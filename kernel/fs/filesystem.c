@@ -1,5 +1,5 @@
 #include "filesystem.h"
-#include "console.h"
+#include "../drivers/console.h"
 
 // Minimal kernel string compare
 int kstrcmp(const char* a, const char* b) {

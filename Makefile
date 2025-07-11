@@ -11,17 +11,29 @@
 CC = gcc -m32
 LD = ld -m elf_i386
 CFLAGS := -ffreestanding -m32 -nostdlib -nostdinc -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostartfiles -nodefaultlibs -march=i386 -mtune=i386 -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-exceptions -mno-red-zone
-LDFLAGS := -T kernel/linker.ld -nostdlib
+LDFLAGS := -T kernel/arch/linker.ld -nostdlib
 
-KERNEL_C_SRCS := $(wildcard kernel/*.c)
-KERNEL_OBJS := $(patsubst kernel/%.c,build/%.o,$(KERNEL_C_SRCS))
+KERNEL_C_SRCS := \
+ $(wildcard kernel/core/*.c) \
+ $(wildcard kernel/drivers/*.c) \
+ $(wildcard kernel/fs/*.c) \
+ $(wildcard kernel/editor/*.c) \
+ $(wildcard kernel/commands/*.c)
+KERNEL_OBJS := $(patsubst kernel/%,build/%,$(KERNEL_C_SRCS:.c=.o))
+KERNEL_ARCH_C_SRCS := $(wildcard kernel/arch/*.c)
+KERNEL_ARCH_OBJS := $(patsubst kernel/%,build/%,$(KERNEL_ARCH_C_SRCS:.c=.o))
 
 # Default target: build the OS image
 all: build/os-image
 
-# Pattern rule for C files
+# Pattern rule for C files in all subdirs
 build/%.o: kernel/%.c
-	@mkdir -p build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Pattern rule for C files in kernel/arch
+build/arch/%.o: kernel/arch/%.c
+	@mkdir -p build/arch
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Assemble the bootloader (NASM, 16-bit real mode)
@@ -30,20 +42,20 @@ build/bootloader.bin: boot/bootloader.asm
 	nasm -f bin boot/bootloader.asm -o build/bootloader.bin
 
 # Assemble .asm files (entry, interrupts, exceptions)
-build/entry.o: kernel/entry.asm
-	@mkdir -p build
+build/arch/entry.o: kernel/arch/entry.asm
+	@mkdir -p build/arch
 	nasm -f elf32 $< -o $@
-build/interrupts.o: kernel/interrupts.asm
-	@mkdir -p build
+build/arch/interrupts.o: kernel/arch/interrupts.asm
+	@mkdir -p build/arch
 	nasm -f elf32 $< -o $@
-build/exceptions_asm.o: kernel/exceptions.asm
-	@mkdir -p build
+build/arch/exceptions_asm.o: kernel/arch/exceptions.asm
+	@mkdir -p build/arch
 	nasm -f elf32 $< -o $@
 
 # Link all kernel objects
-build/kernel.bin: build/entry.o $(KERNEL_OBJS) build/interrupts.o build/exceptions_asm.o
+build/kernel.bin: build/arch/entry.o $(KERNEL_OBJS) build/arch/interrupts.o build/arch/exceptions_asm.o $(KERNEL_ARCH_OBJS)
 	@mkdir -p build
-	$(LD) $(LDFLAGS) build/entry.o $(KERNEL_OBJS) build/interrupts.o build/exceptions_asm.o -o build/kernel.elf
+	$(LD) $(LDFLAGS) build/arch/entry.o $(KERNEL_OBJS) build/arch/interrupts.o build/arch/exceptions_asm.o $(KERNEL_ARCH_OBJS) -o build/kernel.elf
 	objcopy -O binary build/kernel.elf build/kernel.bin
 
 # Create the OS image
@@ -58,4 +70,4 @@ run: build/os-image
 
 # Clean build artifacts
 clean:
-	rm -rf build/*.o build/kernel.bin build/bootloader.bin build/os-image build/kernel.elf 
+	rm -rf build/*.o build/arch/*.o build/kernel.bin build/bootloader.bin build/os-image build/kernel.elf 

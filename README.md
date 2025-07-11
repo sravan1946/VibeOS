@@ -32,4 +32,22 @@ make run
 
 ---
 
+## Shell Command Structure (Modular)
+
+Shell commands are now modularized:
+- Each command is implemented in its own file under `kernel/commands/` (e.g., `help.c`, `ls.c`, etc.).
+- Each command provides a function: `void cmd_<name>(const char* args, const char* flag);`
+- The shell dispatches to these handlers based on the command name.
+- Shared helpers (like `kstrcmp`) are in `kernel/commands/command_utils.h`.
+
+### Adding a New Command
+1. Create a new file in `kernel/commands/` (e.g., `foo.c`).
+2. Implement `void cmd_foo(const char* args, const char* flag);`.
+3. Include `command_utils.h` for helpers.
+4. Add an `#include "commands/foo.c"` in `kernel/shell.c` and a dispatch entry in `handle_command`.
+
+All commands should support `--help`/`-h` flags for usage info.
+
+---
+
 Enjoy the vibes! ✨ 

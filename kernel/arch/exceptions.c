@@ -1,5 +1,5 @@
 #include "exceptions.h"
-#include "console.h"
+#include "../drivers/console.h"
 
 const char* exception_messages[32] = {
     "#DE Divide by Zero",                // 0

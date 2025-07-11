@@ -1,6 +1,6 @@
 #include "keyboard.h"
 #include "console.h"
-#include "shell.h"
+#include "../core/shell.h"
 
 char input_buffer[INPUT_BUFFER_SIZE];
 unsigned int input_len = 0;

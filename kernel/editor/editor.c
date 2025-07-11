@@ -1,7 +1,7 @@
 #include "editor.h"
-#include "console.h"
-#include "filesystem.h"
-#include "keyboard.h"
+#include "../drivers/console.h"
+#include "../fs/filesystem.h"
+#include "../drivers/keyboard.h"
 
 static int kstrlen(const char* s) {
     int i = 0;

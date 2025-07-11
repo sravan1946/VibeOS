@@ -1,7 +1,7 @@
-#include "console.h"
-#include "keyboard.h"
+#include "../drivers/console.h"
+#include "../drivers/keyboard.h"
 #include "shell.h"
-#include "exceptions.h"
+#include "../arch/exceptions.h"
 
 volatile unsigned int key_irq_count = 0;
 volatile unsigned int timer_irq_count = 0;
