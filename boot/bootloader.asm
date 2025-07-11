@@ -13,6 +13,11 @@ ORG 0x7C00
 mov si, boot_msg
 call print_string
 
+; Set VGA to 80x25 mode
+mov ah, 0x00
+mov al, 0x03
+int 0x10
+
 mov [BOOT_DRIVE], dl    ; Store BIOS boot drive number for later disk reads
 
 ; Set ES:BX to 0x1000:0x0000 (destination address for kernel)
