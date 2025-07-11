@@ -10,7 +10,7 @@
 
 CC = gcc -m32
 LD = ld -m elf_i386
-CFLAGS := -ffreestanding -m32 -nostdlib -nostdinc -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostartfiles -nodefaultlibs -march=i386 -mtune=i386 -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-exceptions -fno-rtti -mno-red-zone
+CFLAGS := -ffreestanding -m32 -nostdlib -nostdinc -fno-pic -fno-pie -fno-stack-protector -fno-builtin -nostartfiles -nodefaultlibs -march=i386 -mtune=i386 -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-exceptions -mno-red-zone
 LDFLAGS := -T kernel/linker.ld -nostdlib
 
 KERNEL_C_SRCS := $(wildcard kernel/*.c)

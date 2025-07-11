@@ -6,6 +6,7 @@ extern char input_buffer[INPUT_BUFFER_SIZE];
 extern unsigned int input_len;
 extern volatile int shift_pressed;
 extern volatile int extended_scancode;
+extern volatile int ctrl_pressed;
 extern char last_command[INPUT_BUFFER_SIZE];
 
 extern const char scancode_map[128];

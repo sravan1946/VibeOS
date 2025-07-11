@@ -7,6 +7,7 @@ unsigned int input_len = 0;
 char last_command[INPUT_BUFFER_SIZE] = {0};
 volatile int shift_pressed = 0;
 volatile int extended_scancode = 0;
+volatile int ctrl_pressed = 0;
 
 extern volatile unsigned int timer_irq_count;
 extern volatile unsigned int key_irq_count;
@@ -100,6 +101,14 @@ void keyboard_handler(void) {
         return;
     } else if (!extended_scancode && (scancode == 0xAA || scancode == 0xB6)) { // Left or Right Shift released
         shift_pressed = 0;
+        outb(0x20, 0x20);
+        return;
+    } else if (!extended_scancode && scancode == 0x1D) { // Ctrl pressed
+        ctrl_pressed = 1;
+        outb(0x20, 0x20);
+        return;
+    } else if (!extended_scancode && scancode == 0x9D) { // Ctrl released
+        ctrl_pressed = 0;
         outb(0x20, 0x20);
         return;
     }
