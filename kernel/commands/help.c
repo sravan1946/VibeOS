@@ -17,4 +17,9 @@ void cmd_help(const char* args, const char* flag) {
     print("  cat [--help] <file>       - Show file contents\n");
     print("  echo <text> > <file>      - Write file\n");
     print("  edit [--help] <file>      - Edit a file\n");
+    print("  pwd [--help]               - Print current working directory\n");
+    print("  cd [--help] <dir>          - Change directory\n");
+    print("  mkdir [--help] <dir>       - Create directory\n");
+    print("  rm [--help] <file|dir>     - Remove file or empty directory\n");
+    print("  touch [--help] <file>      - Create an empty file\n");
 } 

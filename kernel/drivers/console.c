@@ -1,4 +1,5 @@
 #include "console.h"
+#include "../fs/filesystem.h"
 
 unsigned char cursor_row = 0;
 unsigned char cursor_col = 0;
@@ -57,7 +58,25 @@ void clear_screen(void) {
 }
 
 void print_prompt(void) {
-    print("> ");
+    // Print current working directory before prompt
+    char buf[MAX_FILENAME*MAX_FILES];
+    int pos = MAX_FILENAME*MAX_FILES-1;
+    buf[pos] = 0;
+    fs_node* n = current_directory;
+    while (n && n != fs_root) {
+        int len = 0; while (n->name[len]) len++;
+        pos -= len;
+        for (int i = 0; i < len; i++) buf[pos+i] = n->name[i];
+        pos--;
+        buf[pos+1] = '/';
+        n = n->parent;
+    }
+    if (pos == MAX_FILENAME*MAX_FILES-1) {
+        print("/");
+    } else {
+        print(&buf[pos+1]);
+    }
+    print(" > ");
 }
 
 void print_hex(unsigned int val) {

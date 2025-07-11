@@ -22,7 +22,7 @@ xor bx, bx        ; ES:BX = 0x1000:0x0000
 
 ; Set up disk read parameters
 mov ah, 0x02      ; INT 13h: Read sectors
-mov al, 32        ; Number of sectors to read (32 * 512 = 16384 bytes)
+mov al, 128       ; Number of sectors to read (128 * 512 = 65536 bytes)
 mov ch, 0         ; Cylinder 0
 mov cl, 2         ; Sector 2 (sector 1 is the bootloader itself)
 mov dh, 0         ; Head 0

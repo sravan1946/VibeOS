@@ -4,20 +4,34 @@
 #define MAX_FILES 16
 #define MAX_FILENAME 16
 #define MAX_FILESIZE 256
+#define MAX_CHILDREN 16
 
-typedef struct {
+typedef enum { FS_FILE, FS_DIR } fs_node_type;
+
+typedef struct fs_node {
     char name[MAX_FILENAME];
-    int size;
-    char data[MAX_FILESIZE];
-} file_entry;
+    fs_node_type type;
+    int size; // For files
+    char data[MAX_FILESIZE]; // For files
+    struct fs_node* parent; // For navigation
+    struct fs_node* children[MAX_CHILDREN]; // For directories
+    int child_count; // For directories
+} fs_node;
 
-extern file_entry files[MAX_FILES];
-extern int file_count;
+extern fs_node* fs_root;
+extern fs_node* current_directory;
 
-file_entry* find_file(const char* name);
-file_entry* create_file(const char* name);
-int write_file(const char* name, const char* data, int len);
-const char* read_file(const char* name, int* out_len);
-void list_files(void);
+fs_node* fs_find(const char* path);
+fs_node* fs_create(const char* path, fs_node_type type);
+int fs_write(const char* path, const char* data, int len);
+const char* fs_read(const char* path, int* out_len);
+void fs_list(const char* path);
+int fs_remove(const char* path);
+int fs_mkdir(const char* path);
+int fs_chdir(const char* path);
+void fs_pwd(void);
+void fs_init(void);
+
+// Note: Every directory contains '.' (self) and '..' (parent) as the first two children.
 
 #endif // FILESYSTEM_H 

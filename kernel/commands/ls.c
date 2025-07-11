@@ -4,10 +4,10 @@
 #include "command_utils.h"
 
 void cmd_ls(const char* args, const char* flag) {
-    (void)args;
     if (flag && (!kstrcmp(flag, "--help") || !kstrcmp(flag, "-h"))) {
-        print("Usage: ls [--help]\nLists all files in the filesystem.\n");
+        print("Usage: ls [--help] [dir]\nLists all files and directories in the given directory (default: current).\n");
         return;
     }
-    list_files();
+    while (*args == ' ' || *args == '\t') args++;
+    fs_list(args);
 } 

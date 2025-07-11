@@ -38,6 +38,11 @@
 #include "../commands/cat.h"
 #include "../commands/echo.h"
 #include "../commands/edit.h"
+#include "../commands/pwd.h"
+#include "../commands/cd.h"
+#include "../commands/mkdir.h"
+#include "../commands/rm.h"
+#include "../commands/touch.h"
 
 // Helper to parse command, arguments, and flags
 static void parse_command(const char* cmd, char* out_cmd, char* out_args, char* out_flag) {
@@ -109,6 +114,31 @@ void handle_command(const char* cmd) {
     }
     if (!kstrcmp(command, "edit")) {
         cmd_edit(args, flag);
+        print_prompt();
+        return;
+    }
+    if (!kstrcmp(command, "pwd")) {
+        cmd_pwd(args, flag);
+        print_prompt();
+        return;
+    }
+    if (!kstrcmp(command, "cd")) {
+        cmd_cd(args, flag);
+        print_prompt();
+        return;
+    }
+    if (!kstrcmp(command, "mkdir")) {
+        cmd_mkdir(args, flag);
+        print_prompt();
+        return;
+    }
+    if (!kstrcmp(command, "rm")) {
+        cmd_rm(args, flag);
+        print_prompt();
+        return;
+    }
+    if (!kstrcmp(command, "touch")) {
+        cmd_touch(args, flag);
         print_prompt();
         return;
     }

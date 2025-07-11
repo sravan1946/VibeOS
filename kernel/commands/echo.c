@@ -18,7 +18,7 @@ void cmd_echo(const char* args, const char* flag) {
         for (int i = 0; i < text_len && i < MAX_FILESIZE; i++) text[i] = args[i];
         const char* fname = gt + 2;
         while (*fname == ' ' || *fname == '\t') fname++;
-        if (write_file(fname, text, text_len)) {
+        if (fs_write(fname, text, text_len)) {
             print("Wrote file: "); print(fname); print("\n");
         } else {
             print("File write error.\n");

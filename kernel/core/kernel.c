@@ -2,6 +2,7 @@
 #include "../drivers/keyboard.h"
 #include "shell.h"
 #include "../arch/exceptions.h"
+#include "../fs/filesystem.h"
 
 volatile unsigned int key_irq_count = 0;
 volatile unsigned int timer_irq_count = 0;
@@ -128,6 +129,7 @@ static inline void sti(void) { __asm__ volatile ("sti"); }
 
 void kernel_main(void) __attribute__((noreturn, section(".text.start")));
 void kernel_main(void) {
+    fs_init();
     clear_screen();
     pic_remap();
     idt_init();

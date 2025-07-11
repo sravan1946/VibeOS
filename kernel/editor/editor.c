@@ -17,7 +17,7 @@ void editor(const char* filename) {
     int saved = 0;
     // Load file if exists
     int file_len = 0;
-    const char* file_data = read_file(filename, &file_len);
+    const char* file_data = fs_read(filename, &file_len);
     if (file_data) {
         int l = 0, c = 0;
         for (int i = 0; i < file_len && l < EDITOR_MAX_LINES; i++) {
@@ -117,7 +117,7 @@ void editor(const char* filename) {
                 for (int k = 0; k < len; k++) buf[pos++] = lines[l][k];
                 buf[pos++] = '\n';
             }
-            write_file(filename, buf, pos);
+            fs_write(filename, buf, pos);
             saved = 1;
             running = 0;
         } else if (ctrl_pressed && (c == 'q' || c == 'Q')) { // Ctrl+Q

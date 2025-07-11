@@ -11,7 +11,7 @@ void cmd_cat(const char* args, const char* flag) {
     const char* fname = args;
     while (*fname == ' ' || *fname == '\t') fname++;
     int len = 0;
-    const char* data = read_file(fname, &len);
+    const char* data = fs_read(fname, &len);
     if (!data) {
         print("File not found.\n");
     } else {
