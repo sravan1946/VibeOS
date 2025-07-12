@@ -3,6 +3,7 @@
 #include "shell.h"
 #include "../arch/exceptions.h"
 #include "../fs/filesystem.h"
+#include "../drivers/graphics.h"
 
 volatile unsigned int key_irq_count = 0;
 volatile unsigned int timer_irq_count = 0;
@@ -129,8 +130,13 @@ static inline void sti(void) { __asm__ volatile ("sti"); }
 
 void kernel_main(void) __attribute__((noreturn, section(".text.start")));
 void kernel_main(void) {
+    graphics_init();
+    graphics_console_clear();
+    graphics_console_set_color(14, 4); // yellow on red
+    graphics_console_print("VibeOS Shell (graphics mode)\n\n");
+    graphics_console_set_color(15, 0); // white on black
+    print_prompt();
     fs_init();
-    clear_screen();
     pic_remap();
     idt_init();
     unsigned int divisor = 1193182 / 10;
@@ -141,7 +147,5 @@ void kernel_main(void) {
     // Enable keyboard controller (PS/2) IRQs and scanning
     outb(0x64, 0xAE); // Enable keyboard interface
     outb(0x60, 0xF4); // Enable scanning
-    print("VibeOS Shell\n\n");
-    print_prompt();
     while (1) {}
 } 

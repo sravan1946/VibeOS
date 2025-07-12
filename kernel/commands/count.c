@@ -1,5 +1,6 @@
 #include "count.h"
 #include "../drivers/console.h"
+#include "../drivers/graphics.h"
 #include "command_utils.h"
 extern volatile unsigned int timer_irq_count;
 extern volatile unsigned int key_irq_count;
@@ -7,7 +8,10 @@ extern volatile unsigned int key_irq_count;
 void cmd_count(const char* args, const char* flag) {
     (void)args;
     if (flag && (!kstrcmp(flag, "--help") || !kstrcmp(flag, "-h"))) {
-        print("Usage: count [--help]\nShows the number of timer and keyboard interrupts.\n");
+        graphics_console_set_color(10, 0); // green for usage
+        print("Usage: count\n");
+        graphics_console_set_color(15, 0); // white for description
+        print("Shows the number of timer and keyboard interrupts.\n");
         return;
     }
     print("Timer IRQs: ");

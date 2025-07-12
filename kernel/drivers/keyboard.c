@@ -46,11 +46,6 @@ unsigned char inb(unsigned short port) {
 }
 
 void timer_handler(void) {
-    static int first_timer = 1;
-    if (first_timer) {
-        print("[timer IRQ working]\n");
-        first_timer = 0;
-    }
     timer_irq_count++;
     outb(0x20, 0x20);
 }
@@ -81,11 +76,6 @@ static void trim_input(char* buf) {
 }
 
 void keyboard_handler(void) {
-    static int first_key = 1;
-    if (first_key) {
-        print("[keyboard IRQ working]\n");
-        first_key = 0;
-    }
     key_irq_count++;
     unsigned char scancode = inb(0x60);
     // Handle extended scancode prefix

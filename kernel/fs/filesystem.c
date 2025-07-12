@@ -219,21 +219,38 @@ int fs_chdir(const char* path) {
     return 1;
 }
 
-void fs_pwd(void) {
+// Helper to get the current working directory as a string
+void get_current_path(char* out, int maxlen) {
     char buf[MAX_FILENAME*MAX_FILES];
-    int pos = MAX_FILENAME*MAX_FILES-1;
-    buf[pos] = 0;
+    int pos = MAX_FILENAME*MAX_FILES;
+    buf[--pos] = 0; // Null terminator
     fs_node* n = current_directory;
     while (n && n != fs_root) {
-        int len = kstrlen(n->name);
-        pos -= len;
-        for (int i = 0; i < len; i++) buf[pos+i] = n->name[i];
-        pos--;
-        buf[pos+1] = '/';
+        int len = 0; while (n->name[len]) len++;
+        // Copy name backwards
+        for (int i = len-1; i >= 0; i--) {
+            buf[--pos] = n->name[i];
+        }
+        // Add slash
+        buf[--pos] = '/';
         n = n->parent;
     }
-    if (pos == MAX_FILENAME*MAX_FILES-1) { print("/\n"); return; }
-    print(&buf[pos+1]); print("\n");
+    if (pos == MAX_FILENAME*MAX_FILES-1) {
+        // Root directory
+        out[0] = '/';
+        out[1] = 0;
+        return;
+    }
+    int i = 0;
+    for (const char* p = &buf[pos]; *p && i < maxlen-1; ++p) out[i++] = *p;
+    out[i] = 0;
+}
+
+void fs_pwd(void) {
+    char path[MAX_FILENAME*MAX_FILES];
+    get_current_path(path, sizeof(path));
+    print(path);
+    print("\n");
 }
 
 // Initialization

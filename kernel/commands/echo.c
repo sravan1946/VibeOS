@@ -1,11 +1,17 @@
 #include "echo.h"
 #include "../drivers/console.h"
 #include "../fs/filesystem.h"
+#include "../drivers/graphics.h"
 #include "command_utils.h"
 
 void cmd_echo(const char* args, const char* flag) {
     if (flag && (!kstrcmp(flag, "--help") || !kstrcmp(flag, "-h"))) {
-        print("Usage: echo [--help] <text>\nPrints text to the screen.\nYou can also use: echo <text> > <file> to write to a file.\n");
+        graphics_console_set_color(10, 0); // green for usage
+        print("Usage: echo ");
+        graphics_console_set_color(13, 0); // magenta for args
+        print("<text>");
+        graphics_console_set_color(15, 0); // white for description
+        print("\nPrints text to the screen.\nYou can also use: echo <text> > <file> to write to a file, or echo <text> >> <file> to append.\n");
         return;
     }
     const char* gt = 0;

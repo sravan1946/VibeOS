@@ -13,10 +13,20 @@ ORG 0x7C00
 mov si, boot_msg
 call print_string
 
-; Set VGA to 80x25 mode
-mov ah, 0x00
-mov al, 0x03
+; Set VESA graphics mode 0x105 (1024x768x8bpp)
+mov ax, 0x4F02
+mov bx, 0x105
 int 0x10
+
+; Retrieve VBE mode info for 0x105 and store framebuffer address at 0x9000:0x0000
+mov ax, 0x9000
+mov es, ax
+xor di, di         ; ES:DI = 0x9000:0x0000
+mov ax, 0x4F01      ; VBE get mode info
+mov cx, 0x105       ; Mode 0x105
+int 0x10            ; Fills ES:DI with VbeModeInfoBlock
+; The framebuffer address is at offset 0x28 in the VbeModeInfoBlock
+; We'll leave the whole structure for the kernel to read
 
 mov [BOOT_DRIVE], dl    ; Store BIOS boot drive number for later disk reads
 

@@ -2,6 +2,7 @@
 #include "../drivers/console.h"
 #include "../fs/filesystem.h"
 #include "../drivers/keyboard.h"
+#include "../drivers/graphics.h"
 
 static int kstrlen(const char* s) {
     int i = 0;
@@ -91,14 +92,15 @@ void editor(const char* filename) {
                 }
             }
             extended = 0;
-            clear_screen();
-            print("-- Nano Editor --  ^S Save  ^Q Quit\n\n");
-            for (int i = 0; i < num_lines; i++) {
-                print(lines[i]);
-                print("\n");
+            // Redraw only the current line and cursor
+            int y = 2 + cur_line;
+            int len = kstrlen(lines[cur_line]);
+            for (int i = 0; i < 80; i++) {
+                if (i < len)
+                    draw_char(i, y, lines[cur_line][i], 15, 0);
+                else
+                    draw_char(i, y, ' ', 15, 0);
             }
-            cursor_row = 2 + cur_line;
-            cursor_col = cur_col;
             update_cursor();
             continue;
         }
@@ -163,14 +165,15 @@ void editor(const char* filename) {
                 cur_col++;
             }
         }
-        clear_screen();
-        print("-- Nano Editor --  ^S Save  ^Q Quit\n\n");
-        for (int i = 0; i < num_lines; i++) {
-            print(lines[i]);
-            print("\n");
+        // Redraw only the current line and cursor
+        int y = 2 + cur_line;
+        int len = kstrlen(lines[cur_line]);
+        for (int i = 0; i < 80; i++) {
+            if (i < len)
+                draw_char(i, y, lines[cur_line][i], 15, 0);
+            else
+                draw_char(i, y, ' ', 15, 0);
         }
-        cursor_row = 2 + cur_line;
-        cursor_col = cur_col;
         update_cursor();
     }
     clear_screen();
@@ -179,7 +182,6 @@ void editor(const char* filename) {
     } else {
         print("Edit cancelled.\n");
     }
-    print_prompt();
     // Wait for and discard the next keypress (to eat the leftover Ctrl+S/Q)
     while (1) {
         unsigned char status = inb(0x64);

@@ -31,6 +31,7 @@ int fs_mkdir(const char* path);
 int fs_chdir(const char* path);
 void fs_pwd(void);
 void fs_init(void);
+void get_current_path(char* out, int maxlen);
 
 // Note: Every directory contains '.' (self) and '..' (parent) as the first two children.
 
