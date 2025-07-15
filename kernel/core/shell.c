@@ -43,6 +43,7 @@
 #include "../commands/mkdir.h"
 #include "../commands/rm.h"
 #include "../commands/touch.h"
+#include "../drivers/graphics.h"
 
 // Helper to parse command, arguments, and flags
 static void parse_command(const char* cmd, char* out_cmd, char* out_args, char* out_flag) {
@@ -84,67 +85,79 @@ void handle_command(const char* cmd) {
     parse_command(cmd, command, args, flag);
     if (!kstrcmp(command, "help") || !kstrcmp(command, "--help")) {
         cmd_help(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "clear")) {
         cmd_clear(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "count")) {
         cmd_count(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "ls")) {
         cmd_ls(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "cat")) {
         cmd_cat(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "echo")) {
         cmd_echo(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "edit")) {
         cmd_edit(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "pwd")) {
         cmd_pwd(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "cd")) {
         cmd_cd(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "mkdir")) {
         cmd_mkdir(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "rm")) {
         cmd_rm(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     if (!kstrcmp(command, "touch")) {
         cmd_touch(args, flag);
+        print("\n");
         print_prompt();
         return;
     }
     print("Unknown command: ");
     print(command);
-    print("\n");
+    print("\n\n");
     print_prompt();
 }
 

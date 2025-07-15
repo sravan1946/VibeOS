@@ -32,12 +32,15 @@ extern uint16_t screen_pitch;
 extern uint8_t screen_bpp;
 
 void graphics_init(void);
-void draw_pixel(int x, int y, uint8_t color);
-void graphics_clear_screen(uint8_t color);
-void draw_char(int cx, int cy, char c, uint8_t fg, uint8_t bg);
+void draw_pixel(int x, int y, uint16_t color);
+void graphics_clear_screen(uint16_t color);
+void draw_char(int cx, int cy, char c, uint16_t fg, uint16_t bg);
 void graphics_console_putc(char c);
 void graphics_console_print(const char* s);
 void graphics_console_clear(void);
-void graphics_console_set_color(uint8_t fg, uint8_t bg);
+void graphics_console_set_color(uint16_t fg, uint16_t bg);
+
+void show_splash_screen(void);
+uint16_t rgb16(uint8_t r, uint8_t g, uint8_t b);
 
 #endif // GRAPHICS_H 

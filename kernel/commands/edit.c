@@ -6,11 +6,11 @@
 
 void cmd_edit(const char* args, const char* flag) {
     if (flag && (!kstrcmp(flag, "--help") || !kstrcmp(flag, "-h"))) {
-        graphics_console_set_color(10, 0); // green for usage
+        graphics_console_set_color(rgb16(0,255,128), rgb16(0,0,0)); // bright green for usage
         print("Usage: edit ");
-        graphics_console_set_color(13, 0); // magenta for args
+        graphics_console_set_color(rgb16(255,128,0), rgb16(0,0,0)); // orange for args
         print("<file>\n");
-        graphics_console_set_color(15, 0); // white for description
+        graphics_console_set_color(rgb16(220,220,220), rgb16(0,0,0)); // soft white for description
         print("Edits a file.\n");
         return;
     }

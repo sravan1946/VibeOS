@@ -6,11 +6,11 @@
 
 void cmd_echo(const char* args, const char* flag) {
     if (flag && (!kstrcmp(flag, "--help") || !kstrcmp(flag, "-h"))) {
-        graphics_console_set_color(10, 0); // green for usage
+        graphics_console_set_color(rgb16(0,255,128), rgb16(0,0,0)); // bright green for usage
         print("Usage: echo ");
-        graphics_console_set_color(13, 0); // magenta for args
+        graphics_console_set_color(rgb16(255,128,0), rgb16(0,0,0)); // orange for args
         print("<text>");
-        graphics_console_set_color(15, 0); // white for description
+        graphics_console_set_color(rgb16(220,220,220), rgb16(0,0,0)); // soft white for description
         print("\nPrints text to the screen.\nYou can also use: echo <text> > <file> to write to a file, or echo <text> >> <file> to append.\n");
         return;
     }
@@ -25,11 +25,14 @@ void cmd_echo(const char* args, const char* flag) {
         const char* fname = gt + 2;
         while (*fname == ' ' || *fname == '\t') fname++;
         if (fs_write(fname, text, text_len)) {
+            graphics_console_set_color(rgb16(0,255,0), rgb16(0,0,0)); // green for success
             print("Wrote file: "); print(fname); print("\n");
         } else {
+            graphics_console_set_color(rgb16(255,64,64), rgb16(0,0,0)); // bright red for error
             print("File write error.\n");
         }
     } else {
+        graphics_console_set_color(rgb16(255,255,255), rgb16(0,0,0));
         print(args);
         print("\n");
     }

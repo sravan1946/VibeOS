@@ -33,7 +33,9 @@ void editor(const char* filename) {
         num_lines = l+1;
     }
     clear_screen();
+    graphics_console_set_color(rgb16(255,255,255), rgb16(0,0,255));
     print("-- Nano Editor --  ^S Save  ^Q Quit\n\n");
+    graphics_console_set_color(rgb16(255,255,255), rgb16(0,0,0));
     for (int i = 0; i < num_lines; i++) {
         print(lines[i]);
         print("\n");
@@ -97,9 +99,9 @@ void editor(const char* filename) {
             int len = kstrlen(lines[cur_line]);
             for (int i = 0; i < 80; i++) {
                 if (i < len)
-                    draw_char(i, y, lines[cur_line][i], 15, 0);
+                    draw_char(i, y, lines[cur_line][i], rgb16(255,255,255), rgb16(0,0,0));
                 else
-                    draw_char(i, y, ' ', 15, 0);
+                    draw_char(i, y, ' ', rgb16(255,255,255), rgb16(0,0,0));
             }
             update_cursor();
             continue;
@@ -170,9 +172,9 @@ void editor(const char* filename) {
         int len = kstrlen(lines[cur_line]);
         for (int i = 0; i < 80; i++) {
             if (i < len)
-                draw_char(i, y, lines[cur_line][i], 15, 0);
+                draw_char(i, y, lines[cur_line][i], rgb16(255,255,255), rgb16(0,0,0));
             else
-                draw_char(i, y, ' ', 15, 0);
+                draw_char(i, y, ' ', rgb16(255,255,255), rgb16(0,0,0));
         }
         update_cursor();
     }

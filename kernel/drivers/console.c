@@ -21,17 +21,6 @@ void clear_screen(void) {
     graphics_console_clear();
 }
 
-void print_prompt(void) {
-    // Print current working directory before prompt
-    char path[MAX_FILENAME*MAX_FILES];
-    get_current_path(path, sizeof(path));
-    graphics_console_set_color(10, 0); // green path
-    print(path);
-    graphics_console_set_color(15, 0); // white prompt
-    print(" > ");
-    graphics_console_set_color(15, 0); // restore white on black
-}
-
 void print_hex(unsigned int val) {
     char hex[11] = "0x00000000";
     for (int i = 9; i >= 2; --i) {
@@ -44,4 +33,15 @@ void print_hex(unsigned int val) {
 
 void update_cursor(void) {
     // No-op in graphics mode
+}
+
+void print_prompt(void) {
+    // Print current working directory before prompt
+    char path[MAX_FILENAME*MAX_FILES];
+    get_current_path(path, sizeof(path));
+    graphics_console_set_color(rgb16(0,255,0), rgb16(0,0,0)); // green path
+    print(path);
+    graphics_console_set_color(rgb16(255,255,255), rgb16(0,0,0)); // white prompt
+    print(" > ");
+    graphics_console_set_color(rgb16(255,255,255), rgb16(0,0,0)); // restore white on black
 } 
