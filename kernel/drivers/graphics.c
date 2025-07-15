@@ -1,13 +1,13 @@
 #include "console.h"
 #include "graphics.h"
 #include "keyboard.h"
-#include "font8x8.h"
+#include "font8x16.h"
 
 // Forward declaration for outb
 void outb(unsigned short port, unsigned char val);
 
 #define CHAR_WIDTH 8
-#define CHAR_HEIGHT 8
+#define CHAR_HEIGHT 16
 #define CONSOLE_COLS (screen_width / (CHAR_WIDTH * 2))
 #define CONSOLE_ROWS (screen_height / (CHAR_HEIGHT * 2))
 
@@ -68,13 +68,14 @@ void graphics_console_set_color(uint16_t fg, uint16_t bg) {
 
 void draw_char(int cx, int cy, char c, uint16_t fg, uint16_t bg) {
     if (c < 0x20 || c > 0x7F) c = '?';
-    const uint8_t* glyph = font8x8[c - 0x20];
+    const uint8_t* glyph = font8x16[c - 0x20];
     int px = cx * CHAR_WIDTH * 2; // 2x scale
     int py = cy * CHAR_HEIGHT * 2; // 2x scale
     for (int y = 0; y < CHAR_HEIGHT; y++) {
         uint8_t row = glyph[y];
         for (int x = 0; x < CHAR_WIDTH; x++) {
-            uint16_t color = (row & (1 << x)) ? fg : bg;
+            // VGA font: bit 7 is leftmost pixel, bit 0 is rightmost
+            uint16_t color = (row & (1 << (7 - x))) ? fg : bg;
             draw_pixel(px + x*2,     py + y*2,     color);
             draw_pixel(px + x*2 + 1, py + y*2,     color);
             draw_pixel(px + x*2,     py + y*2 + 1, color);
@@ -164,9 +165,16 @@ void graphics_console_print(const char* s) {
 static int kstrlen(const char* s) { int i = 0; while (s[i]) i++; return i; }
 
 void show_splash_screen(void) {
-    // 1. Optimized diagonal purple-to-orange gradient background (16bpp)
+    // 1. Diagonal purple-to-orange gradient background (16bpp) with subtle ordered dithering for style
     uint8_t purple_r = 128, purple_g = 0, purple_b = 192;
     uint8_t orange_r = 255, orange_g = 128, orange_b = 0;
+    // 4x4 Bayer matrix for ordered dithering
+    const int bayer4[4][4] = {
+        {  0,  8,  2, 10 },
+        { 12,  4, 14,  6 },
+        {  3, 11,  1,  9 },
+        { 15,  7, 13,  5 }
+    };
     // Precompute color ramps for x and y
     uint8_t* ramp_rx = (uint8_t*)__builtin_alloca(screen_width);
     uint8_t* ramp_gx = (uint8_t*)__builtin_alloca(screen_width);
@@ -189,10 +197,15 @@ void show_splash_screen(void) {
     for (int y = 0; y < screen_height; y++) {
         for (int x = 0; x < screen_width; x++) {
             // Diagonal blend: average x and y ramps
-            uint8_t r = (ramp_rx[x] + ramp_ry[y]) >> 1;
-            uint8_t g = (ramp_gx[x] + ramp_gy[y]) >> 1;
-            uint8_t b = (ramp_bx[x] + ramp_by[y]) >> 1;
-            draw_pixel(x, y, rgb16(r, g, b));
+            int r = (ramp_rx[x] + ramp_ry[y]) >> 1;
+            int g = (ramp_gx[x] + ramp_gy[y]) >> 1;
+            int b = (ramp_bx[x] + ramp_by[y]) >> 1;
+            // Subtle dithering: add a small value from Bayer matrix, wrap at 255
+            int d = bayer4[y & 3][x & 3] - 8; // Range: -8..+7
+            r = r + d; if (r < 0) r = 0; if (r > 255) r = 255;
+            g = g + d; if (g < 0) g = 0; if (g > 255) g = 255;
+            b = b + d; if (b < 0) b = 0; if (b > 255) b = 255;
+            draw_pixel(x, y, rgb16((uint8_t)r, (uint8_t)g, (uint8_t)b));
         }
     }
     // 2. Draw a single clean border rectangle around the text area
@@ -213,7 +226,7 @@ void show_splash_screen(void) {
     const char* name = "VibeOS";
     int name_len = kstrlen(name);
     int name_cx = (screen_width / (CHAR_WIDTH * 2) - name_len) / 2;
-    int name_cy = ((rect_y + rect_h/2) / (CHAR_HEIGHT * 2)) - 1;
+    int name_cy = ((rect_y + rect_h/2) / (CHAR_HEIGHT * 2)) - 2; // Move up for more vertical centering
     for (int i = 0; i < name_len; i++) {
         int px = (name_cx + i) * CHAR_WIDTH * 2;
         int py = name_cy * CHAR_HEIGHT * 2;
@@ -238,11 +251,25 @@ void show_splash_screen(void) {
         uint16_t bg = rgb16(r, g, b);
         draw_char(tag_cx + i, tag_cy, tagline[i], rgb16(255,200,128), bg);
     }
-    // 5. Blinking prompt below the rectangle (no shadow)
+    // 5. Author name (centered below tagline)
+    const char* author = "by Sravan";
+    int author_len = kstrlen(author);
+    int author_cx = (screen_width / (CHAR_WIDTH * 2) - author_len) / 2;
+    int author_cy = tag_cy + 2;
+    for (int i = 0; i < author_len; i++) {
+        int px = (author_cx + i) * CHAR_WIDTH * 2;
+        int py = author_cy * CHAR_HEIGHT * 2;
+        uint8_t r = (ramp_rx[px] + ramp_ry[py]) >> 1;
+        uint8_t g = (ramp_gx[px] + ramp_gy[py]) >> 1;
+        uint8_t b = (ramp_bx[px] + ramp_by[py]) >> 1;
+        uint16_t bg = rgb16(r, g, b);
+        draw_char(author_cx + i, author_cy, author[i], rgb16(128,255,255), bg); // cyan-ish
+    }
+    // 6. Blinking prompt below the rectangle (no shadow)
     const char* prompt = "Press any key to continue...";
     int prompt_len = kstrlen(prompt);
     int prompt_cx = (screen_width / (CHAR_WIDTH * 2) - prompt_len) / 2;
-    int prompt_cy = (rect_y + rect_h) / (CHAR_HEIGHT * 2) + 2;
+    int prompt_cy = author_cy + 3;
     // Flush any pending keypresses
     while (1) {
         unsigned char status = inb(0x64);

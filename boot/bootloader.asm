@@ -23,7 +23,7 @@ mov ax, 0x9000
 mov es, ax
 xor di, di         ; ES:DI = 0x9000:0x0000
 mov ax, 0x4F01      ; VBE get mode info
-mov cx, 0x117       ; Mode 0x117 (16bpp)
+mov cx, 0x117       ; Mode 0x117 (1024x768x16bpp)
 int 0x10            ; Fills ES:DI with VbeModeInfoBlock
 ; The framebuffer address is at offset 0x28 in the VbeModeInfoBlock
 ; We'll leave the whole structure for the kernel to read
