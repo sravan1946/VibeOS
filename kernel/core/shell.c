@@ -155,9 +155,11 @@ void handle_command(const char* cmd) {
         print_prompt();
         return;
     }
+    graphics_console_set_color(rgb16(255,64,64), rgb16(0,0,0)); // bright red for error
     print("Unknown command: ");
     print(command);
     print("\n\n");
+    graphics_console_set_color(rgb16(255,255,255), rgb16(0,0,0)); // restore white on black
     print_prompt();
 }
 

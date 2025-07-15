@@ -16,5 +16,11 @@ void cmd_edit(const char* args, const char* flag) {
     }
     const char* fname = args;
     while (*fname == ' ' || *fname == '\t') fname++;
+    if (!*fname) {
+        graphics_console_set_color(rgb16(255,64,64), rgb16(0,0,0)); // bright red for error
+        print("No file specified. Usage: edit <file>\n");
+        graphics_console_set_color(rgb16(220,220,220), rgb16(0,0,0));
+        return;
+    }
     editor(fname);
 } 

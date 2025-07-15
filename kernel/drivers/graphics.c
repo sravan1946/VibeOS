@@ -164,15 +164,34 @@ void graphics_console_print(const char* s) {
 static int kstrlen(const char* s) { int i = 0; while (s[i]) i++; return i; }
 
 void show_splash_screen(void) {
-    // 1. Diagonal purple-to-orange gradient background (16bpp)
+    // 1. Optimized diagonal purple-to-orange gradient background (16bpp)
     uint8_t purple_r = 128, purple_g = 0, purple_b = 192;
     uint8_t orange_r = 255, orange_g = 128, orange_b = 0;
+    // Precompute color ramps for x and y
+    uint8_t* ramp_rx = (uint8_t*)__builtin_alloca(screen_width);
+    uint8_t* ramp_gx = (uint8_t*)__builtin_alloca(screen_width);
+    uint8_t* ramp_bx = (uint8_t*)__builtin_alloca(screen_width);
+    uint8_t* ramp_ry = (uint8_t*)__builtin_alloca(screen_height);
+    uint8_t* ramp_gy = (uint8_t*)__builtin_alloca(screen_height);
+    uint8_t* ramp_by = (uint8_t*)__builtin_alloca(screen_height);
+    for (int x = 0; x < screen_width; x++) {
+        int t = (x * 256) / (screen_width - 1);
+        ramp_rx[x] = ((256 - t) * purple_r + t * orange_r) >> 8;
+        ramp_gx[x] = ((256 - t) * purple_g + t * orange_g) >> 8;
+        ramp_bx[x] = ((256 - t) * purple_b + t * orange_b) >> 8;
+    }
+    for (int y = 0; y < screen_height; y++) {
+        int t = (y * 256) / (screen_height - 1);
+        ramp_ry[y] = ((256 - t) * purple_r + t * orange_r) >> 8;
+        ramp_gy[y] = ((256 - t) * purple_g + t * orange_g) >> 8;
+        ramp_by[y] = ((256 - t) * purple_b + t * orange_b) >> 8;
+    }
     for (int y = 0; y < screen_height; y++) {
         for (int x = 0; x < screen_width; x++) {
-            float t = ((float)x / (float)(screen_width - 1) + (float)y / (float)(screen_height - 1)) / 2.0f;
-            uint8_t r = (uint8_t)((1.0f - t) * purple_r + t * orange_r);
-            uint8_t g = (uint8_t)((1.0f - t) * purple_g + t * orange_g);
-            uint8_t b = (uint8_t)((1.0f - t) * purple_b + t * orange_b);
+            // Diagonal blend: average x and y ramps
+            uint8_t r = (ramp_rx[x] + ramp_ry[y]) >> 1;
+            uint8_t g = (ramp_gx[x] + ramp_gy[y]) >> 1;
+            uint8_t b = (ramp_bx[x] + ramp_by[y]) >> 1;
             draw_pixel(x, y, rgb16(r, g, b));
         }
     }
@@ -198,10 +217,10 @@ void show_splash_screen(void) {
     for (int i = 0; i < name_len; i++) {
         int px = (name_cx + i) * CHAR_WIDTH * 2;
         int py = name_cy * CHAR_HEIGHT * 2;
-        float t = ((float)px / (float)(screen_width - 1) + (float)py / (float)(screen_height - 1)) / 2.0f;
-        uint8_t r = (uint8_t)((1.0f - t) * purple_r + t * orange_r);
-        uint8_t g = (uint8_t)((1.0f - t) * purple_g + t * orange_g);
-        uint8_t b = (uint8_t)((1.0f - t) * purple_b + t * orange_b);
+        // Use diagonal blend for text background
+        uint8_t r = (ramp_rx[px] + ramp_ry[py]) >> 1;
+        uint8_t g = (ramp_gx[px] + ramp_gy[py]) >> 1;
+        uint8_t b = (ramp_bx[px] + ramp_by[py]) >> 1;
         uint16_t bg = rgb16(r, g, b);
         draw_char(name_cx + i, name_cy, name[i], rgb16(255,255,255), bg);
     }
@@ -213,10 +232,9 @@ void show_splash_screen(void) {
     for (int i = 0; i < tag_len; i++) {
         int px = (tag_cx + i) * CHAR_WIDTH * 2;
         int py = tag_cy * CHAR_HEIGHT * 2;
-        float t = ((float)px / (float)(screen_width - 1) + (float)py / (float)(screen_height - 1)) / 2.0f;
-        uint8_t r = (uint8_t)((1.0f - t) * purple_r + t * orange_r);
-        uint8_t g = (uint8_t)((1.0f - t) * purple_g + t * orange_g);
-        uint8_t b = (uint8_t)((1.0f - t) * purple_b + t * orange_b);
+        uint8_t r = (ramp_rx[px] + ramp_ry[py]) >> 1;
+        uint8_t g = (ramp_gx[px] + ramp_gy[py]) >> 1;
+        uint8_t b = (ramp_bx[px] + ramp_by[py]) >> 1;
         uint16_t bg = rgb16(r, g, b);
         draw_char(tag_cx + i, tag_cy, tagline[i], rgb16(255,200,128), bg);
     }
@@ -236,10 +254,9 @@ void show_splash_screen(void) {
         for (int i = 0; i < prompt_len; i++) {
             int px = (prompt_cx + i) * CHAR_WIDTH * 2;
             int py = prompt_cy * CHAR_HEIGHT * 2;
-            float t = ((float)px / (float)(screen_width - 1) + (float)py / (float)(screen_height - 1)) / 2.0f;
-            uint8_t r = (uint8_t)((1.0f - t) * purple_r + t * orange_r);
-            uint8_t g = (uint8_t)((1.0f - t) * purple_g + t * orange_g);
-            uint8_t b = (uint8_t)((1.0f - t) * purple_b + t * orange_b);
+            uint8_t r = (ramp_rx[px] + ramp_ry[py]) >> 1;
+            uint8_t g = (ramp_gx[px] + ramp_gy[py]) >> 1;
+            uint8_t b = (ramp_bx[px] + ramp_by[py]) >> 1;
             uint16_t bg = rgb16(r, g, b);
             draw_char(prompt_cx + i, prompt_cy, prompt[i], blink ? rgb16(128,128,128) : rgb16(255,255,255), bg);
         }
