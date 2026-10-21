@@ -250,3 +250,43 @@ void ui_vscroll(struct ui *ui, int x, int y, int h, int total, int visible, int 
     int ty = y + span * *first / range;
     gfx_round_fill(ui->c, x + 2, ty, 6, th, 3, ui->active == id ? RGBA(255, 255, 255, 110) : RGBA(255, 255, 255, 60));
 }
+
+static void dialog_box(struct ui *ui, int pw, int ph, int *ox, int *oy) {
+    struct canvas *c = ui->c;
+    int W = ui->win->w, H = ui->win->h;
+    gfx_fill(c, 0, 0, W, H, RGBA(0, 0, 0, 150));
+    int px = (W - pw) / 2, py = (H - ph) / 2;
+    gfx_shadow(c, px, py, pw, ph, 12, 14, 120);
+    gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
+    gfx_round_rect(c, px, py, pw, ph, 12, RGBA(255, 255, 255, 40));
+    *ox = px; *oy = py;
+}
+
+int ui_prompt(struct ui *ui, const char *title, const char *okl, char *buf, int cap) {
+    int W = ui->win->w, pw = W - 20 < 480 ? W - 20 : 480, ph = 150, px, py;
+    dialog_box(ui, pw, ph, &px, &py);
+    gfx_text(ui->c, &font_ui_bold, px + 20, py + 16, title, UI_TEXT);
+    int tx = px + 20, ty = py + 46, tw = pw - 40;
+    if (!ui->focus) ui->focus = rid(tx, ty, tw, 34);
+    bool enter = ui_textbox(ui, tx, ty, tw, 34, buf, cap, "");
+    int r = 0;
+    if (ui_button(ui, px + pw - 120, py + ph - 52, 100, 34, okl, UI_ACCENT_BTN) || enter) r = 1;
+    if (ui_button(ui, px + pw - 230, py + ph - 52, 100, 34, "Cancel", UI_NORMAL_BTN)) r = -1;
+    struct gui_event k;
+    while (ui_key(ui, &k)) if (k.key == KEY_ESC) r = -1;
+    if (r) ui->focus = 0;
+    return r;
+}
+
+int ui_confirm(struct ui *ui, const char *title, const char *text, const char *okl) {
+    int W = ui->win->w, pw = W - 20 < 440 ? W - 20 : 440, ph = 140, px, py;
+    dialog_box(ui, pw, ph, &px, &py);
+    gfx_text(ui->c, &font_ui_bold, px + 20, py + 16, title, UI_TEXT);
+    ui_text_fit(ui, &font_ui, px + 20, py + 46, pw - 40, text, UI_TEXT_DIM);
+    int r = 0;
+    if (ui_button(ui, px + pw - 120, py + ph - 52, 100, 34, okl, UI_ACCENT_BTN)) r = 1;
+    if (ui_button(ui, px + pw - 230, py + ph - 52, 100, 34, "Cancel", UI_NORMAL_BTN)) r = -1;
+    struct gui_event k;
+    while (ui_key(ui, &k)) { if (k.key == KEY_ESC) r = -1; else if (k.key == KEY_ENTER) r = 1; }
+    return r;
+}

@@ -9,7 +9,7 @@ steps:
   key:NAME         QEMU sendkey name, e.g. ctrl-c, up, esc
   sleep:SECS
   shot:PATH.png    screenshot
-  moveto:X,Y       move the pointer (absolute pixels)   click / rclick
+  moveto:X,Y       move the pointer (absolute pixels)   click / rclick / dclick
   drag:X0,Y0,X1,Y1 left-drag
   smoke            = wait for the desktop and take build/smoke.png
 The VM window opens on the desktop unless --headless (or VIBE_HEADLESS=1).
@@ -153,6 +153,11 @@ def main(argv):
                     vm.moveto(x0 + (x1 - x0) * i // 10, y0 + (y1 - y0) * i // 10, home=False); time.sleep(0.03)
                 vm.hmp("mouse_button 1"); time.sleep(0.05)
                 vm.hmp("mouse_button 0")
+            elif kind == "dclick":              # two clicks fast enough to count as a double click
+                for _ in range(2):
+                    vm.m.sendall(b"mouse_button 1\n"); time.sleep(0.04)
+                    vm.m.sendall(b"mouse_button 0\n"); time.sleep(0.04)
+                vm.drain()
             elif kind == "click": vm.hmp("mouse_button 1"); time.sleep(0.05); vm.hmp("mouse_button 0")
             elif kind == "rclick": vm.hmp("mouse_button 2"); time.sleep(0.05); vm.hmp("mouse_button 0")
             else: print("unknown step", s); ok = False; break

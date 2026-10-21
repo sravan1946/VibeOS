@@ -72,3 +72,7 @@ bool ui_tool(struct ui *ui, int x, int y, int w, int h, const char *label, bool 
 void ui_vscroll(struct ui *ui, int x, int y, int h, int total, int visible, int *first);
 /* the id a widget at this rectangle gets, e.g. to set ui->focus on a textbox programmatically */
 uint32_t ui_id(int x, int y, int w, int h);
+/* modal dialogs: draw them last, every frame, while open. Return 1 = confirmed, -1 = cancelled, 0 = still open.
+ * ui_prompt edits buf (focus is taken automatically); ui_confirm just asks. */
+int ui_prompt(struct ui *ui, const char *title, const char *okl, char *buf, int cap);
+int ui_confirm(struct ui *ui, const char *title, const char *text, const char *okl);

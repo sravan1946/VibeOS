@@ -277,28 +277,6 @@ static void update_title(struct gui_window *w) {
     if (strcmp(t, last)) { strcpy(last, t); gui_set_title(w, t); }
 }
 
-/* modal dialog helpers */
-static int path_prompt(struct ui *ui, const char *title, const char *okl) {
-    struct canvas *c = ui->c;
-    int W = ui->win->w, H = ui->win->h;
-    gfx_fill(c, 0, 0, W, H, RGBA(0, 0, 0, 150));
-    int pw = W - 40 < 520 ? W - 40 : 520, ph = 150, px = (W - pw) / 2, py = (H - ph) / 2;
-    gfx_shadow(c, px, py, pw, ph, 12, 14, 120);
-    gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
-    gfx_round_rect(c, px, py, pw, ph, 12, RGBA(255, 255, 255, 40));
-    gfx_text(c, &font_ui_bold, px + 20, py + 16, title, UI_TEXT);
-    int tx = px + 20, ty = py + 46, tw = pw - 40;
-    uint32_t id = ui_id(tx, ty, tw, 34);
-    if (!ui->focus) ui->focus = id;
-    bool enter = ui_textbox(ui, tx, ty, tw, 34, prompt, sizeof prompt, "path");
-    int r = 0;
-    if (ui_button(ui, px + pw - 20 - 100, py + ph - 52, 100, 34, okl, UI_ACCENT_BTN) || enter) r = 1;
-    if (ui_button(ui, px + pw - 20 - 210, py + ph - 52, 100, 34, "Cancel", UI_NORMAL_BTN)) r = -1;
-    struct gui_event k;
-    while (ui_key(ui, &k)) if (k.key == KEY_ESC) r = -1;
-    return r;
-}
-
 int main(int argc, char **argv) {
     cap = 4096;
     buf = malloc(cap);
@@ -479,12 +457,11 @@ int main(int argc, char **argv) {
             ui.nkeys = nk;
             memcpy(ui.keys, saved_keys, sizeof saved_keys);
             if (mode == M_OPEN || mode == M_SAVEAS) {
-                int r = path_prompt(&ui, mode == M_OPEN ? "Open file" : "Save as", mode == M_OPEN ? "Open" : "Save");
+                int r = ui_prompt(&ui, mode == M_OPEN ? "Open file" : "Save as", mode == M_OPEN ? "Open" : "Save", prompt, sizeof prompt);
                 if (r == 1 && prompt[0]) {
                     bool ok = mode == M_OPEN ? load(prompt) : save(prompt);
                     if (ok) { mode = M_EDIT; if (closing) break; }
                 } else if (r == -1) mode = M_EDIT;
-                if (mode == M_EDIT) ui.focus = 0;
             } else {                                              /* M_CLOSE */
                 gfx_fill(c, 0, 0, W, H, RGBA(0, 0, 0, 150));
                 int pw = 400, ph = 130, px = (W - pw) / 2, py = (H - ph) / 2;
