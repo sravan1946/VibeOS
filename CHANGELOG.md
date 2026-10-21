@@ -43,7 +43,7 @@ Newest notes at the bottom of each phase.
 - [x] Window syscalls + userland GUI library (libgui: gui.h windows/events, ui.h immediate-mode widgets)
 - [ ] GUI apps: system monitor, paint, calculator, clock, file manager, text editor
 - [x] About VibeOS app (first ui.h app, verified open/close in QEMU)
-- [ ] Games
+- [x] Games: snake, tetris (SRS, hold, ghost, DAS), minesweeper (3 levels, chording) — agent
 
 ## Phase 3 — Polish
 - [x] Boot splash with progress (logo, gradient bar, live kprintf status, crossfade into desktop)
