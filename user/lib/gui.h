@@ -20,3 +20,4 @@ void gui_flip_rect(struct gui_window *win, int x, int y, int w, int h);
  * (canvas rebuilt) before it is returned. */
 int gui_next_event(struct gui_window *win, struct gui_event *ev, int timeout_ms);
 int gui_set_title(struct gui_window *win, const char *title);
+int gui_resize(struct gui_window *win, int w, int h);

@@ -11,7 +11,7 @@ static long double f_exp2(long double x) {
     f = x - i;
     __asm__("f2xm1" : "=t"(f) : "0"(f));
     f += 1;
-    __asm__("fscale" : "=t"(f) : "0"(f), "u"(i) : "st(1)");
+    __asm__("fscale; fstp %%st(1)" : "=t"(f) : "0"(f), "u"(i) : "st(1)");
     return f;
 }
 

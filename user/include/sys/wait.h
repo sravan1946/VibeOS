@@ -1,5 +1,5 @@
 #pragma once
 #include "abi.h"
-/* ponytail: ABI doesn't say how the exit status is encoded; assume plain exit code */
+/* kernel stores the plain exit code in *status */
 #define WIFEXITED(s) 1
 #define WEXITSTATUS(s) ((s) & 0xff)

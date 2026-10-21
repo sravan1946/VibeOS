@@ -55,15 +55,13 @@ int gui_next_event(struct gui_window *win, struct gui_event *ev, int timeout_ms)
     int r = poll(&p, 1, timeout_ms);
     if (r <= 0) return r;
     if (read(win->fd, ev, sizeof *ev) != sizeof *ev) return -1;
-    if (ev->type == EV_RESIZE) {
-        /* ASSUMPTION (abi.h is vague): WIN_SET_SIZE takes a struct win_info * with w/h set and
-         * returns the new pixels/stride in it. */
-        struct win_info wi;
-        memset(&wi, 0, sizeof wi);
-        wi.w = ev->w;
-        wi.h = ev->h;
-        if (win_set(win->fd, WIN_SET_SIZE, (uintptr_t)&wi) == 0 && wi.pixels)
-            attach(win, wi.w, wi.h, wi.pixels, wi.stride);
-    }
+    if (ev->type == EV_RESIZE)      /* kernel keeps the same mapping and stride; only w/h change */
+        attach(win, ev->w, ev->h, win->pixels, win->stride);
     return 1;
+}
+
+/* ask the window manager for a new client size; the EV_RESIZE event confirms it */
+int gui_resize(struct gui_window *win, int w, int h) {
+    struct win_rect r = { 0, 0, w, h };
+    return win_set(win->fd, WIN_SET_SIZE, (uintptr_t)&r);
 }

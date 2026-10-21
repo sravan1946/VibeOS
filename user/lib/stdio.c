@@ -310,7 +310,7 @@ static void fo_out(void *c, const char *s, size_t k) {
 }
 
 int vfprintf(FILE *f, const char *fmt, va_list ap) {
-    struct fo o = { f, 0 };
+    struct fo o = { .f = f };
     int r = __vformat(fo_out, &o, fmt, ap);     /* batches stderr writes into one syscall */
     fo_flush(&o);
     return r;
