@@ -658,6 +658,7 @@ static void launch(int i) {
     if (i == napps || i == napps + 1) {
         extern int ext2_sync_all(void);
         ext2_sync_all();
+        ata_flush_all();
         cli();
         if (i == napps) { while (inb(0x64) & 2) {} outb(0x64, 0xFE); }
         outw(0x604, 0x2000); outw(0xB004, 0x2000); outb(0xF4, 0);

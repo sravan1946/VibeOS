@@ -71,7 +71,7 @@ static int fetch(int out, int *status) {
         }
         for (ssize_t o = 0; o < n; ) {
             ssize_t w = write(out, data + o, n - o);
-            if (w <= 0) { fprintf(stderr, "wget: write error\n"); close(fd); return -1; }
+            if (w <= 0) { fprintf(stderr, "wget: write error: %s\n", w < 0 ? strerror(errno) : "short write"); close(fd); return -1; }
             o += w;
         }
         total += n;

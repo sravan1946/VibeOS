@@ -277,6 +277,7 @@ static int sys_beep(uint32_t hz, uint32_t ms) {
 static NORETURN void sys_shutdown(int reboot) {
     kprintf("shutdown: syncing disks\n");
     ext2_sync_all();
+    ata_flush_all();
     cli();
     if (reboot) { while (inb(0x64) & 2) {} outb(0x64, 0xFE); }
     outw(0x604, 0x2000);           /* QEMU q35/piix ACPI power off */

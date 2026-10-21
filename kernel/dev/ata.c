@@ -5,10 +5,11 @@
 #define ST_DRQ 0x08
 #define ST_DF  0x20
 #define ST_BSY 0x80
-#define SPIN   1000000      /* status polls before giving up */
+#define TIMEOUT_MS 10000   /* a host fsync behind FLUSH CACHE can take a while */
+#define SPIN   50000000     /* poll cap for when the timer isn't running */
 #define MAXRUN 128          /* sectors per command */
 
-struct ata { uint16_t io, ctl; uint8_t slave; };
+struct ata { uint16_t io, ctl; uint8_t slave; bool unflushed; uint64_t last_flush; };
 static struct { struct blockdev bd; struct ata a; } disks[4];
 static int ndisks, inited;
 
@@ -23,28 +24,40 @@ static void delay400(struct ata *a) { for (int i = 0; i < 4; i++) inb(a->ctl); }
 
 /* wait for BSY to clear; returns status or -EIO on timeout */
 static int wait_bsy(struct ata *a) {
-    for (int i = 0; i < SPIN; i++) {
+    uint64_t until = ticks_ms + TIMEOUT_MS;
+    for (int i = 0; i < SPIN && ticks_ms < until; i++) {
         uint8_t s = inb(a->ctl);
         if (!(s & ST_BSY)) return s;
     }
+    kprintf("ata: timeout waiting for BSY\n");
     return -EIO;
 }
 
 /* 400ns after a command/select, then wait for ready (and DRQ if asked) */
 static int ata_wait(struct ata *a, int drq) {
     delay400(a);
-    for (int i = 0; i < SPIN; i++) {
+    uint64_t until = ticks_ms + TIMEOUT_MS;
+    for (int i = 0; i < SPIN && ticks_ms < until; i++) {
         uint8_t s = inb(a->ctl);
         if (s & ST_BSY) continue;
-        if (s & (ST_ERR | ST_DF)) return -EIO;
+        if (s & (ST_ERR | ST_DF)) { kprintf("ata: error status %x (err %x)\n", s, inb(a->io + 1)); return -EIO; }
         if (!drq || (s & ST_DRQ)) return 0;
     }
+    kprintf("ata: timeout (drq=%d)\n", drq);
     return -EIO;
 }
 
 static void select_drive(struct ata *a, uint32_t lba) {
     outb(a->io + 6, 0xE0 | (a->slave << 4) | ((lba >> 24) & 0xF));
     delay400(a);
+}
+
+static int flush(struct ata *a) {
+    select_drive(a, 0);
+    outb(a->io + 7, 0xE7);
+    a->last_flush = ticks_ms;
+    a->unflushed = false;
+    return ata_wait(a, 0);
 }
 
 static int ata_rw(struct blockdev *d, int wr, uint32_t lba, uint32_t cnt, void *buf) {
@@ -65,13 +78,18 @@ static int ata_rw(struct blockdev *d, int wr, uint32_t lba, uint32_t cnt, void *
             if (wr) outsw(a->io, p, 256); else insw(a->io, p, 256);
         }
         lba += n; cnt -= n;
-        if (wr) {   /* let the drive finish, then flush its cache */
+        if (wr) {   /* let the drive finish; flush its cache at most once a second */
             if (ata_wait(a, 0) < 0) return -EIO;
-            outb(a->io + 7, 0xE7);
-            if (ata_wait(a, 0) < 0) return -EIO;
+            a->unflushed = true;
+            if (ticks_ms - a->last_flush >= 1000 && flush(a) < 0) return -EIO;
         }
     }
     return 0;
+}
+
+/* before power-off: push every drive's write cache to the medium */
+void ata_flush_all(void) {
+    for (int i = 0; i < ndisks; i++) if (disks[i].a.unflushed) flush(&disks[i].a);
 }
 
 static int ata_read(struct blockdev *d, uint32_t lba, uint32_t cnt, void *buf) { return ata_rw(d, 0, lba, cnt, buf); }
