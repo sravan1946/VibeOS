@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syscall.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static long floor_div(long a, long b) { return a / b - ((a % b) < 0); }
 
@@ -26,9 +28,18 @@ static void civil_from_days(long z, long *y, int *m, int *d) {
     *y = yoe + era * 400 + (*m <= 2);
 }
 
+/* minutes east of UTC: $TZ_OFFSET, else /etc/tz (what the taskbar clock uses), read once */
 static int tz_off(void) {
+    static int cached = -100000;
     const char *e = getenv("TZ_OFFSET");
-    return e ? atoi(e) : 0;
+    if (e) return atoi(e);
+    if (cached == -100000) {
+        char buf[16] = { 0 };
+        int fd = open("/etc/tz", O_RDONLY);
+        cached = 0;
+        if (fd >= 0) { if (read(fd, buf, sizeof buf - 1) > 0) cached = atoi(buf); close(fd); }
+    }
+    return cached;
 }
 
 double difftime(time_t a, time_t b) { return (double)(a - b); }
@@ -121,7 +132,7 @@ size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm) {
         case 'y': snprintf(tmp, sizeof tmp, "%02d", (tm->tm_year + 1900) % 100); break;
         case 'Y': snprintf(tmp, sizeof tmp, "%d", tm->tm_year + 1900); break;
         case 'z': { int o = tz_off(); snprintf(tmp, sizeof tmp, "%c%02d%02d", o < 0 ? '-' : '+', abs(o) / 60, abs(o) % 60); break; }
-        case 'Z': src = tz_off() ? "TZ" : "UTC"; break;
+        case 'Z': { int o = tz_off(); if (!o) src = "UTC"; else snprintf(tmp, sizeof tmp, "UTC%c%02d:%02d", o < 0 ? '-' : '+', abs(o) / 60, abs(o) % 60); break; }
         case '%': strcpy(tmp, "%"); break;
         case 0: fmt--; /* fallthrough */
         default: tmp[0] = '%'; tmp[1] = *fmt; tmp[2] = 0;
