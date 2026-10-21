@@ -1,0 +1,6 @@
+# VibeOS login profile - sourced by every interactive sh
+export PATH=/bin
+export EDITOR=/bin/notepad
+export HOSTNAME=vibeos
+cat /etc/motd
+echo "Type help for the shell builtins, Tab completes commands and files."

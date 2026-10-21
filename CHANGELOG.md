@@ -28,7 +28,7 @@ Newest notes at the bottom of each phase.
 - [x] Terminal emulator with ANSI escapes + TTY line discipline (canonical/raw)
 - [x] Pipes and fd redirection
 - [ ] User libc (string, stdio/printf, malloc, file I/O)
-- [ ] `sh` with history, line editing, tab completion, pipes, redirection, env vars, scripts
+- [x] `sh`: raw-mode line editor, persisted history, Tab completion, pipes, redirections, `; && || &`, globbing, quoting, $vars, scripts, `/etc/profile`
 - [ ] Coreutils: ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill uptime date free clear
 
 ## Phase 2 — Desktop
