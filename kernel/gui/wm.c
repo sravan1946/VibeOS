@@ -30,7 +30,9 @@ static volatile uint32_t inq_h, inq_t;
 /* ---- interaction state ---- */
 static int cur_x, cur_y, cur_b;
 static struct window *drag_win, *resize_win, *capture_win, *hover_win;
-static int drag_dx, drag_dy;
+static int drag_dx, drag_dy, drag_sx, drag_sy;
+static int snap_zone;                                /* 1 left half, 2 right half, 3 maximise */
+static void draw_snap(struct canvas *c);
 static bool menu_open;
 static int menu_hover = -1, hover_btn = -1, hover_task = -1;
 static uint64_t last_click_ms; static struct window *last_click_win;
@@ -320,6 +322,7 @@ static void compose(void) {
     for (struct window *w = wins; w; w = w->next)
         if (w->visible && !w->minimized) draw_window(&c, w);
     if (d.y + d.h > TB_Y) draw_taskbar(&c);
+    if (drag_win && snap_zone) draw_snap(&c);
     if (menu_open) draw_menu(&c);
     draw_cursor(&c);
     if (no_present) return;
@@ -467,6 +470,40 @@ static void toggle_max(struct window *w) {
     }
 }
 
+/* client rect of a snap zone */
+static struct rect snap_rect(int z) {
+    int h = TB_Y - WM_TITLE_H - 1, half = SW / 2;
+    if (z == 3) return (struct rect){ 1, WM_TITLE_H, SW - 2, h };
+    return (struct rect){ z == 1 ? 1 : half + 1, WM_TITLE_H, half - 2, h };
+}
+
+static void damage_snap(int z) {
+    if (!z) return;
+    struct rect r = snap_rect(z);
+    wm_damage(r.x - 1, r.y - WM_TITLE_H - 1, r.w + 2, r.h + WM_TITLE_H + 2);
+}
+
+static void set_snap(int z) {
+    if (z == snap_zone) return;
+    damage_snap(snap_zone); damage_snap(z);
+    snap_zone = z;
+}
+
+static void apply_snap(struct window *w, int z) {
+    if (w->flags & WIN_FLAG_NORESIZE) return;
+    if (!w->maximized) w->restore = (struct rect){ w->x, w->y, w->w, w->h };
+    w->maximized = true;
+    struct rect r = snap_rect(z);
+    set_geometry(w, r.x, r.y, r.w, r.h);
+}
+
+static void draw_snap(struct canvas *c) {
+    struct rect r = snap_rect(snap_zone);
+    int x = r.x + 6, y = r.y - WM_TITLE_H + 6, w = r.w - 12, h = r.h + WM_TITLE_H - 12;
+    gfx_round_fill(c, x, y, w, h, WM_RADIUS + 2, RGBA(0xB3, 0x88, 0xFF, 46));
+    gfx_round_rect(c, x, y, w, h, WM_RADIUS + 2, RGBA(0xD8, 0xC4, 0xFF, 150));
+}
+
 static void close_window(struct window *w) {
     struct gui_event e = { .type = EV_CLOSE };
     send(w, &e);
@@ -600,10 +637,21 @@ static void mouse_event(int x, int y, int b, int dz) {
     bool down = (b & 1) && !(ob & 1), up = !(b & 1) && (ob & 1);
 
     if (drag_win) {
-        if (up) drag_win = 0;
-        else if (ox != x || oy != y) {
+        struct window *w = drag_win;
+        if (up) {
+            if (snap_zone) apply_snap(w, snap_zone);
+            set_snap(0);
+            drag_win = 0;
+        } else if (ox != x || oy != y) {
+            if (w->maximized) {                              /* pull a maximised/tiled window off the edge */
+                if (imax(x - drag_sx, drag_sx - x) + imax(y - drag_sy, drag_sy - y) < 6) return;
+                drag_dx = drag_dx * w->restore.w / imax(1, w->w);
+                w->maximized = false;
+                set_geometry(w, x - drag_dx, w->y, w->restore.w, w->restore.h);
+            }
             int ny = imax(WM_TITLE_H, imin(y - drag_dy, TB_Y - 20));
-            set_geometry(drag_win, x - drag_dx, ny, drag_win->w, drag_win->h);
+            set_geometry(w, x - drag_dx, ny, w->w, w->h);
+            set_snap(w->flags & WIN_FLAG_NORESIZE ? 0 : x <= 1 ? 1 : x >= SW - 2 ? 2 : y <= 1 ? 3 : 0);
         }
         return;
     }
@@ -668,7 +716,7 @@ static void mouse_event(int x, int y, int b, int dz) {
         if (y < w->y) {
             if (last_click_win == w && ticks_ms - last_click_ms < 400) { toggle_max(w); last_click_win = 0; return; }
             last_click_win = w; last_click_ms = ticks_ms;
-            if (!w->maximized) { drag_win = w; drag_dx = x - w->x; drag_dy = y - w->y; }
+            drag_win = w; drag_dx = x - w->x; drag_dy = y - w->y; drag_sx = x; drag_sy = y;
         }
         return;
     }
