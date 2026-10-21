@@ -37,6 +37,7 @@ struct ui {
     int scroll;                     /* wheel this frame (+ = down) */
     struct gui_event keys[32];      /* key presses this frame, consumed by widgets */
     int nkeys;
+    int ups[16], nups;              /* key codes released this frame (for games / DAS) */
     uint32_t hot, active, focus;    /* widget ids */
     bool closed, resized, focused, timeout;
     uint32_t last_click_ms;
