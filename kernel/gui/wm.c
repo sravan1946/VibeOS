@@ -838,8 +838,21 @@ static void mouse_event(int x, int y, int b, int dz) {
 
 static void key_event(const struct gui_event *ev) {
     int mods = ev->mods;
+    static bool super_alone;                              /* Super tapped on its own opens the launcher */
+    if (ev->key == KEY_SUPER) {
+        if (ev->pressed) super_alone = !(mods & ~MOD_SUPER);
+        else if (super_alone) { menu_open = !menu_open; if (menu_open) load_apps(); wm_damage(0, 0, SW, SH); }
+        return;
+    }
     if (ev->pressed) {
-        if (ev->key == KEY_SUPER && !(mods & ~MOD_SUPER)) { menu_open = !menu_open; if (menu_open) load_apps(); wm_damage(0, 0, SW, SH); return; }
+        super_alone = false;
+        if ((mods & MOD_SUPER) && focused && !(focused->flags & WIN_FLAG_FRAMELESS)) {   /* Super+arrows tile */
+            struct window *w = focused;
+            if (ev->key == KEY_LEFT) { apply_snap(w, 1); return; }
+            if (ev->key == KEY_RIGHT) { apply_snap(w, 2); return; }
+            if (ev->key == KEY_UP) { apply_snap(w, 3); return; }
+            if (ev->key == KEY_DOWN) { if (w->maximized) toggle_max(w); return; }
+        }
         if ((mods & MOD_CTRL) && (mods & MOD_ALT) && (ev->key == 't' || ev->key == 'T')) { termwin_open(0); return; }
         if ((mods & MOD_ALT) && ev->key == KEY_TAB) {         /* cycle: bottom-most visible to top */
             for (struct window *w = wins; w; w = w->next)
