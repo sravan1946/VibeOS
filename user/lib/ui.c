@@ -194,3 +194,58 @@ int ui_list(struct ui *ui, int x, int y, int w, int h, const char *const *items,
     }
     return act;
 }
+
+void ui_text_fit(struct ui *ui, const struct font *f, int x, int y, int maxw, const char *s, color_t col) {
+    if (maxw <= 0) return;
+    if (gfx_text_width(f, s) <= maxw) { gfx_text(ui->c, f, x, y, s, col); return; }
+    int dots = gfx_text_width(f, "...");
+    int n = strlen(s);
+    while (n > 0 && gfx_text_width_n(f, s, n) + dots > maxw) n--;
+    int ax = gfx_text_n(ui->c, f, x, y, s, n, col);
+    gfx_text(ui->c, f, x + ax, y, "...", col);
+}
+
+bool ui_tabs(struct ui *ui, int x, int y, int w, int h, const char *const *names, int n, int *sel) {
+    int old = *sel, tw = (w - 8) / n;
+    gfx_round_fill(ui->c, x, y, w, h, h / 2, UI_PANEL);
+    gfx_round_rect(ui->c, x, y, w, h, h / 2, UI_BORDER);
+    for (int i = 0; i < n; i++) {
+        int tx = x + 4 + i * tw;
+        bool hov = inside(ui, tx, y + 3, tw, h - 6);
+        if (hov && ui->pressed) *sel = i;
+        if (i == *sel) gfx_round_fill(ui->c, tx, y + 3, tw, h - 6, (h - 6) / 2, UI_ACCENT);
+        else if (hov) gfx_round_fill(ui->c, tx, y + 3, tw, h - 6, (h - 6) / 2, UI_HOVER);
+        const struct font *f = i == *sel ? &font_ui_bold : &font_ui;
+        gfx_text_center(ui->c, f, tx, y + (h - f->height) / 2, tw, names[i], i == *sel ? RGB(0x1A, 0x10, 0x2E) : UI_TEXT);
+    }
+    return *sel != old;
+}
+
+bool ui_tool(struct ui *ui, int x, int y, int w, int h, const char *label, bool on) {
+    uint32_t id = rid(x, y, w, h);
+    bool hov = inside(ui, x, y, w, h), clicked = false;
+    if (hov && ui->pressed) ui->active = id;
+    if (ui->released && ui->active == id && hov) clicked = true;
+    bool down = ui->active == id && (ui->buttons & 1) && hov;
+    color_t bg = on ? RGBA(0xB3, 0x88, 0xFF, 90) : down ? UI_PRESSED : hov ? UI_HOVER : RGBA(0, 0, 0, 0);
+    if (ALPHA(bg)) gfx_round_fill(ui->c, x, y, w, h, 6, bg);
+    gfx_text_center(ui->c, &font_ui, x, y + (h - font_ui.height) / 2, w, label, UI_TEXT);
+    return clicked;
+}
+
+void ui_vscroll(struct ui *ui, int x, int y, int h, int total, int visible, int *first) {
+    if (total <= visible) { *first = 0; return; }
+    uint32_t id = rid(x, y, 10, h);
+    int th = h * visible / total;
+    if (th < 24) th = 24;
+    int range = total - visible, span = h - th;
+    if (inside(ui, x - 4, y, 14, h) && ui->pressed) ui->active = id;
+    if (ui->active == id && (ui->buttons & 1)) {
+        int t = ui->my - y - th / 2;
+        *first = span > 0 ? (t < 0 ? 0 : t > span ? range : t * range / span) : 0;
+    }
+    if (*first < 0) *first = 0;
+    if (*first > range) *first = range;
+    int ty = y + span * *first / range;
+    gfx_round_fill(ui->c, x + 2, ty, 6, th, 3, ui->active == id ? RGBA(255, 255, 255, 110) : RGBA(255, 255, 255, 60));
+}
