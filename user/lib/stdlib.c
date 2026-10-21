@@ -186,7 +186,7 @@ static unsigned rand_state = 1;
 void srand(unsigned seed) { rand_state = seed; }
 int rand(void) {
     rand_state = rand_state * 1103515245u + 12345u;
-    return rand_state >> 1;
+    return (rand_state ^ (rand_state >> 16)) >> 1;   /* fold the high bits in: LCG low bits have tiny periods */
 }
 
 /* ---- environment ---- */

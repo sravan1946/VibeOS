@@ -20,6 +20,7 @@ bool ui_poll(struct ui *ui, int timeout_ms) {
     ui->pressed = ui->released = ui->rpressed = ui->dbl = ui->resized = ui->timeout = false;
     ui->scroll = 0;
     ui->nkeys = 0;
+    ui->nups = 0;
     struct gui_event ev;
     int r = gui_next_event(ui->win, &ev, timeout_ms);
     if (r == 0) { ui->timeout = true; return true; }
@@ -38,7 +39,10 @@ bool ui_poll(struct ui *ui, int timeout_ms) {
         case EV_MOUSE_UP: ui->mx = ev.x; ui->my = ev.y; ui->released = true; ui->buttons &= ~1; break;
         case EV_MOUSE_LEAVE: ui->mx = ui->my = -1; break;
         case EV_SCROLL: ui->scroll += ev.dz; break;
-        case EV_KEY: if (ev.pressed && ui->nkeys < 32) ui->keys[ui->nkeys++] = ev; break;
+        case EV_KEY:
+            if (ev.pressed && ui->nkeys < 32) ui->keys[ui->nkeys++] = ev;
+            else if (!ev.pressed && ui->nups < 16) ui->ups[ui->nups++] = ev.key;
+            break;
         case EV_RESIZE: ui->resized = true; break;
         case EV_FOCUS: ui->focused = ev.pressed; break;
         case EV_CLOSE: ui->closed = true; return false;
