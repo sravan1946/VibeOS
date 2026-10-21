@@ -36,6 +36,7 @@ static inline void invlpg(uint32_t a) { __asm__ volatile("invlpg (%0)" :: "r"(a)
 #define PTE_W 0x002
 #define PTE_U 0x004
 #define PTE_PS 0x080
+#define PTE_NOFREE 0x200   /* available bit: frame not owned by this mapping */
 
 void      vmm_init(void);
 uint32_t  vmm_kernel_dir(void);

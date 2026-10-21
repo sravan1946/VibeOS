@@ -88,3 +88,15 @@ gdt_flush:
     mov ax, 0x28
     ltr ax
     ret
+
+; first switch into a kernel thread: EBX = fn, ESI = arg
+global kthread_entry
+extern kthread_exit
+kthread_entry:
+    sti
+    push esi
+    call ebx
+    push eax
+    call kthread_exit
+.hang:
+    jmp .hang

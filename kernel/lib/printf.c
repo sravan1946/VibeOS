@@ -71,6 +71,25 @@ int snprintf(char *buf, size_t n, const char *fmt, ...) {
     return r;
 }
 
+/* kernel log ring (dmesg / /dev/kmsg) */
+#define KLOG_SIZE 32768
+static char klog[KLOG_SIZE];
+static size_t klog_len;                /* total bytes ever written */
+
+static void klog_put(const char *s) {
+    for (; *s; s++) klog[klog_len++ % KLOG_SIZE] = *s;
+}
+
+size_t klog_size(void) { return klog_len < KLOG_SIZE ? klog_len : KLOG_SIZE; }
+
+size_t klog_read(char *buf, size_t off, size_t n) {
+    size_t avail = klog_size(), start = klog_len - avail;
+    if (off >= avail) return 0;
+    if (n > avail - off) n = avail - off;
+    for (size_t i = 0; i < n; i++) buf[i] = klog[(start + off + i) % KLOG_SIZE];
+    return n;
+}
+
 /* kprintf goes to serial always, and to the boot console until the
  * desktop takes over the screen. */
 void kprintf(const char *fmt, ...) {
@@ -83,6 +102,7 @@ void kprintf(const char *fmt, ...) {
         if (*p == '\n') serial_putc('\r');
         serial_putc(*p);
     }
+    klog_put(buf);
     bootcon_write(buf);
     irq_restore(f);
 }

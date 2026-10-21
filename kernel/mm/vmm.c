@@ -1,7 +1,6 @@
 /* vmm.c - two-level x86 paging, see the layout in arch.h */
 #include "arch.h"
 
-#define PTE_NOFREE 0x200      /* available bit: frame not owned by this mapping */
 static uint32_t *kdir;
 
 uint32_t vmm_kernel_dir(void) { return (uint32_t)kdir; }
