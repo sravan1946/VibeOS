@@ -11,7 +11,9 @@
 #include "tty.h"
 
 uint32_t rtc_now(void);
-void wallpaper_render(struct canvas *c);
+void wallpaper_render(struct canvas *c, int theme);
+int wallpaper_count(void);
+const char *wallpaper_name(int i);
 
 static struct canvas bb, wall;          /* back buffer, wallpaper */
 static int SW, SH;
@@ -288,6 +290,60 @@ static void draw_menu(struct canvas *c) {
     }
 }
 
+/* ---- desktop context menu (right-click on the wallpaper) ---- */
+static const struct { const char *label, *path; } ctx_items[] = {
+    { "New Terminal", 0 }, { "Files", "/bin/files" }, { "System Monitor", "/bin/sysmon" },
+    { "Change Wallpaper", "" }, { "About VibeOS", "/bin/about" },
+};
+#define CTX_W 230
+#define CTX_ITEM 34
+static bool ctx_open;
+static int ctx_x, ctx_y, ctx_hover = -1, wall_theme;
+
+static struct rect ctx_rect(void) { return (struct rect){ ctx_x, ctx_y, CTX_W, 12 + (int)ARRAY_LEN(ctx_items) * CTX_ITEM }; }
+static void ctx_damage(void) { struct rect r = ctx_rect(); wm_damage(r.x - SHADOW, r.y - SHADOW, r.w + 2 * SHADOW, r.h + 2 * SHADOW + 8); }
+static int ctx_at(int x, int y) {
+    struct rect r = ctx_rect();
+    if (!ctx_open || x < r.x || x >= r.x + r.w || y < r.y + 6 || y >= r.y + r.h - 6) return -1;
+    return (y - r.y - 6) / CTX_ITEM;
+}
+
+static void draw_ctx(struct canvas *c) {
+    struct rect m = ctx_rect();
+    draw_shadow(c, m, 200);
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 12, RGBA(22, 20, 34, 246));
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 12, RGBA(0xB3, 0x88, 0xFF, 60));
+    for (int i = 0; i < (int)ARRAY_LEN(ctx_items); i++) {
+        int y = m.y + 6 + i * CTX_ITEM;
+        if (i == ctx_hover) gfx_round_fill(c, m.x + 6, y, m.w - 12, CTX_ITEM, 8, RGBA(0xB3, 0x88, 0xFF, 60));
+        gfx_text(c, &font_ui, m.x + 18, y + (CTX_ITEM - font_ui.height) / 2, ctx_items[i].label, C_TEXT);
+        if (ctx_items[i].path && !ctx_items[i].path[0]) {
+            const char *n = wallpaper_name(wall_theme);
+            gfx_text(c, &font_ui, m.x + m.w - 18 - gfx_text_width(&font_ui, n), y + (CTX_ITEM - font_ui.height) / 2, n, C_TEXT_DIM);
+        }
+    }
+}
+
+static void set_wallpaper(int theme) {
+    wall_theme = theme % wallpaper_count();
+    wallpaper_render(&wall, wall_theme);
+    struct file *f;
+    if (vfs_open("/", "/etc/wallpaper", O_WRONLY | O_CREAT | O_TRUNC, &f) == 0) {
+        vfs_write(f, wallpaper_name(wall_theme), strlen(wallpaper_name(wall_theme)));
+        vfs_close(f);
+    }
+    wm_damage(0, 0, SW, SH);
+}
+
+static void ctx_activate(int i) {
+    ctx_open = false;
+    ctx_damage();
+    if (i < 0) return;
+    if (!ctx_items[i].path) termwin_open(0);
+    else if (!ctx_items[i].path[0]) set_wallpaper(wall_theme + 1);
+    else wm_spawn_app(ctx_items[i].path, 0);
+}
+
 /* ---- cursor ---- */
 static const char *cursor_img[] = {
     "X", "XX", "X.X", "X..X", "X...X", "X....X", "X.....X", "X......X", "X.......X", "X........X",
@@ -353,6 +409,7 @@ static bool compose(void) {
     if (d.y + d.h > TB_Y) draw_taskbar(&c);
     if (drag_win && snap_zone) draw_snap(&c);
     if (menu_open) draw_menu(&c);
+    if (ctx_open) draw_ctx(&c);
     draw_cursor(&c);
     if (!no_present)
         for (int y = d.y; y < d.y + d.h; y++)
@@ -709,6 +766,13 @@ static void mouse_event(int x, int y, int b, int dz) {
         return;
     }
 
+    if (ctx_open) {
+        int ci = ctx_at(x, y);
+        if (ci != ctx_hover) { ctx_hover = ci; ctx_damage(); }
+        if (down || ((b & 2) && !(ob & 2))) { ctx_activate(ci); if (ci >= 0) return; }
+        else if (ci >= 0) return;
+    }
+
     bool in_frame = false;
     struct window *w = window_at(x, y, &in_frame);
     int mitem = menu_at(x, y);
@@ -728,6 +792,14 @@ static void mouse_event(int x, int y, int b, int dz) {
     if (dz && w && !in_frame) { struct gui_event e = { .type = EV_SCROLL, .x = x - w->x, .y = y - w->y, .dz = dz }; send(w, &e); }
 
     if ((b & 2) && !(ob & 2) && w && !in_frame) { struct gui_event e = { .type = EV_MOUSE_DOWN, .x = x - w->x, .y = y - w->y, .button = 2 }; send(w, &e); }
+    if ((b & 2) && !(ob & 2) && !w && task == -3 && !in_menu) {             /* desktop context menu */
+        if (menu_open) launch(-1);
+        struct rect r = ctx_rect();
+        ctx_x = imin(x, SW - CTX_W - 8); ctx_y = imin(y, TB_Y - r.h - 8);
+        ctx_open = true; ctx_hover = -1;
+        ctx_damage();
+        return;
+    }
     if (!down) return;
 
     if (in_menu) { if (mitem >= 0) launch(mitem); return; }
@@ -1004,7 +1076,12 @@ void wm_init(void) {
     if (!b || !wp) { kprintf("wm: no memory for buffers\n"); return; }
     canvas_init(&bb, b, SW, SH, SW);
     canvas_init(&wall, wp, SW, SH, SW);
-    wallpaper_render(&wall);
+    void *wt; uint32_t wts;
+    if (vfs_read_all("/etc/wallpaper", &wt, &wts) == 0) {
+        for (int i = 0; i < wallpaper_count(); i++) if (!strncmp(wt, wallpaper_name(i), strlen(wallpaper_name(i)))) wall_theme = i;
+        kfree(wt);
+    }
+    wallpaper_render(&wall, wall_theme);
     splash_progress(95);
     for (int d = 0; d <= SHADOW; d++) { int t = SHADOW - d; shadow_lut[d] = t * t * 110 / (SHADOW * SHADOW); }
     for (int i = 0; i < WM_RADIUS; i++) {

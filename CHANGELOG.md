@@ -34,6 +34,7 @@ Newest notes at the bottom of each phase.
 ## Phase 2 — Desktop
 - [x] PS/2 mouse driver
 - [x] Double-buffered compositor, window manager (drag, focus, z-order, close, minimise)
+- [x] Desktop right-click menu; 5 wallpaper themes (Aurora, Ocean, Sunset, Forest, Midnight), saved in /etc/wallpaper
 - [x] Window open animation (fade + rise, ease-out, 180 ms)
 - [x] Window snapping: drag to left/right edge to tile, top to maximise, with preview; drag a tiled window off to restore
 - [x] Desktop: wallpaper, taskbar, launcher menu, clock
