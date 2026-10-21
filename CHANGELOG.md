@@ -27,7 +27,7 @@ Newest notes at the bottom of each phase.
 - [x] PS/2 keyboard driver (full keymap, modifiers, arrows, key buffer)
 - [x] Terminal emulator with ANSI escapes + TTY line discipline (canonical/raw)
 - [x] Pipes and fd redirection
-- [ ] User libc (string, stdio/printf, malloc, file I/O)
+- [x] User libc (string, stdio/printf, scanf, malloc, file I/O, math, time, setjmp)
 - [ ] `sh` with history, line editing, tab completion, pipes, redirection, env vars, scripts
 - [ ] Coreutils: ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill uptime date free clear
 
@@ -37,12 +37,13 @@ Newest notes at the bottom of each phase.
 - [x] Desktop: wallpaper, taskbar, launcher menu, clock
 - [x] Anti-aliased UI font baked at build time
 - [x] Terminal windows (multiple shells)
-- [ ] Window syscalls + userland GUI library
+- [x] Window syscalls + userland GUI library (libgui: gui.h windows/events, ui.h immediate-mode widgets)
 - [ ] GUI apps: system monitor, paint, calculator, clock, file manager, text editor
+- [x] About VibeOS app (first ui.h app, verified open/close in QEMU)
 - [ ] Games
 
 ## Phase 3 — Polish
-- [ ] Boot splash with progress
+- [x] Boot splash with progress (logo, gradient bar, live kprintf status, crossfade into desktop)
 - [x] RTC clock / date
 - [ ] PC speaker
 - [ ] README with screenshots, architecture docs

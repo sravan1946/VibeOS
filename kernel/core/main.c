@@ -88,6 +88,7 @@ void kmain(struct boot_info *bi) {
     cpu_detect();
     kprintf("\x1b[35mVibeOS\x1b[0m 2.0 on %s, %ux%u\n", brand, bi->fb_width, bi->fb_height);
 
+    splash_progress(5);
     gdt_init();
     idt_init();
     pmm_init();
@@ -100,6 +101,7 @@ void kmain(struct boot_info *bi) {
     vmm_map_mmio(bi->fb_addr, bi->fb_pitch * bi->fb_height);
     kprintf("memory: %u MiB usable, %u MiB kernel heap\n", ram_mb, heap_bytes >> 20);
 
+    splash_progress(15);
     pit_init();
     rtc_init();
     sched_init();
@@ -108,10 +110,13 @@ void kmain(struct boot_info *bi) {
     console = tty_create(console_out, 0, 128, 36);
     key_sink = console_key;
     sti();
+    splash_progress(30);
 
     devfs_init();
     mount_root();
+    splash_progress(60);
     mouse_init(bi->fb_width, bi->fb_height);
+    splash_progress(75);
     wm_init();
     (void)start_init;
     sched_idle();

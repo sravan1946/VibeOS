@@ -111,7 +111,7 @@ user: $(UBINS)
 -include $(shell find build/user -name '*.d' 2>/dev/null)
 
 # root/ is the static skeleton; user binaries land in /bin; empty dirs aren't tracked by the VCS
-build/root.ext2: $(shell find root -type f 2>/dev/null) $(UBINS)
+build/root.ext2: $(shell find root 2>/dev/null) $(UBINS)
 	rm -rf build/rootfs
 	@mkdir -p build/rootfs/bin build/rootfs/dev build/rootfs/proc build/rootfs/tmp build/rootfs/home
 	@cp -a root/. build/rootfs/ 2>/dev/null || true

@@ -305,6 +305,8 @@ static void draw_cursor(struct canvas *c) {
 
 /* ================= compose ================= */
 
+static bool no_present;
+
 static void compose(void) {
     uint32_t f = irq_save();
     struct rect d = dirty;
@@ -320,8 +322,22 @@ static void compose(void) {
     if (d.y + d.h > TB_Y) draw_taskbar(&c);
     if (menu_open) draw_menu(&c);
     draw_cursor(&c);
+    if (no_present) return;
     for (int y = d.y; y < d.y + d.h; y++)
         memcpy(&fb.px[y * fb.stride + d.x], &bb.px[y * SW + d.x], d.w * 4);
+}
+
+/* blend the boot splash (snap) into the first desktop frame */
+static void crossfade(const uint32_t *snap) {
+    for (int t = 32; t <= 256; t += 32) {
+        uint64_t until = ticks_ms + 30;
+        for (int y = 0; y < SH; y++) {
+            const uint32_t *a = snap + y * SW, *b = bb.px + y * SW;
+            uint32_t *o = fb.px + y * fb.stride;
+            for (int x = 0; x < SW; x++) o[x] = mix(a[x], b[x], t);
+        }
+        while (ticks_ms < until) hlt();
+    }
 }
 
 /* ================= window management ================= */
@@ -895,6 +911,7 @@ void wm_init(void) {
     canvas_init(&bb, b, SW, SH, SW);
     canvas_init(&wall, wp, SW, SH, SW);
     wallpaper_render(&wall);
+    splash_progress(95);
     for (int d = 0; d <= SHADOW; d++) { int t = SHADOW - d; shadow_lut[d] = t * t * 110 / (SHADOW * SHADOW); }
     for (int i = 0; i < WM_RADIUS; i++) {
         int dy2 = (2 * (WM_RADIUS - i) - 1) * (2 * (WM_RADIUS - i) - 1);
@@ -911,11 +928,15 @@ void wm_init(void) {
     mouse_pos(&cur_x, &cur_y);
     load_apps();
     running = true;
+    splash_progress(100);
+    uint32_t *snap = kmalloc((size_t)SW * SH * 4);
+    if (snap) for (int y = 0; y < SH; y++) memcpy(snap + y * SW, fb.px + y * fb.stride, SW * 4);
     bootcon_enable(false);
     mouse_sink = irq_mouse;
     key_sink = irq_key;
     last_sample = ticks_ms; last_idle = idle_ms();
     wm_damage(0, 0, SW, SH);
+    if (snap) { no_present = true; compose(); no_present = false; crossfade(snap); kfree(snap); }
     kthread_create("compositor", wm_thread, 0);
     autostart();
     kprintf("[desktop] ready\n");

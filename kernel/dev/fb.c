@@ -9,12 +9,56 @@ static const struct font *con_font = &font_mono;
 #define CON_FG RGB(0xC8, 0xCF, 0xE0)
 #define CON_BG RGB(0x0E, 0x10, 0x18)
 
+/* boot splash: logo + progress bar; kprintf lines become the status text under it */
+static bool splash_on;
+static int splash_pct;
+static char status[96];
+static int st_n;
+static color_t st_col;
+#define BAR_W 300
+
+static bool irqs_on(void) { uint32_t f; __asm__ volatile("pushf; pop %0" : "=r"(f)); return f & 0x200; }
+
+static void splash_draw_status(void) {
+    int y = fb.h / 2 + 96;
+    gfx_fill(&fb, 0, y, fb.w, font_ui.height + 4, RGB(0x12, 0x0F, 0x22));
+    status[st_n] = 0;
+    gfx_text_center(&fb, &font_ui, 0, y, fb.w, status, st_col);
+}
+
+void splash_progress(int pct) {
+    if (!splash_on) return;
+    int x = (fb.w - BAR_W) / 2, y = fb.h / 2 + 74;
+    for (; splash_pct <= pct; splash_pct++) {          /* sweep so jumps animate a little */
+        int fill = BAR_W * splash_pct / 100;
+        gfx_round_fill(&fb, x, y, BAR_W, 6, 3, RGB(0x2A, 0x26, 0x40));
+        for (int i = 0; i < fill; i++)
+            gfx_fill(&fb, x + i, y, 1, 6, mix(RGB(0xB3, 0x88, 0xFF), RGB(0xFF, 0x7A, 0xC6), i * 256 / BAR_W));
+        uint64_t until = ticks_ms + 3;
+        while (ticks_ms < until && irqs_on()) hlt();
+    }
+}
+
+static void splash_init(void) {
+    gfx_fill(&fb, 0, 0, fb.w, fb.h, RGB(0x12, 0x0F, 0x22));
+    int cx = fb.w / 2, cy = fb.h / 2 - 60;
+    for (int i = 0; i < 44; i++) {                      /* diamond logo */
+        color_t col = mix(RGB(0xB3, 0x88, 0xFF), RGB(0xFF, 0x7A, 0xC6), i * 256 / 44);
+        gfx_fill(&fb, cx - i, cy - 44 + i, 2 * i + 1, 1, col);
+        gfx_fill(&fb, cx - i, cy + 43 - i, 2 * i + 1, 1, mix(col, RGB(0x12, 0x0F, 0x22), 40));
+    }
+    gfx_text_center(&fb, &font_big, 0, cy + 58, fb.w, "VibeOS", RGB(0xED, 0xEB, 0xFF));
+    st_col = RGB(0x9A, 0x96, 0xB8);
+    splash_on = true;
+    splash_progress(0);
+}
+
 void fb_init(void) {
     canvas_init(&fb, (uint32_t *)boot_info->fb_addr, boot_info->fb_width,
                 boot_info->fb_height, boot_info->fb_pitch / 4);
-    gfx_fill(&fb, 0, 0, fb.w, fb.h, CON_BG);
     con_x = 16; con_y = 12;
     con_on = true;
+    splash_init();
 }
 
 void bootcon_enable(bool on) { con_on = on; }
@@ -33,6 +77,17 @@ static void con_newline(void) {
 
 void bootcon_write(const char *s) {
     if (!con_on || !fb.px) return;
+    if (splash_on) {
+        for (; *s; s++) {
+            if (*s == '\n') { splash_draw_status(); st_n = 0; st_col = RGB(0x9A, 0x96, 0xB8); }
+            else if (*s == '\x1b') {                   /* colour codes: only red matters here */
+                if (s[1] == '[' && s[2] == '3' && s[3] == '1') st_col = RGB(0xFF, 0x6B, 0x7A);
+                while (*s && *s != 'm') s++;
+                if (!*s) break;
+            } else if (st_n < (int)sizeof status - 1) status[st_n++] = *s;
+        }
+        return;
+    }
     static color_t col = CON_FG;
     for (; *s; s++) {
         if (*s == '\n') { con_newline(); col = CON_FG; continue; }
