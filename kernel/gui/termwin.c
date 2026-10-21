@@ -9,7 +9,7 @@ struct termwin {
     struct term *t;
     struct tty *tty;
     int pid;
-    bool dirty, full, closing, blink_on;
+    bool dirty, full, closing, blink_on, hold;
     uint64_t blink_at;
     char title[64];
 };
@@ -38,7 +38,13 @@ static void tw_frame(struct window *w) {
     struct termwin *tw = w->priv;
     if (tw->pid > 0) {
         struct task *t = task_find(tw->pid);
-        if (!t || t->state == PS_ZOMBIE) { tw->pid = 0; tw->closing = true; }
+        if (!t || t->state == PS_ZOMBIE) {
+            char msg[64];
+            snprintf(msg, sizeof msg, "\r\n\x1b[2m[process exited with %d]\x1b[0m", t ? t->exit_code : 0);
+            tw->pid = 0;
+            if (tw->hold) tw_out(tw, msg, strlen(msg));
+            else tw->closing = true;
+        }
     }
     if (tw->closing && tw->pid <= 0) {
         if (tw->tty) { tty_hangup(tw->tty); tw->tty = 0; }
@@ -104,7 +110,8 @@ static void tw_destroy(struct window *w) {
     kfree(tw);
 }
 
-struct window *termwin_open(const char *cmd) {
+/* argv == NULL: interactive /bin/sh; hold: keep the window after the program exits */
+struct window *termwin_open_argv(char *const argv_in[], bool hold) {
     int cols = 96, rows = 28;
     int pw = cols * term_cell_w() + 2 * PAD, ph = rows * term_cell_h() + 2 * PAD - 4;
     struct termwin *tw = kzalloc(sizeof *tw);
@@ -123,19 +130,25 @@ struct window *termwin_open(const char *cmd) {
     tty_set_winsize(tw->tty, cols, rows, pw, ph);
     tw_redraw_all(tw);
 
+    tw->hold = hold;
     struct file *f = vfs_open_vnode(&tw->tty->vn, O_RDWR);
     struct file *fds[3] = { f, f, f };
-    char *argv[4] = { "/bin/sh", 0, 0, 0 };
-    if (cmd) { argv[1] = "-c"; argv[2] = (char *)cmd; }
+    char *shargv[] = { "/bin/sh", 0 };
+    char *const *argv = argv_in ? argv_in : shargv;
     char *envp[] = { "PATH=/bin", "HOME=/home", "TERM=xterm-256color", "USER=vibe", 0 };
-    tw->pid = proc_spawn_ex("/bin/sh", argv, envp, "/home", fds, tw->tty);
-    if (tw->pid == -ENOENT) tw->pid = proc_spawn_ex("/bin/init", argv, envp, "/home", fds, tw->tty);
+    tw->pid = proc_spawn_ex(argv[0], argv, envp, "/home", fds, tw->tty);
     if (f) vfs_close(f);
     if (tw->pid < 0) {
         char msg[96];
-        snprintf(msg, sizeof msg, "\x1b[31mcan't start /bin/sh (%d)\x1b[0m\r\n", tw->pid);
+        snprintf(msg, sizeof msg, "\x1b[31mcan't start %s (%d)\x1b[0m\r\n", argv[0], tw->pid);
         term_write(tw->t, msg, strlen(msg));
         tw->pid = 0;
     }
     return w;
+}
+
+struct window *termwin_open(const char *cmd) {
+    if (!cmd) return termwin_open_argv(0, false);
+    char *argv[] = { "/bin/sh", "-c", (char *)cmd, 0 };
+    return termwin_open_argv(argv, false);
 }

@@ -44,4 +44,5 @@ void wm_post(struct window *w, const struct gui_event *ev);   /* queue for a use
 int  wm_spawn_app(const char *path, const char *arg);
 
 /* gui/termwin.c */
-struct window *termwin_open(const char *cmd);
+struct window *termwin_open(const char *cmd);              /* NULL = interactive shell */
+struct window *termwin_open_argv(char *const argv[], bool hold);

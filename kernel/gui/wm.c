@@ -862,6 +862,32 @@ static int wm_thread(void *arg) {
     return 0;
 }
 
+/* /etc/autostart: "term ARGV..." opens a terminal running ARGV (kept open after
+ * exit), "run ARGV..." starts a GUI app, "shell" opens an interactive terminal.
+ * No file: one shell. */
+static void autostart(void) {
+    void *data; uint32_t size;
+    if (vfs_read_all("/etc/autostart", &data, &size) < 0) { termwin_open(0); return; }
+    for (char *s = data; *s; ) {
+        char *line = s;
+        while (*s && *s != '\n') s++;
+        if (*s) *s++ = 0;
+        char *argv[16]; int n = 0;
+        for (char *p = line; *p && n < 15; ) {
+            while (*p == ' ') *p++ = 0;
+            if (!*p) break;
+            argv[n++] = p;
+            while (*p && *p != ' ') p++;
+        }
+        argv[n] = 0;
+        if (!n || argv[0][0] == '#') continue;
+        if (!strcmp(argv[0], "shell")) termwin_open(0);
+        else if (!strcmp(argv[0], "term") && n > 1) termwin_open_argv(argv + 1, true);
+        else if (!strcmp(argv[0], "run") && n > 1) wm_spawn_app(argv[1], n > 2 ? argv[2] : 0);
+    }
+    kfree(data);
+}
+
 void wm_init(void) {
     SW = fb.w; SH = fb.h;
     uint32_t *b = kmalloc((size_t)SW * SH * 4), *wp = kmalloc((size_t)SW * SH * 4);
@@ -891,6 +917,6 @@ void wm_init(void) {
     last_sample = ticks_ms; last_idle = idle_ms();
     wm_damage(0, 0, SW, SH);
     kthread_create("compositor", wm_thread, 0);
-    termwin_open(0);
+    autostart();
     kprintf("[desktop] ready\n");
 }
