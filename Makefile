@@ -129,7 +129,8 @@ build/vibeos.img: build/stage1.bin build/stage2.bin build/kernel.bin build/root.
 	dd if=build/root.ext2 of=$@ bs=512 seek=$(FS_LBA) conv=notrunc status=none
 
 QEMU := qemu-system-i386 -m 256 -drive file=build/vibeos.img,format=raw,if=ide \
-        -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot
+        -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot \
+        -nic user,model=e1000
 
 run: build/vibeos.img
 	$(QEMU)

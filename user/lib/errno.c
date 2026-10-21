@@ -17,6 +17,11 @@ static const struct { int e; const char *s; } errs[] = {
     { ESPIPE, "Illegal seek" }, { EROFS, "Read-only file system" }, { EPIPE, "Broken pipe" },
     { ERANGE, "Result too large" }, { ENAMETOOLONG, "File name too long" },
     { ENOSYS, "Function not implemented" }, { ENOTEMPTY, "Directory not empty" },
+    { EMSGSIZE, "Message too long" }, { EPROTONOSUPPORT, "Protocol not supported" },
+    { EAFNOSUPPORT, "Address family not supported" }, { EADDRINUSE, "Address in use" },
+    { ENETDOWN, "Network is down" }, { ECONNRESET, "Connection reset" },
+    { ENOTCONN, "Not connected" }, { ETIMEDOUT, "Connection timed out" },
+    { ECONNREFUSED, "Connection refused" }, { EHOSTUNREACH, "No route to host" },
 };
 
 char *strerror(int e) {

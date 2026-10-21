@@ -1,6 +1,7 @@
 /* syscall.c - int 0x80 dispatch; see common/abi.h for the contract */
 #include "proc.h"
 #include "tty.h"
+#include "net.h"
 
 int pipe_create(struct file **rd, struct file **wr);
 uint32_t rtc_now(void);
@@ -343,9 +344,11 @@ static void syscall_handler(struct regs *r) {
     case SYS_beep:     ret = sys_beep(a, b); break;
     case SYS_shutdown: sys_shutdown(a);
     case SYS_klog:     ret = sys_klog((char *)a, b); break;
+    case SYS_socket: case SYS_connect: case SYS_bind: case SYS_sendto: case SYS_recvfrom:
+    case SYS_resolve: case SYS_netinfo:
+                       ret = net_syscall(r->eax, a, b, c, d, e); break;
     default:           ret = -ENOSYS;
     }
-    (void)d; (void)e;
     r->eax = ret;
     cli();
 }

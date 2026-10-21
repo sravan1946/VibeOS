@@ -3,6 +3,7 @@
 #include "tty.h"
 #include "wm.h"
 #include "mouse.h"
+#include "net.h"
 
 struct boot_info *boot_info;
 void rtc_init(void);
@@ -114,6 +115,7 @@ void kmain(struct boot_info *bi) {
 
     devfs_init();
     mount_root();
+    net_init();
     splash_progress(60);
     mouse_init(bi->fb_width, bi->fb_height);
     splash_progress(75);
