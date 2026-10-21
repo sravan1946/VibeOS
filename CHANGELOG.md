@@ -28,7 +28,8 @@ Newest notes at the bottom of each phase.
 - [x] Terminal emulator with ANSI escapes + TTY line discipline (canonical/raw)
 - [x] Pipes and fd redirection
 - [x] User libc (string, stdio/printf, scanf, malloc, file I/O, math, time, setjmp)
-- [ ] `sh` with history, line editing, tab completion, pipes, redirection, env vars, scripts
+- [x] `sh`: raw-mode line editor, persisted history, Tab completion, pipes, redirections, `; && || &`, globbing, quoting, $vars, scripts, `/etc/profile` — agent
+- [x] Networking: PCI, e1000, ARP/IPv4/ICMP/UDP/DHCP/DNS, TCP client, sockets + poll; ifconfig ping nslookup wget nc — agent
 - [ ] Coreutils: ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill uptime date free clear
 
 ## Phase 2 — Desktop
