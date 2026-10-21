@@ -45,7 +45,7 @@ class VM:
         self.p = subprocess.Popen([
             "qemu-system-i386", "-m", "256", "-drive", f"file={B}/vibeos.img,format=raw,if=ide",
             "-display", "none" if headless else "gtk,zoom-to-fit=off", "-name", "VibeOS (vmtest)",
-            "-serial", f"file:{self.log}", "-no-reboot",
+            "-serial", f"file:{self.log}", "-no-reboot", "-nic", "user,model=e1000",
             "-device", "isa-debug-exit,iobase=0xf4,iosize=4", "-machine", "pc,vmport=off",  # relative PS/2 so monitor mouse_move works
             "-monitor", f"unix:{self.sock},server,nowait", *extra])
         for _ in range(100):

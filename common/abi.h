@@ -45,6 +45,13 @@ enum {
     SYS_beep = 50,    /* (uint32 hz, uint32 ms) */
     SYS_shutdown,     /* (int reboot) */
     SYS_klog,         /* (char *buf, uint32 n) -> bytes of kernel log copied */
+    SYS_socket = 60,  /* (int domain, int type, int proto) -> fd; AF_INET, SOCK_STREAM/DGRAM/RAW(proto 1 = ICMP) */
+    SYS_connect,      /* (int fd, const struct sockaddr_in *a, uint32 len): TCP blocks until established */
+    SYS_bind,         /* (int fd, const struct sockaddr_in *a, uint32 len) */
+    SYS_sendto,       /* (int fd, const void *buf, uint32 n, int flags, const struct sockaddr_in *to or NULL) */
+    SYS_recvfrom,     /* (int fd, void *buf, uint32 n, int flags, struct sockaddr_in *from or NULL); MSG_DONTWAIT */
+    SYS_resolve,      /* (const char *name, uint32 *ip_be) -> 0 / -errno; also accepts dotted quads */
+    SYS_netinfo,      /* (struct netinfo *ni) */
     SYS_MAX
 };
 
@@ -55,6 +62,8 @@ enum {
     EEXIST = 17, EXDEV = 18, ENODEV = 19, ENOTDIR = 20, EISDIR = 21, EINVAL = 22, ENFILE = 23,
     EMFILE = 24, ENOTTY = 25, EFBIG = 27, ENOSPC = 28, ESPIPE = 29, EROFS = 30, EPIPE = 32,
     ERANGE = 34, ENAMETOOLONG = 36, ENOSYS = 38, ENOTEMPTY = 39,
+    EMSGSIZE = 90, EAFNOSUPPORT = 97, EADDRINUSE = 98, ENETDOWN = 100, ECONNRESET = 104,
+    ENOTCONN = 107, ETIMEDOUT = 110, ECONNREFUSED = 111, EHOSTUNREACH = 113, EPROTONOSUPPORT = 93,
 };
 
 /* open flags */
@@ -78,6 +87,7 @@ enum {
 /* file types (st_mode high bits, ext2-compatible) */
 #define S_IFMT   0xF000
 #define S_IFIFO  0x1000
+#define S_IFSOCK 0xC000
 #define S_IFCHR  0x2000
 #define S_IFDIR  0x4000
 #define S_IFREG  0x8000
@@ -156,6 +166,20 @@ struct sysinfo {
     uint32_t nprocs;
     uint32_t idle_ms;     /* time spent in the idle task, for CPU % */
     uint32_t screen_w, screen_h;
+};
+
+/* ---- networking: addresses and ports are in network byte order ---- */
+#define AF_INET 2
+#define SOCK_STREAM 1
+#define SOCK_DGRAM  2
+#define SOCK_RAW    3
+#define IPPROTO_ICMP 1
+#define MSG_DONTWAIT 1
+struct sockaddr_in { uint16_t sin_family, sin_port; uint32_t sin_addr; uint8_t sin_zero[8]; };
+struct netinfo {
+    uint32_t ip, mask, gw, dns;       /* 0 until DHCP finishes */
+    uint8_t mac[6]; uint8_t up, present;   /* up: has a lease; present: NIC found */
+    uint32_t rx_pkts, tx_pkts, rx_bytes, tx_bytes;
 };
 
 /* ---- GUI ---- */
