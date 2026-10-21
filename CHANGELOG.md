@@ -4,17 +4,17 @@ Living checklist of the v2 rewrite. `[x]` = done and verified in QEMU, `[ ]` = p
 Newest notes at the bottom of each phase.
 
 ## Phase 0 — Tooling & foundation
-- [ ] Headless QEMU test harness (serial log, sendkey, screenshots) — `tools/vmtest.py`
-- [ ] Two-stage bootloader: LBA disk reads, A20, E820 memory map, VBE 32bpp mode search, kernel loaded at 1 MiB via unreal mode
-- [ ] MBR partition table pointing at an ext2 root partition
-- [ ] Kernel entry: BSS clear, boot-info handoff
-- [ ] Serial (COM1) kernel log
-- [ ] GDT + TSS, IDT with all 256 vectors, generic ISR/IRQ dispatch, PIC remap
-- [ ] PIT @ 1000 Hz, uptime
-- [ ] Panic screen with register dump
-- [ ] Physical memory manager (bitmap, from E820)
-- [ ] Paging (4 MiB identity kernel map + 4 KiB user pages, framebuffer mapped)
-- [ ] Kernel heap (kmalloc/kfree)
+- [x] Headless QEMU test harness (serial log, sendkey, screenshots) — `tools/vmtest.py`
+- [x] Two-stage bootloader: LBA disk reads, A20, E820 memory map, VBE 32bpp mode search, kernel loaded at 1 MiB via unreal mode
+- [x] MBR partition table pointing at an ext2 root partition
+- [x] Kernel entry: BSS clear, boot-info handoff
+- [x] Serial (COM1) kernel log
+- [x] GDT + TSS, IDT with all 256 vectors, generic ISR/IRQ dispatch, PIC remap
+- [x] PIT @ 1000 Hz, uptime
+- [x] Panic screen with register dump
+- [x] Physical memory manager (bitmap, from E820)
+- [x] Paging (4 MiB identity kernel map + 4 KiB user pages, framebuffer mapped)
+- [x] Kernel heap (kmalloc/kfree)
 
 ## Phase 1 — Processes, storage, userland
 - [ ] Preemptive round-robin scheduler, kernel threads, sleep/wait queues
@@ -49,3 +49,4 @@ Newest notes at the bottom of each phase.
 
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
+- Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.
