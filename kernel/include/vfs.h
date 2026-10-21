@@ -65,6 +65,8 @@ struct blockdev {
 struct blockdev *blockdev_get(int index);           /* NULL if none */
 /* a partition view on top of a disk; reads beyond len fail */
 struct blockdev *blockdev_partition(struct blockdev *disk, uint32_t start, uint32_t len);
+int ata_init(void);                                  /* probe IDE channels; returns disks found */
+struct blockdev *blockdev_root_partition(void);      /* first type-0x83 partition of disk 0, NULL if none */
 
 /* filesystems */
 int ext2_mount(struct blockdev *dev, struct vnode **root);   /* fs/ext2.c */
