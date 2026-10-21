@@ -59,7 +59,6 @@ static void mouse_irq(struct regs *r) {
     uint8_t st = inb(0x64);
     if (!(st & 0x20)) return;                   /* not aux data */
     uint8_t v = inb(0x60);
-    if (absolute) { vmmouse_poll(); return; }   /* PS/2 byte is just a doorbell */
     if (idx == 0 && !(v & 8)) return;           /* resync */
     pkt[idx++] = v;
     if (idx < (wheel ? 4 : 3)) return;
@@ -67,9 +66,17 @@ static void mouse_irq(struct regs *r) {
     int dx = pkt[1] - ((pkt[0] << 4) & 0x100);
     int dy = pkt[2] - ((pkt[0] << 3) & 0x100);
     int dz = wheel ? (int8_t)(pkt[3] << 4) >> 4 : 0;
+    /* with vmmouse the host pointer arrives as absolute data and the PS/2 packet
+     * is just a zero-motion doorbell; real relative motion (e.g. QEMU's monitor)
+     * still works on top of it */
+    if (absolute) vmmouse_poll();
+    static int last_b;
+    int b = pkt[0] & 7;
+    if (!dx && !dy && !dz && b == last_b && absolute) return;
+    last_b = b;
     mx = MAX(0, MIN(scr_w - 1, mx + dx));
     my = MAX(0, MIN(scr_h - 1, my - dy));
-    if (mouse_sink) mouse_sink(mx, my, pkt[0] & 7, -dz);
+    if (mouse_sink) mouse_sink(mx, my, b, -dz);
 }
 
 void mouse_init(int w, int h) {

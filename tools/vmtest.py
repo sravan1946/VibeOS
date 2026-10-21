@@ -9,7 +9,8 @@ steps:
   key:NAME         QEMU sendkey name, e.g. ctrl-c, up, esc
   sleep:SECS
   shot:PATH.png    screenshot
-  mouse:DX,DY      relative mouse move     click / rclick
+  moveto:X,Y       move the pointer (absolute pixels)   click / rclick
+  drag:X0,Y0,X1,Y1 left-drag
   smoke            = wait for the desktop and take build/smoke.png
 The VM window opens on the desktop unless --headless (or VIBE_HEADLESS=1).
 Serial output goes to build/serial.log; exits non-zero on timeout or panic.
@@ -45,7 +46,7 @@ class VM:
             "qemu-system-i386", "-m", "256", "-drive", f"file={B}/vibeos.img,format=raw,if=ide",
             "-display", "none" if headless else "gtk,zoom-to-fit=off", "-name", "VibeOS (vmtest)",
             "-serial", f"file:{self.log}", "-no-reboot",
-            "-device", "isa-debug-exit,iobase=0xf4,iosize=4",
+            "-device", "isa-debug-exit,iobase=0xf4,iosize=4", "-machine", "pc,vmport=off",  # relative PS/2 so monitor mouse_move works
             "-monitor", f"unix:{self.sock},server,nowait", *extra])
         for _ in range(100):
             if os.path.exists(self.sock): break
@@ -64,6 +65,24 @@ class VM:
         self.m.sendall((cmd + "\n").encode())
         time.sleep(0.03)
         self.drain()
+
+    def rel(self, dx, dy):
+        # QEMU only flushes leftover PS/2 motion on the next event: keep steps <= 127
+        while dx or dy:
+            sx, sy = max(-127, min(127, dx)), max(-127, min(127, dy))
+            self.hmp(f"mouse_move {sx} {sy}")
+            dx -= sx; dy -= sy
+
+    def moveto(self, x, y, home=True):
+        if home:                                  # slam into the top-left corner first
+            self.rel(-1400, -900)
+            self.pos = (0, 0)
+        px, py = getattr(self, "pos", (0, 0))
+        self.rel(x - px, y - py)
+        self.pos = (x, y)
+        for _ in range(6):                        # zero moves make QEMU flush parked motion
+            time.sleep(0.03)
+            self.hmp("mouse_move 0 0")
 
     def serial(self):
         try: return open(self.log, errors="replace").read()
@@ -123,7 +142,17 @@ def main(argv):
             elif kind == "key": vm.hmp("sendkey " + arg)
             elif kind == "sleep": time.sleep(float(arg))
             elif kind == "shot": vm.shot(arg); print("screenshot:", arg)
-            elif kind == "mouse": dx, dy = arg.split(","); vm.hmp(f"mouse_move {dx} {dy}")
+            elif kind in ("mouse", "moveto"):   # absolute pixel target via relative PS/2 moves
+                x, y = (int(v) for v in arg.split(","))
+                vm.moveto(x, y)
+            elif kind == "drag":                # drag:X0,Y0,X1,Y1
+                x0, y0, x1, y1 = (int(v) for v in arg.split(","))
+                vm.moveto(x0, y0); time.sleep(0.1)
+                vm.hmp("mouse_button 1"); time.sleep(0.1)
+                for i in range(1, 11):
+                    vm.moveto(x0 + (x1 - x0) * i // 10, y0 + (y1 - y0) * i // 10, home=False); time.sleep(0.03)
+                vm.hmp("mouse_button 1"); time.sleep(0.05)
+                vm.hmp("mouse_button 0")
             elif kind == "click": vm.hmp("mouse_button 1"); time.sleep(0.05); vm.hmp("mouse_button 0")
             elif kind == "rclick": vm.hmp("mouse_button 2"); time.sleep(0.05); vm.hmp("mouse_button 0")
             else: print("unknown step", s); ok = False; break

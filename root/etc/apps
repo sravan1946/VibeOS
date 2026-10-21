@@ -1,0 +1,11 @@
+# launcher entries: name|path|arg|RRGGBB|glyph
+Files|/bin/files||3D8BFD|F
+Text Editor|/bin/notepad||2EC5A0|E
+Paint|/bin/paint||FF8A3D|P
+Calculator|/bin/calc||7C4DFF|C
+Clock|/bin/clock||FF4FA3|T
+System Monitor|/bin/sysmon||4BE08A|M
+Snake|/bin/snake||9BE564|S
+Tetris|/bin/tetris||FFC24B|#
+Minesweeper|/bin/mines||5A64FF|*
+About VibeOS|/bin/about||B388FF|i
