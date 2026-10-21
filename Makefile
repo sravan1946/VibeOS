@@ -55,9 +55,67 @@ build/stage2.bin: boot/stage2.asm build/kernel.bin
 	  -DKERNEL_SECTORS=$$(( ($$(stat -c %s build/kernel.bin) + 511) / 512 )) $< -o $@
 	@test $$(stat -c %s $@) -le 16384 || (echo "stage2 too big"; exit 1)
 
-build/root.ext2: $(shell find root -type f 2>/dev/null)
-	@mkdir -p build/rootfs
+# ---- userland: libc.a + libgui.a, every user/bin/NAME.c or user/bin/NAME/*.c -> /bin/NAME ----
+UCFLAGS := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
+           -fno-asynchronous-unwind-tables -nostdinc -isystem $(GCCINC) \
+           -Iuser/include -Iuser/lib -Icommon -O2 -g $(CWARN) -MMD -MP
+ULIBC_SRC := $(wildcard user/lib/*.c)
+ULIBC_ASM := $(filter-out user/lib/crt0.asm,$(wildcard user/lib/*.asm))
+# gui.o + the shared gfx/fonts live in libgui.a so only GUI programs pay for the font data
+ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o
+ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
+             $(patsubst user/%.asm,build/user/obj/%.o,$(ULIBC_ASM))
+ULIBS := build/user/libgui.a build/user/libc.a
+UBIN_SINGLE := $(basename $(notdir $(wildcard user/bin/*.c)))
+UBIN_MULTI := $(notdir $(patsubst %/,%,$(wildcard user/bin/*/)))
+UBINS := $(addprefix build/user/bin/,$(UBIN_SINGLE) $(UBIN_MULTI))
+UCRT0 := build/user/obj/lib/crt0.o
+
+build/user/obj/%.o: user/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+build/user/obj/common/%.o: common/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+build/user/obj/%.o: user/%.asm
+	@mkdir -p $(dir $@)
+	$(NASM) -f elf32 -g $< -o $@
+
+# string.c must not let gcc turn its loops back into calls to memset/memcpy
+build/user/obj/lib/string.o: UCFLAGS += -fno-tree-loop-distribute-patterns
+
+build/user/libc.a: $(ULIBC_OBJ)
+	rm -f $@ && ar rcs $@ $^
+build/user/libgui.a: $(ULIBGUI_OBJ)
+	rm -f $@ && ar rcs $@ $^
+
+ULDFLAGS := -T user/user.ld -z max-page-size=4096 -z noexecstack --no-warn-rwx-segments
+
+# single-file programs
+$(addprefix build/user/bin/,$(UBIN_SINGLE)): build/user/bin/%: build/user/obj/bin/%.o $(UCRT0) $(ULIBS) user/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(ULDFLAGS) -o $@ $(UCRT0) $< $(ULIBS) $(LIBGCC)
+
+# multi-file programs: user/bin/NAME/*.c
+define UMULTI
+build/user/bin/$(1): $$(patsubst user/%.c,build/user/obj/%.o,$$(wildcard user/bin/$(1)/*.c)) $$(UCRT0) $$(ULIBS) user/user.ld
+	@mkdir -p $$(dir $$@)
+	$$(LD) $$(ULDFLAGS) -o $$@ $$(UCRT0) $$(filter-out $$(UCRT0),$$(filter %.o,$$^)) $$(ULIBS) $$(LIBGCC)
+endef
+$(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
+
+user: $(UBINS)
+
+-include $(shell find build/user -name '*.d' 2>/dev/null)
+
+# root/ is the static skeleton; user binaries land in /bin; empty dirs aren't tracked by the VCS
+build/root.ext2: $(shell find root -type f 2>/dev/null) $(UBINS)
+	rm -rf build/rootfs
+	@mkdir -p build/rootfs/bin build/rootfs/dev build/rootfs/proc build/rootfs/tmp build/rootfs/home
 	@cp -a root/. build/rootfs/ 2>/dev/null || true
+	@for f in $(UBINS); do cp $$f build/rootfs/bin/; done
 	rm -f $@
 	mke2fs -q -t ext2 -b 1024 -I 256 -L vibeos -d build/rootfs $@ $(FS_MB)M
 
@@ -85,4 +143,4 @@ test: build/vibeos.img
 clean:
 	rm -rf build
 
-.PHONY: all run debug test clean
+.PHONY: all run debug test clean user
