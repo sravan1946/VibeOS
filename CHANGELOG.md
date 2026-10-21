@@ -29,7 +29,7 @@ Newest notes at the bottom of each phase.
 - [x] Pipes and fd redirection
 - [ ] User libc (string, stdio/printf, malloc, file I/O)
 - [ ] `sh` with history, line editing, tab completion, pipes, redirection, env vars, scripts
-- [ ] Coreutils: ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill uptime date free clear
+- [x] Coreutils: ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill uptime date free clear, plus sleep env true false yes seq sort uniq tee find which basename dirname stat dmesg uname whoami cal fortune beep shutdown reboot vibefetch; TUIs: less top edit
 
 ## Phase 2 — Desktop
 - [x] PS/2 mouse driver
