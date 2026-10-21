@@ -95,4 +95,5 @@ size_t    heap_size(void);
 
 /* ---- time (dev/pit.c) ---- */
 extern volatile uint64_t ticks_ms;
+void speaker_tone(uint32_t hz);          /* PC speaker, 0 = off */
 void pit_init(void);

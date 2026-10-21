@@ -16,3 +16,13 @@ void pit_init(void) {
     outb(0x40, div >> 8);
     irq_register(0, pit_irq);
 }
+
+/* PC speaker on PIT channel 2; hz == 0 silences it */
+void speaker_tone(uint32_t hz) {
+    if (!hz) { outb(0x61, inb(0x61) & ~3); return; }
+    uint32_t div = 1193182 / hz;
+    outb(0x43, 0xB6);
+    outb(0x42, div & 0xFF);
+    outb(0x42, div >> 8);
+    outb(0x61, inb(0x61) | 3);
+}

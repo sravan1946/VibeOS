@@ -952,6 +952,14 @@ static void autostart(void) {
     kfree(data);
 }
 
+/* startup chime: a rising arpeggio, played off the boot path */
+static int chime(void *arg) {
+    static const uint16_t notes[] = { 523, 659, 784, 1047 };
+    for (unsigned i = 0; i < ARRAY_LEN(notes); i++) { speaker_tone(notes[i]); sleep_ms(i == 3 ? 220 : 90); }
+    speaker_tone(0);
+    return 0;
+}
+
 void wm_init(void) {
     SW = fb.w; SH = fb.h;
     uint32_t *b = kmalloc((size_t)SW * SH * 4), *wp = kmalloc((size_t)SW * SH * 4);
@@ -986,6 +994,7 @@ void wm_init(void) {
     wm_damage(0, 0, SW, SH);
     if (snap) { no_present = true; compose(); no_present = false; crossfade(snap); kfree(snap); }
     kthread_create("compositor", wm_thread, 0);
+    kthread_create("chime", chime, 0);
     autostart();
     kprintf("[desktop] ready\n");
 }

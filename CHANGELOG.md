@@ -46,7 +46,7 @@ Newest notes at the bottom of each phase.
 ## Phase 3 — Polish
 - [x] Boot splash with progress (logo, gradient bar, live kprintf status, crossfade into desktop)
 - [x] RTC clock / date
-- [ ] PC speaker
+- [x] PC speaker: `beep` syscall, startup chime; `make run` routes it to the host via PulseAudio
 - [ ] README with screenshots, architecture docs
 
 ## Log

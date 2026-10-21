@@ -267,13 +267,9 @@ static int sys_poll(struct pollfd *ufds, int n, int timeout) {
 
 static int sys_beep(uint32_t hz, uint32_t ms) {
     if (hz < 20 || hz > 20000 || ms > 5000) return -EINVAL;
-    uint32_t div = 1193182 / hz;
-    outb(0x43, 0xB6);
-    outb(0x42, div & 0xFF);
-    outb(0x42, div >> 8);
-    outb(0x61, inb(0x61) | 3);
+    speaker_tone(hz);
     sleep_ms(ms);
-    outb(0x61, inb(0x61) & ~3);
+    speaker_tone(0);
     return 0;
 }
 
