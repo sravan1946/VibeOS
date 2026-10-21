@@ -5,6 +5,7 @@
 #include <syscall.h>
 
 static uint32_t rid(int x, int y, int w, int h) { return ((uint32_t)x * 73856093u) ^ ((uint32_t)y * 19349663u) ^ ((uint32_t)w * 83492791u) ^ (uint32_t)h; }
+uint32_t ui_id(int x, int y, int w, int h) { return rid(x, y, w, h); }
 static bool inside(struct ui *ui, int x, int y, int w, int h) { return ui->mx >= x && ui->my >= y && ui->mx < x + w && ui->my < y + h; }
 
 void ui_init(struct ui *ui, struct gui_window *win) {

@@ -70,3 +70,5 @@ bool ui_tabs(struct ui *ui, int x, int y, int w, int h, const char *const *names
 bool ui_tool(struct ui *ui, int x, int y, int w, int h, const char *label, bool on);
 /* vertical scrollbar for content of `total` rows with `visible` shown; *first is dragged. */
 void ui_vscroll(struct ui *ui, int x, int y, int h, int total, int visible, int *first);
+/* the id a widget at this rectangle gets, e.g. to set ui->focus on a textbox programmatically */
+uint32_t ui_id(int x, int y, int w, int h);
