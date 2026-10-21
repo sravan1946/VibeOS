@@ -209,28 +209,22 @@ static void draw_taskbar(struct canvas *c) {
     if (TB_Y >= c->cy1) {} else {}
     gfx_fill(c, 0, TB_Y, SW, WM_TASKBAR_H, RGBA(13, 12, 22, 222));
     gfx_fill(c, 0, TB_Y, SW, 1, RGBA(255, 255, 255, 22));
-    /* launcher pill */
-    int lx = 8, ly = TB_Y + 7, lh = WM_TASKBAR_H - 14;
+    /* launcher pill: gradient columns clipped to a stadium shape */
+    int lx = 8, ly = TB_Y + 7, lh = WM_TASKBAR_H - 14, rr = lh / 2;
+    bool lit = menu_open || hover_task == -2;
     for (int i = 0; i < LAUNCH_W; i++) {
+        int k = i < rr ? rr - i : i >= LAUNCH_W - rr ? i - (LAUNCH_W - rr - 1) : 0;
+        int inset = k ? rr - (int)isqrt(imax(0, rr * rr - k * k)) : 0;
         color_t col = mix(C_ACCENT, C_PINK, i * 256 / LAUNCH_W);
-        if (menu_open || hover_task == -2) col = mix(col, RGB(255, 255, 255), 40);
-        gfx_fill(c, lx + i, ly + 3, 1, lh - 6, col);
+        if (lit) col = mix(col, RGB(255, 255, 255), 50);
+        gfx_fill(c, lx + i, ly + inset, 1, lh - 2 * inset, col);
     }
-    gfx_round_fill(c, lx - 1, ly, 8, lh, 4, mix(C_ACCENT, C_PINK, 0));
-    gfx_round_fill(c, lx, ly, LAUNCH_W, lh, lh / 2, 0);
-    /* cheap pill: draw gradient columns clipped by circle ends */
-    struct canvas pc = *c;
-    canvas_clip(&pc, lx, ly, LAUNCH_W, lh);
-    for (int i = 0; i < LAUNCH_W; i++) {
-        int inset = 0, rr = lh / 2;
-        if (i < rr) inset = rr - (int)isqrt(rr * rr - (rr - i) * (rr - i));
-        else if (i >= LAUNCH_W - rr) { int k = i - (LAUNCH_W - rr - 1); inset = rr - (int)isqrt(imax(0, rr * rr - k * k)); }
-        color_t col = mix(C_ACCENT, C_PINK, i * 256 / LAUNCH_W);
-        if (menu_open || hover_task == -2) col = mix(col, RGB(255, 255, 255), 50);
-        gfx_fill(&pc, lx + i, ly + inset, 1, lh - 2 * inset, col);
+    int dcx = lx + 20, dcy = ly + lh / 2;                       /* diamond logo */
+    for (int dy = -6; dy <= 6; dy++) {
+        int half = 6 - (dy < 0 ? -dy : dy);
+        gfx_fill(c, dcx - half, dcy + dy, 2 * half + 1, 1, RGB(255, 255, 255));
     }
-    gfx_text(c, &font_ui_bold, lx + 16, ly + (lh - font_ui_bold.height) / 2, "\x7f", RGB(255, 255, 255));
-    gfx_text(c, &font_ui_bold, lx + 30, ly + (lh - font_ui_bold.height) / 2, "VibeOS", RGB(255, 255, 255));
+    gfx_text(c, &font_ui_bold, lx + 33, ly + (lh - font_ui_bold.height) / 2, "VibeOS", RGB(255, 255, 255));
     /* window buttons */
     int n = visible_count(), x = lx + LAUNCH_W + 12;
     for (int i = 0; i < n; i++, x += TASK_W + 6) {
@@ -514,10 +508,8 @@ int wm_spawn_app(const char *path, const char *arg) {
 
 static void launch(int i) {
     menu_open = false;
-    damage_window_menu: {
-        struct rect m = menu_rect();
-        wm_damage(m.x - SHADOW, m.y - SHADOW, m.w + 2 * SHADOW, m.h + 2 * SHADOW + 8);
-    }
+    struct rect m = menu_rect();
+    wm_damage(m.x - SHADOW, m.y - SHADOW, m.w + 2 * SHADOW, m.h + 2 * SHADOW + 8);
     if (i < 0) return;
     if (i == napps || i == napps + 1) {
         extern int ext2_sync_all(void);
@@ -830,6 +822,7 @@ int win_syscall(int num, uint32_t a, uint32_t b, uint32_t c) {
 /* ================= main loop ================= */
 
 bool wm_running(void) { return running; }
+void wm_wake(void) { wakeup(&wm_chan); }
 
 static int wm_thread(void *arg) {
     uint64_t last_tick = 0;
@@ -898,5 +891,6 @@ void wm_init(void) {
     last_sample = ticks_ms; last_idle = idle_ms();
     wm_damage(0, 0, SW, SH);
     kthread_create("compositor", wm_thread, 0);
+    termwin_open(0);
     kprintf("[desktop] ready\n");
 }

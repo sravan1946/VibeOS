@@ -32,6 +32,7 @@ struct window {
 
 void wm_init(void);                         /* takes over the screen, starts the compositor thread */
 bool wm_running(void);
+void wm_wake(void);
 struct window *wm_create(const char *title, int x, int y, int w, int h, int flags);
 void wm_destroy(struct window *w);
 void wm_damage(int x, int y, int w, int h); /* screen coords */

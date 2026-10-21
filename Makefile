@@ -24,7 +24,7 @@ FS_SECTORS := $(shell echo $$(( $(FS_MB) * 2048 )))
 KSRC  := $(wildcard kernel/*/*.c)
 KASM  := $(wildcard kernel/arch/*.asm)
 KOBJ  := $(patsubst %.c,build/%.o,$(KSRC)) $(patsubst %.asm,build/%.o,$(KASM)) \
-         build/common/gfx.k.o build/common/fonts.k.o
+         build/common/gfx.k.o build/common/fonts.k.o build/common/term.k.o
 
 all: build/vibeos.img
 

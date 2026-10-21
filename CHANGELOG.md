@@ -17,36 +17,38 @@ Newest notes at the bottom of each phase.
 - [x] Kernel heap (kmalloc/kfree)
 
 ## Phase 1 — Processes, storage, userland
-- [ ] Preemptive round-robin scheduler, kernel threads, sleep/wait queues
-- [ ] Ring-3 user processes with per-process address spaces
-- [ ] `int 0x80` syscall interface
-- [ ] ELF32 loader, `spawn` + `waitpid`
-- [ ] ATA PIO disk driver
-- [ ] ext2 filesystem (read + write)
-- [ ] VFS with /dev (tty, null, zero, random) and /proc
-- [ ] PS/2 keyboard driver (full keymap, modifiers, arrows, key buffer)
-- [ ] Terminal emulator with ANSI escapes + TTY line discipline (canonical/raw)
-- [ ] Pipes and fd redirection
+- [x] Preemptive round-robin scheduler, kernel threads, sleep/wait queues
+- [x] Ring-3 user processes with per-process address spaces
+- [x] `int 0x80` syscall interface
+- [x] ELF32 loader, `spawn` + `waitpid`
+- [x] ATA PIO disk driver
+- [x] ext2 filesystem (read + write)
+- [x] VFS with /dev (tty, null, zero, random) and /proc
+- [x] PS/2 keyboard driver (full keymap, modifiers, arrows, key buffer)
+- [x] Terminal emulator with ANSI escapes + TTY line discipline (canonical/raw)
+- [x] Pipes and fd redirection
 - [ ] User libc (string, stdio/printf, malloc, file I/O)
 - [ ] `sh` with history, line editing, tab completion, pipes, redirection, env vars, scripts
 - [ ] Coreutils: ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill uptime date free clear
 
 ## Phase 2 — Desktop
-- [ ] PS/2 mouse driver
-- [ ] Double-buffered compositor, window manager (drag, focus, z-order, close, minimise)
-- [ ] Desktop: wallpaper, taskbar, launcher menu, clock
-- [ ] Anti-aliased UI font baked at build time
-- [ ] Terminal windows (multiple shells)
+- [x] PS/2 mouse driver
+- [x] Double-buffered compositor, window manager (drag, focus, z-order, close, minimise)
+- [x] Desktop: wallpaper, taskbar, launcher menu, clock
+- [x] Anti-aliased UI font baked at build time
+- [x] Terminal windows (multiple shells)
 - [ ] Window syscalls + userland GUI library
 - [ ] GUI apps: system monitor, paint, calculator, clock, file manager, text editor
 - [ ] Games
 
 ## Phase 3 — Polish
 - [ ] Boot splash with progress
-- [ ] RTC clock / date
+- [x] RTC clock / date
 - [ ] PC speaker
 - [ ] README with screenshots, architecture docs
 
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
 - Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.
+- Phase 1 kernel: xv6-style scheduler (non-preemptive kernel, preemptive user mode, FPU state per task), per-process page directories with demand-grown stacks, `spawn`/`waitpid`/signals, 35 syscalls, VFS with mounts + `/dev` (null zero random tty kmsg) + `/proc` (meminfo uptime cpuinfo version processes), pipes, canonical/raw TTY with ^C/^D/^U, CMOS RTC. ATA PIO + read/write ext2 (agent, host-tested with e2fsck at 1k/2k/4k blocks). ANSI/xterm terminal emulator with 256/truecolor, scroll regions, alt screen, procedural box drawing (agent, host-tested).
+- Phase 2 desktop: in-kernel compositor with damage tracking, procedural aurora wallpaper, rounded windows with soft shadows and traffic-light buttons, drag/resize/maximise/minimise, taskbar with launcher, window list, CPU meter and clock (`/etc/tz`), vmmouse absolute pointer (no mouse grab in QEMU), terminal windows. First ring-3 program ran in a terminal window.

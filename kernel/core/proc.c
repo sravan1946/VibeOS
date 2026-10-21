@@ -135,10 +135,12 @@ NORETURN void proc_exit(int code) {
         vmm_free_dir(d);
     }
     t->exit_code = code;
+    if (code) kprintf("[proc] %s[%d] exited with %d\n", t->name, t->pid, code);
     struct task *parent = task_find(t->ppid);
     for (struct task *c = task_list(); c; c = c->next)    /* orphan our children */
         if (c->ppid == t->pid) { c->ppid = 0; c->orphan = true; }
-    if (!parent || parent->state == PS_ZOMBIE) t->orphan = true;
+    /* kernel threads never wait(): their children are reaped by the idle loop */
+    if (!parent || parent->state == PS_ZOMBIE || !parent->user) t->orphan = true;
     if (t->tty) tty_proc_exited(t->tty, t->pid);
     t->state = PS_ZOMBIE;
     if (parent) wakeup(parent);

@@ -1,6 +1,8 @@
 #include "proc.h"
 #include "console.h"
 #include "tty.h"
+#include "wm.h"
+#include "mouse.h"
 
 struct boot_info *boot_info;
 void rtc_init(void);
@@ -109,6 +111,8 @@ void kmain(struct boot_info *bi) {
 
     devfs_init();
     mount_root();
-    kthread_create("init-launcher", start_init, 0);
+    mouse_init(bi->fb_width, bi->fb_height);
+    wm_init();
+    (void)start_init;
     sched_idle();
 }
