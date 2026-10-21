@@ -308,26 +308,59 @@ static void draw_cursor(struct canvas *c) {
 /* ================= compose ================= */
 
 static bool no_present;
+#define FADE_MS 180
+#define RISE 12
 
-static void compose(void) {
+/* open animation: draw w risen and blended over what's beneath it */
+static void draw_window_fading(struct canvas *c, struct window *w, uint32_t age) {
+    static uint32_t *under;
+    if (!under && !(under = kmalloc((size_t)SW * SH * 4))) { draw_window(c, w); return; }
+    int t = (int)(age * 256 / FADE_MS), e = 256 - (256 - t) * (256 - t) / 256;   /* ease-out */
+    struct rect r;
+    frame_rect(w, &r);
+    int x0 = imax(c->cx0, r.x - SHADOW), y0 = imax(c->cy0, r.y - SHADOW);
+    int x1 = imin(c->cx1, r.x + r.w + SHADOW), y1 = imin(c->cy1, r.y + r.h + SHADOW + RISE + 8);
+    if (x1 <= x0 || y1 <= y0) return;
+    for (int y = y0; y < y1; y++) memcpy(&under[y * SW + x0], &bb.px[y * SW + x0], (x1 - x0) * 4);
+    int off = RISE * (256 - e) / 256;
+    w->y += off;
+    draw_window(c, w);
+    w->y -= off;
+    for (int y = y0; y < y1; y++) {
+        uint32_t *o = &bb.px[y * SW], *u = &under[y * SW];
+        for (int x = x0; x < x1; x++) o[x] = mix(u[x], o[x], e);
+    }
+}
+
+/* returns true while something is animating */
+static bool compose(void) {
     uint32_t f = irq_save();
     struct rect d = dirty;
     dirty.w = 0;
     irq_restore(f);
-    if (!d.w) return;
+    if (!d.w) return false;
+    bool anim = false;
     struct canvas c = bb;
     canvas_clip(&c, d.x, d.y, d.w, d.h);
     for (int y = d.y; y < d.y + d.h; y++)
         memcpy(&bb.px[y * SW + d.x], &wall.px[y * SW + d.x], d.w * 4);
-    for (struct window *w = wins; w; w = w->next)
-        if (w->visible && !w->minimized) draw_window(&c, w);
+    for (struct window *w = wins; w; w = w->next) {
+        if (!w->visible || w->minimized) continue;
+        uint32_t age = ticks_ms - w->born;
+        if (age < FADE_MS && !(w->flags & WIN_FLAG_FRAMELESS)) { draw_window_fading(&c, w, age); anim = true; }
+        else draw_window(&c, w);
+    }
     if (d.y + d.h > TB_Y) draw_taskbar(&c);
     if (drag_win && snap_zone) draw_snap(&c);
     if (menu_open) draw_menu(&c);
     draw_cursor(&c);
-    if (no_present) return;
-    for (int y = d.y; y < d.y + d.h; y++)
-        memcpy(&fb.px[y * fb.stride + d.x], &bb.px[y * SW + d.x], d.w * 4);
+    if (!no_present)
+        for (int y = d.y; y < d.y + d.h; y++)
+            memcpy(&fb.px[y * fb.stride + d.x], &bb.px[y * SW + d.x], d.w * 4);
+    if (anim)
+        for (struct window *w = wins; w; w = w->next)
+            if (ticks_ms - w->born < FADE_MS + 20) { struct rect r; frame_rect(w, &r); wm_damage(r.x - SHADOW, r.y - SHADOW, r.w + 2 * SHADOW, r.h + 2 * SHADOW + RISE + 8); }
+    return anim;
 }
 
 /* blend the boot splash (snap) into the first desktop frame */
@@ -402,6 +435,7 @@ struct window *wm_create(const char *title, int x, int y, int w, int h, int flag
     win->buf = (uint32_t *)pa;
     memset32(win->buf, RGB(0x11, 0x13, 0x1C), (size_t)SW * h);
     win->id = next_id++;
+    win->born = ticks_ms;
     win->w = w; win->h = h; win->flags = flags;
     if (x < 0 || y < 0) {                               /* cascade */
         static int slot;
@@ -921,7 +955,11 @@ static int wm_thread(void *arg) {
             uint32_t t = rtc_now() + tz_minutes * 60;
             if ((int)((t / 60) % 60) != last_minute) { last_minute = (t / 60) % 60; wm_damage(SW - 120, TB_Y, 120, WM_TASKBAR_H); }
         }
-        compose();
+        if (compose()) {                                 /* animating: pace frames, let apps run */
+            uint32_t f2 = irq_save();
+            sleep_on(&wm_chan, 12);
+            irq_restore(f2);
+        }
     }
     return 0;
 }
