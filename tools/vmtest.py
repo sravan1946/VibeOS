@@ -11,6 +11,7 @@ steps:
   shot:PATH.png    screenshot
   mouse:DX,DY      relative mouse move     click / rclick
   smoke            = wait for the desktop and take build/smoke.png
+The VM window opens on the desktop unless --headless (or VIBE_HEADLESS=1).
 Serial output goes to build/serial.log; exits non-zero on timeout or panic.
 """
 import os, socket, subprocess, sys, time
@@ -34,7 +35,7 @@ def keyname(ch):
     raise ValueError(f"can't type {ch!r}")
 
 class VM:
-    def __init__(self, extra=()):
+    def __init__(self, headless=False, extra=()):
         os.makedirs(B, exist_ok=True)
         self.sock = os.path.join(B, "mon.sock")
         self.log = os.path.join(B, "serial.log")
@@ -42,7 +43,8 @@ class VM:
             if os.path.exists(p): os.unlink(p)
         self.p = subprocess.Popen([
             "qemu-system-i386", "-m", "256", "-drive", f"file={B}/vibeos.img,format=raw,if=ide",
-            "-display", "none", "-serial", f"file:{self.log}", "-no-reboot",
+            "-display", "none" if headless else "gtk,zoom-to-fit=off", "-name", "VibeOS (vmtest)",
+            "-serial", f"file:{self.log}", "-no-reboot",
             "-device", "isa-debug-exit,iobase=0xf4,iosize=4",
             "-monitor", f"unix:{self.sock},server,nowait", *extra])
         for _ in range(100):
@@ -100,13 +102,15 @@ class VM:
 
 def main(argv):
     timeout, keep, steps = 30, False, []
+    headless = os.environ.get("VIBE_HEADLESS") == "1"
     it = iter(argv)
     for a in it:
         if a == "--timeout": timeout = float(next(it))
         elif a == "--keep": keep = True
+        elif a == "--headless": headless = True
         elif a == "smoke": steps += ["wait:[desktop] ready", f"shot:{B}/smoke.png"]
         else: steps.append(a)
-    vm = VM()
+    vm = VM(headless)
     ok = True
     try:
         for s in steps:
