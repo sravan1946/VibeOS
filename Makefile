@@ -169,8 +169,8 @@ user: $(UBINS)
 # the in-OS toolchain's sdk (tcc is the compiler): headers in /usr/include, crt + libs in /usr/lib, tcc's own
 # runtime + headers in /usr/lib/tcc. libtcc1.a is plain gcc output (tcc's 64-bit divide/shift helpers, alloca).
 SDK_HDRS := user/lib/gui.h user/lib/ui.h user/lib/image.h common/abi.h common/gfx.h common/font.h
-build/user/libtcc1.a: third_party/tcc/lib/libtcc1.c third_party/tcc/lib/alloca86.S
-	$(CC) $(UCFLAGS) -fno-builtin -c third_party/tcc/lib/libtcc1.c -o build/user/libtcc1.o
+build/user/libtcc1.a: third_party/tcc/lib/libtcc1.c third_party/tcc/lib/alloca86.S Makefile
+	$(CC) $(UCFLAGS) -O0 -fno-builtin -c third_party/tcc/lib/libtcc1.c -o build/user/libtcc1.o   # -O0: at -O2 the static __udivmoddi4 gets regparm
 	objcopy --globalize-symbol=__udivmoddi4 build/user/libtcc1.o   # libc.a (gcc-built) calls it
 	$(CC) -m32 -c third_party/tcc/lib/alloca86.S -o build/user/alloca86.o
 	rm -f $@ && ar rcs $@ build/user/libtcc1.o build/user/alloca86.o

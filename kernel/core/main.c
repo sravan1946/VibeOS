@@ -63,8 +63,8 @@ static int start_init(void *arg) {
     char *envp[] = { "PATH=/bin", "HOME=/home", "TERM=xterm-256color", 0 };
     struct file *f;
     for (int i = 0; i < 3; i++)
-        if ((f = vfs_open_vnode(&console->vn, O_RDWR))) current->fds[i] = f;
-    current->tty = console;
+        if ((f = vfs_open_vnode(&console->vn, O_RDWR))) current->proc->fds[i] = f;
+    current->proc->tty = console;
     int pid = proc_spawn("/bin/init", argv, envp, 0);
     if (pid < 0) {
         argv[0] = "/bin/sh";

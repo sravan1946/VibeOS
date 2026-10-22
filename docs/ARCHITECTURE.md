@@ -57,7 +57,7 @@ and two font files that are baked into C arrays at build time.
   checked when an interrupt returns to ring 3. FPU state is saved per task with `fnsave`.
 * Blocking is `sleep_on(chan, timeout)` / `wakeup(chan)`; `poll()` sleeps on a global channel
   that every wakeup pokes.
-* There's no `fork`: processes are created with `spawn(path, argv, envp, opts)` where `opts`
+* There's no `fork`: new processes are created with `spawn(path, argv, envp, opts)` where `opts`
   carries the child's stdin/stdout/stderr, cwd and flags. ELF32 executables are linked at
   `0x40001000` (`user/user.ld`), and argv/envp land on the stack in the Linux i386 layout.
 * Signals are checked on the way back to ring 3 (`sched_irq_exit`). Each task has a pending and
@@ -68,7 +68,30 @@ and two font files that are baked into C arrays at build time.
   fail with `EINTR`. The default action is exit with `128 + sig`, except for SIGCHLD and SIGWINCH,
   which are ignored. The TTY sends `SIGINT` to its foreground process on `^C` and SIGWINCH on
   resize, and a child's exit sends SIGCHLD to its parent. Ignored signals stay ignored across
-  `spawn`, as they would across exec. `/bin/sigtest` checks it all.
+  `spawn` and `exec`. `/bin/sigtest` checks it all.
+* **exec** (`SYS_exec`, `proc_exec`): `load_image` (shared with spawn, including the `#!` rule) builds the new
+  address space first, so a failed exec returns `-errno` with the old image untouched. Then the old page directory
+  is freed, fds marked close-on-exec are closed (a per-process `fd_cloexec` bitmask: `fcntl F_SETFD`, `O_CLOEXEC`;
+  window fds get it automatically because their pixels were mapped into the old image), handled signals reset to
+  default (ignored ones, the mask and pending signals stay) and the syscall's trap frame is rewritten to the new
+  entry point. pid, ppid, cwd, tty and the other fds stay. libc's `execve/execv/execvp/execl/execlp/execle` and
+  sh's `exec` builtin use it.
+* **Threads**: a process is its leader task plus threads, which are tasks with `proc` pointing at the leader and the
+  same `dir`. fds, cwd, tty, brk and signal handlers live in the leader (always reached through `t->proc`); the
+  signal mask, pending set and FPU state are per thread. `getpid()` is the leader's pid and `gettid()` the task's;
+  wait() skips threads, ps lists them under the process. A process-directed signal goes to the leader. The first
+  thread to call `exit()` (or take a fatal signal) records the status, marks the process `exiting` (from then on
+  `proc_kill` ignores it) and SIGKILLs the rest; they die on their next way back to ring 3, and the leader tears the
+  process down once `nthreads` reaches 1. exec from the main thread does the same kill first. `thread_join` frees a
+  zombie thread; unjoined ones are orphaned with the process and reaped by the idle loop. `SYS_futex` sleeps on the
+  user word's physical address (check-and-sleep is atomic because the kernel isn't preempted); WAKE wakes everyone.
+  libc's errno stays a plain global: the scheduler keeps a copy per thread and swaps it in and out of the process's
+  errno word on every switch (single CPU only, see the `ponytail:` note in `sched.c`).
+* `<pthread.h>` (`user/lib/pthread.c`): create (malloc'd stacks, 128 KiB default), join, exit, self, attr
+  stacksize, futex mutexes (Drepper's three-state), condition variables (a sequence number), once. Linking it turns on
+  a recursive libc lock (weak `__libc_lock` in `malloc.c` and `stdio.c`), so malloc/free/realloc and
+  fwrite/fread/fflush/fgetc are safe from threads; programs without threads don't link it and pay nothing.
+  `/bin/proctest` checks exec and threads.
 
 ## Syscalls
 

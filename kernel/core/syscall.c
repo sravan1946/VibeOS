@@ -50,29 +50,31 @@ static char **uvec(char *const *u, int *err) {
 
 static int sys_path1(int num, const char *up) {
     UPATH(p, up);
-    if (num == SYS_mkdir) return vfs_mkdir(current->cwd, p);
-    return vfs_unlink(current->cwd, p, num == SYS_rmdir);
+    if (num == SYS_mkdir) return vfs_mkdir(current->proc->cwd, p);
+    return vfs_unlink(current->proc->cwd, p, num == SYS_rmdir);
 }
 
 static int sys_rename(const char *ua, const char *ub) {
     UPATH(p, ua);
     UPATH(q, ub);
-    return vfs_rename(current->cwd, p, q);
+    return vfs_rename(current->proc->cwd, p, q);
 }
 
 static int sys_open(const char *up, int flags) {
     UPATH(p, up);
     struct file *f;
-    int r = vfs_open(current->cwd, p, flags, &f);
+    int r = vfs_open(current->proc->cwd, p, flags & ~O_CLOEXEC, &f);
     if (r < 0) return r;
     if ((r = fd_alloc(f)) < 0) vfs_close(f);
+    else if (flags & O_CLOEXEC) current->proc->fd_cloexec |= 1u << r;
     return r;
 }
 
 static int sys_close(int fd) {
     struct file *f = fd_get(fd);
     if (!f) return -EBADF;
-    current->fds[fd] = 0;
+    current->proc->fds[fd] = 0;
+    current->proc->fd_cloexec &= ~(1u << fd);
     vfs_close(f);
     return 0;
 }
@@ -88,7 +90,7 @@ static int sys_stat(const char *up, struct stat *st) {
     UPATH(p, up);
     if (!uok(st, sizeof *st, true)) return -EFAULT;
     struct vnode *v;
-    int r = vfs_lookup(current->cwd, p, &v);
+    int r = vfs_lookup(current->proc->cwd, p, &v);
     if (r < 0) return r;
     vfs_stat_vnode(v, st);
     vnode_put(v);
@@ -113,22 +115,22 @@ static int sys_readdir(int fd, struct dirent *ud) {
 static int sys_chdir(const char *up) {
     UPATH(p, up);
     char c[PATH_MAX];
-    int r = vfs_canon(current->cwd, p, c, sizeof c);
+    int r = vfs_canon(current->proc->cwd, p, c, sizeof c);
     if (r < 0) return r;
     struct vnode *v;
     if ((r = vfs_lookup("/", c, &v)) < 0) return r;
     bool dir = S_ISDIR(v->mode);
     vnode_put(v);
     if (!dir) return -ENOTDIR;
-    strlcpy(current->cwd, c, sizeof current->cwd);
+    strlcpy(current->proc->cwd, c, sizeof current->proc->cwd);
     return 0;
 }
 
 static int sys_getcwd(char *buf, uint32_t n) {
-    uint32_t l = strlen(current->cwd) + 1;
+    uint32_t l = strlen(current->proc->cwd) + 1;
     if (n < l) return -ERANGE;
     if (!uok(buf, l, true)) return -EFAULT;
-    memcpy(buf, current->cwd, l);
+    memcpy(buf, current->proc->cwd, l);
     return l - 1;
 }
 
@@ -153,14 +155,14 @@ static int sys_spawn(const char *up, char *const *uargv, char *const *uenvp, con
 }
 
 static int sys_sbrk(int32_t inc) {
-    uint32_t old = current->brk, nb = old + inc;
+    uint32_t old = current->proc->brk, nb = old + inc;
     if (inc > 0 && (nb < old || nb > USER_STACK_TOP - (8u << 20))) return -ENOMEM;
-    if (inc < 0 && nb < current->brk_start) return -EINVAL;
+    if (inc < 0 && nb < current->proc->brk_start) return -EINVAL;
     if (inc > 0 && vmm_alloc_range(current->dir, ALIGN_UP(old, PAGE_SIZE),
                                    ALIGN_UP(nb, PAGE_SIZE) - ALIGN_UP(old, PAGE_SIZE), PTE_U | PTE_W) < 0)
         return -ENOMEM;
     if (inc < 0) vmm_unmap_range(current->dir, ALIGN_UP(nb, PAGE_SIZE), ALIGN_UP(old, PAGE_SIZE) - ALIGN_UP(nb, PAGE_SIZE), true);
-    current->brk = nb;
+    current->proc->brk = nb;
     return old;
 }
 
@@ -172,7 +174,7 @@ static int sys_pipe(int *ufds) {
     int a = fd_alloc(r);
     if (a < 0) { vfs_close(r); vfs_close(w); return a; }
     int b = fd_alloc(w);
-    if (b < 0) { current->fds[a] = 0; vfs_close(r); vfs_close(w); return b; }
+    if (b < 0) { current->proc->fds[a] = 0; vfs_close(r); vfs_close(w); return b; }
     ufds[0] = a; ufds[1] = b;
     return 0;
 }
@@ -181,9 +183,10 @@ static int sys_dup2(int old, int nfd) {
     struct file *f = fd_get(old);
     if (!f || nfd < 0 || nfd >= MAX_FDS) return -EBADF;
     if (old == nfd) return nfd;
-    if (current->fds[nfd]) vfs_close(current->fds[nfd]);
+    if (current->proc->fds[nfd]) vfs_close(current->proc->fds[nfd]);
     f->refs++;
-    current->fds[nfd] = f;
+    current->proc->fds[nfd] = f;
+    current->proc->fd_cloexec &= ~(1u << nfd);
     return nfd;
 }
 
@@ -193,6 +196,50 @@ static int sys_dup(int fd) {
     int n = fd_alloc(f);
     if (n >= 0) f->refs++;
     return n;
+}
+
+static int sys_fcntl(int fd, int cmd, int arg) {
+    struct file *f = fd_get(fd);
+    struct task *p = current->proc;
+    if (!f) return -EBADF;
+    switch (cmd) {
+    case F_DUPFD:
+        for (int i = arg < 0 ? 0 : arg; i < MAX_FDS; i++)
+            if (!p->fds[i]) { p->fds[i] = f; f->refs++; p->fd_cloexec &= ~(1u << i); return i; }
+        return arg < 0 || arg >= MAX_FDS ? -EINVAL : -EMFILE;
+    case F_GETFD: return p->fd_cloexec >> fd & 1;
+    case F_SETFD:
+        if (arg & FD_CLOEXEC) p->fd_cloexec |= 1u << fd; else p->fd_cloexec &= ~(1u << fd);
+        return 0;
+    case F_GETFL: return f->flags;
+    case F_SETFL: f->flags = (f->flags & ~(O_APPEND | O_NONBLOCK)) | (arg & (O_APPEND | O_NONBLOCK)); return 0;
+    }
+    return -EINVAL;
+}
+
+static int sys_exec(const char *up, char *const *uargv, char *const *uenvp, struct regs *r) {
+    UPATH(p, up);
+    int err;
+    char **argv = uvec(uargv, &err);
+    if (err) return err;
+    char **envp = uvec(uenvp, &err);
+    if (err) { kfree(argv); return err; }
+    char *defargv[] = { p, 0 };
+    err = proc_exec(p, argv ? argv : defargv, envp, r);   /* copies them onto the new stack first */
+    kfree(argv); kfree(envp);
+    return err;
+}
+
+/* sleep/wake on a user word, keyed by its physical address (unique, and right for shared pages too) */
+static int sys_futex(int *uaddr, int op, int val) {
+    if (((uint32_t)uaddr & 3) || !uok(uaddr, 4, true)) return -EFAULT;
+    void *chan = (void *)vmm_translate(current->dir, (uint32_t)uaddr);
+    if (op == FUTEX_WAKE) { wakeup(chan); return 0; }   /* ponytail: wakes every waiter; they re-check */
+    if (op != FUTEX_WAIT) return -EINVAL;
+    uint32_t f = irq_save();                            /* the kernel isn't preempted: check + sleep is atomic */
+    int r = *uaddr != val ? -EAGAIN : sleep_on(chan, 0);
+    irq_restore(f);
+    return r;
 }
 
 static int sys_ioctl(int fd, int req, void *arg) {
@@ -219,7 +266,7 @@ static int sys_proclist(struct procinfo *buf, int max) {
     for (struct task *t = task_list(); t && n < max; t = t->next, n++) {
         struct procinfo *p = &buf[n];
         p->pid = t->pid; p->ppid = t->ppid; p->state = t->state; p->cpu_ms = t->cpu_ms;
-        p->mem_kb = t->user && t->state != PS_ZOMBIE ? count_user_pages(t->dir) * 4 : 0;
+        p->mem_kb = t->user && t->state != PS_ZOMBIE && t->proc == t ? count_user_pages(t->dir) * 4 : 0;   /* threads: 0 */
         strlcpy(p->name, t->name, sizeof p->name);
     }
     return n;
@@ -296,6 +343,12 @@ static void syscall_handler(struct regs *r) {
     uint32_t a = r->ebx, b = r->ecx, c = r->edx, d = r->esi, e = r->edi;
     int ret;
     sti();                         /* syscalls run with interrupts on */
+    /* another thread may close the fd while this call sleeps on it: hold the file meanwhile */
+    struct file *hold = 0;
+    if (current->proc->nthreads > 1 && (r->eax == SYS_read || r->eax == SYS_write || r->eax == SYS_ioctl ||
+        r->eax == SYS_connect || r->eax == SYS_sendto || r->eax == SYS_recvfrom || r->eax == SYS_accept) &&
+        (hold = fd_get(a)))
+        hold->refs++;
     switch (r->eax) {
     case SYS_exit:     proc_exit((int)a);
     case SYS_read:     ret = sys_rw(a, (void *)b, c, false); break;
@@ -315,8 +368,8 @@ static void syscall_handler(struct regs *r) {
     case SYS_waitpid:
         if (b && !uok((void *)b, 4, true)) { ret = -EFAULT; break; }
         ret = proc_wait(a, (int *)b, c); break;
-    case SYS_getpid:   ret = current->pid; break;
-    case SYS_getppid:  ret = current->ppid; break;
+    case SYS_getpid:   ret = current->proc->pid; break;
+    case SYS_getppid:  ret = current->proc->ppid; break;
     case SYS_sbrk:     ret = sys_sbrk(a); break;
     case SYS_sleep:    sleep_ms(a); ret = sig_deliverable(current) ? -EINTR : 0; break;
     case SYS_uptime:   ret = (uint32_t)ticks_ms; break;
@@ -346,8 +399,20 @@ static void syscall_handler(struct regs *r) {
     case SYS_socket: case SYS_connect: case SYS_bind: case SYS_sendto: case SYS_recvfrom:
     case SYS_resolve: case SYS_netinfo: case SYS_listen: case SYS_accept:
                        ret = net_syscall(r->eax, a, b, c, d, e); break;
+    case SYS_exec:                 /* on success r is the new image's first frame */
+        if ((ret = sys_exec((const char *)a, (char *const *)b, (char *const *)c, r)) == 0) { cli(); return; }
+        break;
+    case SYS_fcntl:    ret = sys_fcntl(a, b, c); break;
+    case SYS_thread_create: ret = proc_thread_create(a, b, c); break;
+    case SYS_thread_exit:   proc_thread_exit(a); ret = -EINTR; break;
+    case SYS_thread_join:
+        if (b && !uok((void *)b, 4, true)) { ret = -EFAULT; break; }
+        ret = proc_thread_join(a, (int *)b); break;
+    case SYS_gettid:   ret = current->pid; break;
+    case SYS_futex:    ret = sys_futex((int *)a, b, c); break;
     default:           ret = -ENOSYS;
     }
+    if (hold) vfs_close(hold);
     r->eax = ret;
     cli();
 }

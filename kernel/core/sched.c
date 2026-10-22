@@ -24,6 +24,8 @@ void sched_init(void) {
     fpu_init();
     idle_task = kzalloc(sizeof *idle_task);
     idle_task->pid = 0;
+    idle_task->proc = idle_task;
+    idle_task->nthreads = 1;
     idle_task->state = PS_RUNNING;
     strlcpy(idle_task->name, "idle", sizeof idle_task->name);
     idle_task->dir = vmm_kernel_dir();
@@ -38,7 +40,9 @@ static struct task *task_alloc(const char *name) {
     t->kstack = (uint32_t)kmalloc(KSTACK_SIZE);
     if (!t->kstack) { kfree(t); return 0; }
     t->pid = next_pid++;
-    t->ppid = current ? current->pid : 0;
+    t->ppid = current ? current->proc->pid : 0;
+    t->proc = t;
+    t->nthreads = 1;
     strlcpy(t->name, name, sizeof t->name);
     t->dir = vmm_kernel_dir();
     strcpy(t->cwd, "/");
@@ -115,6 +119,12 @@ struct task *task_find(int pid) {
 struct task *task_list(void) { return tasks; }
 uint32_t idle_ms(void) { return idle_task->cpu_ms; }
 
+/* libc's errno in t's process, through the identity map (0 if unthreaded or the page is gone) */
+static int *uerrno_word(struct task *t) {
+    uint32_t va = t->proc->uerrno;
+    return va ? (int *)vmm_translate(t->dir, va) : 0;
+}
+
 void schedule(void) {
     uint32_t f = irq_save();
     need_resched = false;
@@ -130,9 +140,14 @@ void schedule(void) {
     if (prev->state == PS_RUNNING) prev->state = PS_READY;
     next->state = PS_RUNNING;
     if (next != prev) {
+        /* threads share libc's errno word: park the outgoing thread's value, install the incoming one's.
+         * ponytail: single CPU only; with SMP this needs real TLS (a %gs segment per thread) */
+        int *e;
+        if (prev->state != PS_ZOMBIE && (e = uerrno_word(prev))) prev->uerrno_val = *e;
         current = next;
         tss_set_kernel_stack(next->kstack + KSTACK_SIZE);
         if (read_cr3() != next->dir) write_cr3(next->dir);
+        if ((e = uerrno_word(next))) *e = next->uerrno_val;
         __asm__ volatile("fnsave %0" : "=m"(prev->fpu));
         __asm__ volatile("frstor %0" :: "m"(next->fpu));
         context_switch(&prev->kesp, next->kesp);

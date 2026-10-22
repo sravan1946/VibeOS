@@ -39,6 +39,18 @@ int spawnve(const char *path, char *const argv[], char *const envp[], const stru
     return __sysret(__syscall4(SYS_spawn, P(path), P(argv), P(envp), P(o)));
 }
 
+int execve(const char *path, char *const argv[], char *const envp[]) {
+    return __sysret(__syscall3(SYS_exec, P(path), P(argv), P(envp)));
+}
+
+int fcntl(int fd, int cmd, ...) {
+    va_list ap;
+    va_start(ap, cmd);
+    int arg = va_arg(ap, int);           /* every cmd takes an int or nothing */
+    va_end(ap);
+    return __sysret(__syscall3(SYS_fcntl, fd, cmd, arg));
+}
+
 pid_t waitpid(pid_t pid, int *status, int flags) {
     return __sysret(__syscall3(SYS_waitpid, pid, P(status), flags));
 }
