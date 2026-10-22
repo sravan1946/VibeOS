@@ -1,4 +1,4 @@
-/* devfs.c - /dev (null zero random tty kmsg) and /proc (text files) */
+/* devfs.c - /dev (null zero random tty kmsg clipboard) and /proc (text files) */
 #include "proc.h"
 #include "tty.h"
 
@@ -63,10 +63,41 @@ static const struct vnode_ops random_ops = { .read = random_read, .write = sink_
 static const struct vnode_ops kmsg_ops = { .read = kmsg_read, .poll = always_ready };
 static const struct vnode_ops tty_placeholder_ops = { 0 };
 
+/* /dev/clipboard: one shared buffer, a regular file so offsets advance; O_TRUNC + write replaces it */
+#define CLIP_MAX (1u << 20)
+static char *clip;
+static uint32_t clip_cap;
+static struct vnode *clip_vn;
+static int clip_read(struct vnode *v, uint32_t off, void *b, uint32_t n) {
+    if (off >= v->size) return 0;
+    n = MIN(n, v->size - off);
+    memcpy(b, clip + off, n);
+    return n;
+}
+static int clip_write(struct vnode *v, uint32_t off, const void *b, uint32_t n) {
+    if (off > v->size || n > CLIP_MAX - off) return -EFBIG;
+    if (off + n > clip_cap) {
+        uint32_t cap = MAX(off + n, clip_cap * 2);
+        char *p = krealloc(clip, cap);
+        if (!p) return -ENOMEM;
+        clip = p; clip_cap = cap;
+    }
+    memcpy(clip + off, b, n);
+    v->size = MAX(v->size, off + n);
+    v->mtime = rtc_now();
+    return n;
+}
+static int clip_truncate(struct vnode *v, uint32_t len) { if (len < v->size) v->size = len; return 0; }
+static const struct vnode_ops clip_ops = { .read = clip_read, .write = clip_write, .truncate = clip_truncate, .poll = always_ready };
+
+int clipboard_get(char *buf, int n) { return clip_read(clip_vn, 0, buf, n); }
+void clipboard_set(const char *s, int n) { clip_vn->size = 0; clip_write(clip_vn, 0, s, n); }
+
 #define CHR(nm, o, i) { nm, { .mode = S_IFCHR | 0666, .ino = i, .refs = 1, .ops = &o } }
 static struct snode dev_nodes[] = {
     CHR("null", null_ops, 2), CHR("zero", zero_ops, 3), CHR("random", random_ops, 4),
     CHR("urandom", random_ops, 5), CHR("tty", tty_placeholder_ops, 6), CHR("kmsg", kmsg_ops, 7),
+    { "clipboard", { .mode = S_IFREG | 0666, .ino = 8, .refs = 1, .ops = &clip_ops } },
 };
 static struct sdir devdir = { { .mode = S_IFDIR | 0755, .ino = 1, .refs = 1, .ops = &sdir_ops }, dev_nodes, ARRAY_LEN(dev_nodes) };
 
@@ -115,6 +146,8 @@ static struct sdir procdir = { { .mode = S_IFDIR | 0555, .ino = 101, .refs = 1, 
 
 void devfs_init(void) {
     devdir.vn.priv = &devdir;
+    for (int i = 0; i < (int)ARRAY_LEN(dev_nodes); i++)
+        if (dev_nodes[i].vn.ops == &clip_ops) clip_vn = &dev_nodes[i].vn;
     procdir.vn.priv = &procdir;
     vfs_mount("/dev", &devdir.vn);
     vfs_mount("/proc", &procdir.vn);

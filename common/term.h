@@ -26,6 +26,10 @@ int  term_cols(struct term *t);
 int  term_rows(struct term *t);
 const char *term_title(struct term *t);
 int  term_take_bell(struct term *t);                       /* returns and clears the BEL flag */
+/* mouse selection in visible cell coordinates (clamped, either order); it follows the text as it scrolls */
+void term_select(struct term *t, int c0, int r0, int c1, int r1);
+void term_select_clear(struct term *t);
+int  term_selection_text(struct term *t, char *buf, int n);  /* UTF-8, trailing blanks trimmed; 0 if none */
 
 /* introspection (tests, selection/copy): row < 0 addresses scrollback, -1 = newest line */
 uint32_t term_cell_char(struct term *t, int col, int row);

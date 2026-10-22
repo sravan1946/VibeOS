@@ -19,8 +19,6 @@ static int cur, anchor;            /* caret and the other end of the selection *
 static int want_col = -1;          /* remembered visual column for up/down */
 static bool modified;
 static char path[PATH_MAX];        /* "" = untitled */
-static char *clip;
-static int cliplen;
 
 /* line index, rebuilt after every edit */
 static int *lines, nlines, lines_cap;
@@ -117,11 +115,7 @@ static void insert(const char *s, int n) {
 static void copy_sel(void) {
     int lo, hi;
     sel_range(&lo, &hi);
-    if (hi <= lo) return;
-    free(clip);
-    cliplen = hi - lo;
-    clip = malloc(cliplen);
-    memcpy(clip, buf + lo, cliplen);
+    if (hi > lo) gui_clip_set(buf + lo, hi - lo);
 }
 
 static void new_doc(void) {
@@ -207,7 +201,7 @@ static void handle_key(const struct gui_event *k, int vis_lines) {
         case 'a': anchor = 0; cur = len; break;
         case 'c': copy_sel(); break;
         case 'x': copy_sel(); { int lo, hi; sel_range(&lo, &hi); del_range(lo, hi); } break;
-        case 'v': if (clip) insert(clip, cliplen); break;
+        case 'v': { int n; char *c = gui_clip_get(&n); if (c) insert(c, n); free(c); break; }
         case KEY_LEFT: { int i = cur; while (i > 0 && !isword(buf[i - 1])) i--; while (i > 0 && isword(buf[i - 1])) i--; move_to(i, shift, false); break; }
         case KEY_RIGHT: { int i = cur; while (i < len && !isword(buf[i])) i++; while (i < len && isword(buf[i])) i++; move_to(i, shift, false); break; }
         case KEY_HOME: move_to(0, shift, false); break;

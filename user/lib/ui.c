@@ -177,6 +177,12 @@ bool ui_textbox(struct ui *ui, int x, int y, int w, int h, char *buf, int cap, c
             if (k.key == KEY_ENTER) { enter = true; break; }
             if (k.key == KEY_BACKSPACE || k.ch == 127 || k.ch == 8) { if (n) buf[--n] = 0; }
             else if (k.ch == 21) { n = 0; buf[0] = 0; }              /* ^U */
+            else if ((k.mods & MOD_CTRL) && (k.key | 0x20) == 'v') {    /* paste the first line */
+                char *c = gui_clip_get(NULL);
+                for (char *p = c; p && *p && *p != '\n' && n < cap - 1; p++) if (*p >= 32) { buf[n++] = *p; buf[n] = 0; }
+                free(c);
+            }
+            else if ((k.mods & MOD_CTRL) && (k.key | 0x20) == 'c') gui_clip_set(buf, n);
             else if (k.ch >= 32 && k.ch < 127 && n < cap - 1) { buf[n++] = k.ch; buf[n] = 0; }
         }
     }

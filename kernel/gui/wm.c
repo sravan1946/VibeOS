@@ -804,7 +804,8 @@ static void mouse_event(int x, int y, int b, int dz) {
     }
     if (dz && w && !in_frame) { struct gui_event e = { .type = EV_SCROLL, .x = x - w->x, .y = y - w->y, .dz = dz }; send(w, &e); }
 
-    if ((b & 2) && !(ob & 2) && w && !in_frame) { struct gui_event e = { .type = EV_MOUSE_DOWN, .x = x - w->x, .y = y - w->y, .button = 2 }; send(w, &e); }
+    for (int k = 2; k <= 4; k += 2)                                          /* right and middle */
+        if ((b & k) && !(ob & k) && w && !in_frame) { struct gui_event e = { .type = EV_MOUSE_DOWN, .x = x - w->x, .y = y - w->y, .button = k }; send(w, &e); }
     if ((b & 2) && !(ob & 2) && !w && task == -3 && !in_menu) {             /* desktop context menu */
         if (menu_open) launch(-1);
         struct rect r = ctx_rect();

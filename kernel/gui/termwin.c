@@ -9,7 +9,8 @@ struct termwin {
     struct term *t;
     struct tty *tty;
     int pid;
-    bool dirty, full, closing, blink_on, hold;
+    bool dirty, full, closing, blink_on, hold, selecting;
+    int sc, sr;                       /* selection anchor cell */
     uint64_t blink_at;
     char title[64];
 };
@@ -68,11 +69,46 @@ static void tw_frame(struct window *w) {
     if (term_take_bell(tw->t)) {}
 }
 
+static void tw_copy(struct termwin *tw) {
+    char *buf = kmalloc(64 * 1024);
+    int n = buf ? term_selection_text(tw->t, buf, 64 * 1024) : 0;
+    if (n) clipboard_set(buf, n);
+    kfree(buf);
+}
+
+static void tw_paste(struct termwin *tw) {
+    char *buf = kmalloc(64 * 1024);
+    int n = buf && tw->tty ? clipboard_get(buf, 64 * 1024) : 0;
+    for (int i = 0; i < n; i++) if (buf[i] == '\n') buf[i] = '\r';
+    if (n > 0) tty_input(tw->tty, buf, n);
+    kfree(buf);
+}
+
 static void tw_event(struct window *w, const struct gui_event *ev) {
     struct termwin *tw = w->priv;
+    int col = (ev->x - PAD) / term_cell_w(), row = (ev->y - PAD + 2) / term_cell_h();
     switch (ev->type) {
+    case EV_MOUSE_DOWN:
+        if (ev->button == 4) { tw_paste(tw); break; }
+        if (ev->button != 1) break;
+        term_select_clear(tw->t);
+        tw->selecting = true; tw->sc = col; tw->sr = row;
+        tw->dirty = true;
+        break;
+    case EV_MOUSE_MOVE:
+        if (!tw->selecting || !(ev->button & 1) || (col == tw->sc && row == tw->sr)) break;
+        term_select(tw->t, tw->sc, tw->sr, col, row);
+        tw->dirty = true;
+        break;
+    case EV_MOUSE_UP:
+        if (ev->button == 1 && tw->selecting) { tw->selecting = false; tw_copy(tw); }
+        break;
     case EV_KEY:
         if (!ev->pressed) return;
+        if ((ev->mods & (MOD_CTRL | MOD_SHIFT)) == (MOD_CTRL | MOD_SHIFT) && ev->key < 256) {
+            if ((ev->key | 0x20) == 'c') { tw_copy(tw); return; }
+            if ((ev->key | 0x20) == 'v') { tw_paste(tw); return; }
+        }
         if ((ev->mods & MOD_SHIFT) && (ev->key == KEY_PGUP || ev->key == KEY_PGDN)) {
             term_scroll_view(tw->t, ev->key == KEY_PGUP ? term_rows(tw->t) / 2 : -term_rows(tw->t) / 2);
             tw->dirty = tw->full = true;

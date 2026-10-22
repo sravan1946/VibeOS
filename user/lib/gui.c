@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <fcntl.h>
 
 static void attach(struct gui_window *win, int w, int h, uint32_t *px, int stride) {
     win->w = w;
@@ -64,4 +65,26 @@ int gui_next_event(struct gui_window *win, struct gui_event *ev, int timeout_ms)
 int gui_resize(struct gui_window *win, int w, int h) {
     struct win_rect r = { 0, 0, w, h };
     return win_set(win->fd, WIN_SET_SIZE, (uintptr_t)&r);
+}
+
+int gui_clip_set(const char *s, int n) {
+    int fd = open("/dev/clipboard", O_WRONLY | O_TRUNC), r = -1;
+    if (fd >= 0) { r = write(fd, s, n) == n ? 0 : -1; close(fd); }
+    return r;
+}
+
+char *gui_clip_get(int *n) {
+    int fd = open("/dev/clipboard", O_RDONLY), len = 0, cap = 0, r = 0;
+    char *b = NULL;
+    if (fd < 0) return NULL;
+    do {
+        if (len + 4096 + 1 > cap) { char *nb = realloc(b, cap = cap * 2 + 4096 + 1); if (!nb) break; b = nb; }
+        r = read(fd, b + len, cap - len - 1);
+        if (r > 0) len += r;
+    } while (r > 0);
+    close(fd);
+    if (!len) { free(b); return NULL; }
+    b[len] = 0;
+    if (n) *n = len;
+    return b;
 }

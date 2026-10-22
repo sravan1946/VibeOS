@@ -4,7 +4,6 @@
 #include "net.h"
 
 int pipe_create(struct file **rd, struct file **wr);
-uint32_t rtc_now(void);
 size_t klog_read(char *buf, size_t off, size_t n);
 size_t klog_size(void);
 int win_syscall(int num, uint32_t a, uint32_t b, uint32_t c);   /* gui/wm.c */

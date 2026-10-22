@@ -66,6 +66,8 @@ struct blockdev *blockdev_get(int index);           /* NULL if none */
 /* a partition view on top of a disk; reads beyond len fail */
 struct blockdev *blockdev_partition(struct blockdev *disk, uint32_t start, uint32_t len);
 void ata_flush_all(void);                            /* write caches -> disk, before power-off */
+int  clipboard_get(char *buf, int n);                 /* /dev/clipboard contents, for kernel windows */
+void clipboard_set(const char *s, int n);
 int ata_init(void);                                  /* probe IDE channels; returns disks found */
 struct blockdev *blockdev_root_partition(void);      /* first type-0x83 partition of disk 0, NULL if none */
 
