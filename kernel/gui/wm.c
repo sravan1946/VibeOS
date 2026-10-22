@@ -31,7 +31,7 @@ static volatile uint32_t inq_h, inq_t;
 
 /* ---- interaction state ---- */
 static int cur_x, cur_y, cur_b;
-static struct window *drag_win, *resize_win, *capture_win, *hover_win;
+static struct window *drag_win, *resize_win, *capture_win, *hover_win, *last_in;   /* last_in: client the pointer was last inside (gets EV_MOUSE_LEAVE) */
 static int drag_dx, drag_dy, drag_sx, drag_sy;
 static int snap_zone;                                /* 1 left half, 2 right half, 3 maximise */
 static void draw_snap(struct canvas *c);
@@ -946,6 +946,7 @@ void wm_destroy(struct window *w) {
     if (resize_win == w) resize_win = 0;
     if (capture_win == w) capture_win = 0;
     if (hover_win == w) hover_win = 0;
+    if (last_in == w) last_in = 0;
     if (last_click_win == w) last_click_win = 0;
     if (wmenu_win == w) wmenu_close();
     if (sw_open) sw_close(false);
@@ -1488,7 +1489,6 @@ static void mouse_event(int x, int y, int b, int dz) {
     set_hover(desk ? 0 : w, btn, task == T_NONE ? -1 : task, mitem);
 
     if (w && !in_frame) {                                      /* motion inside a client (terminals take it too, for link hover) */
-        static struct window *last_in;
         if (last_in && last_in != w) { struct gui_event e = { .type = EV_MOUSE_LEAVE }; send(last_in, &e); }
         last_in = w;
         if (ox != x || oy != y) { struct gui_event e = { .type = EV_MOUSE_MOVE, .x = x - w->x, .y = y - w->y, .button = b }; send(w, &e); }
