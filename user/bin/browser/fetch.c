@@ -28,7 +28,7 @@ static int fail(const char *kind, const char *msg) {
     return 1;
 }
 
-int fetch_main(const char *url) {
+int fetch_main(const char *url, const char *post) {
     char host[128], path[URL_MAX];
     int port;
     if (url_split_http(url, host, sizeof host, &port, path, sizeof path) < 0) return fail("url", "bad URL");
@@ -44,9 +44,12 @@ int fetch_main(const char *url) {
     if (fd < 0 || connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) return fail("connect", fd < 0 ? strerror(errno) : "connection refused or timed out");
     char req[URL_MAX + 400], hh[160];
     if (port == 80) snprintf(hh, sizeof hh, "%s", host); else snprintf(hh, sizeof hh, "%s:%d", host, port);
-    int rl = snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: VibeBrowser/1.0 (VibeOS)\r\n"
-                      "Accept: text/html,text/plain;q=0.9,*/*;q=0.5\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n", path, hh);
-    if (write(fd, req, rl) != rl) return fail("send", strerror(errno));
+    int rl = snprintf(req, sizeof req, "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: VibeBrowser/1.0 (VibeOS)\r\n"
+                      "Accept: text/html,text/plain;q=0.9,image/png,image/bmp,*/*;q=0.5\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
+                      post ? "POST" : "GET", path, hh);
+    if (post) rl += snprintf(req + rl, sizeof req - rl, "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %d\r\n", (int)strlen(post));
+    rl += snprintf(req + rl, sizeof req - rl, "\r\n");
+    if (write(fd, req, rl) != rl || (post && write(fd, post, strlen(post)) != (ssize_t)strlen(post))) return fail("send", strerror(errno));
     char buf[4096];
     for (;;) {
         struct pollfd pf = { fd, POLLIN, 0 };
@@ -67,12 +70,12 @@ void fetch_reap(void) {
         if (waitpid(dying[i], 0, WNOHANG) != 0) dying[i--] = dying[--ndying];
 }
 
-int fetch_start(struct fetch *f, const char *url) {
+int fetch_start(struct fetch *f, const char *url, const char *post) {
     memset(f, 0, sizeof *f);
     f->fd = -1; f->clen = -1;
     int p[2];
     if (pipe(p) < 0) return -1;
-    char *argv[] = { "/bin/browser", "--fetch", (char *)url, 0 };
+    char *argv[] = { "/bin/browser", "--fetch", (char *)url, (char *)post, 0 };
     struct spawn_opts o = { { -1, p[1], -1 }, 0, 0 };
     f->pid = spawnve("/bin/browser", argv, environ, &o);
     close(p[1]);

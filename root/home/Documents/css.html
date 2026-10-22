@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html><head><title>CSS test</title>
+<style>
+/* comments are fine */
+body { background-color: #fdf6e3; color: #333; max-width: 640px; margin: 0 auto; padding: 0 12px; }
+h1 { color: #b58900; border-bottom: 2px solid #b58900; padding-bottom: 6px; text-align: center; }
+h2, h3 { color: rgb(38, 139, 210); margin-top: 24px; }
+p { margin-bottom: 4px; }
+.note { background-color: #eee8d5; padding: 8px 12px; margin: 12px 0; border-left: 4px solid #cb4b16; }
+.warn { background: #ffe0e0; color: #900; font-weight: bold; padding: 6px; }
+#hero { text-align: center; font-size: 24px; color: #6c71c4; }
+.hidden, .nope { display: none; }
+ul.nav { list-style: none; padding: 0; margin: 0 0 12px 0; }
+ul.nav li { display: inline; margin-right: 14px; }
+ul.nav li a { text-decoration: none; color: #2aa198; font-weight: bold; }
+a.plain { text-decoration: none; }
+div.box { border: 1px solid #93a1a1; padding: 6px 10px; margin: 8px 0; }
+div.box p { color: #586e75; }
+.right { text-align: right; color: #859900; }
+.narrow { width: 300px; margin: 10px auto; background-color: #002b36; color: #eee; padding: 10px; text-align: center; }
+.strike { text-decoration: line-through; }
+.under { text-decoration: underline; color: #d33682; }
+.mono { font-family: monospace; }
+.imp { color: green !important; }
+.imp { color: red; }
+</style></head>
+<body>
+<h1>CSS test page</h1>
+<p id="hero">An id selector, 24px</p>
+<ul class="nav"><li><a href="#">Home</a></li><li><a href="#">About</a></li><li><a href="#">Contact</a></li></ul>
+<h2>Boxes</h2>
+<div class="note">A note box: background, padding and a left border from a class selector.</div>
+<p class="warn">Bold red-ish warning paragraph with its own background.</p>
+<div class="box"><p>Descendant selector: this paragraph is grey-blue inside div.box.</p></div>
+<h2>Inline styles</h2>
+<p>Normal text, <span style="color: #dc322f; font-weight: bold">inline red bold</span>, <span style="color:#268bd2">blue</span>,
+<a class="plain" href="#">a link without underline</a>, <span class="strike">struck out</span>, <span class="under">underlined</span>, <span class="mono">monospace</span>.</p>
+<p class="right">Right aligned paragraph.</p>
+<div class="narrow">A 300px column centred with margin auto.</div>
+<p class="imp">!important wins: this is green.</p>
+<p style="color: #ff00ff; border-bottom: 1px solid #ff00ff; padding-bottom: 4px">Inline style with a bottom rule.</p>
+<p class="hidden">You should NOT see this (display:none).</p>
+<div class="nope"><p>Nor this, nor anything inside.</p></div>
+<p style="display:none">Nor this.</p>
+<p>After the hidden things. <span style="display:block; margin-top: 10px; color: teal">display:block on a span.</span></p>
+<p style="margin-top: 40px">This paragraph has margin-top: 40px.</p>
+<p>Colours: <span style="color: navy">navy</span> <span style="color: #f60">#f60</span> <span style="color: rgb(0,128,0)">rgb()</span> <span style="color: weird-value">unknown value</span>; unsupported things are ignored: <span style="float: right; position: absolute; transform: rotate(3deg)">float/position</span>.</p>
+</body></html>

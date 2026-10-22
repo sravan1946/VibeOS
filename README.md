@@ -58,7 +58,7 @@ emulator, and a set of desktop apps and games.
 - `/bin/tcc`: TinyCC 0.9.27 compiles C inside VibeOS against its own libc (`tcc hello.c -o hello`, `tcc -run`, `-lgui` for windows); see `~/projects/README.txt`.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc` (`nc -l` listens), and `httpd` — run it inside `make run` and open http://localhost:8080 on the host. Audio: `play` (WAV files), `tone`.
-- GUI apps: Files, Notepad, Browser (HTTP + an HTML subset), Paint (saves/opens PNG), Image
+- GUI apps: Files, Notepad, Browser (HTTP, HTML + basic CSS, images, forms, find-in-page), Paint (saves/opens PNG), Image
   viewer (PNG/BMP/PPM, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
   Monitor, Settings, About, Piano (a polyphonic synth keyboard). PrtSc saves a PNG screenshot
   to `~/Pictures`.

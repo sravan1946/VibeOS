@@ -49,13 +49,20 @@ Newest notes at the bottom of each phase.
 - [x] About VibeOS app (first ui.h app, verified open/close in QEMU)
 - [x] Games: snake, tetris (SRS, hold, ghost, DAS), minesweeper (3 levels, chording) — agent
 
+## Browser
+- [x] Images: `<img>` PNG/BMP/PPM from http and file URLs, width/height attributes, shrunk to the column, placeholders while loading, two helper-process downloads at a time, per-page cache of decoded + scaled images, direct viewing of image URLs; inflate is table-driven (`tools/imagetest` 222/222)
+- [x] CSS: `<style>` + `style=""`, selectors (type, .class, #id, descendant, `>`, comma lists), cascade with specificity/`!important`; color, background(-color), font-weight/size/family, text-align, text-decoration, margin/padding, border(-top/-bottom/-left/-right), width/max-width with `margin: auto`, display none/block/inline, list-style none; colours as names, #rgb, #rrggbb, rgb()/rgba()
+- [x] Forms: GET and POST, text/search/password/hidden/checkbox/radio/submit/button/reset inputs, textarea, select dropdown, `<button>`; fields edit inline (caret, paste), Enter submits, Tab moves
+- [x] Find in page (Ctrl+F, Enter / Shift+Enter, F3), mouse text selection with Ctrl+C to the system clipboard, Ctrl+A
+- [ ] External stylesheets (`<link>`), tables as a grid, JPEG/GIF, HTTPS
+
 ## Networking
 - [x] PCI enumeration, e1000 (82540EM) driver with RX/TX rings + IRQ, net thread (`kernel/net/`)
 - [x] Ethernet, ARP cache, IPv4, ICMP echo (answer + send), UDP, DHCP at boot, DNS resolver, TCP client (retransmit, FIN/RST)
 - [x] Sockets as fds (`socket connect bind sendto recvfrom`, `resolve`, `netinfo`; syscalls 60-66), poll() support
 - [x] `ifconfig ping nslookup wget nc` (verified in QEMU user net: ping gw, DNS, HTTP GET incl. a 16 MB download)
 - [x] TCP server side: `listen`/`accept` (syscalls 67-68, SYN_RCVD children, backlog, poll on listeners), `nc -l`, `/bin/httpd` (static files, listings, index.html), `make run` forwards host :8080 → guest :80
-- [x] Loopback: 127/8 and our own address are queued back into the net thread; `localhost` resolves; the in-OS browser loads the in-OS httpd (http://localhost:8000/). `ping`/`wget` over loopback not yet checked
+- [x] Loopback: 127/8 and our own address are queued back into the net thread; `localhost` resolves; the in-OS browser loads the in-OS httpd (http://localhost:8000/). `ping 127.0.0.1` and `wget` over loopback verified
 - [ ] **HTTPS**: TLS 1.2/1.3 client (e.g. vendored BearSSL + a CA bundle in /etc/ssl) for the browser and `wget`, so real sites load over https://
 - [ ] IP fragments, DHCP renewal
 
@@ -128,3 +135,4 @@ Newest notes at the bottom of each phase.
 - Doom (2026-10-22): doomgeneric + Freedoom run in a 640x400 desktop window with sound. `-timedemo demo1` renders 202 fps uncapped (7117 tics in 35 s, KVM), so the 35 fps cap has plenty of headroom: doom itself uses <10% CPU, but the in-kernel compositor spends ~85% of the CPU re-composing a 640x400 window 35 times a second (a pre-existing cost of full-window damage; worth optimising). Gotchas: doomkeys.h `#define`s names that `abi.h` declares as enum constants (so abi.h is force-included first and the platform layer captures our codes before including doomkeys.h), and doomgeneric's `I_Quit` returns instead of exiting (an `I_AtExit` hook does the `exit`).
 - Desktop (2026-10-22): workspaces, Alt+Tab thumbnails, notifications (`/dev/notify`, toasts, center), window menu, Super+drag and a volume/network tray, all in `wm.c` and damage-tracked (idle stays at 1% CPU: indicators only damage their own rectangle, toast expiry and tray polling run on the 250 ms tick). Held modifiers needed QMP `input-send-event`, since HMP `sendkey` always releases.
 - Merged tcc, Doom and desktop. Profiling the compositor under Doom (85% CPU) showed 97% of it in the final copy to the framebuffer: it was mapped uncached (PCD), and under KVM on AMD the guest's UC is honoured, so every pixel store cost ~260 cycles. Mapping it write-combining through PAT entry 1 took Doom's desktop load from 85% to ~8% and speeds up every screen update. Also: stage1 now rebuilds when the disk layout changes (a stale partition table after `FS_MB` 64→96 failed the root mount).
+- Browser: images, CSS, forms, find and selection (see Browser). Rendering pitfalls found on the way: first_item() assumed items are under 40 px tall, so a tall textarea/image scrolled partly off-screen vanished or couldn't be clicked (now tracks the tallest item); a positional struct initialiser silently put a colour into `link` after a field was added. inflate went from bit-at-a-time to a 9-bit table (1.7x on a synthetic 4.5 MB stream).
