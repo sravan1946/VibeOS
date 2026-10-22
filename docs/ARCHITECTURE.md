@@ -164,6 +164,13 @@ window (`kernel/gui/termwin.c`) glues a window, a TTY and the terminal emulator 
 `common/term.c` (xterm-compatible: 256 colours and truecolor, scroll regions, alternate screen,
 procedurally drawn box-drawing glyphs, scrollback). Keys become escape sequences in `tty_key`.
 
+A terminal window owns up to 8 tabs; a tab is a `struct term` plus its own TTY and shell, and
+only the current tab is rendered (the others keep parsing output). `termwin.c` also draws the tab
+bar and the find box on top of the window canvas, handles Ctrl+Shift shortcuts, zoom (each term
+carries a font pair from `common/termfonts.c`, so the cell size is per terminal) and Ctrl+click on
+URLs. The emulator exposes search (`term_search_*`, highlights drawn in `term_render`) and link
+detection (`term_link_at`) so the window code stays free of cell-level logic.
+
 ## Graphics and the desktop
 
 * `common/gfx.c` is shared by the kernel and userland: alpha blending, anti-aliased rounded

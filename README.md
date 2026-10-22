@@ -40,8 +40,10 @@ emulator, and a set of desktop apps and games.
 - 4 virtual workspaces (Super+1..4, Super+Shift+1..4 to move a window), an Alt+Tab switcher with
   live thumbnails, toast notifications and a notification center (Super+N; `notify TITLE BODY`,
   `/dev/notify`), a taskbar with launcher, workspace dots, volume and network tray, CPU meter and clock.
-- An xterm-compatible terminal emulator (256 colours and truecolor, alternate screen, scroll
-  regions, scrollback, UTF-8) with mouse selection; a system clipboard shared by every app.
+- An xterm-compatible terminal emulator (256 colours and truecolor, bold/dim/italic/underline/strike,
+  alternate screen, scroll regions, scrollback, UTF-8) with mouse selection; a system clipboard shared by
+  every app. Terminal windows have tabs (Ctrl+Shift+T/W, Ctrl+PgUp/PgDn), scrollback search (Ctrl+Shift+F),
+  zoom (Ctrl+= / Ctrl+- / Ctrl+0), Ctrl+Shift+C/V and Ctrl+click on a URL to open it in the browser.
 - Fonts (JetBrains Mono, Noto Sans) rasterised into the build with Latin-1, arrows, symbols
   and box/block glyphs.
 - Apps are ordinary processes: a window is a file descriptor whose buffer is mapped into the
@@ -55,7 +57,7 @@ emulator, and a set of desktop apps and games.
   history, Ctrl-R, `!!`, Tab completion, pipes, redirections and globbing.
 - Coreutils: `ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill
   uptime date free clear sleep env seq sort uniq tee find which stat dmesg uname cal fortune
-  vibefetch` and more.
+  vibefetch colortest` and more.
 - Text processing: `grep` (BRE/ERE/fixed, context, `-o -w -r`), `sed`, `awk`, `tr cut paste nl tac rev`, `diff` (normal and
   unified), `cmp`, `xargs`, `md5sum sha256sum`.
 - `/bin/lua`: Lua 5.4 with a REPL, plus `vibe` (system info, processes, beep) and `gui` (windows) modules.
