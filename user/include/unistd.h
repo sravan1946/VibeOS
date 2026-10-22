@@ -22,6 +22,7 @@ int dup2(int old, int new_);
 int pipe(int fds[2]);
 int isatty(int fd);
 int ftruncate(int fd, off_t len);
+int fsync(int fd);
 unsigned sleep(unsigned sec);
 int usleep(unsigned us);
 void _exit(int code) __attribute__((noreturn));

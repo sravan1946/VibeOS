@@ -43,3 +43,10 @@ for n in sin cos tan asin acos atan atan2 sqrt pow exp log log2 log10 floor ceil
 gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -Icommon $R -w -c user/lib/math.c -o $T/math64.o
 gcc -O2 -Wall tools/libctest/math_diff.c $T/math64.o -o $T/math_diff -lm
 $T/math_diff
+
+echo "== compat2 libm differential test vs glibc (64-bit build of user/lib/compat2.c)"
+R=""
+for n in copysign nearbyint expm1 log1p asinh acosh atanh erf erfc tgamma lgamma nan fsync; do R="$R -D$n=vibe_$n"; done
+gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -Icommon $R -w -c user/lib/compat2.c -o $T/compat2_64.o
+gcc -O2 -Wall tools/libctest/compat2_diff.c $T/compat2_64.o -o $T/compat2_diff -lm
+$T/compat2_diff
