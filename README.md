@@ -43,8 +43,9 @@ emulator, and a set of desktop apps and games.
 
 **Userland**
 - A libc: stdio, printf/scanf, malloc, string, math, time, termios, dirents, sockets.
-- `/bin/sh`: line editing, persistent history, Tab completion, pipes, redirections,
-  `&& || ; &`, globbing, quoting, variables and scripts.
+- `/bin/sh`: a scripting shell with if/for/while/case, functions, `$(..)`, `$((..))`,
+  here-docs, `test`/`read`/`printf` builtins and `#!` scripts, plus line editing, persistent
+  history, Ctrl-R, `!!`, Tab completion, pipes, redirections and globbing.
 - Coreutils: `ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill
   uptime date free clear sleep env seq sort uniq tee find which stat dmesg uname cal fortune
   vibefetch` and more.
