@@ -85,6 +85,18 @@ Newest notes at the bottom of each phase.
 - [x] vmtest: AC'97 + `wav` audiodev (`build/audio.wav`, configurable), `tools/wavcheck.py` to find tones/RMS in the capture
 - [ ] Sample-rate conversion in the kernel (VRA), recording, `/dev/dsp` mixing of several writers
 
+## Text tools
+- [x] POSIX regex in libc (`user/include/regex.h`, `user/lib/regex.c`): `regcomp/regexec/regerror/regfree`, BRE and ERE (+ GNU `\| \+ \? \w \s \b \< \>`), `REG_ICASE/NEWLINE/NOSUB/NOTBOL/NOTEOL/STARTEND`, groups with submatch offsets, alternation, `* + ? {m,n}`, bracket expressions with classes/ranges/negation, anchors, back-references; a Pike VM (leftmost-longest, linear time) with a step-bounded backtracker only for back-references
+- [x] `tools/libctest/regex_diff.c`: differential test against glibc (hand corpus x 4 flag sets x NOTBOL/NOTEOL + 40k random patterns, compile errors and extents compared; 270k checks, 0 failures)
+- [x] `grep` rewritten on it: `-E -F -G -i -v -n -c -l -L -r -o -w -x -q -s -H -h -e... -A -B -C -NUM`
+- [x] `sed`: `s///` (g p N I, `\U\L\u\l`), `y`, `d D p P q Q n N = a i c r h H g G x b t T : { }`, addresses `N $ /re/ first~step a,b a,+N !`, `-n -e -f -E -i[SUF]`; checked against GNU sed on 60+ scripts
+- [x] `tr` (sets, ranges, classes, `-c -d -s`), `cut` (`-b -c -f -d -s`), `xargs` (`-n -I -0 -t -r`, spawnvp), `cmp` (`-s -l`), `tac`, `rev`, `nl`, `paste` (`-s -d`)
+- [x] `diff`: Myers O(ND); normal output and `-u/-U N` byte-identical to GNU diff on unique-line inputs, `-q -i -w -b`, "\\ No newline at end of file"
+- [x] `awk`: patterns/ranges/BEGIN/END, fields and NF/NR/FNR/FS/OFS/ORS/RS (single char, paragraph, regex), printf/print with `> >> |`, user functions (arrays by reference), assoc arrays and `in`/`delete`/SUBSEP, getline (plain, var, `< file`, `cmd |`), length substr index split sub gsub match sprintf tolower toupper int sqrt sin cos atan2 exp log rand srand system close; compared with gawk on ~140 programs
+- [x] `md5sum`, `sha256sum` (`-c` to verify; `tools/hashtest.py` checks both against hashlib)
+- [x] `/home/texttest.sh`: 247 checks for all of the above (`sh /home/texttest.sh`)
+- [ ] `join`, `sort -k/-t`, `tail -n +N`, multibyte (UTF-8) awareness in regex and awk, awk `printf %c` for code points > 255
+
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
 - Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.
@@ -97,3 +109,4 @@ Newest notes at the bottom of each phase.
 - Audio (2026-10-22): AC'97 driver + `/dev/dsp`, `play`, `tone`, Piano app. Verified in QEMU against the captured WAV (440/1000 Hz tones, arpeggio notes within 1 Hz, 8-bit/8 kHz stereo resampled to 1000 Hz). Fixed: `irq_register` replaced the previous handler, so the AC'97 card on IRQ 11 silently killed the e1000.
 - Images: PNG/BMP/PPM codecs in libgui (own inflate + PNG encoder, 222 host checks vs Pillow under sanitizers), `/bin/viewer`, PrtSc screenshots via `/dev/screen` + `/bin/screenshot`, PNG in Paint and Files. Fixed along the way: a float bilinear resampler took >1 s per 800x480 frame under QEMU (frames lagged input), now packed-integer lerp + row-copy at 1:1.
 - Merged the audio, Lua and image agents. A slow PrtSc led to the disk: writes ran at ~47 KB/s under KVM because `rep outsw` exits per word; reads were fine. DMA fixed it; e2fsck clean after a write-heavy session.
+- Text tools (2026-10-22): a from-scratch POSIX regex engine in libc (Pike VM; glibc differential test with 270k checks) and a text-processing toolbox on top of it: grep, sed, tr, cut, xargs, cmp, diff, tac, rev, nl, paste, awk, md5sum, sha256sum; verified against GNU sed/diff/grep/awk on the host and by `texttest.sh` (247 checks) in QEMU. Found on the way: `tail` has no `-n +N`, and libctest no longer linked after `signal` moved into syscall.c (stubbed).

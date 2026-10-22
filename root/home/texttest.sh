@@ -262,12 +262,12 @@ t diff-u "@@ -1,8 +1,9 @@
  f
  g
  h
-+i" "$(diff -u d1 d2 | tail -n +3)"
++i" "$(diff -u d1 d2 | sed 1,2d)"
 t diff-U0 "@@ -3 +3 @@
 -c
 +X
 @@ -8,0 +9 @@
-+i" "$(diff -U0 d1 d2 | tail -n +3)"
++i" "$(diff -U0 d1 d2 | sed 1,2d)"
 t diff-u-header "--- d1
 +++ d2" "$(diff -u d1 d2 | head -2)"
 t diff-q "Files d1 and d2 differ" "$(diff -q d1 d2)"
@@ -319,6 +319,142 @@ t paste-stdin "1	a
 2	b
 3	" "$(cat p2 | paste p1 -)"
 t paste-multi-delims "1+a-1" "$(printf '1\n' > q1; printf 'a\n' > q2; paste -d'+-' q1 q2 q1)"
+
+# ---- awk
+printf 'Beth\t4.00\t0\nDan\t3.75\t0\nKathy\t4.00\t10\nMark\t5.00\t20\nMary\t5.50\t22\nSusie\t4.25\t18\n' > emp
+t awk-field "Beth
+Dan" "$(awk '{print $1}' emp | head -2)"
+t awk-fs-tab "Kathy 40
+Mark 100
+Mary 121
+Susie 76.5" "$(awk -F'\t' '$3 > 0 {print $1, $2*$3}' emp)"
+t awk-pattern "Beth	4.00	0
+Dan	3.75	0" "$(awk '$3 == 0' emp)"
+t awk-sum "6 26.5 4.41667" "$(awk '{ pay += $2 } END { print NR, pay, pay/NR }' emp)"
+t awk-nf-nr "6 18" "$(awk '{ nw += NF } END { print NR, nw }' emp)"
+t awk-begin "7 4 1.5 1 9 -3" "$(awk 'BEGIN { x = 3; print x * 2 + 1, x + 1, x / 2, x % 2, x ^ 2, -x }')"
+t awk-num-format "0.333333 10000000000 9007199254740992 0.3 1000000 1e-05 -3 3" "$(awk 'BEGIN { print 1/3, 100000 * 100000, 2^53, 0.1+0.2, 1e6, 1e-5, int(-3.7), int(3.7) }')"
+t awk-string-fns "5 ell hello lo 3 HELLO abc" "$(awk 'BEGIN { s = "hello"; print length(s), substr(s, 2, 3), substr(s, 0), substr(s, 4, 100), index(s, "ll"), toupper(s), tolower("ABC") }')"
+t awk-split "3 a c a;b;c;" "$(awk 'BEGIN { n = split("a,b,c", arr, ","); printf "%d %s %s ", n, arr[1], arr[3]; for (i = 1; i <= n; i++) printf "%s;", arr[i]; print "" }')"
+t awk-split-ws "3 c" "$(awk 'BEGIN { n = split("a b  c", b); print n, b[3] }')"
+t awk-gsub "2 X bar X" "$(awk 'BEGIN { s = "foo bar foo"; n = gsub(/foo/, "X", s); print n, s }')"
+t awk-sub-amp "foo [bar] foo" "$(awk 'BEGIN { s = "foo bar foo"; sub(/bar/, "[&]", s); print s }')"
+t awk-gsub-record "B#th" "$(awk '{ gsub(/[aeiou]/, "#"); print }' emp | head -1 | cut -f1)"
+t awk-assign-field "Beth  0" "$(echo 'Beth 4.00 0' | awk '{ $2 = ""; print }')"
+t awk-nf-grow "a b c  x 5" "$(echo 'a b c' | awk '{ $5 = "x"; print $0, NF }')"
+t awk-nf-assign "a b" "$(echo 'a b c' | awk '{ NF = 2; print }')"
+t awk-ofs "a-b-c" "$(echo 'a b c' | awk 'BEGIN { OFS = "-" } { $1 = $1; print }')"
+t awk-printf "   42|42   |00042|ff|10|A|h|str|     3.142|1.234500e+03|   ab|ab   |" "$(awk 'BEGIN { printf "%5d|%-5d|%05d|%x|%o|%c|%c|%s|%10.3f|%e|%5s|%-5s|\n", 42, 42, 42, 255, 8, 65, "hello", "str", 3.14159, 1234.5, "ab", "ab" }')"
+t awk-printf-star "   42|7   |" "$(awk 'BEGIN { printf "%*d|%-*d|\n", 5, 42, 4, 7 }')"
+t awk-printf-pct "45.68%" "$(awk 'BEGIN { printf "%5.2f%%\n", 45.678 }')"
+t awk-printf-big "8589934592" "$(awk 'BEGIN { printf "%d\n", 2147483648 * 4 }')"
+t awk-array "6 5.50 1 0
+0 5" "$(awk '{ a[$1] = $2 } END { for (k in a) n++; print n, a["Mary"], ("Dan" in a), ("Zed" in a); delete a["Dan"]; print ("Dan" in a), length(a) }' emp)"
+t awk-multidim "1 2 yes" "$(awk 'BEGIN { a[1,2] = 3; for (k in a) { split(k, p, SUBSEP); printf "%s %s ", p[1], p[2] }; if ((1,2) in a) print "yes" }')"
+t awk-function "3628800" "$(awk 'function f(n) { return n <= 1 ? 1 : n * f(n-1) } BEGIN { print f(10) }')"
+t awk-func-array "25 5" "$(awk 'function fill(arr, n,  i) { for (i = 1; i <= n; i++) arr[i] = i*i } BEGIN { fill(sq, 5); print sq[5], length(sq) }')"
+t awk-func-byval "1" "$(awk 'function g(x) { x = 5 } BEGIN { y = 1; g(y); print y }')"
+t awk-loops "1
+3" "$(awk 'BEGIN { i = 0; while (i < 5) { i++; if (i == 2) continue; if (i == 4) break; print i } }')"
+t awk-do-for "3 4" "$(awk 'BEGIN { do { n++ } while (n < 3); for (;;) { if (++k > 3) break }; print n, k }')"
+t awk-regex-pat "Dan
+Kathy
+Mark
+Mary" "$(awk '/a/ && !/s/ { print $1 }' emp)"
+t awk-range "Beth
+Dan
+Kathy" "$(awk '/Beth/,/Kathy/ { print $1 }' emp)"
+t awk-nr-range "2: Dan
+3: Kathy
+4: Mark" "$(awk 'NR==2, NR==4 { print NR": "$1 }' emp)"
+t awk-match-op "Mark
+Mary" "$(awk '$1 ~ /^M/ { print $1 }' emp)"
+t awk-nomatch-op "Beth
+Mark
+Mary" "$(awk '$1 !~ /a/ || $1 ~ /Mar/ { print $1 }' emp | head -3)"
+t awk-dyn-regex "m m2" "$(awk 'BEGIN { if ("abc" ~ "b") printf "m "; r = "^a.c$"; if ("abc" ~ r) print "m2" }')"
+t awk-match-fn "2 2 2" "$(awk 'BEGIN { print match("foobar", /o+/), RSTART, RLENGTH }')"
+t awk-compare "1 1 1 0 0" "$(awk 'BEGIN { print 1 == 1.0, "a" < "b", "10" < "9", 10 < 9, "abc" < 1 }')"
+t awk-field-compare "1 1 1" "$(echo '10 10.0 abc' | awk '{ print ($1 == $2), ($1 == "10"), ($1 < $3) }')"
+t awk-ternary "lo" "$(echo 4 | awk '{ print ($1 > 4) ? "hi" : "lo" }')"
+t awk-v "10" "$(awk -v n=5 'BEGIN { print n * 2 }')"
+t awk-v-escape "a	b" "$(awk -v 's=a\tb' 'BEGIN { print s }')"
+t awk-argv "3 foo bar" "$(awk 'BEGIN { print ARGC, ARGV[1], ARGV[2] }' foo bar)"
+t awk-filename "emp 1 1
+emp 2 2" "$(awk '{ print FILENAME, FNR, NR }' emp | head -2)"
+t awk-cmdline-assign "1 Beth" "$(awk '{ print v, $1 }' v=1 emp | head -1)"
+t awk-next-exit "Dan
+Kathy
+end 3" "$(awk 'NR==1 { next } { print $1 } NR==3 { exit } END { print "end", NR }' emp)"
+awk 'BEGIN { exit 3 }'; t awk-exit-code 3 $?
+t awk-end-record "Susie 3" "$(awk 'END { print $1, NF }' emp)"
+t awk-getline-file "6 Beth" "$(awk 'BEGIN { while ((getline line < "emp") > 0) n++; close("emp"); getline < "emp"; print n, $1 }')"
+t awk-getline-plain "after getline: Dan 2" "$(awk 'NR==1 { getline; print "after getline:", $1, NR }' emp)"
+t awk-getline-var "Beth	4.00	0" "$(awk 'BEGIN { getline x < "emp"; print x }')"
+t awk-rs "1: a
+2: b
+3: c" "$(printf 'a;b;c' | awk 'BEGIN { RS = ";" } { print NR": "$0 }')"
+t awk-paragraph "1: a|b
+3
+2: d|e
+3" "$(printf 'a b\nc\n\nd e f\n' | awk 'BEGIN { RS = "" } { print NR": "$1"|"$2; print NF }')"
+t awk-fs-single "y" "$(echo x:y:z | awk 'BEGIN { FS = ":" } { print $2 }')"
+t awk-fs-regex "yz" "$(echo 'x:y;z' | awk -F'[:;]' '{ print $2 $3 }')"
+t awk-fs-pipe "b" "$(echo 'a|b|c' | awk -F'|' '{ print $2 }')"
+t awk-nf-dollar "z y" "$(echo x:y:z | awk -F: '{ print $NF, $(NF-1) }')"
+t awk-field-assign "4 4" "$(echo '3 4' | awk '{ s = $1; $1 = s + 1; print }')"
+t awk-dollar0-assign "3 b" "$(awk 'BEGIN { $0 = "a b c"; print NF, $2 }')"
+t awk-uninit "uninit ok 0 0" "$(awk 'BEGIN { if (x == 0 && x == "") printf "uninit ok "; print length(x), x+0 }')"
+t awk-dedupe "Beth	4.00	0" "$(awk '!seen[$2]++ && $2 == "4.00"' emp)"
+t awk-reverse "Susie
+Mary" "$(awk '{ a[NR] = $1 } END { for (i = NR; i > 0; i--) print a[i] }' emp | head -2)"
+t awk-wordcount "the 3" "$(printf 'the quick the fox\nthe end\n' | awk '{ for (i = 1; i <= NF; i++) c[$i]++ } END { for (w in c) if (c[w] > 2) print w, c[w] }')"
+t awk-pipe-out "a
+b
+c" "$(printf 'b\na\nc\n' | awk '{ print $1 | "sort" } END { close("sort") }')"
+t awk-pipe-getline "hi
+there" "$(awk 'BEGIN { while (("echo hi; echo there" | getline l) > 0) print l }')"
+t awk-system "from sh" "$(awk 'BEGIN { system("echo from sh") }')"
+t awk-redirect "6" "$(awk '{ print > "awkout" } END { close("awkout"); while ((getline l < "awkout") > 0) c++; print c }' emp)"
+t awk-f-file "10" "$(printf 'BEGIN { print 5 * 2 }\n' > prog.awk; awk -f prog.awk)"
+t awk-comments "c" "$(awk '# comment
+BEGIN { print "c" } # trailing')"
+t awk-multiline-if "a
+d" "$(awk 'BEGIN {
+  if (1)
+    print "a"
+  else
+    print "b"
+  if (0) print "c"; else print "d"
+}')"
+t awk-incr "7 3 4" "$(awk 'BEGIN { x = 5; x += 2; y = 3; z = y++ + 0; print x, z, y }')"
+t awk-power "-4 512 1 0 1 0" "$(awk 'BEGIN { print -2^2, 2^3^2, !0, !1, !"", !"a" }')"
+t awk-concat-prec "A A A 1 2 22" "$(awk 'BEGIN { x = "A"; y = x " " x " " x; print y, 1 " " 2, 1+1 "" 2 }')"
+awk 'BEGIN { print 1/0 }' > /dev/null 2>&1; t awk-div-zero 2 $?
+awk 'BEGIN { print ( }' > /dev/null 2>&1; t awk-syntax-error 2 $?
+t awk-printf-no-newline "ab" "$(awk 'BEGIN { printf "a"; printf "b" }')"
+t awk-substr-edge "ello||" "$(awk 'BEGIN { print substr("hello", 2) "|" substr("x", 1, 0) "|" substr("abc", 2, -1) }')"
+t awk-length-forms "5 6 18" "$(printf 'hello\n' | awk '{ print length, length($0) + 1, length("abc") * 6 }')"
+t awk-toupper-first "Beth" "$(echo beth | awk '{ print toupper(substr($1,1,1)) substr($1,2) }')"
+t awk-srand-rand "1" "$(awk 'BEGIN { srand(1); r = rand(); print (r >= 0 && r < 1) }')"
+t awk-math "1 0 2.71828 3 3.14" "$(awk 'BEGIN { printf "%d %d %.5f %d %.2f\n", sin(1.5707963) + 0.5, cos(1.5707963) + 0.1, exp(1), sqrt(9), atan2(0, -1) }')"
+# ---- md5sum sha256sum
+printf 'abc' > h1
+t md5-abc "900150983cd24fb0d6963f7d28e17f72  h1" "$(md5sum h1)"
+t sha256-abc "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  h1" "$(sha256sum h1)"
+t md5-empty "d41d8cd98f00b204e9800998ecf8427e  -" "$(md5sum < /dev/null)"
+t sha256-empty "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -" "$(sha256sum < /dev/null)"
+t sha256-stdin "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  -" "$(printf abc | sha256sum)"
+t md5-long "7707d6ae4e027c70eea2a935c2296f21  -" "$(awk 'BEGIN { for (i = 0; i < 1000000; i++) printf "a" }' | md5sum)"
+t sha256-long "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0  -" "$(awk 'BEGIN { for (i = 0; i < 1000000; i++) printf "a" }' | sha256sum)"
+sha256sum h1 > h1.sum
+t sha256-check "h1: OK" "$(sha256sum -c h1.sum)"
+md5sum h1 > h1.md5
+t md5-check "h1: OK" "$(md5sum -c h1.md5)"
+printf 'abd' > h1
+sha256sum -c h1.sum > /dev/null 2>&1; t sha256-check-fail 1 $?
+t md5-check-fail "h1: FAILED" "$(md5sum -c h1.md5 2> /dev/null)"
+sha256sum nonexist > /dev/null 2>&1; t sha256-missing 1 $?
 
 rm -rf $TMP
 echo

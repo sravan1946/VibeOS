@@ -156,6 +156,20 @@ allocator with segregated free lists. `/bin/lua` builds the unmodified Lua 5.4 f
 `third_party/lua` plus `user/bin/lua/` (REPL line editor, the `vibe` and `gui` modules); see
 `third_party/lua/README.vibeos`.
 
+`user/lib/regex.c` is the POSIX regex engine behind `grep`, `sed` and `awk` (`regcomp`/`regexec`, BRE and ERE plus the
+GNU `\| \+ \? \w \b \< \>` extensions, `REG_STARTEND` so callers can scan a buffer for successive matches without
+copying). A pattern is parsed to an AST (counted repeats are unrolled; `x*` is compiled as `(x+)?` so an empty iteration
+still sets captures) and then to a small program. Matching without back-references is a Pike VM: all threads advance in
+lock step, so it is linear in the input, and it keeps running after the first match to get POSIX leftmost-longest extents
+(captures follow thread priority, i.e. greedy-first). Patterns with back-references run on a recursive backtracker that
+explores every path for the longest match under a 2M-step budget (exceeding it reports no match). It has its own ASCII
+ctype so `tools/libctest/regex_diff.c` can build it against glibc on the host. Bytes only: no locale or UTF-8 awareness.
+
+`awk` (`user/bin/awk.c`) is a tree-walking interpreter: lexer (regex-vs-divide decided by the previous token), recursive
+descent parser to an AST with variables resolved to slots, and an evaluator whose temporary strings live on a stack-like
+pool that is released at statement boundaries. `cmd | getline` and `print | cmd` use `pipe` + `spawnve` with the child's
+fds 0/1 taken from the pipe (no fork), reading the whole command output at once.
+
 `/bin/sh` (`user/bin/sh/`) is a POSIX-style scripting shell: `parse.c` (lexer + recursive-descent parser
 into an arena-allocated AST; "incomplete" results drive the `> ` continuation prompt), `expand.c`
 (variables, `$(..)`, `$((..))`, `${..}` forms, globbing), `exec.c` (evaluator, pipelines, functions),
@@ -172,4 +186,4 @@ The kernel runs `#!interp [arg]` scripts itself (`proc_spawn_ex`, one level, 128
 * `/etc/autostart` lists what the desktop opens at boot (`shell`, `term ARGV`, `run ARGV`).
 * Host-side unit tests: `tools/ext2test` (filesystem vs `e2fsck`), `tools/termtest`
   (terminal emulator), `tools/libctest` (libc; also differential tests of printf, strtod and libm against the host's glibc),
-  `tools/imagetest` (image codecs vs Pillow, ASan/UBSan); `make test-host` runs the host tests.
+  `tools/imagetest` (image codecs vs Pillow, ASan/UBSan); `make test-host` runs the host tests. libctest also holds `regex_diff.c` (regex vs glibc), `tools/hashtest.py` checks `md5sum`/`sha256sum` against hashlib, and `/home/texttest.sh` (run inside VibeOS) is the regression test for the text tools.

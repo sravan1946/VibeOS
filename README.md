@@ -43,13 +43,15 @@ emulator, and a set of desktop apps and games.
   widget toolkit.
 
 **Userland**
-- A libc: stdio, printf/scanf (incl. `%a`), a binned malloc, correctly-rounded strtod/libm, string, math, time, termios, dirents, sockets.
+- A libc: stdio, printf/scanf (incl. `%a`), a binned malloc, correctly-rounded strtod/libm, POSIX regex (BRE/ERE, `regcomp`/`regexec`), string, math, time, termios, dirents, sockets.
 - `/bin/sh`: a scripting shell with if/for/while/case, functions, `$(..)`, `$((..))`,
   here-docs, `test`/`read`/`printf` builtins and `#!` scripts, plus line editing, persistent
   history, Ctrl-R, `!!`, Tab completion, pipes, redirections and globbing.
 - Coreutils: `ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill
   uptime date free clear sleep env seq sort uniq tee find which stat dmesg uname cal fortune
   vibefetch` and more.
+- Text processing: `grep` (BRE/ERE/fixed, context, `-o -w -r`), `sed`, `awk`, `tr cut paste nl tac rev`, `diff` (normal and
+  unified), `cmp`, `xargs`, `md5sum sha256sum`.
 - `/bin/lua`: Lua 5.4 with a REPL, plus `vibe` (system info, processes, beep) and `gui` (windows) modules.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc`. Audio: `play` (WAV files), `tone`.
