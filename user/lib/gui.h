@@ -2,6 +2,7 @@
 #pragma once
 #include "abi.h"
 #include "gfx.h"
+#include "theme.h"
 
 struct gui_window {
     int fd;
@@ -29,3 +30,13 @@ char *gui_clip_get(int *n);                 /* malloc'd, NUL-terminated; NULL if
 /* desktop notification (/dev/notify): a toast plus an entry in the notification center.
  * kind: NULL (accent), "good", "warn" or "bad". 0 or -1. */
 int gui_notify(const char *title, const char *body, const char *kind);
+
+/* the desktop theme (/dev/theme): loaded when the first window is created and refreshed when EV_THEME arrives,
+ * so UI_* colours in ui.h are always current; draw everything again after that event */
+extern struct theme ui_th;
+int gui_theme_load(void);                       /* re-read /dev/theme into ui_th; 0 or -1 */
+int gui_theme_state(struct theme_state *st);    /* index, accent override, animations, text size; 0 or -1 */
+int gui_theme_set(const char *cmd);             /* write a /dev/theme command ("light", "accent=blue anim=0"); 0 or -1 */
+int gui_theme_save(void);                       /* write the current settings to /etc/theme so the next boot applies them */
+/* decode an image (PNG/JPEG/...), scale it to cover the screen and hand it to the desktop as the wallpaper; 0 or -1 */
+int gui_wallpaper_push(const char *path);

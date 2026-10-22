@@ -220,9 +220,9 @@ static int w_poll(lua_State *L) {
     int r = gui_next_event(w, &ev, (int)luaL_optinteger(L, 2, 0));
     if (r < 0) return luaL_fileresult(L, 0, "gui.poll");
     if (r == 0) { lua_pushnil(L); return 1; }
-    static const char *const types[] = { "?", "key", "mouse_move", "mouse_down", "mouse_up", "scroll", "resize", "close", "focus", "mouse_leave" };
+    static const char *const types[] = { "?", "key", "mouse_move", "mouse_down", "mouse_up", "scroll", "resize", "close", "focus", "mouse_leave", "theme" };
     lua_createtable(L, 0, 8);
-    lua_pushstring(L, ev.type > 0 && ev.type < 10 ? types[ev.type] : "?");
+    lua_pushstring(L, ev.type > 0 && ev.type < 11 ? types[ev.type] : "?");
     lua_setfield(L, -2, "type");
     switch (ev.type) {
     case EV_KEY:

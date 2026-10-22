@@ -117,7 +117,7 @@ bool ui_button(struct ui *ui, int x, int y, int w, int h, const char *label, int
     bool down = ui->active == id && (ui->buttons & 1) && hov;
     color_t bg;
     if (style == UI_ACCENT_BTN) {
-        bg = down ? RGB(0x95, 0x6C, 0xE0) : hov ? RGB(0xC4, 0xA0, 0xFF) : UI_ACCENT;
+        bg = down ? ui_th.accent_lo : hov ? ui_th.accent_hi : UI_ACCENT;
     } else if (style == UI_GHOST_BTN) {
         bg = down ? UI_PRESSED : hov ? UI_SURFACE : RGBA(0, 0, 0, 0);
     } else {
@@ -126,7 +126,7 @@ bool ui_button(struct ui *ui, int x, int y, int w, int h, const char *label, int
     if (ALPHA(bg)) gfx_round_fill(ui->c, x, y, w, h, UI_RADIUS, bg);
     if (style == UI_NORMAL_BTN) gfx_round_rect(ui->c, x, y, w, h, UI_RADIUS, UI_BORDER);
     const struct font *f = style == UI_ACCENT_BTN ? &font_ui_bold : &font_ui;
-    color_t tc = style == UI_ACCENT_BTN ? RGB(0x1A, 0x10, 0x2E) : UI_TEXT;
+    color_t tc = style == UI_ACCENT_BTN ? UI_ON_ACCENT : UI_TEXT;
     int tw = gfx_text_width(f, label);
     gfx_text(ui->c, f, x + (w - tw) / 2, y + (h - f->height) / 2 + (down ? 1 : 0), label, tc);
     return clicked;
@@ -139,11 +139,11 @@ bool ui_checkbox(struct ui *ui, int x, int y, const char *label, bool *v) {
     if (hov && ui->pressed) { *v = !*v; changed = true; }
     if (*v) {
         gfx_round_fill(ui->c, x, y, s, s, 5, UI_ACCENT);
-        gfx_line_aa(ui->c, x + 4, y + 9, x + 8, y + 13, 2.2f, RGB(0x1A, 0x10, 0x2E));
-        gfx_line_aa(ui->c, x + 8, y + 13, x + 14, y + 5, 2.2f, RGB(0x1A, 0x10, 0x2E));
+        gfx_line_aa(ui->c, x + 4, y + 9, x + 8, y + 13, 2.2f, UI_ON_ACCENT);
+        gfx_line_aa(ui->c, x + 8, y + 13, x + 14, y + 5, 2.2f, UI_ON_ACCENT);
     } else {
         gfx_round_fill(ui->c, x, y, s, s, 5, hov ? UI_HOVER : UI_SURFACE);
-        gfx_round_rect(ui->c, x, y, s, s, 5, RGBA(255, 255, 255, 50));
+        gfx_round_rect(ui->c, x, y, s, s, 5, UI_OV(50));
     }
     gfx_text(ui->c, &font_ui, x + s + 8, y + (s - font_ui.height) / 2, label, UI_TEXT);
     return changed;
@@ -162,7 +162,7 @@ bool ui_slider(struct ui *ui, int x, int y, int w, int *v, int min, int max) {
     int px = x + (max > min ? (*v - min) * w / (max - min) : 0);
     gfx_round_fill(ui->c, x, y + h / 2 - 3, w, 6, 3, UI_SURFACE);
     gfx_round_fill(ui->c, x, y + h / 2 - 3, px - x + 3, 6, 3, UI_ACCENT);
-    gfx_circle_fill(ui->c, px, y + h / 2, 8, ui->active == id ? RGB(255, 255, 255) : RGB(0xE8, 0xDF, 0xFF));
+    gfx_circle_fill(ui->c, px, y + h / 2, 8, ui->active == id ? ui_th.knob_on : ui_th.knob);
     return *v != old;
 }
 
@@ -186,7 +186,7 @@ bool ui_textbox(struct ui *ui, int x, int y, int w, int h, char *buf, int cap, c
             else if (k.ch >= 32 && k.ch < 127 && n < cap - 1) { buf[n++] = k.ch; buf[n] = 0; }
         }
     }
-    gfx_round_fill(ui->c, x, y, w, h, UI_RADIUS, RGB(0x12, 0x11, 0x1C));
+    gfx_round_fill(ui->c, x, y, w, h, UI_RADIUS, UI_INPUT);
     gfx_round_rect(ui->c, x, y, w, h, UI_RADIUS, foc ? UI_ACCENT : UI_BORDER);
     struct canvas cc = *ui->c;
     canvas_clip(&cc, x + 8, y, w - 16, h);
@@ -226,13 +226,13 @@ int ui_list(struct ui *ui, int x, int y, int w, int h, const char *const *items,
         int ry = y + (i - *scroll) * rh;
         bool hov = inside(ui, x, ry, w, rh) && ry + rh <= y + h;
         if (hov && ui->pressed) { *sel = i; if (ui->dbl) act = i; }
-        if (i == *sel) gfx_round_fill(&cc, x + 2, ry + 1, w - 4, rh - 2, 6, RGBA(0xB3, 0x88, 0xFF, ui->focus == id ? 90 : 50));
-        else if (hov) gfx_round_fill(&cc, x + 2, ry + 1, w - 4, rh - 2, 6, RGBA(255, 255, 255, 14));
+        if (i == *sel) gfx_round_fill(&cc, x + 2, ry + 1, w - 4, rh - 2, 6, UI_ACC(ui->focus == id ? 90 : 50));
+        else if (hov) gfx_round_fill(&cc, x + 2, ry + 1, w - 4, rh - 2, 6, UI_OV(14));
         gfx_text(&cc, &font_ui, x + 12, ry + (rh - font_ui.height) / 2, items[i], UI_TEXT);
     }
     if (n > visible) {                                             /* scrollbar */
         int th = h * visible / n, ty = y + (h - th) * *scroll / (n - visible);
-        gfx_round_fill(ui->c, x + w - 5, ty, 4, th, 2, RGBA(255, 255, 255, 60));
+        gfx_round_fill(ui->c, x + w - 5, ty, 4, th, 2, UI_OV(60));
     }
     return act;
 }
@@ -258,7 +258,7 @@ bool ui_tabs(struct ui *ui, int x, int y, int w, int h, const char *const *names
         if (i == *sel) gfx_round_fill(ui->c, tx, y + 3, tw, h - 6, (h - 6) / 2, UI_ACCENT);
         else if (hov) gfx_round_fill(ui->c, tx, y + 3, tw, h - 6, (h - 6) / 2, UI_HOVER);
         const struct font *f = i == *sel ? &font_ui_bold : &font_ui;
-        gfx_text_center(ui->c, f, tx, y + (h - f->height) / 2, tw, names[i], i == *sel ? RGB(0x1A, 0x10, 0x2E) : UI_TEXT);
+        gfx_text_center(ui->c, f, tx, y + (h - f->height) / 2, tw, names[i], i == *sel ? UI_ON_ACCENT : UI_TEXT);
     }
     return *sel != old;
 }
@@ -269,7 +269,7 @@ bool ui_tool(struct ui *ui, int x, int y, int w, int h, const char *label, bool 
     if (hov && ui->pressed) ui->active = id;
     if (ui->released && ui->active == id && hov) clicked = true;
     bool down = ui->active == id && (ui->buttons & 1) && hov;
-    color_t bg = on ? RGBA(0xB3, 0x88, 0xFF, 90) : down ? UI_PRESSED : hov ? UI_HOVER : RGBA(0, 0, 0, 0);
+    color_t bg = on ? UI_ACC(90) : down ? UI_PRESSED : hov ? UI_HOVER : RGBA(0, 0, 0, 0);
     if (ALPHA(bg)) gfx_round_fill(ui->c, x, y, w, h, 6, bg);
     gfx_text_center(ui->c, &font_ui, x, y + (h - font_ui.height) / 2, w, label, UI_TEXT);
     return clicked;
@@ -289,7 +289,7 @@ void ui_vscroll(struct ui *ui, int x, int y, int h, int total, int visible, int 
     if (*first < 0) *first = 0;
     if (*first > range) *first = range;
     int ty = y + span * *first / range;
-    gfx_round_fill(ui->c, x + 2, ty, 6, th, 3, ui->active == id ? RGBA(255, 255, 255, 110) : RGBA(255, 255, 255, 60));
+    gfx_round_fill(ui->c, x + 2, ty, 6, th, 3, ui->active == id ? UI_OV(110) : UI_OV(60));
 }
 
 static void dialog_box(struct ui *ui, int pw, int ph, int *ox, int *oy) {
@@ -299,7 +299,7 @@ static void dialog_box(struct ui *ui, int pw, int ph, int *ox, int *oy) {
     int px = (W - pw) / 2, py = (H - ph) / 2;
     gfx_shadow(c, px, py, pw, ph, 12, 14, 120);
     gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
-    gfx_round_rect(c, px, py, pw, ph, 12, RGBA(255, 255, 255, 40));
+    gfx_round_rect(c, px, py, pw, ph, 12, UI_OV(40));
     *ox = px; *oy = py;
 }
 

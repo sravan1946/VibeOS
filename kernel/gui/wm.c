@@ -65,6 +65,24 @@ static int napps;
 static inline int imin(int a, int b) { return a < b ? a : b; }
 static inline int imax(int a, int b) { return a > b ? a : b; }
 
+/* colours come from the active theme (gui/theme.c). OV/ACC tint the theme's overlay/accent colour with an alpha;
+ * OVE/ACE are for outlines, which a theme can make stronger (high contrast) */
+#define TH cur_theme
+#define C_FRAME TH.frame
+#define C_FRAME_OFF TH.frame_off
+#define C_TEXT TH.text
+#define C_TEXT_DIM TH.cdim
+#define C_ACCENT TH.accent
+#define C_PINK TH.accent2
+#define C_BODY TH.body
+#define OV(a) TH_A(TH.ov, a)
+#define ACC(a) TH_A(TH.accent, a)
+#define OVE(a) OV(imin(255, (a) * TH.edge / 100))
+#define ACE(a) ACC(imin(255, (a) * TH.edge / 100))
+#define ACCH(a) TH_A(mix(TH.accent, RGB(255, 255, 255), 128), a)   /* a lighter accent, for rings */
+#define C_BORDER OVE(34)
+static const color_t btn_col[3] = { RGB(0xFF, 0x5F, 0x7A), RGB(0xFF, 0xC2, 0x4B), RGB(0x4B, 0xE0, 0x8A) };   /* window buttons: vivid in every theme */
+
 /* screen-sized buffers (back buffer, wallpaper, window buffers, snapshots) come straight from the
  * frame allocator: at 1920x1080 four of them would fill the kernel heap */
 #define SCREEN_FRAMES(w, h) ((uint32_t)(w) * (h) * 4 / PAGE_SIZE + 1)
@@ -123,6 +141,7 @@ static uint32_t isqrt(uint32_t v) {
 }
 
 static void draw_shadow(struct canvas *c, struct rect r, int strength) {
+    strength = strength * TH.shadow / 100;
     int x0 = imax(c->cx0, r.x - SHADOW), x1 = imin(c->cx1, r.x + r.w + SHADOW);
     int y0 = imax(c->cy0, r.y - SHADOW + 6), y1 = imin(c->cy1, r.y + r.h + SHADOW + 6);
     for (int y = y0; y < y1; y++) {
@@ -142,11 +161,6 @@ static void draw_shadow(struct canvas *c, struct rect r, int strength) {
     }
 }
 
-static const color_t C_FRAME = RGB(0x24, 0x22, 0x36), C_FRAME_OFF = RGB(0x1B, 0x1A, 0x26);
-static const color_t C_TEXT = RGB(0xED, 0xEB, 0xFF), C_TEXT_DIM = RGB(0x8C, 0x89, 0xA6);
-static const color_t C_ACCENT = RGB(0xB3, 0x88, 0xFF), C_PINK = RGB(0xFF, 0x7A, 0xC6);
-static const color_t C_BORDER = RGBA(255, 255, 255, 34);
-static const color_t btn_col[3] = { RGB(0xFF, 0x5F, 0x7A), RGB(0xFF, 0xC2, 0x4B), RGB(0x4B, 0xE0, 0x8A) };
 
 static void btn_center(struct window *w, int i, int *cx, int *cy) {
     *cx = w->x + 14 + i * 22;
@@ -179,13 +193,13 @@ static void draw_window(struct canvas *c, struct window *w) {
     draw_shadow(c, r, foc ? 200 : 120);
     gfx_round_fill(c, r.x, r.y, r.w, r.h, WM_RADIUS, foc ? C_FRAME : C_FRAME_OFF);
     if (foc)   /* faint accent glow along the top of the focused window */
-        gfx_fill(c, r.x + WM_RADIUS, r.y, r.w - 2 * WM_RADIUS, 1, RGBA(0xB3, 0x88, 0xFF, 110));
+        gfx_fill(c, r.x + WM_RADIUS, r.y, r.w - 2 * WM_RADIUS, 1, ACE(110));
     blit_client(c, w);
-    gfx_round_rect(c, r.x, r.y, r.w, r.h, WM_RADIUS, foc ? RGBA(0xB3, 0x88, 0xFF, 70) : C_BORDER);
+    gfx_round_rect(c, r.x, r.y, r.w, r.h, WM_RADIUS, foc ? ACE(70) : C_BORDER);
     for (int i = 0; i < 3; i++) {
         int cx, cy;
         btn_center(w, i, &cx, &cy);
-        if (!foc && hover_win != w) { gfx_circle_fill(c, cx, cy, 6, RGB(0x45, 0x43, 0x58)); continue; }
+        if (!foc && hover_win != w) { gfx_circle_fill(c, cx, cy, 6, TH.btn_off); continue; }
         gfx_circle_fill(c, cx, cy, 6, btn_col[i]);
         if (hover_win == w && hover_btn >= 0) {          /* glyphs on hover, like macOS */
             color_t g = RGBA(0, 0, 0, 150);
@@ -204,7 +218,7 @@ static void draw_window(struct canvas *c, struct window *w) {
     }
     if (w->topmost) gfx_circle_fill(c, w->x + w->w - 18, w->y - WM_TITLE_H / 2, 3, C_ACCENT);
     if (!(w->flags & WIN_FLAG_NORESIZE)) {             /* resize grip */
-        color_t g = RGBA(255, 255, 255, 40);
+        color_t g = OVE(40);
         for (int i = 0; i < 3; i++) gfx_line(c, w->x + w->w - 3 - i * 4, w->y + w->h - 2, w->x + w->w - 2, w->y + w->h - 3 - i * 4, g);
     }
 }
@@ -256,14 +270,14 @@ static void draw_speaker(struct canvas *c, int x, int cy, int vol, color_t col) 
 
 /* three rising bars, lit when there's a lease */
 static void draw_net(struct canvas *c, int x, int cy, bool up) {
-    for (int i = 0; i < 3; i++) gfx_fill(c, x + i * 5, cy + 6 - 4 * (i + 1), 3, 4 * (i + 1), up ? C_TEXT : RGBA(255, 255, 255, 60));
+    for (int i = 0; i < 3; i++) gfx_fill(c, x + i * 5, cy + 6 - 4 * (i + 1), 3, 4 * (i + 1), up ? C_TEXT : OV(60));
     if (!up) gfx_line(c, x - 1, cy + 7, x + 14, cy - 7, btn_col[0]);
 }
 
 static void draw_taskbar(struct canvas *c) {
     if (TB_Y >= c->cy1) {} else {}
-    gfx_fill(c, 0, TB_Y, SW, WM_TASKBAR_H, RGBA(13, 12, 22, 222));
-    gfx_fill(c, 0, TB_Y, SW, 1, RGBA(255, 255, 255, 22));
+    gfx_fill(c, 0, TB_Y, SW, WM_TASKBAR_H, TH.bar);
+    gfx_fill(c, 0, TB_Y, SW, 1, OVE(22));
     /* launcher pill: gradient columns clipped to a stadium shape */
     int lx = 8, ly = TB_Y + 7, lh = WM_TASKBAR_H - 14, rr = lh / 2;
     bool lit = menu_open || hover_task == -2;
@@ -277,16 +291,16 @@ static void draw_taskbar(struct canvas *c) {
     int dcx = lx + 20, dcy = ly + lh / 2;                       /* diamond logo */
     for (int dy = -6; dy <= 6; dy++) {
         int half = 6 - (dy < 0 ? -dy : dy);
-        gfx_fill(c, dcx - half, dcy + dy, 2 * half + 1, 1, RGB(255, 255, 255));
+        gfx_fill(c, dcx - half, dcy + dy, 2 * half + 1, 1, TH.on_pill);
     }
-    gfx_text(c, &font_ui_bold, lx + 33, ly + (lh - font_ui_bold.height) / 2, "VibeOS", RGB(255, 255, 255));
+    gfx_text(c, &font_ui_bold, lx + 33, ly + (lh - font_ui_bold.height) / 2, "VibeOS", TH.on_pill);
     /* workspace indicator: numbers in a row, the current one lit, a dot under the others that hold windows */
     for (int k = 0; k < WM_WS; k++) {
         int wx = WS_X + k * WS_CELL;
         bool cur = k == cur_ws, has = false;
         for (struct window *w = wins; w; w = w->next) if (w->visible && w->ws == k) has = true;
-        if (cur) gfx_round_fill(c, wx, ly, WS_CELL - 2, lh, 8, RGBA(0xB3, 0x88, 0xFF, 96));
-        else if (hover_task == T_WS0 - k) gfx_round_fill(c, wx, ly, WS_CELL - 2, lh, 8, RGBA(255, 255, 255, 22));
+        if (cur) gfx_round_fill(c, wx, ly, WS_CELL - 2, lh, 8, ACC(96));
+        else if (hover_task == T_WS0 - k) gfx_round_fill(c, wx, ly, WS_CELL - 2, lh, 8, OV(22));
         char d[2] = { '1' + k, 0 };
         gfx_text_center(c, &font_ui_bold, wx, ly + (lh - font_ui_bold.height) / 2 - (has && !cur ? 2 : 0), WS_CELL - 2, d, cur ? C_TEXT : C_TEXT_DIM);
         if (has && !cur) gfx_circle_fill(c, wx + WS_CELL / 2 - 1, ly + lh - 5, 2, C_ACCENT);
@@ -297,7 +311,7 @@ static void draw_taskbar(struct canvas *c) {
         struct window *w = task_at(i);
         if (x + TASK_W > TRAY_X) break;
         bool act = w == focused && !w->minimized;
-        color_t bg = act ? RGBA(0xB3, 0x88, 0xFF, 60) : hover_task == i ? RGBA(255, 255, 255, 26) : RGBA(255, 255, 255, 12);
+        color_t bg = act ? ACC(60) : hover_task == i ? OV(26) : OV(12);
         gfx_round_fill(c, x, ly, TASK_W, lh, 8, bg);
         if (act) gfx_round_fill(c, x + TASK_W / 2 - 12, TB_Y + WM_TASKBAR_H - 5, 24, 3, 1, C_ACCENT);
         struct canvas tc = *c;
@@ -309,7 +323,7 @@ static void draw_taskbar(struct canvas *c) {
     char clk[16];
     snprintf(clk, sizeof clk, "%02u:%02u", (t / 3600) % 24, (t / 60) % 60);
     int cw = gfx_text_width(&font_ui_bold, clk);
-    if (hover_task == T_CLOCK || cn_open_p()) gfx_round_fill(c, SW - cw - 26, ly, cw + 22, lh, 8, RGBA(255, 255, 255, 20));
+    if (hover_task == T_CLOCK || cn_open_p()) gfx_round_fill(c, SW - cw - 26, ly, cw + 22, lh, 8, OV(20));
     gfx_text(c, &font_ui_bold, SW - cw - 16, TB_Y + (WM_TASKBAR_H - font_ui_bold.height) / 2, clk, C_TEXT);
     if (unseen) gfx_circle_fill(c, SW - cw - 21, TB_Y + 10, 3, C_PINK);
     char cpu[24];
@@ -317,18 +331,18 @@ static void draw_taskbar(struct canvas *c) {
     int px = SW - cw - 40 - 110;
     gfx_text(c, &font_ui, px, TB_Y + (WM_TASKBAR_H - font_ui.height) / 2, cpu, C_TEXT_DIM);
     int bx = px + 62, by = TB_Y + WM_TASKBAR_H / 2 - 3;
-    gfx_round_fill(c, bx, by, 44, 6, 3, RGBA(255, 255, 255, 30));
+    gfx_round_fill(c, bx, by, 44, 6, 3, OV(30));
     gfx_round_fill(c, bx, by, imax(6, 44 * (int)cpu_pct / 100), 6, 3, cpu_pct > 80 ? btn_col[0] : C_ACCENT);
     /* tray: volume (if there's a mixer) and network */
     int cy = TB_Y + WM_TASKBAR_H / 2;
     if (vol_cache >= 0) {
         int vx = TRAY_VOL_X;
-        if (hover_task == T_VOL || qs_open_p()) gfx_round_fill(c, vx, ly, TRAY_W, lh, 8, RGBA(255, 255, 255, 20));
+        if (hover_task == T_VOL || qs_open_p()) gfx_round_fill(c, vx, ly, TRAY_W, lh, 8, OV(20));
         draw_speaker(c, vx + 6, cy, vol_cache, C_TEXT);
     }
     if (net_present) {
         int nx = TRAY_NET_X;
-        if (hover_task == T_NET || qs_open_p()) gfx_round_fill(c, nx, ly, TRAY_W, lh, 8, RGBA(255, 255, 255, 20));
+        if (hover_task == T_NET || qs_open_p()) gfx_round_fill(c, nx, ly, TRAY_W, lh, 8, OV(20));
         draw_net(c, nx + 8, cy, net_up);
     }
 }
@@ -351,14 +365,14 @@ static int menu_item_y(int i) {
 static void draw_menu(struct canvas *c) {
     struct rect m = menu_rect();
     draw_shadow(c, m, 220);
-    gfx_round_fill(c, m.x, m.y, m.w, m.h, 14, RGBA(22, 20, 34, 246));
-    gfx_round_rect(c, m.x, m.y, m.w, m.h, 14, RGBA(0xB3, 0x88, 0xFF, 70));
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 14, TH.launcher);
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 14, ACE(70));
     gfx_text(c, &font_title, m.x + 18, m.y + 12, "VibeOS", C_TEXT);
     gfx_text(c, &font_ui, m.x + 18 + gfx_text_width(&font_title, "VibeOS") + 10, m.y + 18, "apps", C_TEXT_DIM);
     for (int i = 0; i < menu_items(); i++) {
         int y = menu_item_y(i);
-        if (i == napps) gfx_fill(c, m.x + 14, y - 6, m.w - 28, 1, RGBA(255, 255, 255, 24));
-        if (i == menu_hover) gfx_round_fill(c, m.x + 8, y, m.w - 16, ITEM_H - 4, 9, RGBA(255, 255, 255, 22));
+        if (i == napps) gfx_fill(c, m.x + 14, y - 6, m.w - 28, 1, OVE(24));
+        if (i == menu_hover) gfx_round_fill(c, m.x + 8, y, m.w - 16, ITEM_H - 4, 9, OV(22));
         const char *name; color_t col; char g;
         if (i < napps) { name = apps[i].name; col = apps[i].color; g = apps[i].glyph; }
         else if (i == napps) { name = "Restart"; col = RGB(0x5A, 0x64, 0x8C); g = 'R'; }
@@ -389,11 +403,11 @@ static int ctx_at(int x, int y) {
 static void draw_ctx(struct canvas *c) {
     struct rect m = ctx_rect();
     draw_shadow(c, m, 200);
-    gfx_round_fill(c, m.x, m.y, m.w, m.h, 12, RGBA(22, 20, 34, 246));
-    gfx_round_rect(c, m.x, m.y, m.w, m.h, 12, RGBA(0xB3, 0x88, 0xFF, 60));
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 12, TH.launcher);
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 12, ACE(60));
     for (int i = 0; i < (int)ARRAY_LEN(ctx_items); i++) {
         int y = m.y + 6 + i * CTX_ITEM;
-        if (i == ctx_hover) gfx_round_fill(c, m.x + 6, y, m.w - 12, CTX_ITEM, 8, RGBA(0xB3, 0x88, 0xFF, 60));
+        if (i == ctx_hover) gfx_round_fill(c, m.x + 6, y, m.w - 12, CTX_ITEM, 8, ACC(60));
         gfx_text(c, &font_ui, m.x + 18, y + (CTX_ITEM - font_ui.height) / 2, ctx_items[i].label, C_TEXT);
         if (ctx_items[i].path && !ctx_items[i].path[0]) {
             const char *n = wallpaper_name(wall_theme);
@@ -402,16 +416,57 @@ static void draw_ctx(struct canvas *c) {
     }
 }
 
-static void set_wallpaper(int theme) {
-    wall_theme = theme % wallpaper_count();
+/* /etc/wallpaper is a procedural theme's name or the path of an image. The kernel never decodes images: /bin/theme
+ * does and pushes the pixels to /dev/wallpaper (wm_wallpaper_write), at the current screen size; so after a mode
+ * change or at boot the procedural wallpaper stands in until it has done so again. */
+static char wp_cfg[128];                                 /* /etc/wallpaper as last loaded: only a change there touches the wallpaper */
+static bool wall_img, wp_redo;                           /* wall holds a pushed image; ask for a push on the next tick */
+static uint32_t *wp_stage;                               /* an image arriving */
+static int wp_pid;
+
+static void render_wallpaper(void) {
     wallpaper_render(&wall, wall_theme);
     wallpaper_watermark(&wall);
+    wall_img = false;
+}
+
+static void set_wallpaper(int theme) {
+    wall_theme = theme % wallpaper_count();
+    render_wallpaper();
+    strlcpy(wp_cfg, wallpaper_name(wall_theme), sizeof wp_cfg);
     struct file *f;
     if (vfs_open("/", "/etc/wallpaper", O_WRONLY | O_CREAT | O_TRUNC, &f) == 0) {
         vfs_write(f, wallpaper_name(wall_theme), strlen(wallpaper_name(wall_theme)));
         vfs_close(f);
     }
     wm_damage(0, 0, SW, SH);
+}
+
+/* text: a procedural wallpaper's name; binary: "WPIM", w, h (the screen size), then w*h XRGB pixels, written in order */
+#define WPIM 0x4D495057u
+int wm_wallpaper_write(uint32_t off, const void *buf, uint32_t n) {
+    if (!running) return -ENODEV;
+    const uint8_t *b = buf;
+    if (off == 0 && n >= 4 && *(const uint32_t *)b != WPIM) {          /* a name */
+        for (int i = 0; i < wallpaper_count(); i++)
+            if (!strncmp(buf, wallpaper_name(i), strlen(wallpaper_name(i)))) { wall_theme = i; render_wallpaper(); wm_damage(0, 0, SW, SH); return n; }
+        return -EINVAL;
+    }
+    uint32_t total = 12 + (uint32_t)SW * SH * 4;
+    if (off == 0) {
+        if (n < 12 || ((const uint32_t *)b)[1] != (uint32_t)SW || ((const uint32_t *)b)[2] != (uint32_t)SH) return -EINVAL;
+        if (!wp_stage && !(wp_stage = big_alloc(SW, SH))) return -ENOMEM;
+    }
+    if (!wp_stage || off + n > total) return -EINVAL;
+    uint32_t skip = off < 12 ? 12 - off : 0;
+    if (n > skip) memcpy((uint8_t *)wp_stage + (off + skip - 12), b + skip, n - skip);
+    if (off + n == total) {
+        memcpy(wall.px, wp_stage, (size_t)SW * SH * 4);
+        big_free(wp_stage, SW, SH); wp_stage = 0;
+        wall_img = true;
+        wm_damage(0, 0, SW, SH);
+    }
+    return n;
 }
 
 static void ctx_activate(int i) {
@@ -458,15 +513,14 @@ static int wrap(const struct font *f, const char *s, int maxw, int *off, int *le
     return n;
 }
 
-static const color_t C_BODY = RGB(0xC4, 0xC1, 0xDC);
-
 /* ---- notifications: the history (newest first) feeds both the toasts and the center ---- */
 #define NQ 24
 #define NTOAST 4
 #define TOAST_W 340
 #define TOAST_MS 4000
 #define TOAST_IN 200
-struct notif { char title[48], body[160]; color_t col; uint32_t born, wall; bool toast; };
+struct notif { char title[48], body[160]; uint8_t kind; uint32_t born, wall; bool toast; };   /* kind: 0 accent, 1 good, 2 warn, 3 bad */
+static color_t ncol(const struct notif *n) { return n->kind == 1 ? TH.good : n->kind == 2 ? TH.warn : n->kind == 3 ? TH.bad : TH.accent; }
 static struct notif hist[NQ];
 static int nhist;
 
@@ -490,7 +544,7 @@ static void toast_damage(void) {
 }
 
 static bool toasts_animating(void) {
-    for (int i = 0; i < nhist; i++) if (hist[i].toast && ticks_ms - hist[i].born < TOAST_IN + 24) return true;
+    if (theme_anim) for (int i = 0; i < nhist; i++) if (hist[i].toast && ticks_ms - hist[i].born < TOAST_IN + 24) return true;
     return false;
 }
 
@@ -500,12 +554,12 @@ static void draw_toasts(struct canvas *c) {
     for (int i = 0; i < k; i++) {
         uint32_t age = ticks_ms - n[i]->born;
         int off = 0;
-        if (age < TOAST_IN) { int t = age * 256 / TOAST_IN, e = 256 - (256 - t) * (256 - t) / 256; off = (TOAST_W + 24) * (256 - e) / 256; }
+        if (age < TOAST_IN && theme_anim) { int t = age * 256 / TOAST_IN, e = 256 - (256 - t) * (256 - t) / 256; off = (TOAST_W + 24) * (256 - e) / 256; }
         struct rect q = { r[i].x + off, r[i].y, r[i].w, r[i].h };
         draw_shadow(c, q, 200);
-        gfx_round_fill(c, q.x, q.y, q.w, q.h, 12, RGBA(24, 22, 38, 248));
-        gfx_round_rect(c, q.x, q.y, q.w, q.h, 12, RGBA(255, 255, 255, 40));
-        gfx_round_fill(c, q.x + 10, q.y + 12, 4, q.h - 24, 2, n[i]->col);
+        gfx_round_fill(c, q.x, q.y, q.w, q.h, 12, TH.toast);
+        gfx_round_rect(c, q.x, q.y, q.w, q.h, 12, OVE(40));
+        gfx_round_fill(c, q.x + 10, q.y + 12, 4, q.h - 24, 2, ncol(n[i]));
         struct canvas tc = *c;
         canvas_clip(&tc, q.x + 22, q.y, q.w - 34, q.h);
         gfx_text(&tc, &font_ui_bold, q.x + 22, q.y + 12, n[i]->title, C_TEXT);
@@ -529,17 +583,17 @@ static void cn_close(void) { if (!cn_open) return; cn_damage(); cn_open = false;
 static void draw_center(struct canvas *c) {
     struct rect m = cn_rect();
     draw_shadow(c, m, 220);
-    gfx_round_fill(c, m.x, m.y, m.w, m.h, 14, RGBA(22, 20, 34, 248));
-    gfx_round_rect(c, m.x, m.y, m.w, m.h, 14, RGBA(0xB3, 0x88, 0xFF, 70));
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 14, TH.popup);
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 14, ACE(70));
     gfx_text(c, &font_title, m.x + 18, m.y + 14, "Notifications", C_TEXT);
     if (nhist) gfx_text(c, &font_ui, m.x + m.w - 18 - gfx_text_width(&font_ui, "Clear all"), m.y + 20, "Clear all", C_ACCENT);
-    gfx_fill(c, m.x + 14, m.y + 52, m.w - 28, 1, RGBA(255, 255, 255, 24));
+    gfx_fill(c, m.x + 14, m.y + 52, m.w - 28, 1, OVE(24));
     if (!nhist) { gfx_text_center(c, &font_ui, m.x, m.y + 52 + CN_ROW / 2 - 4, m.w, "You're all caught up", C_TEXT_DIM); return; }
     for (int i = 0; i < cn_vis() && cn_off + i < nhist; i++) {
         struct notif *n = &hist[cn_off + i];
         int y = m.y + 58 + i * CN_ROW;
-        gfx_round_fill(c, m.x + 10, y, m.w - 20, CN_ROW - 6, 10, RGBA(255, 255, 255, 12));
-        gfx_round_fill(c, m.x + 20, y + 12, 4, CN_ROW - 30, 2, n->col);
+        gfx_round_fill(c, m.x + 10, y, m.w - 20, CN_ROW - 6, 10, OV(12));
+        gfx_round_fill(c, m.x + 20, y + 12, 4, CN_ROW - 30, 2, ncol(n));
         uint32_t t = n->wall + tz_minutes * 60;
         char tm[8];
         snprintf(tm, sizeof tm, "%02u:%02u", (t / 3600) % 24, (t / 60) % 60);
@@ -556,7 +610,7 @@ static void draw_center(struct canvas *c) {
     int vis = cn_vis();
     if (nhist > vis) {                                         /* scroll thumb */
         int th = imax(16, vis * CN_ROW * vis / nhist), ty = m.y + 58 + (vis * CN_ROW - th) * cn_off / (nhist - vis);
-        gfx_round_fill(c, m.x + m.w - 7, ty, 3, th, 1, RGBA(255, 255, 255, 60));
+        gfx_round_fill(c, m.x + m.w - 7, ty, 3, th, 1, OV(60));
     }
 }
 
@@ -574,22 +628,22 @@ static void qs_close(void) { if (!qs_open) return; qs_damage(); qs_open = false;
 static void draw_qs(struct canvas *c) {
     struct rect m = qs_rect();
     draw_shadow(c, m, 220);
-    gfx_round_fill(c, m.x, m.y, m.w, m.h, 14, RGBA(22, 20, 34, 248));
-    gfx_round_rect(c, m.x, m.y, m.w, m.h, 14, RGBA(0xB3, 0x88, 0xFF, 70));
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 14, TH.popup);
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 14, ACE(70));
     gfx_text(c, &font_ui_bold, m.x + 18, m.y + 14, "Quick settings", C_TEXT);
     int y = m.y + 46;
     if (vol_cache >= 0) {
         draw_speaker(c, m.x + 20, y + 20, vol_cache, C_TEXT);
         int x0 = m.x + 64, x1 = m.x + m.w - 58, cy = y + 20, kx = x0 + (x1 - x0) * vol_cache / 100;
-        gfx_round_fill(c, x0, cy - 3, x1 - x0, 6, 3, RGBA(255, 255, 255, 34));
+        gfx_round_fill(c, x0, cy - 3, x1 - x0, 6, 3, OV(34));
         gfx_round_fill(c, x0, cy - 3, imax(6, kx - x0), 6, 3, C_ACCENT);
-        gfx_circle_fill(c, kx, cy, 8, RGB(255, 255, 255));
+        gfx_circle_fill(c, kx, cy, 8, TH.knob_on);
         char pct[8];
         snprintf(pct, sizeof pct, "%d%%", vol_cache);
         gfx_text(c, &font_ui, m.x + m.w - 18 - gfx_text_width(&font_ui, pct), cy - font_ui.height / 2, pct, C_TEXT_DIM);
         y += 50;
     }
-    gfx_fill(c, m.x + 14, y - 6, m.w - 28, 1, RGBA(255, 255, 255, 24));
+    gfx_fill(c, m.x + 14, y - 6, m.w - 28, 1, OVE(24));
     draw_net(c, m.x + 22, y + 24, net_up);
     gfx_text(c, &font_ui_bold, m.x + 64, y + 8, !net_present ? "No network card" : net_up ? "Connected" : "Not connected", C_TEXT);
     if (net_up) {
@@ -619,12 +673,12 @@ static int wmenu_at(int x, int y) {
 static void draw_wmenu(struct canvas *c) {
     struct rect m = { wmenu_x, wmenu_y, WMENU_W, wmenu_h() };
     draw_shadow(c, m, 200);
-    gfx_round_fill(c, m.x, m.y, m.w, m.h, 12, RGBA(22, 20, 34, 248));
-    gfx_round_rect(c, m.x, m.y, m.w, m.h, 12, RGBA(0xB3, 0x88, 0xFF, 60));
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 12, TH.popup);
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 12, ACE(60));
     for (int i = 0; i < wmi_n; i++) {
         int y = wmenu_iy(i);
-        if (wmi[i].sep) gfx_fill(c, m.x + 14, y - 5, m.w - 28, 1, RGBA(255, 255, 255, 24));
-        if (i == wmenu_hover) gfx_round_fill(c, m.x + 6, y, m.w - 12, WMENU_ITEM, 8, RGBA(0xB3, 0x88, 0xFF, 60));
+        if (wmi[i].sep) gfx_fill(c, m.x + 14, y - 5, m.w - 28, 1, OVE(24));
+        if (i == wmenu_hover) gfx_round_fill(c, m.x + 6, y, m.w - 12, WMENU_ITEM, 8, ACC(60));
         gfx_text(c, &font_ui, m.x + 18, y + (WMENU_ITEM - font_ui.height) / 2, wmi[i].label, wmi[i].act == WA_CLOSE ? btn_col[0] : C_TEXT);
         if (wmi[i].act == WA_TOP && wmenu_win && wmenu_win->topmost) gfx_circle_fill(c, m.x + m.w - 22, y + WMENU_ITEM / 2, 4, C_ACCENT);
     }
@@ -672,16 +726,16 @@ static void draw_thumb(struct canvas *c, int x, int y, int tw, int th, struct wi
 static void draw_switcher(struct canvas *c) {
     struct rect m = sw_rect();
     draw_shadow(c, m, 230);
-    gfx_round_fill(c, m.x, m.y, m.w, m.h, 16, RGBA(18, 16, 30, 244));
-    gfx_round_rect(c, m.x, m.y, m.w, m.h, 16, RGBA(0xB3, 0x88, 0xFF, 80));
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 16, TH.switcher);
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 16, ACE(80));
     for (int i = 0; i < sw_n; i++) {
         struct rect q = sw_cell(i);
         struct window *w = sw_list[i];
         if (i == sw_sel) {
-            gfx_round_fill(c, q.x + 2, q.y + 2, q.w - 4, q.h - 4, 12, RGBA(0xB3, 0x88, 0xFF, 56));
-            gfx_round_rect(c, q.x + 2, q.y + 2, q.w - 4, q.h - 4, 12, RGBA(0xD8, 0xC4, 0xFF, 170));
+            gfx_round_fill(c, q.x + 2, q.y + 2, q.w - 4, q.h - 4, 12, ACC(56));
+            gfx_round_rect(c, q.x + 2, q.y + 2, q.w - 4, q.h - 4, 12, ACCH(170));
         }
-        gfx_round_fill(c, q.x + 10, q.y + 10, SW_TW, SW_TH, 6, RGB(0x11, 0x13, 0x1C));
+        gfx_round_fill(c, q.x + 10, q.y + 10, SW_TW, SW_TH, 6, TH.term.bg);
         draw_thumb(c, q.x + 10, q.y + 10, SW_TW, SW_TH, w);
         struct canvas tc = *c;
         canvas_clip(&tc, q.x + 8, q.y, q.w - 16, q.h);
@@ -731,7 +785,7 @@ static bool compose(void) {
     for (struct window *w = wins; w; w = w->next) {
         if (!shown(w)) continue;
         uint32_t age = ticks_ms - w->born;
-        if (age < FADE_MS && !(w->flags & WIN_FLAG_FRAMELESS)) { draw_window_fading(&c, w, age); anim = true; }
+        if (age < FADE_MS && !(w->flags & WIN_FLAG_FRAMELESS) && theme_anim) { draw_window_fading(&c, w, age); anim = true; }
         else draw_window(&c, w);
     }
     if (d.y + d.h > TB_Y) draw_taskbar(&c);
@@ -826,7 +880,7 @@ struct window *wm_create(const char *title, int x, int y, int w, int h, int flag
     uint32_t pa = pmm_alloc_contig(win->buf_frames);
     if (!pa) { kfree(win); return 0; }
     win->buf = (uint32_t *)pa;
-    memset32(win->buf, RGB(0x11, 0x13, 0x1C), (size_t)SW * h);
+    memset32(win->buf, TH.term.bg, (size_t)SW * h);
     win->id = next_id++;
     win->ws = flags & WIN_FLAG_FRAMELESS ? -1 : cur_ws;
     win->born = ticks_ms;
@@ -942,8 +996,8 @@ static void apply_snap(struct window *w, int z) {
 static void draw_snap(struct canvas *c) {
     struct rect r = snap_rect(snap_zone);
     int x = r.x + 6, y = r.y - WM_TITLE_H + 6, w = r.w - 12, h = r.h + WM_TITLE_H - 12;
-    gfx_round_fill(c, x, y, w, h, WM_RADIUS + 2, RGBA(0xB3, 0x88, 0xFF, 46));
-    gfx_round_rect(c, x, y, w, h, WM_RADIUS + 2, RGBA(0xD8, 0xC4, 0xFF, 150));
+    gfx_round_fill(c, x, y, w, h, WM_RADIUS + 2, ACC(46));
+    gfx_round_rect(c, x, y, w, h, WM_RADIUS + 2, ACCH(150));
 }
 
 static void close_window(struct window *w) {
@@ -1053,7 +1107,11 @@ static void switch_ws(int n) {
     cur_ws = n;
     focus_top();
     wm_damage(0, 0, SW, SH);
-    if (ws_old) { no_present = true; compose(); no_present = false; crossfade(ws_old, 43, 20); }
+    if (ws_old) {
+        no_present = true; compose(); no_present = false;
+        if (theme_anim) crossfade(ws_old, 43, 20);
+        else for (int y = 0; y < SH; y++) memcpy(&fb.px[y * fb.stride], &bb.px[y * SW], SW * 4);
+    }
 }
 
 static void move_to_ws(struct window *w, int k) {
@@ -1089,7 +1147,7 @@ void wm_notify(const char *msg, int n) {
     memset(h, 0, sizeof *h);
     strlcpy(h->title, *title ? title : "Notification", sizeof h->title);
     strlcpy(h->body, body, sizeof h->body);
-    h->col = !strcmp(kind, "good") ? RGB(0x4B, 0xE0, 0x8A) : !strcmp(kind, "warn") ? RGB(0xFF, 0xC2, 0x4B) : !strcmp(kind, "bad") ? RGB(0xFF, 0x5F, 0x7A) : C_ACCENT;
+    h->kind = !strcmp(kind, "good") ? 1 : !strcmp(kind, "warn") ? 2 : !strcmp(kind, "bad") ? 3 : 0;
     h->born = ticks_ms; h->wall = rtc_now();
     h->toast = !cn_open;
     int k = 0;
@@ -1684,8 +1742,8 @@ int wm_set_mode(int nw, int nh) {
     int n = 0, r = -ENOMEM;
     for (struct window *w = wins; w; w = w->next) n++;
     if (!(rg = kzalloc((n + 1) * sizeof *rg))) return -ENOMEM;
-    big_free(under, SW, SH); big_free(ws_old, SW, SH);
-    under = ws_old = 0;
+    big_free(under, SW, SH); big_free(ws_old, SW, SH); big_free(wp_stage, SW, SH);
+    under = ws_old = wp_stage = 0;
     uint32_t *nb = big_alloc(nw, nh), *nwall = big_alloc(nw, nh);
     if (!nb || !nwall) goto fail;
     n = 0;
@@ -1708,8 +1766,9 @@ int wm_set_mode(int nw, int nh) {
     SW = nw; SH = nh;
     canvas_init(&bb, nb, SW, SH, SW);
     canvas_init(&wall, nwall, SW, SH, SW);
-    wallpaper_render(&wall, wall_theme);
-    wallpaper_watermark(&wall);
+    bool had_img = wall_img;
+    render_wallpaper();
+    if (had_img || wp_cfg[0] == '/') wp_redo = true;       /* the pushed image was for the old size: /bin/theme -W pushes /etc/wallpaper again */
     cur_x = imin(cur_x, SW - 1); cur_y = imin(cur_y, SH - 1);
     for (int i = 0; i < n; i++) {
         struct window *w = rg[i].w;
@@ -1760,6 +1819,15 @@ fail:
 bool wm_running(void) { return running; }
 void wm_wake(void) { wakeup(&wm_chan); }
 
+/* a theme switch (gui/theme.c): every window hears about it from the compositor thread, which then repaints it all */
+static volatile bool theme_pending;
+void wm_theme_changed(void) { if (running) { theme_pending = true; wm_wake(); } }
+static void theme_broadcast(void) {
+    struct gui_event e = { .type = EV_THEME, .x = theme_zoom_changed() };
+    for (struct window *w = wins; w; w = w->next) send(w, &e);
+    wm_damage(0, 0, SW, SH);
+}
+
 /* volume and network state can change behind our back (mixer ioctls, DHCP): poll cheaply, damage on change */
 static void poll_tray(void) {
     int v = ac97_volume(-1);
@@ -1788,6 +1856,7 @@ static int wm_thread(void *arg) {
                 mouse_event(in.x, in.y, in.b, in.dz);
             } else key_event(&in.ev);
         }
+        if (theme_pending) { theme_pending = false; theme_broadcast(); }
         for (struct window *w = wins, *n; w; w = n) {
             n = w->next;
             if (w->on_frame) w->on_frame(w);
@@ -1802,6 +1871,7 @@ static int wm_thread(void *arg) {
                 wm_damage(TRAY_X, TB_Y, SW - TRAY_X, WM_TASKBAR_H);
             }
             poll_tray();
+            if (wp_redo && !(wp_pid && task_find(wp_pid))) { wp_redo = false; wp_pid = wm_spawn_app("/bin/theme", "-W"); }
             for (int i = 0, k = 0; i < nhist; i++)                     /* toasts time out */
                 if (hist[i].toast && ticks_ms - hist[i].born >= TOAST_MS) { if (!k++) toast_damage(); hist[i].toast = false; }
             uint32_t t = rtc_now() + tz_minutes * 60;
@@ -1850,19 +1920,27 @@ static int chime(void *arg) {
     return 0;
 }
 
-/* /etc/wallpaper (theme name) and /etc/tz (minutes east of UTC); Settings asks for a reload */
+/* /etc/wallpaper (a theme name or an image path) and /etc/tz (minutes east of UTC); Settings asks for a reload */
 static void load_prefs(bool init) {
-    int theme = wall_theme;
     void *d; uint32_t n;
     if (vfs_read_all("/etc/wallpaper", &d, &n) == 0) {
-        for (int i = 0; i < wallpaper_count(); i++) if (!strncmp(d, wallpaper_name(i), strlen(wallpaper_name(i)))) theme = i;
+        char cfg[sizeof wp_cfg];
+        n = MIN(n, sizeof cfg - 1);
+        memcpy(cfg, d, n);
         kfree(d);
-    }
-    if (init || theme != wall_theme) {
-        wall_theme = theme;
-        wallpaper_render(&wall, wall_theme);
-        wallpaper_watermark(&wall);
-    }
+        while (n && cfg[n - 1] <= ' ') n--;
+        cfg[n] = 0;
+        if (init || strcmp(cfg, wp_cfg)) {                 /* only a change in the file touches the wallpaper */
+            strlcpy(wp_cfg, cfg, sizeof wp_cfg);
+            if (cfg[0] == '/') {
+                if (init) render_wallpaper();              /* stands in until /bin/theme has pushed the image */
+                wp_redo = true;
+            } else {
+                for (int i = 0; i < wallpaper_count(); i++) if (!strncmp(cfg, wallpaper_name(i), strlen(wallpaper_name(i)))) wall_theme = i;
+                render_wallpaper();
+            }
+        }
+    } else if (init) render_wallpaper();
     if (vfs_read_all("/etc/tz", &d, &n) == 0) {
         char *p = d; int sign = 1, v = 0;
         if (*p == '-') { sign = -1; p++; } else if (*p == '+') p++;
@@ -1880,6 +1958,7 @@ void wm_init(void) {
     if (!b || !wp) { kprintf("wm: no memory for buffers\n"); return; }
     canvas_init(&bb, b, SW, SH, SW);
     canvas_init(&wall, wp, SW, SH, SW);
+    theme_init();
     load_prefs(true);
     splash_progress(95);
     for (int d = 0; d <= SHADOW; d++) { int t = SHADOW - d; shadow_lut[d] = t * t * 110 / (SHADOW * SHADOW); }

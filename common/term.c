@@ -66,15 +66,18 @@ struct term {
 
 /* ---- palette ---- */
 
-static const uint32_t pal16[16] = {   /* Tokyo Night-ish */
-    RGB(0x2A, 0x2E, 0x42), RGB(0xF7, 0x76, 0x8E), RGB(0x9E, 0xCE, 0x6A), RGB(0xE0, 0xAF, 0x68),
-    RGB(0x7A, 0xA2, 0xF7), RGB(0xBB, 0x9A, 0xF7), RGB(0x7D, 0xCF, 0xFF), RGB(0xA9, 0xB1, 0xD6),
-    RGB(0x4E, 0x55, 0x75), RGB(0xFF, 0x89, 0x9D), RGB(0xB3, 0xE0, 0x7E), RGB(0xF5, 0xC2, 0x7C),
-    RGB(0x8D, 0xB0, 0xFF), RGB(0xC7, 0xA9, 0xFF), RGB(0xA4, 0xDA, 0xFF), RGB(0xE6, 0xEA, 0xFA),
+/* the colours in use: Tokyo Night-ish until the desktop hands over the active theme (term_set_colors) */
+static struct term_colors tc = {
+    { RGB(0x2A, 0x2E, 0x42), RGB(0xF7, 0x76, 0x8E), RGB(0x9E, 0xCE, 0x6A), RGB(0xE0, 0xAF, 0x68),
+      RGB(0x7A, 0xA2, 0xF7), RGB(0xBB, 0x9A, 0xF7), RGB(0x7D, 0xCF, 0xFF), RGB(0xA9, 0xB1, 0xD6),
+      RGB(0x4E, 0x55, 0x75), RGB(0xFF, 0x89, 0x9D), RGB(0xB3, 0xE0, 0x7E), RGB(0xF5, 0xC2, 0x7C),
+      RGB(0x8D, 0xB0, 0xFF), RGB(0xC7, 0xA9, 0xFF), RGB(0xA4, 0xDA, 0xFF), RGB(0xE6, 0xEA, 0xFA) },
+    TERM_DEFAULT_FG, TERM_DEFAULT_BG, 0xFFF2F4FBu, RGB(0x4A, 0x3F, 0x7A), RGB(0x6A, 0x56, 0x22), RGB(0xE0, 0xAF, 0x68), TERM_DEFAULT_BG, RGB(0x7D, 0xCF, 0xFF),
 };
+void term_set_colors(const struct term_colors *c) { tc = *c; }
 
 static color_t pal_rgb(int i) {
-    if (i < 16) return pal16[i];
+    if (i < 16) return tc.pal[i];
     if (i < 232) {
         static const uint8_t lv[6] = { 0, 95, 135, 175, 215, 255 };
         i -= 16;
@@ -85,7 +88,7 @@ static color_t pal_rgb(int i) {
 }
 
 static color_t resolve(uint32_t c, int fg, int bold) {
-    if (c == 0) return fg ? (bold ? 0xFFF2F4FBu : TERM_DEFAULT_FG) : TERM_DEFAULT_BG;
+    if (c == 0) return fg ? (bold ? tc.bold : tc.fg) : tc.bg;
     if (c >> 24 == 0xFF) return c;
     int i = c & 0xFF;
     if (fg && bold && i < 8) i += 8;
@@ -782,7 +785,7 @@ static void draw_cell(struct term *t, struct canvas *c, int x, int y, const stru
     color_t fg = resolve(e->fg, 1, bold), bg = resolve(e->bg, 0, 0);
     if (e->attr & TERM_A_INVERSE) { color_t tmp = fg; fg = bg; bg = tmp; }
     if (e->attr & TERM_A_DIM) fg = mix(fg, bg, 90);
-    color_t curcol = TERM_DEFAULT_FG;
+    color_t curcol = tc.fg;
     if (cur == 1) { color_t tmp = bg; bg = curcol; fg = tmp; }
     gfx_fill(c, x, y, cw, ch, bg);
     uint32_t cp = e->ch;
@@ -981,15 +984,15 @@ void term_render(struct term *t, struct canvas *c, int x, int y, int full, struc
             const struct cell *e = &row[col];
             struct cell hl;
             if (selected(t, line, col)) {
-                hl = *e; hl.bg = COL_RGB(0x4A, 0x3F, 0x7A); hl.attr &= ~TERM_A_INVERSE; e = &hl;
+                hl = *e; hl.bg = tc.sel; hl.attr &= ~TERM_A_INVERSE; e = &hl;
             }
             if (hits && t->hit[col]) {
                 hl = *e; hl.attr &= ~TERM_A_INVERSE; e = &hl;
-                if (t->hit[col] == 2) { hl.bg = COL_RGB(0xE0, 0xAF, 0x68); hl.fg = TERM_DEFAULT_BG; }
-                else hl.bg = COL_RGB(0x6A, 0x56, 0x22);
+                if (t->hit[col] == 2) { hl.bg = tc.hitcur; hl.fg = tc.hitcur_fg; }
+                else hl.bg = tc.hit;
             }
             if (r == t->hrow && col >= t->hc0 && col <= t->hc1) {   /* hovered link */
-                hl = *e; hl.attr |= TERM_A_UNDER; hl.fg = COL_RGB(0x7D, 0xCF, 0xFF); e = &hl;
+                hl = *e; hl.attr |= TERM_A_UNDER; hl.fg = tc.link; e = &hl;
             }
             draw_cell(t, c, x + col * cw, y + r * ch, e, style && col == t->cx && r == t->cy ? style : 0);
         }

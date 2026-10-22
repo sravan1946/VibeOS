@@ -243,7 +243,7 @@ struct win_info {
 };
 
 enum { WIN_SET_TITLE = 1, WIN_SET_SIZE, WIN_SET_POS, WIN_SET_VISIBLE,
-       WIN_SET_PREFS };   /* PREFS: desktop re-reads /etc/wallpaper and /etc/tz */
+       WIN_SET_PREFS };   /* PREFS: desktop re-reads /etc/wallpaper (name or image path) and /etc/tz */
 
 /* reading a window fd yields struct gui_event records */
 enum {
@@ -256,6 +256,7 @@ enum {
     EV_CLOSE,          /* close button pressed */
     EV_FOCUS,          /* pressed = gained/lost */
     EV_MOUSE_LEAVE,
+    EV_THEME,          /* the desktop theme or accent changed: re-read /dev/theme (libgui does) and repaint; x = 1 if the terminal text size changed */
 };
 
 /* key codes: printable keys use their ASCII; specials below */

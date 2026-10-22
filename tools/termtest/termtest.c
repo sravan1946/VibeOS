@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "term.h"
+#include "theme.h"
 
 void *kmalloc(size_t n) { return malloc(n); }
 void kfree(void *p) { free(p); }
@@ -613,6 +614,42 @@ static void showcase(const char *dir) {
     term_destroy(t);
 }
 
+/* every theme's terminal colours reach the cells; the dark theme is exactly the built-in default */
+static void test_theme_colors(void) {
+    for (int i = 0; i < theme_count(); i++) {
+        const struct term_colors *c = &theme_get(i)->term;
+        if (i == 0) {                                    /* before the first term_set_colors: the built-in palette is the dark theme's */
+            struct term *d = term_create(20, 1);
+            for (int k = 0; k < 16; k++) { char e[16]; snprintf(e, sizeof e, "\x1b[38;5;%dm.", k); W(d, e); }
+            for (int k = 0; k < 16; k++) CHECK(term_cell_fg(d, k, 0) == c->pal[k]);
+            term_destroy(d);
+        }
+        term_set_colors(c);
+        struct term *t = term_create(12, 2);
+        W(t, "\x1b[31ma\x1b[0mb\x1b[91mc\x1b[44md\x1b[38;5;2me\x1b[0m");
+        CHECK(term_cell_fg(t, 0, 0) == c->pal[1]);
+        CHECK(term_cell_fg(t, 1, 0) == c->fg && term_cell_bg(t, 1, 0) == c->bg);
+        CHECK(term_cell_fg(t, 2, 0) == c->pal[9]);
+        CHECK(term_cell_bg(t, 3, 0) == c->pal[4]);
+        CHECK(term_cell_fg(t, 4, 0) == c->pal[2]);
+        uint32_t px[12 * 2 * 40 * 40];
+        struct canvas cv;
+        canvas_init(&cv, px, 12 * term_cell_w(t), 2 * term_cell_h(t), 12 * term_cell_w(t));
+        struct rect dmg;
+        term_render(t, &cv, 0, 0, 1, &dmg);
+        CHECK(px[(2 * term_cell_h(t) - 1) * cv.stride + 11 * term_cell_w(t) + 1] == c->bg);      /* an empty cell is the theme's background */
+        term_destroy(t);
+        if (i == 0) {
+            t = term_create(4, 1);
+            W(t, "x\x1b[1my");
+            CHECK(term_cell_fg(t, 0, 0) == TERM_DEFAULT_FG && term_cell_bg(t, 0, 0) == TERM_DEFAULT_BG);
+            CHECK(c->fg == TERM_DEFAULT_FG && c->bg == TERM_DEFAULT_BG);
+            term_destroy(t);
+        }
+    }
+    term_set_colors(&theme_get(0)->term);
+}
+
 int main(int argc, char **argv) {
     const char *dir = argc > 1 ? argv[1] : ".";
     test_wrap_scroll();
@@ -630,6 +667,7 @@ int main(int argc, char **argv) {
     test_search();
     test_links();
     test_zoom();
+    test_theme_colors();
     test_render();
     showcase(dir);
     printf("%d checks, %d failed\n", checks, fails);

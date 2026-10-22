@@ -2,6 +2,7 @@
 #pragma once
 #include "proc.h"
 #include "gfx.h"
+#include "theme.h"
 
 #define WM_TITLE_H   34
 #define WM_RADIUS    10
@@ -47,6 +48,15 @@ struct window *wm_focused(void);
 void wm_post(struct window *w, const struct gui_event *ev);   /* queue for a user window */
 int  wm_spawn_app(const char *path, const char *arg);
 void wm_notify(const char *msg, int n);                       /* "title\nbody[\nkind]", from /dev/notify */
+
+/* gui/theme.c: the active theme (/dev/theme); wm.c repaints and sends EV_THEME when it changes */
+extern struct theme cur_theme;
+extern int theme_anim, theme_zoom;                           /* window animations on, terminal text size step */
+extern const struct vnode_ops theme_ops;
+void theme_init(void);                                       /* /etc/theme, before the desktop first draws */
+bool theme_zoom_changed(void);
+void wm_theme_changed(void);
+int  wm_wallpaper_write(uint32_t off, const void *buf, uint32_t n);   /* /dev/wallpaper */
 
 /* gui/termwin.c */
 struct window *termwin_open(const char *cmd);              /* NULL = interactive shell */

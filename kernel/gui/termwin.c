@@ -38,7 +38,10 @@ struct termwin {
     char q[64];
 };
 
-static const color_t C_BAR = RGB(0x16, 0x18, 0x24), C_TAB = RGB(0x24, 0x28, 0x3B), C_ACCENT = RGB(0x7A, 0xA2, 0xF7);
+#define TH cur_theme                                         /* the tab bar and find box follow the desktop theme */
+#define C_BAR TH.tbar
+#define C_TAB TH.tab
+#define C_ACCENT TH.tab_acc
 
 static struct tab *cur_tab(struct termwin *tw) { return tw->tabs[tw->cur]; }
 static int bar_h(struct termwin *tw) { return tw->n > 1 || tw->shell ? TAB_H : 0; }
@@ -62,7 +65,7 @@ static void tab_reply(void *ctx, const char *s, int n) {
 }
 
 static void tw_redraw_all(struct termwin *tw) {
-    gfx_fill(&tw->w->canvas, 0, 0, tw->w->w, tw->w->h, TERM_DEFAULT_BG);
+    gfx_fill(&tw->w->canvas, 0, 0, tw->w->w, tw->w->h, TH.term.bg);
     wm_damage_client(tw->w, 0, 0, tw->w->w, tw->w->h);
     tw->full = tw->dirty = tw->bar_dirty = true;
 }
@@ -205,7 +208,7 @@ static void draw_bar(struct termwin *tw) {
         tab_rect(tw, i, &x, &y, &w, &h, &tabw);
         struct tab *tb = tw->tabs[i];
         bool on = i == tw->cur;
-        gfx_round_fill(c, x, y, w, h, 6, on ? C_TAB : RGB(0x1D, 0x20, 0x31));
+        gfx_round_fill(c, x, y, w, h, 6, on ? C_TAB : TH.tab_off);
         if (on) gfx_fill(c, x + 8, y, w - 16, 2, C_ACCENT);
         const char *name = term_title(tb->t);
         if (!*name) name = "Terminal";
@@ -214,15 +217,15 @@ static void draw_bar(struct termwin *tw) {
         while (n > 0 && gfx_text_width_n(&font_ui, name, n) > maxw) { n--; cut = true; }
         int tx = x + 10;
         if (tb->activity && !on) { gfx_circle_fill(c, tx + 3, y + h / 2, 3, C_ACCENT); tx += 12; }
-        color_t fg = on ? RGB(0xE6, 0xEA, 0xFA) : RGB(0x8D, 0x93, 0xB5);
+        color_t fg = on ? TH.tab_fg : TH.tab_dim;
         int tw_ = gfx_text_n(c, &font_ui, tx, y + (h - font_ui.height) / 2, name, n, fg);
         if (cut) gfx_text(c, &font_ui, tx + tw_, y + (h - font_ui.height) / 2, "\xe2\x80\xa6", fg);
-        gfx_text_center(c, &font_ui, x + w - 22, y + (h - font_ui.height) / 2, 16, "\xc3\x97", on ? fg : RGB(0x6A, 0x70, 0x90));
+        gfx_text_center(c, &font_ui, x + w - 22, y + (h - font_ui.height) / 2, 16, "\xc3\x97", on ? fg : TH.tab_faint);
     }
     if (tw->n < MAXTABS) {
         int x, y, w, h, tabw;
         tab_rect(tw, tw->n, &x, &y, &w, &h, &tabw);
-        gfx_text_center(c, &font_ui, x, y + (h - font_ui.height) / 2, 22, "+", RGB(0x8D, 0x93, 0xB5));
+        gfx_text_center(c, &font_ui, x, y + (h - font_ui.height) / 2, 22, "+", TH.tab_dim);
     }
     wm_damage_client(tw->w, 0, 0, tw->pw, TAB_H);
 }
@@ -230,7 +233,7 @@ static void draw_bar(struct termwin *tw) {
 static void draw_find(struct termwin *tw) {
     struct canvas *c = &tw->w->canvas;
     int x = tw->pw - FIND_W - 14, y = bar_h(tw) + 6;
-    gfx_round_fill(c, x, y, FIND_W, FIND_H, 7, RGB(0x20, 0x24, 0x38));
+    gfx_round_fill(c, x, y, FIND_W, FIND_H, 7, TH.tfind);
     gfx_round_rect(c, x, y, FIND_W, FIND_H, 7, C_ACCENT);
     int cur, total;
     term_search_info(cur_tab(tw)->t, &cur, &total);
@@ -239,13 +242,13 @@ static void draw_find(struct termwin *tw) {
     else if (!total) strlcpy(cnt, "no matches", sizeof cnt);
     else snprintf(cnt, sizeof cnt, "%d/%d", cur, total);
     int cw = gfx_text_width(&font_ui, cnt), ty = y + (FIND_H - font_ui.height) / 2;
-    gfx_text(c, &font_ui, x + FIND_W - 10 - cw, ty, cnt, !tw->q[0] || total ? RGB(0x8D, 0x93, 0xB5) : RGB(0xF7, 0x76, 0x8E));
-    gfx_text(c, &font_ui, x + 10, ty, "Find", RGB(0x6A, 0x70, 0x90));
+    gfx_text(c, &font_ui, x + FIND_W - 10 - cw, ty, cnt, !tw->q[0] || total ? TH.tab_dim : TH.term.pal[1]);
+    gfx_text(c, &font_ui, x + 10, ty, "Find", TH.tab_faint);
     int qx = x + 10 + gfx_text_width(&font_ui, "Find") + 10, qmax = x + FIND_W - 20 - cw - qx;
     const char *q = tw->q;
     while (*q && gfx_text_width(&font_ui, q) > qmax - 6) q++;      /* keep the end of a long query visible */
-    int w = gfx_text(c, &font_ui, qx, ty, q, RGB(0xE6, 0xEA, 0xFA));
-    if (tw->blink_on) gfx_fill(c, qx + w + 1, ty + 2, 1, font_ui.height - 4, RGB(0xE6, 0xEA, 0xFA));
+    int w = gfx_text(c, &font_ui, qx, ty, q, TH.tab_fg);
+    if (tw->blink_on) gfx_fill(c, qx + w + 1, ty + 2, 1, font_ui.height - 4, TH.tab_fg);
     wm_damage_client(tw->w, x, y, FIND_W, FIND_H);
 }
 
@@ -456,6 +459,10 @@ static void tw_event(struct window *w, const struct gui_event *ev) {
     case EV_CLOSE:
         while (tw->n) tw_close_tab(tw, tw->n - 1);
         break;
+    case EV_THEME:                                               /* new colours (and maybe text size): repaint everything */
+        if (ev->x) tw_zoom(tw, theme_zoom);
+        tw_redraw_all(tw);
+        break;
     }
 }
 
@@ -471,7 +478,7 @@ struct window *termwin_open_argv(char *const argv_in[], bool hold) {
     int cols = 96, rows = 28;
     struct termwin *tw = kzalloc(sizeof *tw);
     if (!tw) return 0;
-    tw->zoom = TERM_ZOOM_DEF;
+    tw->zoom = theme_zoom;
     tw->shell = !argv_in;
     tw->n = 1;
     tw->tabs[0] = tab_make(tw, cols, rows);
@@ -484,6 +491,7 @@ struct window *termwin_open_argv(char *const argv_in[], bool hold) {
     }
     if (!w) { if (tb) tab_free(tb); kfree(tw); return 0; }
     tw->w = w;
+    if (w->w != tw->pw || w->h != tw->ph) { tw->pw = w->w; tw->ph = w->h; tw_relayout(tw); }   /* clamped to the screen: refit the grid */
     tw->focused = wm_focused() == w;
     term_set_focused(tb->t, tw->focused);
     w->priv = tw;
