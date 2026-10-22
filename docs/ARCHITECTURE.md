@@ -148,6 +148,10 @@ coordinates, so the pointer isn't grabbed in a VM.
 allocator with segregated free lists. `/bin/lua` builds the unmodified Lua 5.4 from
 `third_party/lua` plus `user/bin/lua/` (REPL line editor, the `vibe` and `gui` modules); see
 `third_party/lua/README.vibeos`.
+`/bin/tcc` is the unmodified TinyCC 0.9.27 (`third_party/tcc`, config in `user/bin/tcc/config.h`). The
+rootfs doubles as its SDK: `/usr/include` (libc + gui headers), `/usr/lib/{crt1.o,libc.a,libgui.a}`,
+`/usr/lib/tcc/{libtcc1.a,include}`. tcc output is a static ELF linked at the user base 0x40001000 (set by
+`user/bin/tcc/vibe.c`), which `load_elf` takes as is. See `third_party/tcc/README.vibeos`.
 
 `/bin/sh` (`user/bin/sh/`) is a POSIX-style scripting shell: `parse.c` (lexer + recursive-descent parser
 into an arena-allocated AST; "incomplete" results drive the `> ` continuation prompt), `expand.c`

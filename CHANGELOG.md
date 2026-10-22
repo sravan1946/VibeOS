@@ -59,6 +59,13 @@ Newest notes at the bottom of each phase.
 ## Lua
 - [x] Lua 5.4.9 (`third_party/lua`, unmodified) as `/bin/lua`: REPL with line editing + history, `lua script.lua args`, `-e`, `-`; `vibe` module (sysinfo ps beep sleep uptime listdir ...) and `gui` module (windows, drawing, events); `projects/luatest.lua` (183 checks, all pass), fib/mandelbrot/sysinfo/gui samples. libc grew hex-float `strtod`, `%a`, `freopen tmpfile tmpnam signal setlocale strcoll frexp ldexp modf`, ISO-week `strftime`, exact libm (<= 2 ulp vs glibc), and a binned O(1) `malloc` (the old one was quadratic: 100k-deep Lua recursion took 6.5 s, now 0.1 s); glibc differential tests for printf/strtod/libm in `tools/libctest`
 
+## Toolchain
+- [x] TinyCC 0.9.27 (`third_party/tcc`, unmodified) as `/bin/tcc`: single translation unit configured by `user/bin/tcc/config.h`, `user/bin/tcc/vibe.c` prepends `-static -Wl,-Ttext=0x40001000` (the user load address) so `tcc a.c -o a` just works; the kernel ELF loader accepts tcc's output unchanged
+- [x] In-OS SDK in the rootfs: libc headers + `gui.h ui.h image.h` in `/usr/include`, `crt1.o libc.a libgui.a` in `/usr/lib`, `libtcc1.a` (tcc's 64-bit helpers + alloca, built with gcc) and tcc's own headers in `/usr/lib/tcc`
+- [x] `tcc hello.c -o hello`, `tcc -run`, multi-file (`tcc main.c sieve.c`), `-c` + link, GUI via `-lgui`: verified in QEMU (`projects/hello.c`, `projects/sieve/`, `projects/bounce.c`, `projects/README.txt`)
+- [x] libc additions: `stdint.h inttypes.h sys/time.h sys/mman.h`, `gettimeofday mprotect execvp` (spawn+wait emulation) in `user/lib/compat.c`, `strtold` (double precision); host-tested in `tools/libctest`
+- [ ] tcc `-run` backtraces / `-b` bounds checking (needs signals with handlers), `long double` literals beyond 53 bits, `__builtin_*` headers, a `make`
+
 ## Phase 3 — Polish
 - [x] Boot splash with progress (logo, gradient bar, live kprintf status, crossfade into desktop)
 - [x] RTC clock / date
@@ -96,3 +103,4 @@ Newest notes at the bottom of each phase.
 - Audio (2026-10-22): AC'97 driver + `/dev/dsp`, `play`, `tone`, Piano app. Verified in QEMU against the captured WAV (440/1000 Hz tones, arpeggio notes within 1 Hz, 8-bit/8 kHz stereo resampled to 1000 Hz). Fixed: `irq_register` replaced the previous handler, so the AC'97 card on IRQ 11 silently killed the e1000.
 - Images: PNG/BMP/PPM codecs in libgui (own inflate + PNG encoder, 222 host checks vs Pillow under sanitizers), `/bin/viewer`, PrtSc screenshots via `/dev/screen` + `/bin/screenshot`, PNG in Paint and Files. Fixed along the way: a float bilinear resampler took >1 s per 800x480 frame under QEMU (frames lagged input), now packed-integer lerp + row-copy at 1:1.
 - Merged the audio, Lua and image agents. A slow PrtSc led to the disk: writes ran at ~47 KB/s under KVM because `rep outsw` exits per word; reads were fine. DMA fixed it; e2fsck clean after a write-heavy session.
+- Toolchain (2026-10-22): TinyCC 0.9.27 ported as `/bin/tcc` with an in-OS SDK (`/usr/include`, `/usr/lib`); compiles and runs C, multi-file and libgui programs inside VibeOS. Needed `__udivmoddi4` exported from libtcc1 because the gcc-built libc.a calls it, and `-Ttext` at the user base since tcc defaults to 0x08048000.

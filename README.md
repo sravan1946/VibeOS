@@ -50,6 +50,7 @@ emulator, and a set of desktop apps and games.
   uptime date free clear sleep env seq sort uniq tee find which stat dmesg uname cal fortune
   vibefetch` and more.
 - `/bin/lua`: Lua 5.4 with a REPL, plus `vibe` (system info, processes, beep) and `gui` (windows) modules.
+- `/bin/tcc`: TinyCC 0.9.27 compiles C inside VibeOS against its own libc (`tcc hello.c -o hello`, `tcc -run`, `-lgui` for windows); see `~/projects/README.txt`.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc`. Audio: `play` (WAV files), `tone`.
 - GUI apps: Files, Notepad, Browser (HTTP + an HTML subset), Paint (saves/opens PNG), Image
