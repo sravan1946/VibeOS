@@ -3,6 +3,7 @@
 #   make run        -> boot it in QEMU
 #   make test       -> headless smoke test (tools/vmtest.py)
 #   make test-host  -> host unit tests (libc, image codecs)
+#   make doom-wad   -> fetch Freedoom (for /bin/doom) into build/wads/
 
 CC      := gcc
 LD      := ld -m elf_i386
@@ -19,7 +20,7 @@ KGFXFLAGS := $(CBASE) -Ikernel/include
 
 KERNEL_LBA := 64
 FS_LBA     := 8192
-FS_MB      := 64
+FS_MB      := 96
 FS_SECTORS := $(shell echo $$(( $(FS_MB) * 2048 )))
 
 KSRC  := $(wildcard kernel/*/*.c)
@@ -123,6 +124,13 @@ UEXTRA_tcc := build/user/obj/third_party/tcc/tcc.o
 build/user/obj/third_party/tcc/%.o: third_party/tcc/%.c $(wildcard third_party/tcc/*.[ch])
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(TCC_FLAGS) -c $< -o $@
+# Doom (third_party/doomgeneric, GPL-2.0, unmodified; warnings silenced per file; abi.h first so its KEY_* enums precede doomkeys.h macros) + the platform layer in user/bin/doom/
+DOOM_SRC := $(wildcard third_party/doomgeneric/src/*.c)
+UEXTRA_doom := $(patsubst %.c,build/user/obj/%.o,$(DOOM_SRC))
+DOOM_FLAGS := -Ithird_party/doomgeneric/src -Iuser/bin/doom/compat -include abi.h -DNORMALUNIX -DLINUX -DFEATURE_SOUND
+$(UEXTRA_doom): build/user/obj/third_party/doomgeneric/src/%.o: third_party/doomgeneric/src/%.c
+	$(CC) $(UCFLAGS) $(DOOM_FLAGS) -w -c $< -o $@
+build/user/obj/bin/doom/%.o: UCFLAGS += $(DOOM_FLAGS)
 
 $(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
 
@@ -140,7 +148,7 @@ build/user/libtcc1.a: third_party/tcc/lib/libtcc1.c third_party/tcc/lib/alloca86
 	$(CC) -m32 -c third_party/tcc/lib/alloca86.S -o build/user/alloca86.o
 	rm -f $@ && ar rcs $@ build/user/libtcc1.o build/user/alloca86.o
 
-build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(ULIBS) $(UCRT0) build/user/libtcc1.a $(wildcard user/include/*.h user/include/sys/*.h third_party/tcc/include/*.h) $(SDK_HDRS)
+build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(ULIBS) $(UCRT0) build/user/libtcc1.a $(wildcard user/include/*.h user/include/sys/*.h third_party/tcc/include/*.h) $(SDK_HDRS) $(wildcard build/wads/freedoom1.wad)
 	rm -rf build/rootfs
 	@mkdir -p build/rootfs/bin build/rootfs/dev build/rootfs/proc build/rootfs/tmp build/rootfs/home
 	@cp -a root/. build/rootfs/ 2>/dev/null || true
@@ -150,6 +158,8 @@ build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(ULIBS) $(UCRT0) build
 	cp third_party/tcc/include/*.h build/rootfs/usr/lib/tcc/include/ && cp build/user/libtcc1.a build/rootfs/usr/lib/tcc/
 	cp $(UCRT0) build/rootfs/usr/lib/crt1.o && $(CC) -m32 -x c -c /dev/null -o build/rootfs/usr/lib/crti.o && cp build/rootfs/usr/lib/crti.o build/rootfs/usr/lib/crtn.o
 	@for f in $(ULIBS); do strip -g -o build/rootfs/usr/lib/$$(basename $$f) $$f; done
+	@if [ -f build/wads/freedoom1.wad ]; then mkdir -p build/rootfs/usr/share/doom; \
+	  cp build/wads/freedoom1.wad build/rootfs/usr/share/doom/; cp build/wads/freedoom-COPYING.txt build/rootfs/usr/share/doom/COPYING 2>/dev/null || true; fi
 	rm -f $@
 	mke2fs -q -t ext2 -b 1024 -I 256 -L vibeos -d build/rootfs $@ $(FS_MB)M
 
@@ -173,6 +183,9 @@ run: build/vibeos.img
 debug: build/vibeos.img
 	$(QEMU) -s -S & gdb build/kernel.elf -ex 'target remote :1234'
 
+doom-wad:    # download + verify Freedoom into build/wads/ (then `make` puts it in /usr/share/doom)
+	sh tools/getwad.sh
+
 test-host:   # host-side unit tests (libc, image codecs)
 	sh tools/imagetest/run.sh
 	sh tools/libctest/run.sh
@@ -183,4 +196,4 @@ test: build/vibeos.img
 clean:
 	rm -rf build
 
-.PHONY: all run debug test test-host clean user
+.PHONY: all run debug test test-host clean user doom-wad

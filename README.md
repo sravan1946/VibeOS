@@ -58,7 +58,7 @@ emulator, and a set of desktop apps and games.
   viewer (PNG/BMP/PPM, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
   Monitor, Settings, About, Piano (a polyphonic synth keyboard). PrtSc saves a PNG screenshot
   to `~/Pictures`.
-- Games: Snake, Tetris, Minesweeper.
+- Games: Snake, Tetris, Minesweeper, and **Doom** (doomgeneric + the BSD-licensed Freedoom, with sound effects; `make doom-wad` fetches the game data).
 
 ## Building and running
 

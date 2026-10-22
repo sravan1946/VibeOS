@@ -1,3 +1,4 @@
+/* inttypes.h - fixed-width types plus the printf/scanf format macros for them (i386: int32 = int, int64 = long long) */
 #pragma once
 #include <stdint.h>
 #define PRId8 "d"
@@ -10,6 +11,8 @@
 #define PRIu16 "u"
 #define PRIu32 "u"
 #define PRIu64 "llu"
+#define PRIx8 "x"
+#define PRIx16 "x"
 #define PRIx32 "x"
 #define PRIx64 "llx"
 #define PRIX32 "X"

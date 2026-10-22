@@ -93,6 +93,14 @@ Newest notes at the bottom of each phase.
 - [x] vmtest: AC'97 + `wav` audiodev (`build/audio.wav`, configurable), `tools/wavcheck.py` to find tones/RMS in the capture
 - [ ] Sample-rate conversion in the kernel (VRA), recording, `/dev/dsp` mixing of several writers
 
+## Doom
+- [x] doomgeneric (GPL-2.0, pinned commit, unmodified) vendored in `third_party/doomgeneric/`; platform layer in `user/bin/doom/` (libgui window, `uptime_ms` clock, key queue with real key-up events, no stuck keys on focus loss)
+- [x] Freedoom 0.13.0 (BSD) fetched on demand: `make doom-wad` / `tools/getwad.sh` (pinned zip, sha256-checked, cached in `build/wads/`, never committed); the rootfs build copies it to `/usr/share/doom/`; `FS_MB` 64 -> 96
+- [x] `/bin/doom`: finds the IWAD or says so (terminal message, or a window when started from the launcher); `-iwad FILE` works; config + savegames in `/home/.doom`; Quit menu and the close button exit cleanly; launcher entry
+- [x] SFX through `/dev/dsp`: 16-channel mixer, Doom panning, 11025 -> 48 kHz linear resampling, ~40 ms queued via `AUDIO_GETQ`, never blocks the game loop; verified in the captured WAV
+- [x] libc: only `inttypes.h` was missing; everything else doomgeneric needs already linked
+- [ ] Music (needs MUS -> OPL/MIDI synthesis; the music module is a stub), mouse look, resizable scaling (frame is centred, fixed 2x), `/dev/dsp` shared with other writers
+
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
 - Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.
@@ -107,3 +115,4 @@ Newest notes at the bottom of each phase.
 - Merged the audio, Lua and image agents. A slow PrtSc led to the disk: writes ran at ~47 KB/s under KVM because `rep outsw` exits per word; reads were fine. DMA fixed it; e2fsck clean after a write-heavy session.
 - Toolchain (2026-10-22): TinyCC 0.9.27 ported as `/bin/tcc` with an in-OS SDK (`/usr/include`, `/usr/lib`); compiles and runs C, multi-file and libgui programs inside VibeOS. Needed `__udivmoddi4` exported from libtcc1 because the gcc-built libc.a calls it, and `-Ttext` at the user base since tcc defaults to 0x08048000.
 - TCP server sockets + `/bin/httpd`: the host browses VibeOS at http://localhost:8080 under `make run`; vmtest gained `--hostfwd`, `--pcap` and `host:CMD`. The capture showed two stack bugs: the first SYN-ACK waited 500 ms on ARP (the net thread can't sleep, so it fell to the retransmit timer; senders' MACs are now learned from incoming IP frames), and a burst of tiny segments overran the 32-slot e1000 RX ring and dropped the next SYN (ring is now 128, httpd batches its writes).
+- Doom (2026-10-22): doomgeneric + Freedoom run in a 640x400 desktop window with sound. `-timedemo demo1` renders 202 fps uncapped (7117 tics in 35 s, KVM), so the 35 fps cap has plenty of headroom: doom itself uses <10% CPU, but the in-kernel compositor spends ~85% of the CPU re-composing a 640x400 window 35 times a second (a pre-existing cost of full-window damage; worth optimising). Gotchas: doomkeys.h `#define`s names that `abi.h` declares as enum constants (so abi.h is force-included first and the platform layer captures our codes before including doomkeys.h), and doomgeneric's `I_Quit` returns instead of exiting (an `I_AtExit` hook does the `exit`).
