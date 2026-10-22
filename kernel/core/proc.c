@@ -77,17 +77,20 @@ static int build_stack(uint32_t dir, char *const argv[], char *const envp[], uin
 int proc_spawn(const char *path, char *const argv[], char *const envp[], const struct spawn_opts *o) {
     struct file *fds[3];
     for (int i = 0; i < 3; i++) fds[i] = fd_get((o && o->fd[i] >= 0) ? o->fd[i] : i);
-    return proc_spawn_ex(path, argv, envp, o ? o->cwd : 0, fds, current->tty);
+    return proc_spawn_ex(path, argv, envp, o ? o->cwd : 0, fds, current->proc->tty);
 }
 
-int proc_spawn_ex(const char *path, char *const argv[], char *const envp[], const char *cwd,
-                  struct file *fds[3], struct tty *tty) {
+/* a loaded but not yet running program image */
+struct image { uint32_t dir, entry, end, esp; char name[PROC_NAME_MAX]; };
+
+/* read path into a fresh address space with argv/envp on its stack. "#!interp [arg]" runs the
+ * interpreter with argv = interp [arg] script args...  One level only. */
+static int load_image(const char *path, char *const argv[], char *const envp[], struct image *im) {
     char cpath[PATH_MAX];
-    int r = vfs_canon(current->cwd, path, cpath, sizeof cpath);
+    int r = vfs_canon(current->proc->cwd, path, cpath, sizeof cpath);
     if (r < 0) return r;
     void *img; uint32_t size;
     if ((r = vfs_read_all(cpath, &img, &size)) < 0) return r;
-    /* "#!interp [arg]": run the interpreter with argv = interp [arg] script args...  One level only. */
     char **nargv = 0, ipath[128], iarg[128];
     const char *ln = img;
     if (size > 2 && ln[0] == '#' && ln[1] == '!') {
@@ -115,51 +118,131 @@ int proc_spawn_ex(const char *path, char *const argv[], char *const envp[], cons
         nargv[k] = 0;
         argv = nargv;
         char ip2[PATH_MAX];
-        if ((r = vfs_canon(current->cwd, ipath, ip2, sizeof ip2)) < 0 ||
+        if ((r = vfs_canon(current->proc->cwd, ipath, ip2, sizeof ip2)) < 0 ||
             (r = vfs_read_all(ip2, &img, &size)) < 0) { kfree(nargv); return r; }
     }
-    uint32_t dir = vmm_new_dir(), entry = 0, end = 0, esp = 0;
-    if (!dir) { kfree(img); kfree(nargv); return -ENOMEM; }
-    r = load_elf(dir, img, size, &entry, &end);
+    im->dir = vmm_new_dir();
+    if (!im->dir) { kfree(img); kfree(nargv); return -ENOMEM; }
+    r = load_elf(im->dir, img, size, &im->entry, &im->end);
     kfree(img);
-    if (r == 0 && vmm_alloc_range(dir, USER_STACK_TOP - STACK_INIT, STACK_INIT, PTE_U | PTE_W) < 0) r = -ENOMEM;
-    if (r == 0) r = build_stack(dir, argv, envp, &esp);
+    if (r == 0 && vmm_alloc_range(im->dir, USER_STACK_TOP - STACK_INIT, STACK_INIT, PTE_U | PTE_W) < 0) r = -ENOMEM;
+    if (r == 0) r = build_stack(im->dir, argv, envp, &im->esp);
     kfree(nargv);
-    if (r < 0) { vmm_free_dir(dir); return r; }
-
-    struct regs fr;
-    memset(&fr, 0, sizeof fr);
-    fr.gs = fr.fs = fr.es = fr.ds = fr.ss = USER_DS;
-    fr.cs = USER_CS;
-    fr.eip = entry;
-    fr.useresp = esp;
-    fr.eflags = 0x202;
+    if (r < 0) { vmm_free_dir(im->dir); return r; }
     const char *base = strrchr(cpath, '/');
-    struct task *t = task_create_user(base ? base + 1 : cpath, &fr);
-    if (!t) { vmm_free_dir(dir); return -ENOMEM; }
-    t->dir = dir;
-    t->brk_start = t->brk = end;
+    strlcpy(im->name, base ? base + 1 : cpath, sizeof im->name);
+    return 0;
+}
+
+/* a fresh ring-3 register frame starting at eip with stack esp */
+static void user_frame(struct regs *fr, uint32_t eip, uint32_t esp) {
+    memset(fr, 0, sizeof *fr);
+    fr->gs = fr->fs = fr->es = fr->ds = fr->ss = USER_DS;
+    fr->cs = USER_CS;
+    fr->eip = eip;
+    fr->useresp = esp;
+    fr->eflags = 0x202;
+}
+
+int proc_spawn_ex(const char *path, char *const argv[], char *const envp[], const char *cwd,
+                  struct file *fds[3], struct tty *tty) {
+    struct image im;
+    int r = load_image(path, argv, envp, &im);
+    if (r < 0) return r;
+    struct regs fr;
+    user_frame(&fr, im.entry, im.esp);
+    struct task *t = task_create_user(im.name, &fr);
+    if (!t) { vmm_free_dir(im.dir); return -ENOMEM; }
+    t->dir = im.dir;
+    t->brk_start = t->brk = im.end;
     t->tty = tty;
     for (int i = 1; i < NSIG; i++)                       /* like exec: ignored stays ignored */
-        if (current->sig_handler[i] == 1) t->sig_handler[i] = 1;
+        if (current->proc->sig_handler[i] == 1) t->sig_handler[i] = 1;
     char cw[PATH_MAX];
-    if (cwd && vfs_canon(current->cwd, cwd, cw, sizeof cw) >= 0) strlcpy(t->cwd, cw, sizeof t->cwd);
-    else strlcpy(t->cwd, current->cwd, sizeof t->cwd);
+    if (cwd && vfs_canon(current->proc->cwd, cwd, cw, sizeof cw) >= 0) strlcpy(t->cwd, cw, sizeof t->cwd);
+    else strlcpy(t->cwd, current->proc->cwd, sizeof t->cwd);
     for (int i = 0; i < 3; i++)
         if (fds[i]) { fds[i]->refs++; t->fds[i] = fds[i]; }
     task_start(t);
     return t->pid;
 }
 
+/* SIGKILL the other threads of current's process; the leader then waits until they're all zombies.
+ * They die on their way back to ring 3, so a thread busy in the kernel finishes that first. */
+static void kill_other_threads(void) {
+    struct task *p = current->proc;
+    uint32_t f = irq_save();
+    for (struct task *t = task_list(); t; t = t->next)
+        if (t->proc == p && t != current && t->state != PS_ZOMBIE) {
+            t->sig_pending |= 1u << SIGKILL;
+            if (t->state == PS_BLOCKED) t->state = PS_READY;
+        }
+    while (current == p && p->nthreads > 1)
+        if (sleep_on(p, 0) < 0) yield();                 /* a signal of our own pending: just let them run */
+    irq_restore(f);
+}
+
+/* Replace current's image. Everything that can fail happens before the old image is touched. */
+int proc_exec(const char *path, char *const argv[], char *const envp[], struct regs *r) {
+    struct task *p = current->proc;
+    if (current != p) return -EINVAL;                    /* ponytail: only the main thread may exec */
+    struct image im;
+    int e = load_image(path, argv, envp, &im);
+    if (e < 0) return e;
+    /* point of no return */
+    if (p->nthreads > 1) {
+        p->exiting = true;               /* the threads die quietly instead of taking us with them */
+        kill_other_threads();
+        p->exiting = false;
+    }
+    for (int i = 0; i < MAX_FDS; i++)
+        if (p->fds[i] && (p->fd_cloexec >> i & 1)) { vfs_close(p->fds[i]); p->fds[i] = 0; }
+    p->fd_cloexec = 0;
+    cli();
+    uint32_t old = p->dir;
+    p->dir = im.dir;
+    write_cr3(im.dir);
+    vmm_free_dir(old);
+    sti();
+    p->brk_start = p->brk = im.end;
+    p->uerrno = 0;
+    strlcpy(p->name, im.name, sizeof p->name);
+    for (int i = 1; i < NSIG; i++)                       /* handlers lived in the old image; ignored stays ignored */
+        if (p->sig_handler[i] > 1) p->sig_handler[i] = 0;
+    p->sig_restorer = 0;
+    __asm__ volatile("fninit");
+    user_frame(r, im.entry, im.esp);
+    return 0;
+}
+
 static void close_all(struct task *t) {
     for (int i = 0; i < MAX_FDS; i++)
         if (t->fds[i]) { vfs_close(t->fds[i]); t->fds[i] = 0; }
+    t->fd_cloexec = 0;
 }
 
-NORETURN void proc_exit(int code) {
-    struct task *t = current;
+/* a thread (never the leader) leaves; whoever joins it, or the idle loop once the process is gone, frees it */
+static NORETURN void thread_die(int value) {
+    struct task *t = current, *p = t->proc;
     cli();
-    sti();                       /* closing pipes/files may sleep; allow IRQs meanwhile */
+    t->exit_code = value;
+    t->state = PS_ZOMBIE;
+    p->nthreads--;
+    wakeup(p);
+    schedule();
+    panic("zombie thread %d scheduled", t->pid);
+}
+
+/* exit the whole process: any thread may call it, the leader does the teardown once it's alone */
+NORETURN void proc_exit(int code) {
+    struct task *t = current, *p = t->proc;
+    cli();
+    bool first = !p->exiting;            /* the first thread out sets the status and kills the rest */
+    if (first) { p->exiting = true; p->exit_code = code; }
+    t->sig_pending = 0;                  /* and proc_kill ignores an exiting process from here on */
+    sti();                               /* closing pipes/files may sleep; allow IRQs meanwhile */
+    if (p->nthreads > 1 && (first || t == p)) kill_other_threads();
+    if (t != p) thread_die(0);
     close_all(t);
     cli();
     if (t->user) {
@@ -168,10 +251,10 @@ NORETURN void proc_exit(int code) {
         write_cr3(t->dir);
         vmm_free_dir(d);
     }
-    t->exit_code = code;
+    code = t->exit_code;
     if (code) kprintf("[proc] %s[%d] exited with %d\n", t->name, t->pid, code);
     struct task *parent = task_find(t->ppid);
-    for (struct task *c = task_list(); c; c = c->next)    /* orphan our children */
+    for (struct task *c = task_list(); c; c = c->next)    /* orphan our children (and unjoined threads) */
         if (c->ppid == t->pid) { c->ppid = 0; c->orphan = true; }
     /* kernel threads never wait(): their children are reaped by the idle loop */
     if (!parent || parent->state == PS_ZOMBIE || !parent->user) t->orphan = true;
@@ -196,11 +279,12 @@ void proc_reap_orphans(void) {
 }
 
 int proc_wait(int pid, int *status, int flags) {
+    struct task *me = current->proc;
     uint32_t f = irq_save();
     for (;;) {
         bool have = false;
         for (struct task *t = task_list(); t; t = t->next) {
-            if (t->ppid != current->pid || (pid > 0 && t->pid != pid)) continue;
+            if (t->ppid != me->pid || t->proc != t || (pid > 0 && t->pid != pid)) continue;
             have = true;
             if (t->state != PS_ZOMBIE) continue;
             int p = t->pid;
@@ -211,7 +295,61 @@ int proc_wait(int pid, int *status, int flags) {
         }
         if (!have) { irq_restore(f); return -ECHILD; }
         if (flags & WNOHANG) { irq_restore(f); return 0; }
-        if (sleep_on(current, 0) < 0) { irq_restore(f); return -EINTR; }
+        if (sleep_on(me, 0) < 0) { irq_restore(f); return -EINTR; }
+    }
+}
+
+/* ---- threads: tasks sharing the leader's address space, fds, cwd and signal handlers ---- */
+
+int proc_thread_create(uint32_t entry, uint32_t stack, uint32_t errno_addr) {
+    struct task *p = current->proc;
+    if (!p->user || p->exiting) return -EINVAL;
+    if (!vmm_user_ok(p->dir, entry, 1, false) || stack < USER_BASE || stack > USER_STACK_TOP) return -EFAULT;
+    /* aligned, so it never straddles a page; the scheduler skips it if it's unmapped later */
+    if (errno_addr && ((errno_addr & 3) || !vmm_user_ok(p->dir, errno_addr, 4, true))) return -EFAULT;
+    struct regs fr;
+    user_frame(&fr, entry, stack);
+    struct task *t = task_create_user(p->name, &fr);
+    if (!t) return -ENOMEM;
+    t->proc = p;
+    t->dir = p->dir;
+    t->ppid = p->pid;                    /* listed under the process in ps; wait() skips threads */
+    t->sig_blocked = current->sig_blocked;
+    if (errno_addr && !p->uerrno) {      /* from now on errno is per thread */
+        p->uerrno = errno_addr;
+        current->uerrno_val = *(int *)errno_addr;
+    }
+    p->nthreads++;
+    task_start(t);
+    return t->pid;
+}
+
+/* returns only to let a signal handler run (libc calls it again) */
+void proc_thread_exit(int value) {
+    struct task *p = current->proc;
+    if (current != p) thread_die(value);
+    /* the main thread: the process lives on until the last thread is gone, then exits with 0 */
+    uint32_t f = irq_save();
+    while (p->nthreads > 1 && !p->exiting)
+        if (sleep_on(p, 0) < 0) { irq_restore(f); return; }
+    irq_restore(f);
+    proc_exit(0);
+}
+
+int proc_thread_join(int tid, int *value) {
+    struct task *p = current->proc;
+    uint32_t f = irq_save();
+    for (;;) {
+        struct task *t = task_find(tid);
+        if (!t || t->proc != p || t == p) { irq_restore(f); return -ESRCH; }  /* the main thread can't be joined */
+        if (t == current) { irq_restore(f); return -EINVAL; }
+        if (t->state == PS_ZOMBIE) {
+            if (value) *value = t->exit_code;
+            task_unlink_free(t);
+            irq_restore(f);
+            return 0;
+        }
+        if (sleep_on(p, 0) < 0) { irq_restore(f); return -EINTR; }
     }
 }
 
@@ -219,7 +357,7 @@ int proc_wait(int pid, int *status, int flags) {
 
 #define SIG_IGN_ 1
 static bool ignored(struct task *t, int sig) {
-    uint32_t h = t->sig_handler[sig];
+    uint32_t h = t->proc->sig_handler[sig];
     return sig != SIGKILL && (h == SIG_IGN_ || (!h && (sig == SIGCHLD || sig == SIGWINCH)));
 }
 
@@ -228,7 +366,7 @@ int proc_kill(int pid, int sig) {
     if (!t || pid == 0 || t->state == PS_ZOMBIE) return -ESRCH;
     if (!t->user) return -EPERM;
     if (sig < 0 || sig >= NSIG) return -EINVAL;
-    if (sig == 0 || ignored(t, sig)) return 0;
+    if (sig == 0 || ignored(t, sig) || t->proc->exiting) return 0;
     t->sig_pending |= 1u << sig;
     if (t->state == PS_BLOCKED && sig_deliverable(t)) t->state = PS_READY;
     return 0;
@@ -237,9 +375,9 @@ int proc_kill(int pid, int sig) {
 int proc_sigaction(int sig, uint32_t handler, uint32_t restorer) {
     if (sig < 1 || sig >= NSIG || sig == SIGKILL) return -EINVAL;
     if (handler > SIG_IGN_ && !vmm_user_ok(current->dir, handler, 1, false)) return -EFAULT;
-    uint32_t old = current->sig_handler[sig];
-    current->sig_handler[sig] = handler;
-    if (restorer) current->sig_restorer = restorer;
+    uint32_t old = current->proc->sig_handler[sig];
+    current->proc->sig_handler[sig] = handler;
+    if (restorer) current->proc->sig_restorer = restorer;
     if (ignored(current, sig)) current->sig_pending &= ~(1u << sig);
     return old;
 }
@@ -273,10 +411,10 @@ void proc_deliver_signals(struct regs *r) {
     while ((m = sig_deliverable(t))) {
         int sig = __builtin_ctz(m);
         t->sig_pending &= ~(1u << sig);
-        uint32_t h = t->sig_handler[sig];
+        uint32_t h = t->proc->sig_handler[sig];
         if (ignored(t, sig)) continue;
-        if (!h || sig == SIGKILL || !t->sig_restorer) proc_exit(128 + sig);
-        struct sigframe f = { t->sig_restorer, sig, r->eax, r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp,
+        if (!h || sig == SIGKILL || !t->proc->sig_restorer) proc_exit(128 + sig);
+        struct sigframe f = { t->proc->sig_restorer, sig, r->eax, r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp,
                               r->useresp, r->eip, r->eflags, t->sig_blocked };
         uint8_t fpu[108] __attribute__((aligned(16)));
         __asm__ volatile("fnsave %0" : "=m"(fpu));       /* also resets the FPU for the handler */
@@ -307,12 +445,12 @@ void proc_sigreturn(struct regs *r) {
 
 int fd_alloc(struct file *f) {
     for (int i = 0; i < MAX_FDS; i++)
-        if (!current->fds[i]) { current->fds[i] = f; return i; }
+        if (!current->proc->fds[i]) { current->proc->fds[i] = f; current->proc->fd_cloexec &= ~(1u << i); return i; }
     return -EMFILE;
 }
 
 struct file *fd_get(int fd) {
-    return (fd >= 0 && fd < MAX_FDS) ? current->fds[fd] : 0;
+    return (fd >= 0 && fd < MAX_FDS) ? current->proc->fds[fd] : 0;
 }
 
 /* page faults and other exceptions from ring 3 */
@@ -333,7 +471,7 @@ bool proc_handle_fault(struct regs *r) {
     else
         snprintf(msg, sizeof msg, "\x1b[31m%s[%d]: %s (eip %08x)\x1b[0m\n", current->name, current->pid, what, r->eip);
     kprintf("%s", msg);
-    if (current->tty) tty_output(current->tty, msg, strlen(msg));
+    if (current->proc->tty) tty_output(current->proc->tty, msg, strlen(msg));
     sti();
     proc_exit(128 + (r->int_no == 14 ? 11 : r->int_no == 0 ? 8 : 4));
 }

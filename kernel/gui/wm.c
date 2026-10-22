@@ -1585,7 +1585,7 @@ static int map_into_owner(struct window *w) {
                 return -ENOMEM;
         w->user_va = va;
         w->owner_dir = current->dir;
-        w->owner_pid = current->pid;
+        w->owner_pid = current->proc->pid;
         return 0;
     }
     return -ENOMEM;
@@ -1606,6 +1606,7 @@ int win_syscall(int num, uint32_t a, uint32_t b, uint32_t c) {
         struct file *f = vfs_open_vnode(&w->vn, O_RDWR);
         int fd = f ? fd_alloc(f) : -ENOMEM;
         if (fd < 0) { if (f) vfs_close(f); return fd; }
+        current->proc->fd_cloexec |= 1u << fd;     /* the pixels are mapped into this image only */
         wi->x = w->x; wi->y = w->y; wi->w = w->w; wi->h = w->h;
         wi->pixels = (uint32_t *)w->user_va;
         wi->stride = SW;

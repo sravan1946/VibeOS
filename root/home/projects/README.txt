@@ -7,6 +7,7 @@ Programs here
   tcc -run hello.c world                       compile in memory and run, no output file
   cd sieve && tcc main.c sieve.c -o sieve && ./sieve 100     several files at once
   tcc bounce.c -lgui -o bounce && ./bounce     a GUI program (-lgui = windows + ui.h widgets)
+  tcc threads.c -o threads && ./threads        pthreads (in libc: create/join, mutexes, condvars)
   tcc -c a.c ; tcc a.o b.o -o prog             separate compile and link
 
 Headers are in /usr/include (libc, gui.h, ui.h), crt1.o / libc.a / libgui.a in /usr/lib.

@@ -28,8 +28,8 @@ static int sdir_lookup(struct vnode *d, const char *name, struct vnode **out) {
         if (!strcmp(sd->nodes[i].name, name)) {
             struct vnode *v = &sd->nodes[i].vn;
             if (!strcmp(name, "tty") && d->ino == 1) {        /* /dev/tty = caller's terminal */
-                if (!current->tty) return -ENXIO;
-                v = &current->tty->vn;
+                if (!current->proc->tty) return -ENXIO;
+                v = &current->proc->tty->vn;
             }
             vnode_get(v);
             *out = v;

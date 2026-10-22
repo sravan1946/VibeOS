@@ -18,7 +18,7 @@ emulator, and a set of desktop apps and games.
   kernel load to 1 MiB. A boot splash with a progress bar crossfades into the desktop.
 - Paging with a separate address space per process, physical frame bitmap, kernel heap,
   demand-grown user stacks.
-- Preemptive scheduling of user programs, ring 3, ELF loading, `spawn`/`waitpid`/signals,
+- Preemptive scheduling of user programs, ring 3, ELF loading, `spawn`/`exec`/`waitpid`/signals, threads (`<pthread.h>`: mutexes, condvars),
   per-task FPU state, POSIX-style signal handlers (masks, `sigreturn`, SIGCHLD/SIGWINCH),
   ~50 syscalls (`common/abi.h`).
 - VFS with mounts: read/write **ext2** root filesystem on ATA, `/dev` (null zero random tty

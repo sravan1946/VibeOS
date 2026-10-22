@@ -63,7 +63,7 @@ static int prep_write(FILE *f) {
     return 0;
 }
 
-size_t fwrite(const void *p, size_t sz, size_t n, FILE *f) {
+static size_t fwrite_u(const void *p, size_t sz, size_t n, FILE *f) {
     size_t total = sz * n;
     const char *s = p;
     if (!total || prep_write(f) < 0) return 0;
@@ -99,7 +99,7 @@ int putchar(int c) { return fputc(c, stdout); }
 int fputs(const char *s, FILE *f) { return fwrite(s, 1, strlen(s), f) == strlen(s) ? 0 : EOF; }
 int puts(const char *s) { return fputs(s, stdout) < 0 || fputc('\n', stdout) < 0 ? EOF : 0; }
 
-int fflush(FILE *f) {
+static int fflush_u(FILE *f) {
     if (!f) {
         int r = 0;
         for (FILE *q = all; q; q = q->next) if (fflush(q) < 0) r = EOF;
@@ -131,7 +131,7 @@ static int fill(FILE *f) {
     return 0;
 }
 
-int fgetc(FILE *f) {
+static int fgetc_u(FILE *f) {
     if (f->unget >= 0) { int c = f->unget; f->unget = -1; return c; }
     if (f->pos >= f->len || f->dir != D_READ) {
         f->pos = f->len = 0;
@@ -149,7 +149,7 @@ int ungetc(int c, FILE *f) {
     return c;
 }
 
-size_t fread(void *p, size_t sz, size_t n, FILE *f) {
+static size_t fread_u(void *p, size_t sz, size_t n, FILE *f) {
     size_t want = sz * n, got = 0;
     char *d = p;
     if (!want) return 0;
@@ -393,3 +393,15 @@ int remove(const char *path) {
     if (errno == EISDIR) return rmdir(path);
     return -1;
 }
+
+/* ---- locking: pthread.c's recursive lock, present only in programs that create threads.
+ * ponytail: one lock for every stream, around the buffer-touching calls only; per-FILE locks and
+ * fopen/fclose/setvbuf if threads ever share streams heavily */
+void __libc_lock(void) __attribute__((weak));
+void __libc_unlock(void) __attribute__((weak));
+#define LOCKED(T, call) { if (__libc_lock) __libc_lock(); T r = call; if (__libc_unlock) __libc_unlock(); return r; }
+
+size_t fwrite(const void *p, size_t sz, size_t n, FILE *f) LOCKED(size_t, fwrite_u(p, sz, n, f))
+size_t fread(void *p, size_t sz, size_t n, FILE *f) LOCKED(size_t, fread_u(p, sz, n, f))
+int fflush(FILE *f) LOCKED(int, fflush_u(f))
+int fgetc(FILE *f) LOCKED(int, fgetc_u(f))

@@ -29,6 +29,12 @@ void _exit(int code) __attribute__((noreturn));
 int spawnv(const char *path, char *const argv[]);
 int spawnve(const char *path, char *const argv[], char *const envp[], const struct spawn_opts *o);
 int spawnvp(const char *file, char *const argv[]);          /* searches $PATH (default "/bin") */
-int execvp(const char *file, char *const argv[]);          /* emulated: spawn + wait + _exit (no exec in the kernel) */
+/* exec: replace this process's image (same pid; fds stay open unless FD_CLOEXEC); returns -1 only on failure */
+int execve(const char *path, char *const argv[], char *const envp[]);
+int execv(const char *path, char *const argv[]);
+int execvp(const char *file, char *const argv[]);          /* searches $PATH like spawnvp */
+int execl(const char *path, const char *arg0, ...);        /* the list ends with (char *)NULL */
+int execlp(const char *file, const char *arg0, ...);
+int execle(const char *path, const char *arg0, ...);       /* ..., (char *)NULL, char *const envp[] */
 pid_t waitpid(pid_t pid, int *status, int flags);
 pid_t wait(int *status);

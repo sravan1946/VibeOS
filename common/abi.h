@@ -57,6 +57,15 @@ enum {
     SYS_sigaction = 70, /* (int sig, uintptr handler, uintptr restorer) -> old handler (SIG_DFL 0, SIG_IGN 1) */
     SYS_sigreturn,    /* () from the restorer: resume what the handler interrupted */
     SYS_sigprocmask,  /* (int how, uint32 set) -> old mask; SIG_BLOCK 0 / SIG_UNBLOCK 1 / SIG_SETMASK 2, bit n = signal n */
+    SYS_exec = 80,    /* (const char *path, char *const argv[], char *const envp[]): new image, same pid, fds (minus
+                         FD_CLOEXEC), cwd, mask and ignored signals; handlers reset to default. Returns only on error */
+    SYS_fcntl,        /* (int fd, int cmd, int arg) F_DUPFD / F_GETFD / F_SETFD (FD_CLOEXEC) / F_GETFL / F_SETFL */
+    SYS_thread_create, /* (uintptr entry, uintptr stack, int *errno) -> tid: a thread of this process runs at entry
+                         with esp = stack (no arguments in registers); errno, if given, becomes per thread */
+    SYS_thread_exit,  /* (int value): the main thread waits for the others, then the process exits with 0 */
+    SYS_thread_join,  /* (int tid, int *value): wait for a thread of this process and free it */
+    SYS_gettid,       /* () -> this thread's id (= getpid() in the main thread) */
+    SYS_futex,        /* (int *addr, int op, int val): FUTEX_WAIT sleeps if *addr == val (-EAGAIN otherwise), FUTEX_WAKE wakes waiters */
     SYS_MAX
 };
 
@@ -82,6 +91,17 @@ enum {
 #define O_APPEND   0x0400
 #define O_NONBLOCK 0x0800
 #define O_DIRECTORY 0x10000
+#define O_CLOEXEC  0x80000
+
+/* fcntl */
+#define F_DUPFD 0
+#define F_GETFD 1
+#define F_SETFD 2
+#define F_GETFL 3
+#define F_SETFL 4         /* only O_APPEND and O_NONBLOCK change */
+#define FD_CLOEXEC 1
+#define FUTEX_WAIT 0
+#define FUTEX_WAKE 1
 
 #define SEEK_SET 0
 #define SEEK_CUR 1

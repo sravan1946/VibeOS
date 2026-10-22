@@ -10,11 +10,13 @@
 #include <sys/wait.h>
 #include <limits.h>
 #include <syscall.h>
+#include <stdarg.h>
 
 int spawnv(const char *path, char *const argv[]) { return spawnve(path, argv, environ, NULL); }
 
-int spawnvp(const char *file, char *const argv[]) {
-    if (strchr(file, '/')) return spawnv(file, argv);
+/* run(path, argv) for file in each $PATH entry (default "/bin") until one doesn't fail with ENOENT/ENOTDIR */
+static int path_search(const char *file, char *const argv[], int (*run)(const char *, char *const[])) {
+    if (strchr(file, '/')) return run(file, argv);
     const char *p = getenv("PATH");
     if (!p || !*p) p = "/bin";
     size_t fl = strlen(file);
@@ -27,8 +29,8 @@ int spawnvp(const char *file, char *const argv[]) {
             memcpy(path, p, dl);
             path[dl] = '/';
             memcpy(path + dl + 1, file, fl + 1);
-            int pid = spawnv(dl ? path : path + 1, argv);       /* empty entry = cwd */
-            if (pid >= 0) return pid;
+            int r = run(dl ? path : path + 1, argv);            /* empty entry = cwd */
+            if (r >= 0) return r;
             if (errno != ENOENT && errno != ENOTDIR) err = errno;
         }
         if (!e) break;
@@ -36,6 +38,42 @@ int spawnvp(const char *file, char *const argv[]) {
     }
     errno = err;
     return -1;
+}
+
+int spawnvp(const char *file, char *const argv[]) { return path_search(file, argv, spawnv); }
+
+int execv(const char *path, char *const argv[]) { return execve(path, argv, environ); }
+int execvp(const char *file, char *const argv[]) { return path_search(file, argv, execv); }
+
+/* execl & co: the argument list (up to the NULL) becomes argv; execle's envp follows the NULL */
+#define LIST_ARGV(av, arg0, ap)                                              \
+    int n_ = 1;                                                              \
+    va_start(ap, arg0);                                                      \
+    while (va_arg(ap, char *)) n_++;                                         \
+    va_end(ap);                                                              \
+    char *av[n_ + 1];                                                        \
+    av[0] = (char *)arg0;                                                    \
+    va_start(ap, arg0);                                                      \
+    for (int i_ = 1; i_ <= n_; i_++) av[i_] = va_arg(ap, char *)
+
+int execl(const char *path, const char *arg0, ...) {
+    va_list ap;
+    LIST_ARGV(av, arg0, ap);
+    va_end(ap);
+    return execv(path, av);
+}
+int execlp(const char *file, const char *arg0, ...) {
+    va_list ap;
+    LIST_ARGV(av, arg0, ap);
+    va_end(ap);
+    return execvp(file, av);
+}
+int execle(const char *path, const char *arg0, ...) {
+    va_list ap;
+    LIST_ARGV(av, arg0, ap);
+    char **envp = va_arg(ap, char **);
+    va_end(ap);
+    return execve(path, av, envp);
 }
 
 pid_t wait(int *status) { return waitpid(-1, status, 0); }
@@ -55,7 +93,7 @@ struct DIR {
 };
 
 DIR *opendir(const char *path) {
-    int fd = open(path, O_RDONLY | O_DIRECTORY);
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (fd < 0) return NULL;
     DIR *d = malloc(sizeof *d);
     if (!d) { close(fd); return NULL; }

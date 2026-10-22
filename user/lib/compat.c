@@ -1,4 +1,4 @@
-/* compat.c - small POSIX leftovers a compiler needs: gettimeofday, mprotect, execvp */
+/* compat.c - small POSIX leftovers a compiler needs: gettimeofday, mprotect */
 #include <sys/time.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -17,11 +17,3 @@ int gettimeofday(struct timeval *tv, void *tz) {
 }
 
 int mprotect(void *addr, size_t len, int prot) { return 0; }
-
-/* no exec in the kernel: run the program as a child, wait, and exit with its status */
-int execvp(const char *file, char *const argv[]) {
-    int pid = spawnvp(file, argv), st = 0;
-    if (pid < 0) return -1;
-    waitpid(pid, &st, 0);
-    _exit(st);
-}

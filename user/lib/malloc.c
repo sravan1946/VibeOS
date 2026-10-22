@@ -111,7 +111,7 @@ static void *take(struct blk *b, size_t need) {
     return (char *)b + HDR;
 }
 
-void *malloc(size_t n) {
+static void *heap_alloc(size_t n) {
     if (n > 0x7fffffff - 64) { errno = ENOMEM; return NULL; }
     size_t need = ((n + 7) & ~(size_t)7) + HDR;
     if (need < MINBLK) need = MINBLK;
@@ -128,7 +128,7 @@ void *malloc(size_t n) {
     return NULL;
 }
 
-void free(void *p) {
+static void heap_free(void *p) {
     if (!p) return;
     struct blk *b = (struct blk *)((char *)p - HDR);
     if (b->magic != MAGIC_USED) abort();                  /* double free / wild pointer */
@@ -141,7 +141,7 @@ void *calloc(size_t n, size_t sz) {
     return p ? memset(p, 0, n * sz) : NULL;
 }
 
-void *realloc(void *p, size_t n) {
+static void *heap_realloc(void *p, size_t n) {
     if (!p) return malloc(n);
     if (!n) { free(p); return NULL; }
     if (n > 0x7fffffff - 64) { errno = ENOMEM; return NULL; }
@@ -168,9 +168,19 @@ void *realloc(void *p, size_t n) {
         }
         return p;
     }
-    void *q = malloc(n);
+    void *q = heap_alloc(n);
     if (!q) return NULL;
     memcpy(q, p, size - HDR);
-    free(p);
+    heap_free(p);
     return q;
 }
+
+/* pthread.c's recursive lock: only present (and only taken) in programs that create threads */
+void __libc_lock(void) __attribute__((weak));
+void __libc_unlock(void) __attribute__((weak));
+#define LOCK() do { if (__libc_lock) __libc_lock(); } while (0)
+#define UNLOCK() do { if (__libc_unlock) __libc_unlock(); } while (0)
+
+void *malloc(size_t n) { LOCK(); void *p = heap_alloc(n); UNLOCK(); return p; }
+void *realloc(void *p, size_t n) { LOCK(); p = heap_realloc(p, n); UNLOCK(); return p; }
+void free(void *p) { LOCK(); heap_free(p); UNLOCK(); }

@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <signal.h>
 #include "sh.h"
@@ -335,10 +336,21 @@ static int bi_exec(int argc, char **argv) {
     const char *path = find_cmd(argv[1], buf, sizeof buf);
     if (!path) { fprintf(stderr, "sh: exec: %s: not found\n", argv[1]); return 127; }
     char **envp = var_envp(NULL, 0);
-    fflush(stdout);
-    int pid = spawnve(path, argv + 1, envp, NULL);
-    if (pid < 0) { fprintf(stderr, "sh: exec: %s: %s\n", argv[1], strerror(errno)); return 126; }
-    exit(wait_pid(pid));                                   /* no real exec: spawn, wait, exit with its status */
+    fflush(NULL);
+    for (int fd = 3; fd < 32; fd++) fcntl(fd, F_SETFD, FD_CLOEXEC);   /* our own fds (history, saved 0-2) stay behind */
+    execve(path, argv + 1, envp);                          /* the kernel handles #! lines */
+    if (errno == ENOEXEC) {                                /* plain text without #!: runs under sh */
+        int n = 0;
+        while (argv[n]) n++;
+        char **av = malloc((n + 2) * sizeof *av);
+        av[0] = "sh"; av[1] = (char *)path;
+        memcpy(av + 2, argv + 2, (n - 1) * sizeof *av);   /* argv[2..n], including the NULL */
+        execve("/bin/sh", av, envp);
+        free(av);
+    }
+    fprintf(stderr, "sh: exec: %s: %s\n", argv[1], strerror(errno));
+    free(envp);
+    return 126;
 }
 
 /* ---- the classic ones ---- */
