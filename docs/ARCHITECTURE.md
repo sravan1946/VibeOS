@@ -83,7 +83,7 @@ header shared by the kernel and libc: `common/abi.h`.
   offset and flags and are shared between fds via refcounts.
 * **ext2** (`kernel/fs/ext2.c`): read/write, 1/2/4 KiB blocks, indirect blocks, create/unlink/
   rename/mkdir/truncate; tested on the host against `e2fsck` (`tools/ext2test`).
-* **devfs** at `/dev`: `null zero random urandom tty kmsg clipboard screen` (+ `dsp mixer` with an AC'97 card; `screen` reads as `u32 w, u32 h` then the composed
+* **devfs** at `/dev`: `null zero random urandom tty kmsg clipboard screen notify` (+ `dsp mixer` with an AC'97 card; `screen` reads as `u32 w, u32 h` then the composed
   screen as ARGB rows, taken from the compositor's back buffer). **procfs** at `/proc`:
   `meminfo uptime cpuinfo version processes`.
 * **Pipes**: 8 KiB ring buffers with blocking read/write and EOF/EPIPE.
@@ -139,6 +139,16 @@ procedurally drawn box-drawing glyphs, scrollback). Keys become escape sequences
   only that region: wallpaper, windows back to front with rounded frames and shadows, the
   taskbar, the launcher menu and the cursor. It handles focus, dragging, resizing, edge
   snapping, minimise/maximise, Alt+Tab, and keyboard shortcuts.
+* **Workspaces**: every window has `ws` (0..3, or -1 for frameless toasts, shown everywhere); `shown(w)` =
+  visible, not minimised, on the current workspace, and every compose/hit-test/placement/focus loop uses it.
+  Switching snapshots the screen, composes the target and cross-fades (`crossfade`). `topmost` windows are kept
+  above the rest by `raise()`.
+* **Overlays** (drawn after the windows, top to bottom: Alt+Tab, toasts, notification center, quick settings,
+  window menu, context menu, launcher) each have their own rectangle and damage only that rectangle when
+  they change. Alt+Tab thumbnails are a 2x2-tap downscale of the window buffers, redrawn when a client flips.
+* **Notifications**: `/dev/notify` (`title\nbody[\nkind]`) calls `wm_notify`, which pushes onto a 24-entry
+  history; entries flagged `toast` are stacked top-right for 4 s (checked on the 250 ms tick). The center lists
+  the history. The tray polls `ac97_volume()` and `ni` on the same tick and damages the tray only on change.
 * **User windows are file descriptors.** `win_create` maps a pixel buffer into the process at
   `0xA0000000+` (8 MiB slots; buffers are full-screen-sized so resizes never reallocate);
   the app draws into it and calls `win_flip` with a damage rectangle. `read()` on the fd returns

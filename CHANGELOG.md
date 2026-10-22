@@ -67,6 +67,14 @@ Newest notes at the bottom of each phase.
 - [x] libc additions: `stdint.h inttypes.h sys/time.h sys/mman.h`, `gettimeofday mprotect execvp` (spawn+wait emulation) in `user/lib/compat.c`, `strtold` (double precision); host-tested in `tools/libctest`
 - [ ] tcc `-run` backtraces / `-b` bounds checking (needs signals with handlers), `long double` literals beyond 53 bits, `__builtin_*` headers, a `make`
 
+## Desktop
+- [x] 4 virtual workspaces: Super+1..4 switch, Super+Shift+1..4 move the focused window, Ctrl+Super+←/→ cycle; clickable numbers in the taskbar (a dot marks workspaces holding windows); the window list shows only the current workspace; 120 ms cross-fade between workspaces
+- [x] Alt+Tab switcher: overlay with live downscaled window thumbnails and titles, most recently used first; Tab / Shift+Tab (or arrows) cycle while Alt is held, release to focus, Esc cancels, click picks
+- [x] Notifications: kernel queue + toasts at the top right (accent bar, title, wrapped body, slide-in, 4 s auto-dismiss, click to dismiss); `/dev/notify` (`title\nbody[\nkind]`), `/bin/notify [-k good|warn|bad] TITLE [BODY]`, `gui_notify()` in libgui; notification center (click the clock or Super+N) with history, per-item dismiss, Clear all, scroll; unread dot by the clock; `/bin/screenshot` now posts a notification instead of its own toast window
+- [x] Window polish: double-click title bar maximises/restores, right-click title bar menu (minimise, maximise/restore, always on top, move to workspace N, close), Super+drag moves a window from anywhere
+- [x] Tray: volume icon (only with `/dev/mixer`; scroll to change) and network icon (lease state); click either for quick settings (volume slider + mute, IP)
+- [x] vmtest: `keydown:NAME` / `keyup:NAME` hold keys through QMP (Alt+Tab, Super+drag)
+
 ## Phase 3 — Polish
 - [x] Boot splash with progress (logo, gradient bar, live kprintf status, crossfade into desktop)
 - [x] RTC clock / date
@@ -116,3 +124,4 @@ Newest notes at the bottom of each phase.
 - Toolchain (2026-10-22): TinyCC 0.9.27 ported as `/bin/tcc` with an in-OS SDK (`/usr/include`, `/usr/lib`); compiles and runs C, multi-file and libgui programs inside VibeOS. Needed `__udivmoddi4` exported from libtcc1 because the gcc-built libc.a calls it, and `-Ttext` at the user base since tcc defaults to 0x08048000.
 - TCP server sockets + `/bin/httpd`: the host browses VibeOS at http://localhost:8080 under `make run`; vmtest gained `--hostfwd`, `--pcap` and `host:CMD`. The capture showed two stack bugs: the first SYN-ACK waited 500 ms on ARP (the net thread can't sleep, so it fell to the retransmit timer; senders' MACs are now learned from incoming IP frames), and a burst of tiny segments overran the 32-slot e1000 RX ring and dropped the next SYN (ring is now 128, httpd batches its writes).
 - Doom (2026-10-22): doomgeneric + Freedoom run in a 640x400 desktop window with sound. `-timedemo demo1` renders 202 fps uncapped (7117 tics in 35 s, KVM), so the 35 fps cap has plenty of headroom: doom itself uses <10% CPU, but the in-kernel compositor spends ~85% of the CPU re-composing a 640x400 window 35 times a second (a pre-existing cost of full-window damage; worth optimising). Gotchas: doomkeys.h `#define`s names that `abi.h` declares as enum constants (so abi.h is force-included first and the platform layer captures our codes before including doomkeys.h), and doomgeneric's `I_Quit` returns instead of exiting (an `I_AtExit` hook does the `exit`).
+- Desktop (2026-10-22): workspaces, Alt+Tab thumbnails, notifications (`/dev/notify`, toasts, center), window menu, Super+drag and a volume/network tray, all in `wm.c` and damage-tracked (idle stays at 1% CPU: indicators only damage their own rectangle, toast expiry and tray polling run on the 250 ms tick). Held modifiers needed QMP `input-send-event`, since HMP `sendkey` always releases.

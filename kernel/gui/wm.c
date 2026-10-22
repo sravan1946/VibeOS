@@ -9,6 +9,8 @@
 #include "console.h"
 #include "mouse.h"
 #include "tty.h"
+#include "net.h"
+#include "vfs.h"
 
 uint32_t rtc_now(void);
 #include "wallpaper.h"
@@ -39,6 +41,21 @@ static int menu_hover = -1, hover_btn = -1, hover_task = -1;
 static uint64_t last_click_ms; static struct window *last_click_win;
 static uint32_t cpu_pct, last_idle, last_sample;
 static int last_minute = -1;
+
+/* ---- workspaces, overlays ---- */
+static int cur_ws;
+static bool super_alone;                                /* Super tapped on its own opens the launcher */
+static bool sw_open;                                    /* Alt+Tab switcher */
+static void sw_damage(void);
+static void sw_close(bool commit);
+static struct window *wmenu_win;
+static void wmenu_close(void);
+static int vol_cache = -1;                              /* master volume, -1 without a mixer */
+static bool net_up, net_present;
+static uint32_t net_ip;
+static int unseen;                                      /* notifications not yet looked at */
+static inline bool onws(const struct window *w) { return w->ws < 0 || w->ws == cur_ws; }
+static inline bool shown(const struct window *w) { return w->visible && !w->minimized && onws(w); }
 
 /* ---- launcher entries: built-in terminal + /etc/apps ---- */
 struct app { char name[32]; char path[64]; char arg[64]; color_t color; char glyph; };
@@ -79,7 +96,8 @@ static void damage_window(struct window *w) {
 }
 
 void wm_damage_client(struct window *w, int x, int y, int cw, int ch) {
-    if (!w->visible || w->minimized) return;
+    if (!shown(w)) return;
+    if (sw_open) sw_damage();                         /* live thumbnails */
     x = imax(0, x); y = imax(0, y);
     cw = imin(cw, w->w - x); ch = imin(ch, w->h - y);
     wm_damage(w->x + x, w->y + y, cw, ch);
@@ -177,6 +195,7 @@ static void draw_window(struct canvas *c, struct window *w) {
         canvas_clip(&cc, w->x + 80, r.y, w->w - 160, WM_TITLE_H);
         gfx_text(&cc, &font_ui_bold, tx, r.y + (WM_TITLE_H - font_ui_bold.height) / 2 + 1, w->title, foc ? C_TEXT : C_TEXT_DIM);
     }
+    if (w->topmost) gfx_circle_fill(c, w->x + w->w - 18, w->y - WM_TITLE_H / 2, 3, C_ACCENT);
     if (!(w->flags & WIN_FLAG_NORESIZE)) {             /* resize grip */
         color_t g = RGBA(255, 255, 255, 40);
         for (int i = 0; i < 3; i++) gfx_line(c, w->x + w->w - 3 - i * 4, w->y + w->h - 2, w->x + w->w - 2, w->y + w->h - 3 - i * 4, g);
@@ -187,16 +206,24 @@ static void draw_window(struct canvas *c, struct window *w) {
 #define TB_Y (SH - WM_TASKBAR_H)
 #define LAUNCH_W 92
 #define TASK_W 168
+#define WS_X (8 + LAUNCH_W + 10)
+#define WS_CELL 26
+#define TRAY_W 30
+#define TRAY_VOL_X (SW - 304)
+#define TRAY_NET_X (vol_cache >= 0 ? SW - 268 : SW - 304)
+#define TRAY_X (SW - 320)
+#define CLOCK_HIT 84
+enum { T_NONE = -3, T_LAUNCH = -2, T_GAP = -1, T_WS0 = -10, T_VOL = -20, T_NET = -21, T_CLOCK = -22 };
 
 static int visible_count(void) {
     int n = 0;
-    for (struct window *w = wins; w; w = w->next) if (w->visible && !(w->flags & WIN_FLAG_FRAMELESS)) n++;
+    for (struct window *w = wins; w; w = w->next) if (w->visible && onws(w) && !(w->flags & WIN_FLAG_FRAMELESS)) n++;
     return n;
 }
 
 static struct window *task_at(int i) {
     for (struct window *w = wins; w; w = w->next)
-        if (w->visible && !(w->flags & WIN_FLAG_FRAMELESS) && i-- == 0) return w;
+        if (w->visible && onws(w) && !(w->flags & WIN_FLAG_FRAMELESS) && i-- == 0) return w;
     return 0;
 }
 
@@ -206,6 +233,24 @@ static void app_icon(struct canvas *c, int x, int y, int s, color_t col, char gl
     char g[2] = { glyph, 0 };
     const struct font *f = &font_ui_bold;
     gfx_text(c, f, x + (s - gfx_text_width(f, g)) / 2, y + (s - f->height) / 2, g, RGB(255, 255, 255));
+}
+
+static bool cn_open_p(void);
+static bool qs_open_p(void);
+
+/* speaker glyph with 0..2 waves, or a cross when muted */
+static void draw_speaker(struct canvas *c, int x, int cy, int vol, color_t col) {
+    gfx_fill(c, x, cy - 3, 4, 7, col);
+    for (int i = 0; i < 5; i++) gfx_fill(c, x + 4 + i, cy - 3 - i, 1, 7 + 2 * i, col);
+    if (!vol) { color_t b = btn_col[0]; gfx_line(c, x + 12, cy - 3, x + 18, cy + 3, b); gfx_line(c, x + 12, cy + 3, x + 18, cy - 3, b); return; }
+    gfx_line(c, x + 12, cy - 3, x + 12, cy + 3, col);
+    if (vol > 40) gfx_line(c, x + 15, cy - 5, x + 15, cy + 5, col);
+}
+
+/* three rising bars, lit when there's a lease */
+static void draw_net(struct canvas *c, int x, int cy, bool up) {
+    for (int i = 0; i < 3; i++) gfx_fill(c, x + i * 5, cy + 6 - 4 * (i + 1), 3, 4 * (i + 1), up ? C_TEXT : RGBA(255, 255, 255, 60));
+    if (!up) gfx_line(c, x - 1, cy + 7, x + 14, cy - 7, btn_col[0]);
 }
 
 static void draw_taskbar(struct canvas *c) {
@@ -228,11 +273,22 @@ static void draw_taskbar(struct canvas *c) {
         gfx_fill(c, dcx - half, dcy + dy, 2 * half + 1, 1, RGB(255, 255, 255));
     }
     gfx_text(c, &font_ui_bold, lx + 33, ly + (lh - font_ui_bold.height) / 2, "VibeOS", RGB(255, 255, 255));
+    /* workspace indicator: numbers in a row, the current one lit, a dot under the others that hold windows */
+    for (int k = 0; k < WM_WS; k++) {
+        int wx = WS_X + k * WS_CELL;
+        bool cur = k == cur_ws, has = false;
+        for (struct window *w = wins; w; w = w->next) if (w->visible && w->ws == k) has = true;
+        if (cur) gfx_round_fill(c, wx, ly, WS_CELL - 2, lh, 8, RGBA(0xB3, 0x88, 0xFF, 96));
+        else if (hover_task == T_WS0 - k) gfx_round_fill(c, wx, ly, WS_CELL - 2, lh, 8, RGBA(255, 255, 255, 22));
+        char d[2] = { '1' + k, 0 };
+        gfx_text_center(c, &font_ui_bold, wx, ly + (lh - font_ui_bold.height) / 2 - (has && !cur ? 2 : 0), WS_CELL - 2, d, cur ? C_TEXT : C_TEXT_DIM);
+        if (has && !cur) gfx_circle_fill(c, wx + WS_CELL / 2 - 1, ly + lh - 5, 2, C_ACCENT);
+    }
     /* window buttons */
-    int n = visible_count(), x = lx + LAUNCH_W + 12;
+    int n = visible_count(), x = WS_X + WM_WS * WS_CELL + 12;
     for (int i = 0; i < n; i++, x += TASK_W + 6) {
         struct window *w = task_at(i);
-        if (x + TASK_W > SW - 200) break;
+        if (x + TASK_W > TRAY_X) break;
         bool act = w == focused && !w->minimized;
         color_t bg = act ? RGBA(0xB3, 0x88, 0xFF, 60) : hover_task == i ? RGBA(255, 255, 255, 26) : RGBA(255, 255, 255, 12);
         gfx_round_fill(c, x, ly, TASK_W, lh, 8, bg);
@@ -246,7 +302,9 @@ static void draw_taskbar(struct canvas *c) {
     char clk[16];
     snprintf(clk, sizeof clk, "%02u:%02u", (t / 3600) % 24, (t / 60) % 60);
     int cw = gfx_text_width(&font_ui_bold, clk);
+    if (hover_task == T_CLOCK || cn_open_p()) gfx_round_fill(c, SW - cw - 26, ly, cw + 22, lh, 8, RGBA(255, 255, 255, 20));
     gfx_text(c, &font_ui_bold, SW - cw - 16, TB_Y + (WM_TASKBAR_H - font_ui_bold.height) / 2, clk, C_TEXT);
+    if (unseen) gfx_circle_fill(c, SW - cw - 21, TB_Y + 10, 3, C_PINK);
     char cpu[24];
     snprintf(cpu, sizeof cpu, "CPU %u%%", cpu_pct);
     int px = SW - cw - 40 - 110;
@@ -254,6 +312,18 @@ static void draw_taskbar(struct canvas *c) {
     int bx = px + 62, by = TB_Y + WM_TASKBAR_H / 2 - 3;
     gfx_round_fill(c, bx, by, 44, 6, 3, RGBA(255, 255, 255, 30));
     gfx_round_fill(c, bx, by, imax(6, 44 * (int)cpu_pct / 100), 6, 3, cpu_pct > 80 ? btn_col[0] : C_ACCENT);
+    /* tray: volume (if there's a mixer) and network */
+    int cy = TB_Y + WM_TASKBAR_H / 2;
+    if (vol_cache >= 0) {
+        int vx = TRAY_VOL_X;
+        if (hover_task == T_VOL || qs_open_p()) gfx_round_fill(c, vx, ly, TRAY_W, lh, 8, RGBA(255, 255, 255, 20));
+        draw_speaker(c, vx + 6, cy, vol_cache, C_TEXT);
+    }
+    if (net_present) {
+        int nx = TRAY_NET_X;
+        if (hover_task == T_NET || qs_open_p()) gfx_round_fill(c, nx, ly, TRAY_W, lh, 8, RGBA(255, 255, 255, 20));
+        draw_net(c, nx + 8, cy, net_up);
+    }
 }
 
 /* ---- launcher menu ---- */
@@ -361,6 +431,255 @@ static void draw_cursor(struct canvas *c) {
 #define CURSOR_W 12
 #define CURSOR_H 20
 
+/* ================= overlays: toasts, notification center, quick settings, window menu, Alt+Tab ================= */
+
+/* greedy word wrap of s into at most max lines of width maxw; fills off/len, returns the line count */
+static int wrap(const struct font *f, const char *s, int maxw, int *off, int *len, int max) {
+    int n = 0, i = 0, L = strlen(s);
+    while (i < L && n < max) {
+        int last = -1, j = i;
+        for (; j < L; j++) {
+            if (s[j] == ' ') last = j;
+            if (gfx_text_width_n(f, s + i, j + 1 - i) > maxw) { if (last > i) j = last; else if (j == i) j++; break; }
+        }
+        off[n] = i; len[n] = j - i; n++;
+        i = j;
+        while (i < L && s[i] == ' ') i++;
+    }
+    return n;
+}
+
+static const color_t C_BODY = RGB(0xC4, 0xC1, 0xDC);
+
+/* ---- notifications: the history (newest first) feeds both the toasts and the center ---- */
+#define NQ 24
+#define NTOAST 4
+#define TOAST_W 340
+#define TOAST_MS 4000
+#define TOAST_IN 200
+struct notif { char title[48], body[160]; color_t col; uint32_t born, wall; bool toast; };
+static struct notif hist[NQ];
+static int nhist;
+
+static int toast_layout(struct rect *r, struct notif **ns) {
+    int k = 0, y = 16;
+    for (int i = 0; i < nhist && k < NTOAST; i++) {
+        if (!hist[i].toast) continue;
+        int off[3], len[3], nl = wrap(&font_ui, hist[i].body, TOAST_W - 40, off, len, 3);
+        int h = 12 + font_ui_bold.height + (nl ? 4 + nl * (font_ui.height + 2) : 0) + 12;
+        r[k] = (struct rect){ SW - TOAST_W - 16, y, TOAST_W, h };
+        ns[k++] = &hist[i];
+        y += h + 10;
+    }
+    return k;
+}
+
+static void toast_damage(void) {
+    struct rect r[NTOAST]; struct notif *n[NTOAST];
+    int k = toast_layout(r, n);
+    if (k) wm_damage(SW - TOAST_W - 16 - SHADOW, 0, TOAST_W + 16 + SHADOW, r[k - 1].y + r[k - 1].h + SHADOW + 14);
+}
+
+static bool toasts_animating(void) {
+    for (int i = 0; i < nhist; i++) if (hist[i].toast && ticks_ms - hist[i].born < TOAST_IN + 24) return true;
+    return false;
+}
+
+static void draw_toasts(struct canvas *c) {
+    struct rect r[NTOAST]; struct notif *n[NTOAST];
+    int k = toast_layout(r, n);
+    for (int i = 0; i < k; i++) {
+        uint32_t age = ticks_ms - n[i]->born;
+        int off = 0;
+        if (age < TOAST_IN) { int t = age * 256 / TOAST_IN, e = 256 - (256 - t) * (256 - t) / 256; off = (TOAST_W + 24) * (256 - e) / 256; }
+        struct rect q = { r[i].x + off, r[i].y, r[i].w, r[i].h };
+        draw_shadow(c, q, 200);
+        gfx_round_fill(c, q.x, q.y, q.w, q.h, 12, RGBA(24, 22, 38, 248));
+        gfx_round_rect(c, q.x, q.y, q.w, q.h, 12, RGBA(255, 255, 255, 40));
+        gfx_round_fill(c, q.x + 10, q.y + 12, 4, q.h - 24, 2, n[i]->col);
+        struct canvas tc = *c;
+        canvas_clip(&tc, q.x + 22, q.y, q.w - 34, q.h);
+        gfx_text(&tc, &font_ui_bold, q.x + 22, q.y + 12, n[i]->title, C_TEXT);
+        int off2[3], len2[3], nl = wrap(&font_ui, n[i]->body, q.w - 40, off2, len2, 3);
+        for (int l = 0; l < nl; l++)
+            gfx_text_n(&tc, &font_ui, q.x + 22, q.y + 12 + font_ui_bold.height + 4 + l * (font_ui.height + 2), n[i]->body + off2[l], len2[l], C_BODY);
+    }
+}
+
+/* ---- notification center ---- */
+#define CN_W 380
+#define CN_ROW 76
+static bool cn_open;
+static int cn_off;
+static bool cn_open_p(void) { return cn_open; }
+static int cn_vis(void) { return imax(1, imin(imax(1, nhist), (TB_Y - 24 - 70) / CN_ROW)); }
+static struct rect cn_rect(void) { return (struct rect){ SW - CN_W - 12, 12, CN_W, 64 + cn_vis() * CN_ROW }; }
+static void cn_damage(void) { struct rect r = cn_rect(); wm_damage(r.x - SHADOW, r.y - SHADOW, r.w + 2 * SHADOW, r.h + 2 * SHADOW + 8); }
+static void cn_close(void) { if (!cn_open) return; cn_damage(); cn_open = false; wm_damage(0, TB_Y, SW, WM_TASKBAR_H); }
+
+static void draw_center(struct canvas *c) {
+    struct rect m = cn_rect();
+    draw_shadow(c, m, 220);
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 14, RGBA(22, 20, 34, 248));
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 14, RGBA(0xB3, 0x88, 0xFF, 70));
+    gfx_text(c, &font_title, m.x + 18, m.y + 14, "Notifications", C_TEXT);
+    if (nhist) gfx_text(c, &font_ui, m.x + m.w - 18 - gfx_text_width(&font_ui, "Clear all"), m.y + 20, "Clear all", C_ACCENT);
+    gfx_fill(c, m.x + 14, m.y + 52, m.w - 28, 1, RGBA(255, 255, 255, 24));
+    if (!nhist) { gfx_text_center(c, &font_ui, m.x, m.y + 52 + CN_ROW / 2 - 4, m.w, "You're all caught up", C_TEXT_DIM); return; }
+    for (int i = 0; i < cn_vis() && cn_off + i < nhist; i++) {
+        struct notif *n = &hist[cn_off + i];
+        int y = m.y + 58 + i * CN_ROW;
+        gfx_round_fill(c, m.x + 10, y, m.w - 20, CN_ROW - 6, 10, RGBA(255, 255, 255, 12));
+        gfx_round_fill(c, m.x + 20, y + 12, 4, CN_ROW - 30, 2, n->col);
+        uint32_t t = n->wall + tz_minutes * 60;
+        char tm[8];
+        snprintf(tm, sizeof tm, "%02u:%02u", (t / 3600) % 24, (t / 60) % 60);
+        gfx_text(c, &font_ui, m.x + m.w - 24 - gfx_text_width(&font_ui, tm), y + 10, tm, C_TEXT_DIM);
+        struct canvas tc = *c;
+        canvas_clip(&tc, m.x + 34, y, m.w - 34 - 70, CN_ROW - 6);
+        gfx_text(&tc, &font_ui_bold, m.x + 34, y + 10, n->title, C_TEXT);
+        struct canvas bc = *c;
+        canvas_clip(&bc, m.x + 34, y, m.w - 34 - 26, CN_ROW - 6);
+        int off[2], len[2], nl = wrap(&font_ui, n->body, m.w - 34 - 34, off, len, 2);
+        for (int l = 0; l < nl; l++)
+            gfx_text_n(&bc, &font_ui, m.x + 34, y + 10 + font_ui_bold.height + 3 + l * (font_ui.height + 1), n->body + off[l], len[l], C_BODY);
+    }
+    int vis = cn_vis();
+    if (nhist > vis) {                                         /* scroll thumb */
+        int th = imax(16, vis * CN_ROW * vis / nhist), ty = m.y + 58 + (vis * CN_ROW - th) * cn_off / (nhist - vis);
+        gfx_round_fill(c, m.x + m.w - 7, ty, 3, th, 1, RGBA(255, 255, 255, 60));
+    }
+}
+
+/* ---- quick settings (volume + network), opened from the tray ---- */
+#define QS_W 290
+static bool qs_open, qs_drag;
+static bool qs_open_p(void) { return qs_open; }
+static struct rect qs_rect(void) {
+    int h = 46 + (vol_cache >= 0 ? 50 : 0) + 62;
+    return (struct rect){ SW - QS_W - 12, TB_Y - h - 8, QS_W, h };
+}
+static void qs_damage(void) { struct rect r = qs_rect(); wm_damage(r.x - SHADOW, r.y - SHADOW, r.w + 2 * SHADOW, r.h + 2 * SHADOW + 8); }
+static void qs_close(void) { if (!qs_open) return; qs_damage(); qs_open = false; qs_drag = false; wm_damage(0, TB_Y, SW, WM_TASKBAR_H); }
+
+static void draw_qs(struct canvas *c) {
+    struct rect m = qs_rect();
+    draw_shadow(c, m, 220);
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 14, RGBA(22, 20, 34, 248));
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 14, RGBA(0xB3, 0x88, 0xFF, 70));
+    gfx_text(c, &font_ui_bold, m.x + 18, m.y + 14, "Quick settings", C_TEXT);
+    int y = m.y + 46;
+    if (vol_cache >= 0) {
+        draw_speaker(c, m.x + 20, y + 20, vol_cache, C_TEXT);
+        int x0 = m.x + 64, x1 = m.x + m.w - 58, cy = y + 20, kx = x0 + (x1 - x0) * vol_cache / 100;
+        gfx_round_fill(c, x0, cy - 3, x1 - x0, 6, 3, RGBA(255, 255, 255, 34));
+        gfx_round_fill(c, x0, cy - 3, imax(6, kx - x0), 6, 3, C_ACCENT);
+        gfx_circle_fill(c, kx, cy, 8, RGB(255, 255, 255));
+        char pct[8];
+        snprintf(pct, sizeof pct, "%d%%", vol_cache);
+        gfx_text(c, &font_ui, m.x + m.w - 18 - gfx_text_width(&font_ui, pct), cy - font_ui.height / 2, pct, C_TEXT_DIM);
+        y += 50;
+    }
+    gfx_fill(c, m.x + 14, y - 6, m.w - 28, 1, RGBA(255, 255, 255, 24));
+    draw_net(c, m.x + 22, y + 24, net_up);
+    gfx_text(c, &font_ui_bold, m.x + 64, y + 8, !net_present ? "No network card" : net_up ? "Connected" : "Not connected", C_TEXT);
+    if (net_up) {
+        char l[40];
+        snprintf(l, sizeof l, "%u.%u.%u.%u", net_ip & 255, net_ip >> 8 & 255, net_ip >> 16 & 255, net_ip >> 24);
+        gfx_text(c, &font_ui, m.x + 64, y + 30, l, C_BODY);
+    }
+}
+
+/* ---- window menu (right-click on a title bar) ---- */
+enum { WA_MIN = 1, WA_MAX, WA_TOP, WA_CLOSE, WA_WS = 10 };
+struct wmi { char label[40]; int act; bool sep; };
+static struct wmi wmi[10];
+static int wmi_n, wmenu_x, wmenu_y, wmenu_hover = -1;
+#define WMENU_W 224
+#define WMENU_ITEM 32
+static int wmenu_h(void) { int h = 12; for (int i = 0; i < wmi_n; i++) h += WMENU_ITEM + (wmi[i].sep ? 8 : 0); return h; }
+static int wmenu_iy(int i) { int y = wmenu_y + 6; for (int k = 0; k <= i; k++) { if (wmi[k].sep) y += 8; if (k < i) y += WMENU_ITEM; } return y; }
+static void wmenu_damage(void) { wm_damage(wmenu_x - SHADOW, wmenu_y - SHADOW, WMENU_W + 2 * SHADOW, wmenu_h() + 2 * SHADOW + 8); }
+static void wmenu_close(void) { if (!wmenu_win) return; wmenu_damage(); wmenu_win = 0; }
+static int wmenu_at(int x, int y) {
+    if (!wmenu_win || x < wmenu_x || x >= wmenu_x + WMENU_W) return -1;
+    for (int i = 0; i < wmi_n; i++) if (y >= wmenu_iy(i) && y < wmenu_iy(i) + WMENU_ITEM) return i;
+    return -1;
+}
+
+static void draw_wmenu(struct canvas *c) {
+    struct rect m = { wmenu_x, wmenu_y, WMENU_W, wmenu_h() };
+    draw_shadow(c, m, 200);
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 12, RGBA(22, 20, 34, 248));
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 12, RGBA(0xB3, 0x88, 0xFF, 60));
+    for (int i = 0; i < wmi_n; i++) {
+        int y = wmenu_iy(i);
+        if (wmi[i].sep) gfx_fill(c, m.x + 14, y - 5, m.w - 28, 1, RGBA(255, 255, 255, 24));
+        if (i == wmenu_hover) gfx_round_fill(c, m.x + 6, y, m.w - 12, WMENU_ITEM, 8, RGBA(0xB3, 0x88, 0xFF, 60));
+        gfx_text(c, &font_ui, m.x + 18, y + (WMENU_ITEM - font_ui.height) / 2, wmi[i].label, wmi[i].act == WA_CLOSE ? btn_col[0] : C_TEXT);
+        if (wmi[i].act == WA_TOP && wmenu_win && wmenu_win->topmost) gfx_circle_fill(c, m.x + m.w - 22, y + WMENU_ITEM / 2, 4, C_ACCENT);
+    }
+}
+
+/* ---- Alt+Tab switcher: live thumbnails, most recently used first ---- */
+#define SW_CW 196
+#define SW_CH 150
+#define SW_TW 176
+#define SW_TH 108
+#define SW_COLS 6
+static struct window *sw_list[16];
+static int sw_n, sw_sel;
+static struct rect sw_rect(void) {
+    int cols = imin(sw_n, SW_COLS), rows = (sw_n + SW_COLS - 1) / SW_COLS, w = cols * SW_CW + 24, h = rows * SW_CH + 24;
+    return (struct rect){ (SW - w) / 2, (TB_Y - h) / 2, w, h };
+}
+static struct rect sw_cell(int i) {
+    struct rect r = sw_rect();
+    return (struct rect){ r.x + 12 + i % SW_COLS * SW_CW, r.y + 12 + i / SW_COLS * SW_CH, SW_CW, SW_CH };
+}
+static void sw_damage(void) { struct rect r = sw_rect(); wm_damage(r.x - SHADOW, r.y - SHADOW, r.w + 2 * SHADOW, r.h + 2 * SHADOW + 8); }
+
+/* 2x2-tap downscale of a window buffer, fitted into tw x th */
+static void draw_thumb(struct canvas *c, int x, int y, int tw, int th, struct window *w) {
+    int dw = tw, dh = w->h * tw / w->w;
+    if (dh > th) { dh = th; dw = w->w * th / w->h; }
+    if (dw < 1 || dh < 1) return;
+    x += (tw - dw) / 2; y += (th - dh) / 2;
+    int x0 = imax(x, c->cx0), x1 = imin(x + dw, c->cx1), y0 = imax(y, c->cy0), y1 = imin(y + dh, c->cy1);
+    for (int dy = y0; dy < y1; dy++) {
+        const uint32_t *ra = &w->buf[(((dy - y) * 4 + 1) * w->h / (4 * dh)) * SW], *rb = &w->buf[(((dy - y) * 4 + 3) * w->h / (4 * dh)) * SW];
+        uint32_t *o = &c->px[dy * c->stride];
+        for (int dx = x0; dx < x1; dx++) {
+            int xa = ((dx - x) * 4 + 1) * w->w / (4 * dw), xb = ((dx - x) * 4 + 3) * w->w / (4 * dw);
+            uint32_t p0 = ra[xa], p1 = ra[xb], p2 = rb[xa], p3 = rb[xb];
+            uint32_t rbv = (((p0 & 0xFF00FF) + (p1 & 0xFF00FF) + (p2 & 0xFF00FF) + (p3 & 0xFF00FF)) >> 2) & 0xFF00FF;
+            uint32_t g = (((p0 & 0xFF00) + (p1 & 0xFF00) + (p2 & 0xFF00) + (p3 & 0xFF00)) >> 2) & 0xFF00;
+            o[dx] = 0xFF000000u | rbv | g;
+        }
+    }
+}
+
+static void draw_switcher(struct canvas *c) {
+    struct rect m = sw_rect();
+    draw_shadow(c, m, 230);
+    gfx_round_fill(c, m.x, m.y, m.w, m.h, 16, RGBA(18, 16, 30, 244));
+    gfx_round_rect(c, m.x, m.y, m.w, m.h, 16, RGBA(0xB3, 0x88, 0xFF, 80));
+    for (int i = 0; i < sw_n; i++) {
+        struct rect q = sw_cell(i);
+        struct window *w = sw_list[i];
+        if (i == sw_sel) {
+            gfx_round_fill(c, q.x + 2, q.y + 2, q.w - 4, q.h - 4, 12, RGBA(0xB3, 0x88, 0xFF, 56));
+            gfx_round_rect(c, q.x + 2, q.y + 2, q.w - 4, q.h - 4, 12, RGBA(0xD8, 0xC4, 0xFF, 170));
+        }
+        gfx_round_fill(c, q.x + 10, q.y + 10, SW_TW, SW_TH, 6, RGB(0x11, 0x13, 0x1C));
+        draw_thumb(c, q.x + 10, q.y + 10, SW_TW, SW_TH, w);
+        struct canvas tc = *c;
+        canvas_clip(&tc, q.x + 8, q.y, q.w - 16, q.h);
+        int tw = gfx_text_width(&font_ui_bold, w->title), tx = tw < q.w - 16 ? q.x + (q.w - tw) / 2 : q.x + 8;
+        gfx_text(&tc, &font_ui_bold, tx, q.y + 10 + SW_TH + 10, w->title, i == sw_sel ? C_TEXT : C_TEXT_DIM);
+    }
+}
+
 /* ================= compose ================= */
 
 static bool no_present;
@@ -401,7 +720,7 @@ static bool compose(void) {
     for (int y = d.y; y < d.y + d.h; y++)
         memcpy(&bb.px[y * SW + d.x], &wall.px[y * SW + d.x], d.w * 4);
     for (struct window *w = wins; w; w = w->next) {
-        if (!w->visible || w->minimized) continue;
+        if (!shown(w)) continue;
         uint32_t age = ticks_ms - w->born;
         if (age < FADE_MS && !(w->flags & WIN_FLAG_FRAMELESS)) { draw_window_fading(&c, w, age); anim = true; }
         else draw_window(&c, w);
@@ -410,10 +729,16 @@ static bool compose(void) {
     if (drag_win && snap_zone) draw_snap(&c);
     if (menu_open) draw_menu(&c);
     if (ctx_open) draw_ctx(&c);
+    if (wmenu_win) draw_wmenu(&c);
+    if (qs_open) draw_qs(&c);
+    if (cn_open) draw_center(&c);
+    draw_toasts(&c);
+    if (sw_open) draw_switcher(&c);
     draw_cursor(&c);
     if (!no_present)
         for (int y = d.y; y < d.y + d.h; y++)
             memcpy(&fb.px[y * fb.stride + d.x], &bb.px[y * SW + d.x], d.w * 4);
+    if (toasts_animating()) { anim = true; toast_damage(); }
     if (anim)
         for (struct window *w = wins; w; w = w->next)
             if (ticks_ms - w->born < FADE_MS + 20) { struct rect r; frame_rect(w, &r); wm_damage(r.x - SHADOW, r.y - SHADOW, r.w + 2 * SHADOW, r.h + 2 * SHADOW + RISE + 8); }
@@ -421,9 +746,10 @@ static bool compose(void) {
 }
 
 /* blend the boot splash (snap) into the first desktop frame */
-static void crossfade(const uint32_t *snap) {
-    for (int t = 32; t <= 256; t += 32) {
-        uint64_t until = ticks_ms + 30;
+static void crossfade(const uint32_t *snap, int step, int ms) {
+    for (int t = step; t < 256 + step; t += step) {
+        if (t > 256) t = 256;
+        uint64_t until = ticks_ms + ms;
         for (int y = 0; y < SH; y++) {
             const uint32_t *a = snap + y * SW, *b = bb.px + y * SW;
             uint32_t *o = fb.px + y * fb.stride;
@@ -442,9 +768,9 @@ static void unlink_win(struct window *w) {
 
 static void raise(struct window *w) {
     unlink_win(w);
-    w->next = 0;
     struct window **pp = &wins;
-    while (*pp) pp = &(*pp)->next;
+    while (*pp && (w->topmost || !(*pp)->topmost)) pp = &(*pp)->next;   /* topmost windows stay above the rest */
+    w->next = *pp;
     *pp = w;
 }
 
@@ -473,7 +799,7 @@ struct window *wm_focused(void) { return focused; }
 static void focus_top(void) {
     struct window *top = 0;
     for (struct window *w = wins; w; w = w->next)
-        if (w->visible && !w->minimized && !(w->flags & WIN_FLAG_FRAMELESS)) top = w;
+        if (shown(w) && !(w->flags & WIN_FLAG_FRAMELESS)) top = w;
     focused = 0;
     if (top) wm_focus(top);
     else wm_damage(0, TB_Y, SW, WM_TASKBAR_H);
@@ -492,6 +818,7 @@ struct window *wm_create(const char *title, int x, int y, int w, int h, int flag
     win->buf = (uint32_t *)pa;
     memset32(win->buf, RGB(0x11, 0x13, 0x1C), (size_t)SW * h);
     win->id = next_id++;
+    win->ws = flags & WIN_FLAG_FRAMELESS ? -1 : cur_ws;
     win->born = ticks_ms;
     win->w = w; win->h = h; win->flags = flags;
     if (x < 0 || y < 0) {          /* least-overlap placement on a 24 px grid, cascade on ties */
@@ -503,7 +830,7 @@ struct window *wm_create(const char *title, int x, int y, int w, int h, int flag
             for (int cx = 16; cx + w + 16 <= SW; cx += 24) {
                 int64_t ov = 0;
                 for (struct window *o = wins; o; o = o->next) {
-                    if (!o->visible || o->minimized || (o->flags & WIN_FLAG_FRAMELESS)) continue;
+                    if (!shown(o) || (o->flags & WIN_FLAG_FRAMELESS)) continue;
                     int ix = imin(cx + w, o->x + o->w) - imax(cx, o->x);
                     int iy = imin(cy + h, o->y + o->h) - imax(cy - WM_TITLE_H, o->y - WM_TITLE_H);
                     if (ix > 0 && iy > 0) ov += (int64_t)ix * iy;
@@ -535,6 +862,8 @@ void wm_destroy(struct window *w) {
     if (capture_win == w) capture_win = 0;
     if (hover_win == w) hover_win = 0;
     if (last_click_win == w) last_click_win = 0;
+    if (wmenu_win == w) wmenu_close();
+    if (sw_open) sw_close(false);
     if (w->user_va) {
         struct task *o = task_find(w->owner_pid);
         if (o && o->dir == w->owner_dir) vmm_unmap_range(w->owner_dir, w->user_va, w->buf_frames * PAGE_SIZE, false);
@@ -680,12 +1009,256 @@ static void launch(int i) {
     else wm_spawn_app(apps[i].path, apps[i].arg);
 }
 
+static int taskbar_at(int x, int y);
+/* ================= workspaces, popups, notifications ================= */
+
+static void defocus(void) {
+    if (!focused) return;
+    struct window *o = focused;
+    focused = 0;
+    struct gui_event e = { .type = EV_FOCUS, .pressed = 0 };
+    send(o, &e);
+    damage_window(o);
+    wm_damage(0, TB_Y, SW, WM_TASKBAR_H);
+}
+
+static void close_popups(void) {
+    if (menu_open) launch(-1);
+    if (ctx_open) ctx_activate(-1);
+    wmenu_close(); qs_close(); cn_close(); sw_close(false);
+}
+
+/* fade to the new workspace: snapshot the screen, compose the target, cross-dissolve */
+static void switch_ws(int n) {
+    n = (n % WM_WS + WM_WS) % WM_WS;
+    if (n == cur_ws) return;
+    close_popups();
+    drag_win = resize_win = capture_win = 0;
+    set_snap(0);
+    static uint32_t *old;
+    if (!old) old = kmalloc((size_t)SW * SH * 4);
+    compose();                                           /* flush pending damage so bb == screen */
+    if (old) memcpy(old, bb.px, (size_t)SW * SH * 4);
+    defocus();
+    hover_win = 0;
+    cur_ws = n;
+    focus_top();
+    wm_damage(0, 0, SW, SH);
+    if (old) { no_present = true; compose(); no_present = false; crossfade(old, 43, 20); }
+}
+
+static void move_to_ws(struct window *w, int k) {
+    if (w->ws == k || (w->flags & WIN_FLAG_FRAMELESS)) return;
+    bool was = w == focused;
+    damage_window(w);
+    if (drag_win == w) drag_win = 0;
+    if (was) defocus();
+    w->ws = k;
+    if (was) focus_top();
+    wm_damage(0, TB_Y, SW, WM_TASKBAR_H);
+}
+
+/* ---- notifications ---- */
+void wm_notify(const char *msg, int n) {
+    char buf[256];
+    n = imin(n, (int)sizeof buf - 1);
+    memcpy(buf, msg, n);
+    buf[n] = 0;
+    char *title = buf, *body = buf + n, *kind = buf + n, *p;
+    if ((p = strchr(buf, '\n'))) {
+        *p = 0; body = p + 1;
+        if ((p = strchr(body, '\n'))) { *p = 0; kind = p + 1; } else kind = body + strlen(body);
+    }
+    for (char *e = kind + strlen(kind); e > kind && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' '); ) *--e = 0;
+    for (char *e = body + strlen(body); e > body && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' '); ) *--e = 0;
+    for (p = body; *p; p++) if (*p == '\r') *p = ' ';
+    if (!*title && !*body) return;
+    if (running) toast_damage();
+    memmove(hist + 1, hist, (NQ - 1) * sizeof hist[0]);
+    if (nhist < NQ) nhist++;
+    struct notif *h = &hist[0];
+    memset(h, 0, sizeof *h);
+    strlcpy(h->title, *title ? title : "Notification", sizeof h->title);
+    strlcpy(h->body, body, sizeof h->body);
+    h->col = !strcmp(kind, "good") ? RGB(0x4B, 0xE0, 0x8A) : !strcmp(kind, "warn") ? RGB(0xFF, 0xC2, 0x4B) : !strcmp(kind, "bad") ? RGB(0xFF, 0x5F, 0x7A) : C_ACCENT;
+    h->born = ticks_ms; h->wall = rtc_now();
+    h->toast = !cn_open;
+    int k = 0;
+    for (int i = 0; i < nhist; i++) if (hist[i].toast && ++k > NTOAST) hist[i].toast = false;
+    if (!cn_open) unseen++;
+    if (running) { toast_damage(); if (cn_open) cn_damage(); wm_damage(0, TB_Y, SW, WM_TASKBAR_H); }
+}
+
+static void cn_toggle(void) {
+    if (cn_open) { cn_close(); return; }
+    close_popups();
+    toast_damage();
+    for (int i = 0; i < nhist; i++) hist[i].toast = false;
+    unseen = 0; cn_off = 0; cn_open = true;
+    cn_damage();
+    wm_damage(0, TB_Y, SW, WM_TASKBAR_H);
+}
+
+static void notif_remove(int i) {
+    memmove(hist + i, hist + i + 1, (NQ - 1 - i) * sizeof hist[0]);
+    nhist--;
+    cn_off = imax(0, imin(cn_off, nhist - cn_vis()));
+}
+
+/* returns true when the click/scroll belonged to the center */
+static bool cn_mouse(int x, int y, bool down, int dz) {
+    struct rect m = cn_rect();
+    if (x < m.x || x >= m.x + m.w || y < m.y || y >= m.y + m.h) {
+        if (!down) return false;
+        bool clk = taskbar_at(x, y) == T_CLOCK;           /* clicking the clock again just closes */
+        cn_close();
+        return clk;
+    }
+    if (dz && nhist > cn_vis()) { cn_off = imax(0, imin(nhist - cn_vis(), cn_off + (dz > 0 ? 1 : -1))); cn_damage(); }
+    if (!down) return true;
+    if (y < m.y + 52) { if (nhist && x > m.x + m.w - 110) { cn_damage(); nhist = 0; cn_off = 0; cn_damage(); } return true; }
+    int i = (y - m.y - 58) / CN_ROW;
+    if (y >= m.y + 58 && i < cn_vis() && cn_off + i < nhist) { cn_damage(); notif_remove(cn_off + i); cn_damage(); }
+    return true;
+}
+
+static bool toasts_mouse(int x, int y, bool down) {
+    if (!down) return false;
+    struct rect r[NTOAST]; struct notif *n[NTOAST];
+    int k = toast_layout(r, n);
+    for (int i = 0; i < k; i++)
+        if (x >= r[i].x && x < r[i].x + r[i].w && y >= r[i].y && y < r[i].y + r[i].h) { toast_damage(); n[i]->toast = false; return true; }
+    return false;
+}
+
+/* ---- quick settings ---- */
+static void set_volume(int v) {
+    vol_cache = ac97_volume(imax(0, imin(100, v)));
+    wm_damage(TRAY_X, TB_Y, SW - TRAY_X, WM_TASKBAR_H);
+    if (qs_open) qs_damage();
+}
+
+static void qs_toggle(void) {
+    if (qs_open) { qs_close(); return; }
+    close_popups();
+    qs_open = true;
+    qs_damage();
+    wm_damage(0, TB_Y, SW, WM_TASKBAR_H);
+}
+
+static bool qs_mouse(int x, int y, bool down, int dz) {
+    struct rect m = qs_rect();
+    if (x < m.x || x >= m.x + m.w || y < m.y || y >= m.y + m.h) {
+        if (!down) return false;
+        int t = taskbar_at(x, y);
+        qs_close();
+        return t == T_VOL || t == T_NET;
+    }
+    if (vol_cache < 0) return true;
+    if (dz) set_volume(vol_cache - (dz > 0 ? 5 : -5));
+    int vy = m.y + 46;
+    if (down && y >= vy && y < vy + 40) {
+        static int saved = 60;
+        if (x < m.x + 56) { if (vol_cache) saved = vol_cache; set_volume(vol_cache ? 0 : saved); }
+        else if (x < m.x + m.w - 50) { qs_drag = true; set_volume((x - (m.x + 64)) * 100 / (m.w - 64 - 58)); }
+    }
+    return true;
+}
+
+/* ---- window menu ---- */
+static void wmi_add(const char *label, int act, bool sep) {
+    if (wmi_n >= (int)ARRAY_LEN(wmi)) return;
+    strlcpy(wmi[wmi_n].label, label, sizeof wmi[0].label);
+    wmi[wmi_n].act = act; wmi[wmi_n].sep = sep;
+    wmi_n++;
+}
+
+static void wmenu_open(struct window *w, int x, int y) {
+    wmi_n = 0;
+    wmi_add("Minimise", WA_MIN, false);
+    if (!(w->flags & WIN_FLAG_NORESIZE)) wmi_add(w->maximized ? "Restore" : "Maximise", WA_MAX, false);
+    wmi_add("Always on top", WA_TOP, false);
+    for (int k = 0, first = 1; k < WM_WS; k++) {
+        if (k == w->ws) continue;
+        char l[32];
+        snprintf(l, sizeof l, "Move to workspace %d", k + 1);
+        wmi_add(l, WA_WS + k, first);
+        first = 0;
+    }
+    wmi_add("Close", WA_CLOSE, true);
+    wmenu_win = w;
+    wmenu_x = imax(4, imin(x, SW - WMENU_W - 8));
+    wmenu_y = imax(4, imin(y, TB_Y - wmenu_h() - 8));
+    wmenu_hover = -1;
+    wmenu_damage();
+}
+
+static void wmenu_act(int a) {
+    struct window *w = wmenu_win;
+    wmenu_close();
+    if (!w) return;
+    if (a == WA_MIN) { w->minimized = true; damage_window(w); focus_top(); }
+    else if (a == WA_MAX) toggle_max(w);
+    else if (a == WA_TOP) { w->topmost = !w->topmost; raise(w); damage_window(w); }
+    else if (a == WA_CLOSE) close_window(w);
+    else if (a >= WA_WS) move_to_ws(w, a - WA_WS);
+}
+
+static bool wmenu_mouse(int x, int y, bool click) {
+    int i = wmenu_at(x, y);
+    if (i != wmenu_hover) { wmenu_hover = i; wmenu_damage(); }
+    if (x >= wmenu_x && x < wmenu_x + WMENU_W && y >= wmenu_y && y < wmenu_y + wmenu_h()) {
+        if (click && i >= 0) wmenu_act(wmi[i].act);
+        return true;
+    }
+    if (click) wmenu_close();
+    return false;
+}
+
+/* ---- Alt+Tab ---- */
+static void sw_start(bool back) {
+    struct window *tmp[32];
+    int n = 0;
+    for (struct window *w = wins; w && n < 32; w = w->next)
+        if (w->visible && onws(w) && !(w->flags & WIN_FLAG_FRAMELESS)) tmp[n++] = w;
+    if (n == 1 && focused != tmp[0]) { tmp[0]->minimized = false; wm_focus(tmp[0]); }
+    if (n < 2) return;
+    close_popups();
+    sw_n = imin(n, 16);
+    for (int i = 0; i < sw_n; i++) sw_list[i] = tmp[n - 1 - i];     /* most recently used first */
+    sw_sel = back ? sw_n - 1 : focused == sw_list[0] ? 1 : 0;
+    sw_open = true;
+    sw_damage();
+}
+
+static void sw_step(int d) { sw_sel = (sw_sel + d + sw_n) % sw_n; sw_damage(); }
+
+static void sw_close(bool commit) {
+    if (!sw_open) return;
+    sw_damage();
+    sw_open = false;
+    struct window *w = sw_list[sw_sel];
+    if (commit && w) { w->minimized = false; wm_focus(w); }
+}
+
+static void sw_mouse(int x, int y, bool down) {
+    for (int i = 0; i < sw_n; i++) {
+        struct rect q = sw_cell(i);
+        if (x >= q.x && x < q.x + q.w && y >= q.y && y < q.y + q.h) {
+            if (i != sw_sel) { sw_sel = i; sw_damage(); }
+            if (down) sw_close(true);
+            return;
+        }
+    }
+    if (down) sw_close(false);
+}
+
 /* ================= input ================= */
 
 static struct window *window_at(int x, int y, bool *in_frame) {
     struct window *hit = 0;
     for (struct window *w = wins; w; w = w->next) {
-        if (!w->visible || w->minimized) continue;
+        if (!shown(w)) continue;
         struct rect r;
         frame_rect(w, &r);
         if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) { hit = w; *in_frame = !(x >= w->x && y >= w->y && x < w->x + w->w && y < w->y + w->h); }
@@ -704,12 +1277,16 @@ static int title_button_at(struct window *w, int x, int y) {
 }
 
 static int taskbar_at(int x, int y) {
-    if (y < TB_Y) return -3;
-    if (x >= 8 && x < 8 + LAUNCH_W) return -2;
-    int x0 = 8 + LAUNCH_W + 12;
-    if (x < x0) return -1;
+    if (y < TB_Y) return T_NONE;
+    if (x >= 8 && x < 8 + LAUNCH_W) return T_LAUNCH;
+    if (x >= WS_X && x < WS_X + WM_WS * WS_CELL) return T_WS0 - (x - WS_X) / WS_CELL;
+    if (x >= SW - CLOCK_HIT) return T_CLOCK;
+    if (vol_cache >= 0 && x >= TRAY_VOL_X && x < TRAY_VOL_X + TRAY_W) return T_VOL;
+    if (net_present && x >= TRAY_NET_X && x < TRAY_NET_X + TRAY_W) return T_NET;
+    int x0 = WS_X + WM_WS * WS_CELL + 12;
+    if (x < x0) return T_GAP;
     int i = (x - x0) / (TASK_W + 6);
-    if ((x - x0) % (TASK_W + 6) >= TASK_W || i >= visible_count()) return -1;
+    if ((x - x0) % (TASK_W + 6) >= TASK_W || i >= visible_count()) return T_GAP;
     return i;
 }
 
@@ -779,6 +1356,17 @@ static void mouse_event(int x, int y, int b, int dz) {
         return;
     }
 
+    if (qs_drag) {                                           /* dragging the volume slider */
+        if (!(b & 1)) qs_drag = false;
+        else { struct rect m = qs_rect(); set_volume((x - (m.x + 64)) * 100 / (m.w - 64 - 58)); }
+        return;
+    }
+    if (sw_open) { sw_mouse(x, y, down); return; }
+    if (wmenu_win && wmenu_mouse(x, y, down || ((b & 2) && !(ob & 2)))) return;
+    if (cn_open && cn_mouse(x, y, down, dz)) return;
+    if (qs_open && qs_mouse(x, y, down, dz)) return;
+    if (toasts_mouse(x, y, down)) return;
+
     if (ctx_open) {
         int ci = ctx_at(x, y);
         if (ci != ctx_hover) { ctx_hover = ci; ctx_damage(); }
@@ -792,9 +1380,9 @@ static void mouse_event(int x, int y, int b, int dz) {
     int task = taskbar_at(x, y);
     struct rect m = menu_rect();
     bool in_menu = menu_open && x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h;
-    if (in_menu || task != -3) w = 0;
+    if (in_menu || task != T_NONE) w = 0;
     int btn = w && in_frame ? title_button_at(w, x, y) : -1;
-    set_hover(w, btn, task == -3 ? -1 : task, mitem);
+    set_hover(w, btn, task == T_NONE ? -1 : task, mitem);
 
     if (w && !in_frame && !w->on_event) {                   /* motion inside a user client */
         static struct window *last_in;
@@ -802,11 +1390,18 @@ static void mouse_event(int x, int y, int b, int dz) {
         last_in = w;
         if (ox != x || oy != y) { struct gui_event e = { .type = EV_MOUSE_MOVE, .x = x - w->x, .y = y - w->y, .button = b }; send(w, &e); }
     }
+    if (dz && task == T_VOL) set_volume(vol_cache - (dz > 0 ? 5 : -5));
     if (dz && w && !in_frame) { struct gui_event e = { .type = EV_SCROLL, .x = x - w->x, .y = y - w->y, .dz = dz }; send(w, &e); }
 
     for (int k = 2; k <= 4; k += 2)                                          /* right and middle */
         if ((b & k) && !(ob & k) && w && !in_frame) { struct gui_event e = { .type = EV_MOUSE_DOWN, .x = x - w->x, .y = y - w->y, .button = k }; send(w, &e); }
-    if ((b & 2) && !(ob & 2) && !w && task == -3 && !in_menu) {             /* desktop context menu */
+    if ((b & 2) && !(ob & 2) && w && in_frame && y < w->y && !(w->flags & WIN_FLAG_FRAMELESS)) {   /* window menu */
+        close_popups();
+        wm_focus(w);
+        wmenu_open(w, x, y);
+        return;
+    }
+    if ((b & 2) && !(ob & 2) && !w && task == T_NONE && !in_menu) {             /* desktop context menu */
         if (menu_open) launch(-1);
         struct rect r = ctx_rect();
         ctx_x = imin(x, SW - CTX_W - 8); ctx_y = imin(y, TB_Y - r.h - 8);
@@ -817,17 +1412,26 @@ static void mouse_event(int x, int y, int b, int dz) {
     if (!down) return;
 
     if (in_menu) { if (mitem >= 0) launch(mitem); return; }
-    if (menu_open && task != -2) launch(-1);                 /* click elsewhere closes the menu */
-    if (task == -2) { menu_open = !menu_open; if (menu_open) load_apps(); wm_damage(0, 0, SW, SH); return; }
+    if (menu_open && task != T_LAUNCH) launch(-1);                 /* click elsewhere closes the menu */
+    if (task == T_LAUNCH) { menu_open = !menu_open; if (menu_open) load_apps(); wm_damage(0, 0, SW, SH); return; }
     if (task >= 0) {
         struct window *tw = task_at(task);
         if (tw == focused && !tw->minimized) { tw->minimized = true; damage_window(tw); focus_top(); }
         else { tw->minimized = false; wm_focus(tw); }
         return;
     }
-    if (task == -1) return;
+    if (task <= T_WS0 && task > T_WS0 - WM_WS) { switch_ws(T_WS0 - task); return; }
+    if (task == T_VOL || task == T_NET) { qs_toggle(); return; }
+    if (task == T_CLOCK) { cn_toggle(); return; }
+    if (task == T_GAP) return;
     if (!w) { if (focused) { struct window *o = focused; focused = 0; damage_window(o); wm_damage(0, TB_Y, SW, WM_TASKBAR_H); } return; }
 
+    if ((keyboard_mods() & MOD_SUPER) && !(w->flags & WIN_FLAG_FRAMELESS)) {   /* Super+drag moves from anywhere */
+        super_alone = false;
+        wm_focus(w);
+        drag_win = w; drag_dx = x - w->x; drag_dy = y - w->y; drag_sx = x; drag_sy = y;
+        return;
+    }
     if (!(w->flags & WIN_FLAG_FRAMELESS)) wm_focus(w);
     if (in_frame) {
         if (btn == 0) { close_window(w); return; }
@@ -852,14 +1456,30 @@ static void mouse_event(int x, int y, int b, int dz) {
 
 static void key_event(const struct gui_event *ev) {
     int mods = ev->mods;
-    static bool super_alone;                              /* Super tapped on its own opens the launcher */
     if (ev->key == KEY_SUPER) {
         if (ev->pressed) super_alone = !(mods & ~MOD_SUPER);
         else if (super_alone) { menu_open = !menu_open; if (menu_open) load_apps(); wm_damage(0, 0, SW, SH); }
         return;
     }
+    if (!ev->pressed && sw_open && (ev->key == KEY_LALT || ev->key == KEY_RALT)) sw_close(true);   /* release Alt: switch */
     if (ev->pressed) {
         super_alone = false;
+        if (sw_open) {
+            if (ev->key == KEY_TAB) { sw_step(mods & MOD_SHIFT ? -1 : 1); return; }
+            if (ev->key == KEY_RIGHT || ev->key == KEY_DOWN) { sw_step(1); return; }
+            if (ev->key == KEY_LEFT || ev->key == KEY_UP) { sw_step(-1); return; }
+            if (ev->key == KEY_ESC) { sw_close(false); return; }
+            if (ev->key == KEY_ENTER) { sw_close(true); return; }
+        }
+        if (mods & MOD_SUPER) {                           /* workspaces + notification center */
+            if ((mods & MOD_CTRL) && (ev->key == KEY_LEFT || ev->key == KEY_RIGHT)) { switch_ws(cur_ws + (ev->key == KEY_LEFT ? -1 : 1)); return; }
+            if (ev->key >= '1' && ev->key < '1' + WM_WS) {
+                if (!(mods & MOD_SHIFT)) switch_ws(ev->key - '1');
+                else if (focused) move_to_ws(focused, ev->key - '1');
+                return;
+            }
+            if (ev->key == 'n' || ev->key == 'N') { cn_toggle(); return; }
+        }
         if ((mods & MOD_SUPER) && focused && !(focused->flags & WIN_FLAG_FRAMELESS)) {   /* Super+arrows tile */
             struct window *w = focused;
             if (ev->key == KEY_LEFT) { apply_snap(w, 1); return; }
@@ -868,13 +1488,9 @@ static void key_event(const struct gui_event *ev) {
             if (ev->key == KEY_DOWN) { if (w->maximized) toggle_max(w); return; }
         }
         if ((mods & MOD_CTRL) && (mods & MOD_ALT) && (ev->key == 't' || ev->key == 'T')) { termwin_open(0); return; }
-        if ((mods & MOD_ALT) && ev->key == KEY_TAB) {         /* cycle: bottom-most visible to top */
-            for (struct window *w = wins; w; w = w->next)
-                if (w->visible && !(w->flags & WIN_FLAG_FRAMELESS) && w != focused) { w->minimized = false; wm_focus(w); break; }
-            return;
-        }
+        if ((mods & MOD_ALT) && ev->key == KEY_TAB) { sw_start(mods & MOD_SHIFT); return; }
         if ((mods & MOD_ALT) && ev->key == KEY_F4) { if (focused) close_window(focused); return; }
-        if (ev->key == KEY_ESC && menu_open) { launch(-1); return; }
+        if (ev->key == KEY_ESC && (menu_open || ctx_open || wmenu_win || cn_open || qs_open)) { close_popups(); return; }
         if (ev->key == KEY_F11 && focused) { toggle_max(focused); return; }
         if (ev->key == KEY_PRTSC) { wm_spawn_app("/bin/screenshot", 0); return; }
     }
@@ -1040,6 +1656,17 @@ int win_syscall(int num, uint32_t a, uint32_t b, uint32_t c) {
 bool wm_running(void) { return running; }
 void wm_wake(void) { wakeup(&wm_chan); }
 
+/* volume and network state can change behind our back (mixer ioctls, DHCP): poll cheaply, damage on change */
+static void poll_tray(void) {
+    int v = ac97_volume(-1);
+    bool up = ni.up, pr = ni.present;
+    uint32_t ip = ni.ip;
+    if (v == vol_cache && up == net_up && pr == net_present && ip == net_ip) return;
+    vol_cache = v; net_up = up; net_present = pr; net_ip = ip;
+    wm_damage(TRAY_X, TB_Y, SW - TRAY_X, WM_TASKBAR_H);
+    if (qs_open) qs_damage();
+}
+
 static int wm_thread(void *arg) {
     uint64_t last_tick = 0;
     for (;;) {
@@ -1068,8 +1695,11 @@ static int wm_thread(void *arg) {
                 uint32_t span = now - last_sample, id = idle - last_idle;
                 cpu_pct = span ? 100 - MIN(100, id * 100 / span) : 0;
                 last_sample = now; last_idle = idle;
-                wm_damage(SW - 260, TB_Y, 260, WM_TASKBAR_H);
+                wm_damage(TRAY_X, TB_Y, SW - TRAY_X, WM_TASKBAR_H);
             }
+            poll_tray();
+            for (int i = 0, k = 0; i < nhist; i++)                     /* toasts time out */
+                if (hist[i].toast && ticks_ms - hist[i].born >= TOAST_MS) { if (!k++) toast_damage(); hist[i].toast = false; }
             uint32_t t = rtc_now() + tz_minutes * 60;
             if ((int)((t / 60) % 60) != last_minute) { last_minute = (t / 60) % 60; wm_damage(SW - 120, TB_Y, 120, WM_TASKBAR_H); }
         }
@@ -1154,6 +1784,8 @@ void wm_init(void) {
         corner_inset[i] = WM_RADIUS - (isqrt(imax(0, 4 * WM_RADIUS * WM_RADIUS - dy2)) + 1) / 2;
     }
     mouse_pos(&cur_x, &cur_y);
+    vol_cache = ac97_volume(-1);
+    net_up = ni.up; net_present = ni.present; net_ip = ni.ip;
     load_apps();
     running = true;
     splash_progress(100);
@@ -1164,7 +1796,7 @@ void wm_init(void) {
     key_sink = irq_key;
     last_sample = ticks_ms; last_idle = idle_ms();
     wm_damage(0, 0, SW, SH);
-    if (snap) { no_present = true; compose(); no_present = false; crossfade(snap); kfree(snap); }
+    if (snap) { no_present = true; compose(); no_present = false; crossfade(snap, 32, 30); kfree(snap); }
     kthread_create("compositor", wm_thread, 0);
     kthread_create("chime", chime, 0);
     autostart();

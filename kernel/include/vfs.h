@@ -94,3 +94,4 @@ int  vfs_read_all(const char *path, void **data, uint32_t *size);   /* kmalloc'd
 /* dev/ac97.c: /dev/dsp (write 48 kHz s16le stereo) */
 int ac97_init(void);                                         /* 0 or -ENODEV; devfs then exposes dsp */
 extern const struct vnode_ops ac97_ops;
+int ac97_volume(int set);                                   /* master volume (set < 0 just reads); -1 without a card */

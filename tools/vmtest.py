@@ -7,6 +7,7 @@ steps:
   wait:TEXT        wait until TEXT shows up in the serial log
   type:TEXT        type TEXT (\\n = Enter, \\t = Tab)
   key:NAME         QEMU sendkey name, e.g. ctrl-c, up, esc (prtsc = print)
+  keydown:NAME     press and hold a key (QMP qcode: alt, meta_l, shift, ctrl, tab, 1 ...) until keyup:NAME
   mclick           middle click (rclick right, dclick double)
   sleep:SECS
   host:CMD         run CMD on the host (fails the run on non-zero exit), e.g. curl through --hostfwd
@@ -21,7 +22,7 @@ the VM quits; analyse it with tools/wavcheck.py). Override with --audiodev SPEC 
 `pa,id=snd0` to hear it (the id must stay snd0).
 Serial output goes to build/serial.log (--pcap: packets to build/net.pcap); exits non-zero on timeout or panic.
 """
-import os, socket, subprocess, sys, time
+import json, os, socket, subprocess, sys, time
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,7 +47,8 @@ class VM:
         os.makedirs(B, exist_ok=True)
         self.sock = os.path.join(B, "mon.sock")
         self.log = os.path.join(B, "serial.log")
-        for p in (self.sock, self.log):
+        self.qsock, self.q = os.path.join(B, "qmp.sock"), None
+        for p in (self.sock, self.qsock, self.log):
             if os.path.exists(p): os.unlink(p)
         self.p = subprocess.Popen([
             "qemu-system-i386", "-m", "256", "-drive", f"file={B}/vibeos.img,format=raw,if=ide",
@@ -55,7 +57,7 @@ class VM:
             *(["-object", f"filter-dump,id=dump,netdev=n0,file={B}/net.pcap"] if pcap else []),
             "-device", "isa-debug-exit,iobase=0xf4,iosize=4", "-machine", "pc,vmport=off",  # relative PS/2 so monitor mouse_move works
             "-accel", "kvm", "-accel", "tcg",  # KVM when available
-            "-monitor", f"unix:{self.sock},server,nowait",
+            "-monitor", f"unix:{self.sock},server,nowait", "-qmp", f"unix:{self.qsock},server,nowait",
             "-audiodev", audiodev or f"wav,id=snd0,path={B}/audio.wav,out.frequency=48000", "-device", "AC97,audiodev=snd0", *extra])
         for _ in range(100):
             if os.path.exists(self.sock): break
@@ -92,6 +94,20 @@ class VM:
         for _ in range(6):                        # zero moves make QEMU flush parked motion
             time.sleep(0.03)
             self.hmp("mouse_move 0 0")
+
+    def keyev(self, name, down):
+        """press/release one key and leave it that way (QMP input-send-event; HMP sendkey can't hold)"""
+        if not self.q:
+            for _ in range(100):
+                if os.path.exists(self.qsock): break
+                time.sleep(0.05)
+            self.q = socket.socket(socket.AF_UNIX); self.q.connect(self.qsock); self.q.settimeout(0.3)
+            self.q.recv(65536); self.q.sendall(b'{"execute":"qmp_capabilities"}\n'); self.q.recv(65536)
+        ev = {"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": name}}}
+        self.q.sendall((json.dumps({"execute": "input-send-event", "arguments": {"events": [ev]}}) + "\n").encode())
+        try: self.q.recv(65536)
+        except socket.timeout: pass
+        time.sleep(0.08)
 
     def serial(self):
         try: return open(self.log, errors="replace").read()
@@ -158,6 +174,7 @@ def main(argv):
                 print(f"$ {arg}\n{r.stdout}{r.stderr}", end="")
                 if r.returncode: print(f"FAIL: exit {r.returncode}"); ok = False; break
             elif kind == "key": vm.hmp("sendkey " + {"prtsc": "print"}.get(arg, arg))
+            elif kind in ("keydown", "keyup"): vm.keyev(arg, kind == "keydown")
             elif kind == "sleep": time.sleep(float(arg))
             elif kind == "shot": vm.shot(arg); print("screenshot:", arg)
             elif kind in ("mouse", "moveto"):   # absolute pixel target via relative PS/2 moves
