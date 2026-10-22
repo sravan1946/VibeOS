@@ -5,6 +5,7 @@
 #include <syscall.h>
 
 static uint32_t rid(int x, int y, int w, int h) { return ((uint32_t)x * 73856093u) ^ ((uint32_t)y * 19349663u) ^ ((uint32_t)w * 83492791u) ^ (uint32_t)h; }
+uint32_t ui_id(int x, int y, int w, int h) { return rid(x, y, w, h); }
 static bool inside(struct ui *ui, int x, int y, int w, int h) { return ui->mx >= x && ui->my >= y && ui->mx < x + w && ui->my < y + h; }
 
 void ui_init(struct ui *ui, struct gui_window *win) {
@@ -219,4 +220,99 @@ int ui_list(struct ui *ui, int x, int y, int w, int h, const char *const *items,
         gfx_round_fill(ui->c, x + w - 5, ty, 4, th, 2, RGBA(255, 255, 255, 60));
     }
     return act;
+}
+
+void ui_text_fit(struct ui *ui, const struct font *f, int x, int y, int maxw, const char *s, color_t col) {
+    if (maxw <= 0) return;
+    if (gfx_text_width(f, s) <= maxw) { gfx_text(ui->c, f, x, y, s, col); return; }
+    int dots = gfx_text_width(f, "...");
+    int n = strlen(s);
+    while (n > 0 && gfx_text_width_n(f, s, n) + dots > maxw) n--;
+    int ax = gfx_text_n(ui->c, f, x, y, s, n, col);
+    gfx_text(ui->c, f, x + ax, y, "...", col);
+}
+
+bool ui_tabs(struct ui *ui, int x, int y, int w, int h, const char *const *names, int n, int *sel) {
+    int old = *sel, tw = (w - 8) / n;
+    gfx_round_fill(ui->c, x, y, w, h, h / 2, UI_PANEL);
+    gfx_round_rect(ui->c, x, y, w, h, h / 2, UI_BORDER);
+    for (int i = 0; i < n; i++) {
+        int tx = x + 4 + i * tw;
+        bool hov = inside(ui, tx, y + 3, tw, h - 6);
+        if (hov && ui->pressed) *sel = i;
+        if (i == *sel) gfx_round_fill(ui->c, tx, y + 3, tw, h - 6, (h - 6) / 2, UI_ACCENT);
+        else if (hov) gfx_round_fill(ui->c, tx, y + 3, tw, h - 6, (h - 6) / 2, UI_HOVER);
+        const struct font *f = i == *sel ? &font_ui_bold : &font_ui;
+        gfx_text_center(ui->c, f, tx, y + (h - f->height) / 2, tw, names[i], i == *sel ? RGB(0x1A, 0x10, 0x2E) : UI_TEXT);
+    }
+    return *sel != old;
+}
+
+bool ui_tool(struct ui *ui, int x, int y, int w, int h, const char *label, bool on) {
+    uint32_t id = rid(x, y, w, h);
+    bool hov = inside(ui, x, y, w, h), clicked = false;
+    if (hov && ui->pressed) ui->active = id;
+    if (ui->released && ui->active == id && hov) clicked = true;
+    bool down = ui->active == id && (ui->buttons & 1) && hov;
+    color_t bg = on ? RGBA(0xB3, 0x88, 0xFF, 90) : down ? UI_PRESSED : hov ? UI_HOVER : RGBA(0, 0, 0, 0);
+    if (ALPHA(bg)) gfx_round_fill(ui->c, x, y, w, h, 6, bg);
+    gfx_text_center(ui->c, &font_ui, x, y + (h - font_ui.height) / 2, w, label, UI_TEXT);
+    return clicked;
+}
+
+void ui_vscroll(struct ui *ui, int x, int y, int h, int total, int visible, int *first) {
+    if (total <= visible) { *first = 0; return; }
+    uint32_t id = rid(x, y, 10, h);
+    int th = h * visible / total;
+    if (th < 24) th = 24;
+    int range = total - visible, span = h - th;
+    if (inside(ui, x - 4, y, 14, h) && ui->pressed) ui->active = id;
+    if (ui->active == id && (ui->buttons & 1)) {
+        int t = ui->my - y - th / 2;
+        *first = span > 0 ? (t < 0 ? 0 : t > span ? range : t * range / span) : 0;
+    }
+    if (*first < 0) *first = 0;
+    if (*first > range) *first = range;
+    int ty = y + span * *first / range;
+    gfx_round_fill(ui->c, x + 2, ty, 6, th, 3, ui->active == id ? RGBA(255, 255, 255, 110) : RGBA(255, 255, 255, 60));
+}
+
+static void dialog_box(struct ui *ui, int pw, int ph, int *ox, int *oy) {
+    struct canvas *c = ui->c;
+    int W = ui->win->w, H = ui->win->h;
+    gfx_fill(c, 0, 0, W, H, RGBA(0, 0, 0, 150));
+    int px = (W - pw) / 2, py = (H - ph) / 2;
+    gfx_shadow(c, px, py, pw, ph, 12, 14, 120);
+    gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
+    gfx_round_rect(c, px, py, pw, ph, 12, RGBA(255, 255, 255, 40));
+    *ox = px; *oy = py;
+}
+
+int ui_prompt(struct ui *ui, const char *title, const char *okl, char *buf, int cap) {
+    int W = ui->win->w, pw = W - 20 < 480 ? W - 20 : 480, ph = 150, px, py;
+    dialog_box(ui, pw, ph, &px, &py);
+    gfx_text(ui->c, &font_ui_bold, px + 20, py + 16, title, UI_TEXT);
+    int tx = px + 20, ty = py + 46, tw = pw - 40;
+    if (!ui->focus) ui->focus = rid(tx, ty, tw, 34);
+    bool enter = ui_textbox(ui, tx, ty, tw, 34, buf, cap, "");
+    int r = 0;
+    if (ui_button(ui, px + pw - 120, py + ph - 52, 100, 34, okl, UI_ACCENT_BTN) || enter) r = 1;
+    if (ui_button(ui, px + pw - 230, py + ph - 52, 100, 34, "Cancel", UI_NORMAL_BTN)) r = -1;
+    struct gui_event k;
+    while (ui_key(ui, &k)) if (k.key == KEY_ESC) r = -1;
+    if (r) ui->focus = 0;
+    return r;
+}
+
+int ui_confirm(struct ui *ui, const char *title, const char *text, const char *okl) {
+    int W = ui->win->w, pw = W - 20 < 440 ? W - 20 : 440, ph = 140, px, py;
+    dialog_box(ui, pw, ph, &px, &py);
+    gfx_text(ui->c, &font_ui_bold, px + 20, py + 16, title, UI_TEXT);
+    ui_text_fit(ui, &font_ui, px + 20, py + 46, pw - 40, text, UI_TEXT_DIM);
+    int r = 0;
+    if (ui_button(ui, px + pw - 120, py + ph - 52, 100, 34, okl, UI_ACCENT_BTN)) r = 1;
+    if (ui_button(ui, px + pw - 230, py + ph - 52, 100, 34, "Cancel", UI_NORMAL_BTN)) r = -1;
+    struct gui_event k;
+    while (ui_key(ui, &k)) { if (k.key == KEY_ESC) r = -1; else if (k.key == KEY_ENTER) r = 1; }
+    return r;
 }

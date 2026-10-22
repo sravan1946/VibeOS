@@ -65,3 +65,17 @@ void ui_panel(struct ui *ui, int x, int y, int w, int h);
 void ui_label(struct ui *ui, int x, int y, const char *s, color_t col);
 /* pop the next unconsumed key press; false if none */
 bool ui_key(struct ui *ui, struct gui_event *out);
+/* text clipped to maxw with a trailing "..." */
+void ui_text_fit(struct ui *ui, const struct font *f, int x, int y, int maxw, const char *s, color_t col);
+/* segmented tab strip; returns true when *sel changed */
+bool ui_tabs(struct ui *ui, int x, int y, int w, int h, const char *const *names, int n, int *sel);
+/* flat toolbar button; `on` draws it latched. Returns clicked. */
+bool ui_tool(struct ui *ui, int x, int y, int w, int h, const char *label, bool on);
+/* vertical scrollbar for content of `total` rows with `visible` shown; *first is dragged. */
+void ui_vscroll(struct ui *ui, int x, int y, int h, int total, int visible, int *first);
+/* the id a widget at this rectangle gets, e.g. to set ui->focus on a textbox programmatically */
+uint32_t ui_id(int x, int y, int w, int h);
+/* modal dialogs: draw them last, every frame, while open. Return 1 = confirmed, -1 = cancelled, 0 = still open.
+ * ui_prompt edits buf (focus is taken automatically); ui_confirm just asks. */
+int ui_prompt(struct ui *ui, const char *title, const char *okl, char *buf, int cap);
+int ui_confirm(struct ui *ui, const char *title, const char *text, const char *okl);
