@@ -249,7 +249,7 @@ enum {
     EV_MOUSE_DOWN,     /* x, y, button */
     EV_MOUSE_UP,
     EV_SCROLL,         /* x, y, dz */
-    EV_RESIZE,         /* w, h: buffer was reallocated, re-read pixels via WIN_SET_SIZE result */
+    EV_RESIZE,         /* w, h; x = new stride (same address) when a display mode change regrew the buffer, else 0 */
     EV_CLOSE,          /* close button pressed */
     EV_FOCUS,          /* pressed = gained/lost */
     EV_MOUSE_LEAVE,

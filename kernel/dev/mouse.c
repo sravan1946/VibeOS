@@ -96,3 +96,10 @@ void mouse_init(int w, int h) {
 }
 
 void mouse_pos(int *x, int *y) { *x = mx; *y = my; }
+
+void mouse_set_screen(int w, int h) {
+    uint32_t f = irq_save();
+    scr_w = w; scr_h = h;
+    mx = MIN(mx, w - 1); my = MIN(my, h - 1);
+    irq_restore(f);
+}

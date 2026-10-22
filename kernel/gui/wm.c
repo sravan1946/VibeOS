@@ -65,6 +65,13 @@ static int napps;
 static inline int imin(int a, int b) { return a < b ? a : b; }
 static inline int imax(int a, int b) { return a > b ? a : b; }
 
+/* screen-sized buffers (back buffer, wallpaper, window buffers, snapshots) come straight from the
+ * frame allocator: at 1920x1080 four of them would fill the kernel heap */
+#define SCREEN_FRAMES(w, h) ((uint32_t)(w) * (h) * 4 / PAGE_SIZE + 1)
+static uint32_t *big_alloc(int w, int h) { return (uint32_t *)pmm_alloc_contig(SCREEN_FRAMES(w, h)); }
+static void big_free(uint32_t *p, int w, int h) { if (p) pmm_free_contig((uint32_t)p, SCREEN_FRAMES(w, h)); }
+static uint32_t *under, *ws_old;         /* lazily made: open-animation backdrop, workspace-switch snapshot */
+
 /* ================= damage ================= */
 
 void wm_damage(int x, int y, int w, int h) {
@@ -154,7 +161,7 @@ static void blit_client(struct canvas *c, struct window *w) {
         if (!(w->flags & WIN_FLAG_FRAMELESS) && from_bottom < WM_RADIUS) inset = corner_inset[from_bottom];
         int x0 = imax(c->cx0, w->x + inset), x1 = imin(c->cx1, w->x + w->w - inset);
         if (x0 >= x1) continue;
-        memcpy(&c->px[y * c->stride + x0], &w->buf[row * SW + (x0 - w->x)], (x1 - x0) * 4);
+        memcpy(&c->px[y * c->stride + x0], &w->buf[row * w->canvas.stride + (x0 - w->x)], (x1 - x0) * 4);
     }
 }
 
@@ -166,7 +173,7 @@ static void draw_window(struct canvas *c, struct window *w) {
         return;
     if (w->flags & WIN_FLAG_FRAMELESS) {
         draw_shadow(c, r, foc ? 170 : 110);
-        gfx_blit(c, w->x, w->y, w->buf, w->w, w->h, SW);
+        gfx_blit(c, w->x, w->y, w->buf, w->w, w->h, w->canvas.stride);
         return;
     }
     draw_shadow(c, r, foc ? 200 : 120);
@@ -649,7 +656,8 @@ static void draw_thumb(struct canvas *c, int x, int y, int tw, int th, struct wi
     x += (tw - dw) / 2; y += (th - dh) / 2;
     int x0 = imax(x, c->cx0), x1 = imin(x + dw, c->cx1), y0 = imax(y, c->cy0), y1 = imin(y + dh, c->cy1);
     for (int dy = y0; dy < y1; dy++) {
-        const uint32_t *ra = &w->buf[(((dy - y) * 4 + 1) * w->h / (4 * dh)) * SW], *rb = &w->buf[(((dy - y) * 4 + 3) * w->h / (4 * dh)) * SW];
+        int ws = w->canvas.stride;
+        const uint32_t *ra = &w->buf[(((dy - y) * 4 + 1) * w->h / (4 * dh)) * ws], *rb = &w->buf[(((dy - y) * 4 + 3) * w->h / (4 * dh)) * ws];
         uint32_t *o = &c->px[dy * c->stride];
         for (int dx = x0; dx < x1; dx++) {
             int xa = ((dx - x) * 4 + 1) * w->w / (4 * dw), xb = ((dx - x) * 4 + 3) * w->w / (4 * dw);
@@ -690,8 +698,7 @@ static bool no_present;
 
 /* open animation: draw w risen and blended over what's beneath it */
 static void draw_window_fading(struct canvas *c, struct window *w, uint32_t age) {
-    static uint32_t *under;
-    if (!under && !(under = kmalloc((size_t)SW * SH * 4))) { draw_window(c, w); return; }
+    if (!under && !(under = big_alloc(SW, SH))) { draw_window(c, w); return; }
     int t = (int)(age * 256 / FADE_MS), e = 256 - (256 - t) * (256 - t) / 256;   /* ease-out */
     struct rect r;
     frame_rect(w, &r);
@@ -813,7 +820,8 @@ struct window *wm_create(const char *title, int x, int y, int w, int h, int flag
     struct window *win = kzalloc(sizeof *win);
     if (!win) return 0;
     /* ponytail: every window gets a full-screen-sized buffer (stride = SW) so resizing
-     * never reallocates. ~4 MiB per window; fine for a dozen windows. */
+     * never reallocates. ~4 MiB per window at 1280x800; fine for a dozen windows. A display
+     * mode change only ever grows it (wm_set_mode). */
     win->buf_frames = (uint32_t)SW * SH * 4 / PAGE_SIZE + 1;
     uint32_t pa = pmm_alloc_contig(win->buf_frames);
     if (!pa) { kfree(win); return 0; }
@@ -1037,16 +1045,15 @@ static void switch_ws(int n) {
     close_popups();
     drag_win = resize_win = capture_win = 0;
     set_snap(0);
-    static uint32_t *old;
-    if (!old) old = kmalloc((size_t)SW * SH * 4);
+    if (!ws_old) ws_old = big_alloc(SW, SH);
     compose();                                           /* flush pending damage so bb == screen */
-    if (old) memcpy(old, bb.px, (size_t)SW * SH * 4);
+    if (ws_old) memcpy(ws_old, bb.px, (size_t)SW * SH * 4);
     defocus();
     hover_win = 0;
     cur_ws = n;
     focus_top();
     wm_damage(0, 0, SW, SH);
-    if (old) { no_present = true; compose(); no_present = false; crossfade(old, 43, 20); }
+    if (ws_old) { no_present = true; compose(); no_present = false; crossfade(ws_old, 43, 20); }
 }
 
 static void move_to_ws(struct window *w, int k) {
@@ -1578,7 +1585,7 @@ static struct window *win_from_fd(int fd) {
 
 static int map_into_owner(struct window *w) {
     uint32_t len = w->buf_frames * PAGE_SIZE;
-    for (uint32_t va = 0xA0000000u; va + len <= 0xB0000000u; va += 0x00800000u) {
+    for (uint32_t va = 0xA0000000u; va + len <= 0xB0000000u; va += 0x01000000u) {   /* 16 MiB slots: room to regrow */
         bool free = true;
         for (uint32_t a = va; a < va + len; a += 0x100000) if (vmm_translate(current->dir, a)) { free = false; break; }
         if (!free) continue;
@@ -1611,7 +1618,7 @@ int win_syscall(int num, uint32_t a, uint32_t b, uint32_t c) {
         current->proc->fd_cloexec |= 1u << fd;     /* the pixels are mapped into this image only */
         wi->x = w->x; wi->y = w->y; wi->w = w->w; wi->h = w->h;
         wi->pixels = (uint32_t *)w->user_va;
-        wi->stride = SW;
+        wi->stride = w->canvas.stride;
         return fd;
     }
     struct window *w = win_from_fd(a);
@@ -1652,6 +1659,100 @@ int win_syscall(int num, uint32_t a, uint32_t b, uint32_t c) {
         return 0;
     }
     return -EINVAL;
+}
+
+/* ================= display mode changes ================= */
+
+/* which snap zone (1 left, 2 right, 3 maximised) a maximised window fills */
+static int zone_of(struct window *w) {
+    for (int z = 1; z <= 2; z++) { struct rect r = snap_rect(z); if (w->x == r.x && w->w == r.w) return z; }
+    return 3;
+}
+
+/* fit r (client rect) on the screen: shrink if resizable, then pull it inside */
+static void fit_rect(struct rect *r, bool noresize) {
+    if (!noresize) { r->w = imin(r->w, SW - 2); r->h = imin(r->h, TB_Y - WM_TITLE_H - 1); }
+    r->x = imax(1, imin(r->x, SW - 1 - r->w));
+    r->y = imax(WM_TITLE_H, imin(r->y, TB_Y - 1 - r->h));
+}
+
+/* Allocate everything first (back buffer, wallpaper, bigger window buffers), so a failure leaves
+ * the old mode intact; then program the adapter, swap the buffers in, re-lay-out the windows. */
+int wm_set_mode(int nw, int nh) {
+    if (nw == SW && nh == SH) return 0;
+    struct regrow { struct window *w; uint32_t *buf, frames; int zone; } *rg;
+    int n = 0, r = -ENOMEM;
+    for (struct window *w = wins; w; w = w->next) n++;
+    if (!(rg = kzalloc((n + 1) * sizeof *rg))) return -ENOMEM;
+    big_free(under, SW, SH); big_free(ws_old, SW, SH);
+    under = ws_old = 0;
+    uint32_t *nb = big_alloc(nw, nh), *nwall = big_alloc(nw, nh);
+    if (!nb || !nwall) goto fail;
+    n = 0;
+    for (struct window *w = wins; w; w = w->next, n++) {
+        rg[n].w = w;
+        rg[n].zone = w->maximized ? zone_of(w) : 0;
+        /* ponytail: buffers only grow (stride >= width, capacity >= stride * height). A client may be
+         * mid-frame with the old stride, so shrinking could fault it; closing the window frees it. */
+        uint32_t frames = MAX(SCREEN_FRAMES(nw, nh), w->buf_frames);
+        if (w->canvas.stride >= nw && (uint64_t)w->canvas.stride * nh * 4 <= (uint64_t)w->buf_frames * PAGE_SIZE) continue;
+        if (!(rg[n].buf = (uint32_t *)pmm_alloc_contig(frames))) goto fail;
+        rg[n].frames = frames;
+    }
+    if ((r = display_mode(nw, nh)) < 0) goto fail;
+
+    close_popups();
+    drag_win = resize_win = capture_win = 0;
+    snap_zone = 0;
+    big_free(bb.px, SW, SH); big_free(wall.px, SW, SH);
+    SW = nw; SH = nh;
+    canvas_init(&bb, nb, SW, SH, SW);
+    canvas_init(&wall, nwall, SW, SH, SW);
+    wallpaper_render(&wall, wall_theme);
+    wallpaper_watermark(&wall);
+    cur_x = imin(cur_x, SW - 1); cur_y = imin(cur_y, SH - 1);
+    for (int i = 0; i < n; i++) {
+        struct window *w = rg[i].w;
+        if (rg[i].buf) {                                  /* move to the bigger buffer, same user address */
+            int os = w->canvas.stride;
+            for (int y = 0; y < w->h; y++) memcpy(rg[i].buf + y * SW, w->buf + y * os, w->w * 4);
+            if (w->user_va) {
+                struct task *o = task_find(w->owner_pid);
+                if (o && o->dir == w->owner_dir) {
+                    vmm_unmap_range(w->owner_dir, w->user_va, w->buf_frames * PAGE_SIZE, false);
+                    for (uint32_t k = 0; k < rg[i].frames; k++)   /* the 16 MiB slot is ours (map_into_owner) */
+                        vmm_map(w->owner_dir, w->user_va + k * PAGE_SIZE, (uint32_t)rg[i].buf + k * PAGE_SIZE, PTE_U | PTE_W | PTE_NOFREE);
+                }
+            }
+            pmm_free_contig((uint32_t)w->buf, w->buf_frames);
+            w->buf = rg[i].buf; w->buf_frames = rg[i].frames;
+            canvas_init(&w->canvas, w->buf, w->w, w->h, SW);
+            struct gui_event e = { .type = EV_RESIZE, .x = SW, .w = w->w, .h = w->h };   /* x = new stride */
+            send(w, &e);
+        }
+        bool nores = w->flags & WIN_FLAG_NORESIZE;
+        if (w->flags & WIN_FLAG_FRAMELESS) {
+            set_geometry(w, imax(0, imin(w->x, SW - w->w)), imax(0, imin(w->y, SH - w->h)), w->w, w->h);
+            continue;
+        }
+        if (w->maximized) {                               /* stays maximised / snapped, at the new size */
+            fit_rect(&w->restore, nores);
+            struct rect z = snap_rect(rg[i].zone);
+            set_geometry(w, z.x, z.y, z.w, z.h);
+            continue;
+        }
+        struct rect g = { w->x, w->y, w->w, w->h };
+        fit_rect(&g, nores);
+        set_geometry(w, g.x, g.y, g.w, g.h);
+    }
+    kfree(rg);
+    wm_damage(0, 0, SW, SH);
+    return 0;
+fail:
+    big_free(nb, nw, nh); big_free(nwall, nw, nh);
+    for (int i = 0; i < n; i++) if (rg[i].buf) pmm_free_contig((uint32_t)rg[i].buf, rg[i].frames);
+    kfree(rg);
+    return r;
 }
 
 /* ================= main loop ================= */
@@ -1775,7 +1876,7 @@ static void load_prefs(bool init) {
 
 void wm_init(void) {
     SW = fb.w; SH = fb.h;
-    uint32_t *b = kmalloc((size_t)SW * SH * 4), *wp = kmalloc((size_t)SW * SH * 4);
+    uint32_t *b = big_alloc(SW, SH), *wp = big_alloc(SW, SH);
     if (!b || !wp) { kprintf("wm: no memory for buffers\n"); return; }
     canvas_init(&bb, b, SW, SH, SW);
     canvas_init(&wall, wp, SW, SH, SW);
@@ -1792,14 +1893,14 @@ void wm_init(void) {
     load_apps();
     running = true;
     splash_progress(100);
-    uint32_t *snap = kmalloc((size_t)SW * SH * 4);
+    uint32_t *snap = big_alloc(SW, SH);
     if (snap) for (int y = 0; y < SH; y++) memcpy(snap + y * SW, fb.px + y * fb.stride, SW * 4);
     bootcon_enable(false);
     mouse_sink = irq_mouse;
     key_sink = irq_key;
     last_sample = ticks_ms; last_idle = idle_ms();
     wm_damage(0, 0, SW, SH);
-    if (snap) { no_present = true; compose(); no_present = false; crossfade(snap, 32, 30); kfree(snap); }
+    if (snap) { no_present = true; compose(); no_present = false; crossfade(snap, 32, 30); big_free(snap, SW, SH); }
     kthread_create("compositor", wm_thread, 0);
     kthread_create("chime", chime, 0);
     autostart();

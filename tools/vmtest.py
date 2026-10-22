@@ -13,7 +13,7 @@ steps:
   host:CMD         run CMD on the host (fails the run on non-zero exit), e.g. curl through --hostfwd
   shot:PATH.png    screenshot
   wheel:DZ         scroll wheel (negative = up)
-  moveto:X,Y       move the pointer (absolute pixels)   click / rclick / dclick / down / up
+  moveto:X,Y       move the pointer (absolute pixels, any display mode)   click / rclick / dclick / down / up
   drag:X0,Y0,X1,Y1 left-drag
   smoke            = wait for the desktop and take build/smoke.png
 The VM window opens on the desktop unless --headless (or VIBE_HEADLESS=1).
@@ -22,7 +22,7 @@ the VM quits; analyse it with tools/wavcheck.py). Override with --audiodev SPEC 
 `pa,id=snd0` to hear it (the id must stay snd0).
 Serial output goes to build/serial.log (--pcap: packets to build/net.pcap); exits non-zero on timeout or panic.
 """
-import json, os, socket, subprocess, sys, time
+import json, os, re, socket, subprocess, sys, time
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -86,13 +86,14 @@ class VM:
             dx -= sx; dy -= sy
 
     def moveto(self, x, y, home=True):
-        if self.absolute:                         # QMP absolute axes span 0..32767 over the 1280x800 screen
-            self.qmp_events([{"type": "abs", "data": {"axis": "x", "value": x * 32767 // 1279}},
-                             {"type": "abs", "data": {"axis": "y", "value": y * 32767 // 799}}])
+        if self.absolute:                         # QMP absolute axes span 0..32767 over the whole screen
+            w, h = self.screen()
+            self.qmp_events([{"type": "abs", "data": {"axis": "x", "value": x * 32767 // (w - 1)}},
+                             {"type": "abs", "data": {"axis": "y", "value": y * 32767 // (h - 1)}}])
             time.sleep(0.04)
             return
         if home:                                  # slam into the top-left corner first
-            self.rel(-1400, -900)
+            self.rel(-4200, -2700)
             self.pos = (0, 0)
         px, py = getattr(self, "pos", (0, 0))
         self.rel(x - px, y - py)
@@ -100,6 +101,11 @@ class VM:
         for _ in range(6):                        # zero moves make QEMU flush parked motion
             time.sleep(0.03)
             self.hmp("mouse_move 0 0")
+
+    def screen(self):
+        """current mode: the kernel logs `display: WxH` on every switch, else the 1280x800 boot mode"""
+        m = re.findall(r"^display: (\d+)x(\d+)\r?$", self.serial(), re.M)
+        return (int(m[-1][0]), int(m[-1][1])) if m else (1280, 800)
 
     def qmp_events(self, evs):
         if not self.q:

@@ -1,4 +1,5 @@
-/* settings - wallpaper and time zone; the desktop reloads them via WIN_SET_PREFS */
+/* settings - wallpaper, display mode and time zone; the desktop reloads prefs via WIN_SET_PREFS,
+ * modes go through /dev/display (and /etc/display for the next boot) */
 #include <ui.h>
 #include <wallpaper.h>
 #include <stdio.h>
@@ -41,6 +42,29 @@ static bool write_file(const char *path, const char *s) {
     return ok;
 }
 
+/* /dev/display: one "WxH" per line, the current one ends in " *" */
+#define MAXMODES 32
+static char mode_buf[MAXMODES][16];
+static const char *mode_names[MAXMODES];
+static int load_modes(int *cur) {
+    char buf[512];
+    int n = 0;
+    read_file("/dev/display", buf, sizeof buf);
+    *cur = -1;
+    for (char *l = strtok(buf, "\n"); l && n < MAXMODES; l = strtok(0, "\n")) {
+        if (strchr(l, '*')) *cur = n;
+        l[strcspn(l, " ")] = 0;
+        strlcpy(mode_buf[n], l, sizeof mode_buf[n]);
+        mode_names[n] = mode_buf[n];
+        n++;
+    }
+    return n;
+}
+
+static uint32_t now_ms(void) { struct sysinfo si; sysinfo(&si); return si.uptime_ms; }
+
+#define KEEP_MS 15000
+
 int main(void) {
     struct gui_window *w = gui_window_create("Settings", W, H, WIN_FLAG_NORESIZE);
     if (!w) { perror("settings"); return 1; }
@@ -65,6 +89,10 @@ int main(void) {
     const char *names[NZONES];
     for (int i = 0; i < NZONES; i++) names[i] = zones[i].name;
     char status[96] = "";
+    int mcur, msel, mscroll = 0, nmodes = load_modes(&mcur);
+    char prev[16] = "";                                  /* set while asking to keep a new mode */
+    uint32_t keep_until = 0;
+    msel = mcur;
 
     do {
         struct canvas *c = ui.c;
@@ -72,13 +100,13 @@ int main(void) {
         gfx_fill(c, 0, 0, SIDE, H, UI_PANEL);
         gfx_fill(c, SIDE, 0, 1, H, UI_BORDER);
         gfx_text(c, &font_title, 20, 18, "Settings", UI_TEXT);
-        static const char *const pages[] = { "Appearance", "Date & Time", "About" };
-        for (int i = 0; i < 3; i++) {
+        static const char *const pages[] = { "Appearance", "Display", "Date & Time", "About" };
+        for (int i = 0; i < 4; i++) {
             int y = 64 + i * 42;
             if (i == page) gfx_round_fill(c, 10, y, SIDE - 20, 36, UI_RADIUS, RGBA(0xB3, 0x88, 0xFF, 70));
             else if (ui_hover(&ui, 10, y, SIDE - 20, 36)) gfx_round_fill(c, 10, y, SIDE - 20, 36, UI_RADIUS, UI_SURFACE);
             gfx_text(c, i == page ? &font_ui_bold : &font_ui, 24, y + (36 - font_ui.height) / 2, pages[i], UI_TEXT);
-            if (ui_clicked(&ui, 10, y, SIDE - 20, 36)) { page = i; status[0] = 0; }
+            if (ui_clicked(&ui, 10, y, SIDE - 20, 36) && !prev[0]) { page = i; status[0] = 0; }
         }
         int x0 = SIDE + 28;
 
@@ -98,6 +126,26 @@ int main(void) {
                 }
             }
         } else if (page == 1) {
+            if (!prev[0]) nmodes = load_modes(&mcur);       /* `display WxH` may have switched it meanwhile */
+            gfx_text(c, &font_title, x0, 18, "Display", UI_TEXT);
+            char cur[48];
+            snprintf(cur, sizeof cur, "Resolution: %s", mcur >= 0 ? mode_names[mcur] : "unknown");
+            gfx_text(c, &font_ui, x0, 52, cur, UI_TEXT_DIM);
+            int lh = H - 88 - 64;
+            int dummy = msel;
+            ui_list(&ui, x0, 88, W - x0 - 28, lh, mode_names, nmodes, prev[0] ? &dummy : &msel, &mscroll);
+            bool can = msel >= 0 && msel != mcur && !prev[0];
+            if (ui_button(&ui, W - 28 - 110, H - 52, 110, 34, "Apply", can ? UI_ACCENT_BTN : UI_NORMAL_BTN) && can) {
+                char old[16];
+                strlcpy(old, mcur >= 0 ? mode_names[mcur] : "", sizeof old);
+                if (write_file("/dev/display", mode_names[msel])) {
+                    nmodes = load_modes(&mcur);
+                    strlcpy(prev, old, sizeof prev); keep_until = now_ms() + KEEP_MS;
+                    status[0] = 0;
+                } else snprintf(status, sizeof status, "%s isn't supported by this display", mode_names[msel]);
+            }
+            if (mcur < 0) snprintf(status, sizeof status, "No display adapter that can change modes");
+        } else if (page == 2) {
             time_t now = time(NULL) + tz * 60;
             struct tm tm;
             gmtime_r(&now, &tm);
@@ -139,8 +187,28 @@ int main(void) {
             gfx_text(c, &font_ui, x0, 230, line, UI_TEXT_DIM);
         }
         if (status[0]) gfx_text(c, &font_ui, x0, H - 36, status, UI_BAD);
+        if (prev[0]) {                                /* "Keep this resolution?", reverts on its own */
+            int left = (int)(keep_until - now_ms());
+            int pw = 420, ph = 150, px = (W - pw) / 2, py = (H - ph) / 2;
+            gfx_fill(c, 0, 0, W, H, RGBA(0, 0, 0, 120));
+            gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
+            gfx_round_rect(c, px, py, pw, ph, 12, RGBA(0xB3, 0x88, 0xFF, 90));
+            gfx_text(c, &font_ui_bold, px + 20, py + 18, "Keep this resolution?", UI_TEXT);
+            char msg[64];
+            snprintf(msg, sizeof msg, "Reverting to %s in %d s.", prev, left > 0 ? (left + 999) / 1000 : 0);
+            gfx_text(c, &font_ui, px + 20, py + 48, msg, UI_TEXT_DIM);
+            int r = 0;
+            if (ui_button(&ui, px + pw - 140, py + ph - 52, 120, 34, "Keep changes", UI_ACCENT_BTN)) r = 1;
+            if (ui_button(&ui, px + pw - 250, py + ph - 52, 100, 34, "Revert", UI_NORMAL_BTN) || left <= 0) r = -1;
+            struct gui_event k;
+            while (ui_key(&ui, &k)) { if (k.key == KEY_ESC) r = -1; else if (k.key == KEY_ENTER) r = 1; }
+            snprintf(buf, sizeof buf, "%s\n", mode_names[mcur]);
+            if (r > 0 && !write_file("/etc/display", buf)) snprintf(status, sizeof status, "Couldn't write /etc/display");
+            if (r < 0) { write_file("/dev/display", prev); nmodes = load_modes(&mcur); msel = mcur; }
+            if (r) prev[0] = 0;
+        }
         ui_end(&ui);
-    } while (ui_poll(&ui, page == 1 ? 1000 : -1));
+    } while (ui_poll(&ui, page == 2 || prev[0] ? 1000 : -1));
     gui_window_destroy(w);
     return 0;
 }
