@@ -38,6 +38,14 @@ void *sbrk(int incr) {
     return p;
 }
 
+#include <sys/mman.h>
+void *mmap(void *a, size_t n, int prot, int fl, int fd, off_t off) {   /* Linux old_mmap: same flag values */
+    int args[6] = { (int)a, n, prot, fl, fd, off }, r = lx(90, (int)args, 0, 0);
+    if (r < 0 && r > -4096) { errno = -r; return MAP_FAILED; }
+    return (void *)r;
+}
+int munmap(void *a, size_t n) { return ret(lx(91, (int)a, n, 0)); }
+
 uint32_t uptime_ms(void) { return 1234; }
 time_t time(time_t *t) { if (t) *t = 1700000000; return 1700000000; }
 

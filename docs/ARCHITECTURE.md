@@ -47,8 +47,23 @@ and two font files that are baked into C arrays at build time.
   `0x40000000–0xBFFFFFFF` in 4 KiB pages, one page directory per process. MMIO (the
   framebuffer) is identity-mapped above `0xC0000000`. `PTE_NOFREE` marks frames a process
   maps but doesn't own (window buffers).
-* **User stacks** start at 64 KiB below `0xBFFF0000` and grow on demand to 8 MiB from the page
-  fault handler.
+* **Demand paging** (`kernel/mm/mmap.c`): only the ELF image and the argv/envp page of the stack are mapped
+  eagerly. The break (`[brk_start, brk)`), the main stack (down from `0xBFFF0000`, to 8 MiB and no more than
+  64 KiB below `esp`; nothing is mapped between its limit and `0xB0000000`, which is the guard gap) and `mmap`
+  ranges get a zeroed frame on first touch in `uvm_fault`. `vmm_user_ok` faults lazy pages in too, so a syscall
+  handed an untouched buffer works, and a kernel-mode fault on a lazy user page is resolved the same way.
+  `ps` counts present PTEs and `free` counts frames, so both show resident memory only.
+* **mmap** (`SYS_mmap/munmap/mprotect` 87-89; prot and flags share one register: `prot | flags << 8`): each
+  process keeps a sorted list of `struct vma { start, end, prot, flags, vnode, off }`, placed top-down from
+  `0xA0000000` (window buffers live above, in `0xA0000000-0xB0000000`); sbrk can't grow past the lowest one.
+  Anonymous private and shared (shared = between threads, which have one page directory), file-backed
+  MAP_PRIVATE (each page read from the vnode on fault, writable copies stay private; MAP_SHARED only read-only),
+  MAP_FIXED above the break. `PROT_NONE` pages stay present but lose `PTE_U`, so `mprotect` back keeps their data;
+  `mprotect` on brk/stack/image pages faults them in first and then changes the PTEs. munmap splits vmas and frees
+  their frames. exec and exit drop the list (the frames go with the page directory).
+* **Faults**: a fault nobody can map is SIGSEGV (divide error SIGFPE, others SIGILL). With a handler installed and
+  not blocked the signal is delivered like any other (a returning handler re-runs the instruction, so it must
+  `longjmp`); otherwise the red `name[pid]: segmentation fault at ADDR (eip EIP)` line and exit 139.
 
 ## Processes and scheduling
 
@@ -87,7 +102,8 @@ and two font files that are baked into C arrays at build time.
   user word's physical address (check-and-sleep is atomic because the kernel isn't preempted); WAKE wakes everyone.
   libc's errno stays a plain global: the scheduler keeps a copy per thread and swaps it in and out of the process's
   errno word on every switch (single CPU only, see the `ponytail:` note in `sched.c`).
-* `<pthread.h>` (`user/lib/pthread.c`): create (malloc'd stacks, 128 KiB default), join, exit, self, attr
+* `<pthread.h>` (`user/lib/pthread.c`): create (stacks from `mmap`, 128 KiB default, with a `PROT_NONE` guard page
+  below, so an overflow is a SIGSEGV instead of silent heap corruption), join, exit, self, attr
   stacksize, futex mutexes (Drepper's three-state), condition variables (a sequence number), once. Linking it turns on
   a recursive libc lock (weak `__libc_lock` in `malloc.c` and `stdio.c`), so malloc/free/realloc and
   fwrite/fread/fflush/fgetc are safe from threads; programs without threads don't link it and pay nothing.
@@ -250,7 +266,8 @@ coordinates, so the pointer isn't grabbed in a VM.
 `user/lib` is a small libc: string/ctype, `printf` family, `scanf`, stdio buffering, `malloc`,
 `stdlib`, `math`, `time`, `setjmp`, termios, dirents and the spawn API. Every
 `user/bin/NAME.c` or `user/bin/NAME/*.c` becomes `/bin/NAME`. `malloc` is a boundary-tag
-allocator with segregated free lists. `/bin/lua` builds the unmodified Lua 5.4 from
+allocator with segregated free lists over sbrk; requests of 128 KiB or more get their own `mmap` and `free` unmaps
+them, so big buffers go back to the system. `/bin/lua` builds the unmodified Lua 5.4 from
 `third_party/lua` plus `user/bin/lua/` (REPL line editor, the `vibe` and `gui` modules); see
 `third_party/lua/README.vibeos`.
 `/bin/tcc` is the unmodified TinyCC 0.9.27 (`third_party/tcc`, config in `user/bin/tcc/config.h`). The

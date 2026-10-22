@@ -66,6 +66,9 @@ enum {
     SYS_thread_join,  /* (int tid, int *value): wait for a thread of this process and free it */
     SYS_gettid,       /* () -> this thread's id (= getpid() in the main thread) */
     SYS_futex,        /* (int *addr, int op, int val): FUTEX_WAIT sleeps if *addr == val (-EAGAIN otherwise), FUTEX_WAKE wakes waiters */
+    SYS_mmap,         /* (uintptr addr, uint32 len, int prot | flags << 8, int fd, uint32 off) -> address; pages fault in lazily */
+    SYS_munmap,       /* (uintptr addr, uint32 len): only mmap'd pages are affected */
+    SYS_mprotect,     /* (uintptr addr, uint32 len, int prot) */
     SYS_MAX
 };
 
@@ -102,6 +105,18 @@ enum {
 #define FD_CLOEXEC 1
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1
+
+/* mmap: a file mapping is a private copy read in on fault (MAP_SHARED only read-only);
+ * MAP_SHARED anonymous memory is shared by the threads of a process */
+#define PROT_NONE  0
+#define PROT_READ  1
+#define PROT_WRITE 2
+#define PROT_EXEC  4          /* implied by PROT_READ: no NX on i686 */
+#define MAP_SHARED    0x01
+#define MAP_PRIVATE   0x02
+#define MAP_FIXED     0x10
+#define MAP_ANONYMOUS 0x20
+#define MAP_ANON MAP_ANONYMOUS
 
 #define SEEK_SET 0
 #define SEEK_CUR 1

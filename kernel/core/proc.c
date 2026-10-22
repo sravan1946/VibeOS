@@ -6,8 +6,7 @@ struct task *task_create_user(const char *name, const struct regs *r);
 void task_start(struct task *t);
 void task_unlink_free(struct task *t);
 
-#define STACK_INIT  (64 * 1024)
-#define STACK_MAX   (8u << 20)
+#define STACK_INIT  (64 * 1024)   /* argv + envp limit; the stack itself faults in */
 
 /* ---- ELF32 ---- */
 struct elf_hdr {
@@ -38,7 +37,7 @@ static int load_elf(uint32_t dir, const uint8_t *img, uint32_t size, uint32_t *e
     for (int i = 0; i < h->phnum; i++) {
         const struct elf_phdr *p = (const void *)(img + h->phoff + i * sizeof *p);
         if (p->type != 1 || !p->memsz) continue;                  /* PT_LOAD */
-        if (p->vaddr < USER_BASE || p->vaddr + p->memsz > USER_STACK_TOP - STACK_MAX ||
+        if (p->vaddr < USER_BASE || p->vaddr + p->memsz > MMAP_TOP ||
             p->offset + p->filesz > size || p->filesz > p->memsz)
             return -ENOEXEC;
         if (vmm_alloc_range(dir, p->vaddr, p->memsz, PTE_U | PTE_W) < 0) return -ENOMEM;
@@ -61,6 +60,8 @@ static int build_stack(uint32_t dir, char *const argv[], char *const envp[], uin
     uint32_t strp = sp;
     uint32_t *ptrs = kmalloc((argc + envc + 3) * 4);
     if (!ptrs) return -ENOMEM;
+    uint32_t lo = ALIGN_DOWN(sp - (argc + envc + 3) * 4, 16);      /* the final sp: only these pages are mapped now */
+    if (vmm_alloc_range(dir, lo, USER_STACK_TOP - lo, PTE_U | PTE_W) < 0) { kfree(ptrs); return -ENOMEM; }
     int k = 0;
     ptrs[k++] = argc;
     for (int i = 0; i < argc; i++) { uint32_t l = strlen(argv[i]) + 1; copy_to_dir(dir, strp, argv[i], l); ptrs[k++] = strp; strp += l; }
@@ -125,7 +126,6 @@ static int load_image(const char *path, char *const argv[], char *const envp[], 
     if (!im->dir) { kfree(img); kfree(nargv); return -ENOMEM; }
     r = load_elf(im->dir, img, size, &im->entry, &im->end);
     kfree(img);
-    if (r == 0 && vmm_alloc_range(im->dir, USER_STACK_TOP - STACK_INIT, STACK_INIT, PTE_U | PTE_W) < 0) r = -ENOMEM;
     if (r == 0) r = build_stack(im->dir, argv, envp, &im->esp);
     kfree(nargv);
     if (r < 0) { vmm_free_dir(im->dir); return r; }
@@ -204,6 +204,7 @@ int proc_exec(const char *path, char *const argv[], char *const envp[], struct r
     write_cr3(im.dir);
     vmm_free_dir(old);
     sti();
+    uvm_free(p);
     p->brk_start = p->brk = im.end;
     p->uerrno = 0;
     strlcpy(p->name, im.name, sizeof p->name);
@@ -244,6 +245,7 @@ NORETURN void proc_exit(int code) {
     if (p->nthreads > 1 && (first || t == p)) kill_other_threads();
     if (t != p) thread_die(0);
     close_all(t);
+    uvm_free(t);
     cli();
     if (t->user) {
         uint32_t d = t->dir;
@@ -453,14 +455,16 @@ struct file *fd_get(int fd) {
     return (fd >= 0 && fd < MAX_FDS) ? current->proc->fds[fd] : 0;
 }
 
-/* page faults and other exceptions from ring 3 */
+/* page faults and other exceptions from ring 3; a lazy user page touched by the kernel is mapped too */
 bool proc_handle_fault(struct regs *r) {
-    if ((r->cs & 3) != 3) return false;
     uint32_t addr = read_cr2();
-    if (r->int_no == 14 && !(r->err & 1) && addr < USER_STACK_TOP &&
-        addr >= USER_STACK_TOP - STACK_MAX && addr + 65536 >= r->useresp) {
-        if (vmm_alloc_range(current->dir, ALIGN_DOWN(addr, PAGE_SIZE), PAGE_SIZE, PTE_U | PTE_W) == 0)
-            return true;                                   /* stack growth */
+    bool user = (r->cs & 3) == 3;
+    if (r->int_no == 14 && !(r->err & 1) && uvm_fault(addr, r->err & 2, user ? r->useresp : 0) == 0) return true;
+    if (!user) return false;
+    int sig = r->int_no == 14 ? SIGSEGV : r->int_no == 0 ? SIGFPE : SIGILL;
+    if (current->proc->sig_handler[sig] > SIG_IGN_ && current->proc->sig_restorer && !(current->sig_blocked >> sig & 1)) {
+        current->sig_pending |= 1u << sig;                 /* a handler: sched_irq_exit runs it */
+        return true;
     }
     static const char *names[] = { [0] = "divide by zero", [6] = "illegal instruction",
                                    [13] = "general protection fault", [14] = "segmentation fault" };
@@ -473,5 +477,5 @@ bool proc_handle_fault(struct regs *r) {
     kprintf("%s", msg);
     if (current->proc->tty) tty_output(current->proc->tty, msg, strlen(msg));
     sti();
-    proc_exit(128 + (r->int_no == 14 ? 11 : r->int_no == 0 ? 8 : 4));
+    proc_exit(128 + sig);
 }

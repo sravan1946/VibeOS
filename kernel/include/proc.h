@@ -21,7 +21,8 @@ struct task {
     bool user;
     struct task *proc;            /* the leader (itself for a process) */
     /* ---- per process (leader only) ---- */
-    uint32_t brk_start, brk;
+    uint32_t brk_start, brk;      /* [brk_start, brk) faults in zeroed pages */
+    struct vma *vmas;             /* mmap'd ranges, sorted (mm/mmap.c) */
     struct file *fds[MAX_FDS];
     uint32_t fd_cloexec;          /* bit n: close fds[n] on exec */
     char cwd[PATH_MAX];
@@ -79,6 +80,13 @@ int  proc_sigprocmask(int how, uint32_t set);
 int  fd_alloc(struct file *f);                     /* in current; -EMFILE */
 struct file *fd_get(int fd);
 void proc_reap_orphans(void);
+
+/* mmap (mm/mmap.c): ranges of current's process; uvm_free drops p's list (its pages go with the page directory) */
+int  uvm_mmap(uint32_t addr, uint32_t len, int prot, int flags, int fd, uint32_t off);
+int  uvm_munmap(uint32_t addr, uint32_t len);
+int  uvm_mprotect(uint32_t addr, uint32_t len, int prot);
+uint32_t uvm_brk_limit(void);                      /* sbrk can't grow past the lowest mapping */
+void uvm_free(struct task *p);
 
 /* syscalls (core/syscall.c) */
 void syscall_init(void);

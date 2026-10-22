@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syscall.h>
+#include <sys/mman.h>
 
 #define P(x) ((int)(uintptr_t)(x))
 
@@ -84,7 +85,7 @@ void __libc_unlock(void) {
 
 /* ---- threads ---- */
 
-struct thr { pthread_t tid; void *(*fn)(void *); void *arg; void *stack; struct thr *next; };
+struct thr { pthread_t tid; void *(*fn)(void *); void *arg; void *stack; size_t len; struct thr *next; };
 static struct thr *thrs;                                 /* under the libc lock */
 
 static void thread_start(struct thr *t) { pthread_exit(t->fn(t->arg)); }
@@ -99,19 +100,24 @@ int pthread_attr_setstacksize(pthread_attr_t *a, size_t n) {
 int pthread_attr_getstacksize(const pthread_attr_t *a, size_t *n) { *n = a->stacksize; return 0; }
 
 int pthread_create(pthread_t *tid, const pthread_attr_t *attr, void *(*fn)(void *), void *arg) {
-    size_t size = attr ? attr->stacksize : 128 * 1024;
+    /* the stack's own mapping, faulted in as it grows, with a PROT_NONE guard page below it */
+    size_t size = ((attr ? attr->stacksize : 128 * 1024) + 4095) & ~4095u, len = size + 4096;
     struct thr *t = malloc(sizeof *t);
-    void *stack = t ? malloc(size) : NULL;
-    if (!stack) { free(t); return EAGAIN; }
-    t->fn = fn; t->arg = arg; t->stack = stack;
+    char *stack = t ? mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) : MAP_FAILED;
+    if (stack == MAP_FAILED || mprotect(stack, 4096, PROT_NONE) < 0) {
+        if (stack != MAP_FAILED) munmap(stack, len);
+        free(t);
+        return EAGAIN;
+    }
+    t->fn = fn; t->arg = arg; t->stack = stack; t->len = len;
     /* thread_start(t) as if called: (esp + 4) 16-aligned, return address 0 */
-    uint32_t *sp = (uint32_t *)(((uintptr_t)stack + size) & ~15u) - 5;
+    uint32_t *sp = (uint32_t *)(stack + len) - 5;
     sp[0] = 0;
     sp[1] = (uint32_t)(uintptr_t)t;
     threaded = 1;                                        /* before the second thread can touch malloc */
     __libc_lock();
     int r = __syscall3(SYS_thread_create, P(thread_start), P(sp), P(&errno));
-    if (r < 0) { __libc_unlock(); free(stack); free(t); return -r; }
+    if (r < 0) { __libc_unlock(); munmap(stack, len); free(t); return -r; }
     t->tid = r;
     t->next = thrs;
     thrs = t;
@@ -130,7 +136,7 @@ int pthread_join(pthread_t tid, void **ret) {
         if ((*pp)->tid == tid) {
             struct thr *t = *pp;
             *pp = t->next;
-            free(t->stack);
+            munmap(t->stack, t->len);
             free(t);
             break;
         }

@@ -306,9 +306,20 @@ static void test_malloc_stress(void) {
     CHECK(bad == 0);
     for (int i = 0; i < N; i++) free(p[i]);
     void *top = sbrk(0);
-    void *big = malloc(1 << 20);                 /* needs one contiguous block: only possible if all merged */
-    CHECK(big && (char *)sbrk(0) <= (char *)top + (1 << 20) + 65536 + 64);
+    void *big = malloc(100000);                  /* needs one contiguous block: only possible if all merged */
+    CHECK(big && sbrk(0) == top);
     free(big);
+    char *m = malloc(1 << 20), *m2;              /* >= 128 KiB: its own mapping, outside the heap */
+    CHECK(m && (m >= (char *)top || m < (char *)top - (8 << 20)) && sbrk(0) == top);
+    memset(m, 0x5A, 1 << 20);
+    m2 = realloc(m, 3 << 20);
+    CHECK(m2 && m2[0] == 0x5A && m2[(1 << 20) - 1] == 0x5A);
+    m = realloc(m2, 1000);                       /* back to the heap */
+    CHECK(m && m[999] == 0x5A);
+    free(m);
+    int *zz = calloc(1 << 18, 4);
+    CHECK(zz && zz[0] == 0 && zz[(1 << 18) - 1] == 0);
+    free(zz);
     for (int i = 0; i < 100000; i++) p[i % N] = malloc(24 + i % 40);   /* many small blocks, freed in a scattered order */
     for (int i = 0; i < N; i++) free(p[(i * 757) % N]);
 }
