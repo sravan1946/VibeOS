@@ -48,7 +48,7 @@ build/kernel.elf: $(KOBJ) kernel/arch/linker.ld
 build/kernel.bin: build/kernel.elf
 	objcopy -O binary $< $@
 
-build/stage1.bin: boot/stage1.asm
+build/stage1.bin: boot/stage1.asm Makefile   # FS_LBA/FS_SECTORS are baked into the partition table
 	@mkdir -p build
 	$(NASM) -f bin -DSTAGE2_SECTORS=32 -DFS_LBA=$(FS_LBA) -DFS_SECTORS=$(FS_SECTORS) $< -o $@
 
