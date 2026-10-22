@@ -48,3 +48,12 @@ NOSYS(pid_t, waitpid, (pid_t p, int *s, int f))
 NOSYS(int, kill, (pid_t p, int s))
 pid_t getpid(void) { return 42; }
 char *getcwd(char *b, size_t n) { errno = ENOSYS; return NULL; }
+
+/* signal() lives in syscall.c on VibeOS; the host test only needs the bookkeeping */
+#include <signal.h>
+sighandler_t signal(int sig, sighandler_t h) {
+    static sighandler_t tab[32];
+    sighandler_t p = tab[sig & 31];
+    tab[sig & 31] = h;
+    return p;
+}
