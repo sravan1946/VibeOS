@@ -32,6 +32,8 @@ and two font files that are baked into C arrays at build time.
   kernel through a bounce buffer at `0x10000` to 1 MiB using unreal mode, switches to protected
   mode and jumps to `0x100000` with `EBX` → `struct boot_info` (magic `'VIBE'`, framebuffer,
   memory map) at `0x5000`.
+![Boot splash](screenshots/splash.png)
+
 * **kmain** (`kernel/core/main.c`) brings up serial, the framebuffer splash, GDT/TSS, IDT, the
   physical allocator, the kernel heap, paging, the 1 kHz PIT, RTC, scheduler, syscalls, keyboard,
   `/dev` + `/proc`, mounts ext2 on `/`, then starts the compositor and becomes the idle task.
