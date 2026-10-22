@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <locale.h>
 #include <signal.h>
+#include <regex.h>
 
 static int fails, checks;
 
@@ -494,9 +495,29 @@ static void test_env(void) {
     CHECK(atexit(at_exit_fn) == 0);
 }
 
+/* regcomp/regexec sanity on the real 32-bit build; the broad comparison is regex_diff */
+static int rx(const char *pat, int cf, const char *s, int so, int eo, int so1, int eo1) {
+    regex_t r; regmatch_t m[3];
+    if (regcomp(&r, pat, cf)) return 0;
+    int e = regexec(&r, s, 3, m, 0), ok = so < 0 ? e == REG_NOMATCH : !e && m[0].rm_so == so && m[0].rm_eo == eo && m[1].rm_so == so1 && m[1].rm_eo == eo1;
+    regfree(&r);
+    return ok;
+}
+static void test_regex(void) {
+    CHECK(rx("a\\(b*\\)c", 0, "xabbcx", 1, 5, 2, 4));
+    CHECK(rx("(a|ab)(c|bcd)?", REG_EXTENDED, "abcd", 0, 4, 0, 1));
+    CHECK(rx("^(x+)$", REG_EXTENDED | REG_ICASE, "XxX", 0, 3, 0, 3));
+    CHECK(rx("\\(a*\\)\\1", 0, "aaaaa", 0, 4, 0, 2));
+    CHECK(rx("z", 0, "abc", -1, 0, 0, 0));
+    regex_t r; char eb[64];
+    CHECK(regcomp(&r, "a\\{2", 0) == REG_EBRACE);
+    regerror(REG_EBRACE, &r, eb, sizeof eb);
+    CHECK_STR(eb, "Unmatched \\{");
+}
+
 int tmain(void) {
     test_string(); test_printf(); test_conv(); test_sort_rand(); test_malloc();
-    test_new(); test_malloc_stress(); test_time(); test_scanf(); test_math(); test_setjmp(); test_stdio(); test_env();
+    test_new(); test_malloc_stress(); test_time(); test_scanf(); test_math(); test_setjmp(); test_stdio(); test_env(); test_regex();
     char b[64];
     snprintf(b, sizeof b, "%d checks, %d failed\n", checks, fails);
     write(1, b, strlen(b));

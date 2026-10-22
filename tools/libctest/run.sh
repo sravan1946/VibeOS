@@ -10,7 +10,7 @@ LIBGCC=$(gcc -m32 -print-libgcc-file-name)
 FLAGS="-m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
   -nostdinc -isystem $GCCINC -Iuser/include -Icommon -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-format"
 OBJS=""
-for f in string errno ctype malloc stdlib strtod locale printf stdio scanf math time; do
+for f in string errno ctype malloc stdlib strtod locale printf stdio scanf math time regex; do
     X=""
     [ $f = string ] && X=-fno-tree-loop-distribute-patterns
     gcc $FLAGS $X -c user/lib/$f.c -o $T/$f.o
@@ -43,3 +43,9 @@ for n in sin cos tan asin acos atan atan2 sqrt pow exp log log2 log10 floor ceil
 gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -Icommon $R -w -c user/lib/math.c -o $T/math64.o
 gcc -O2 -Wall tools/libctest/math_diff.c $T/math64.o -o $T/math_diff -lm
 $T/math_diff
+
+echo "== regex differential test vs glibc (64-bit build of user/lib/regex.c)"
+gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -Icommon \
+    -Dregcomp=vibe_regcomp -Dregexec=vibe_regexec -Dregfree=vibe_regfree -Dregerror=vibe_regerror -w -c user/lib/regex.c -o $T/regex64.o
+gcc -O2 -Wall tools/libctest/regex_diff.c $T/regex64.o -o $T/regex_diff
+$T/regex_diff
