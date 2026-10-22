@@ -68,6 +68,7 @@ Newest notes at the bottom of each phase.
 - [x] `time` command; faster spawns: binaries stripped into the rootfs (16 MB → 5.7 MB of /bin), ext2 block cache 32 → 1024 blocks (`$(..)` 53 → 18 ms, `ls` 37 → 15 ms)
 - [x] QEMU uses KVM when available (`make run` and vmtest; falls back to TCG): demo.sh 3.5 s → 0.3 s
 - [x] System clipboard `/dev/clipboard`: drag-select in terminals copies, Ctrl+Shift+C/V and middle-click; Notepad and text boxes share it; `cat`/`tee` work on it
+- [x] ATA bus-master DMA (PIIX IDE, 64 KiB bounce buffer; PIO fallback), halting on the IRQ while busy: under KVM every PIO-written word trapped to the host (~2 ms/sector); copying 541 KB 11.5 s → 0.6 s, PrtSc screenshots now save in ~1 s
 
 - [x] Images: `user/lib/image.c` (libgui) — from-scratch zlib inflate, PNG decoder (all colour types, depths 1-16, all filters, Adam7, tRNS), BMP 24/32 and binary PPM/PGM, PNG encoder (LZ77 + fixed Huffman, valid CRC/Adler), area-average/bilinear resampler; host-tested against Pillow under ASan/UBSan (`tools/imagetest`, `make test-host`)
 - [x] Viewer app (`/bin/viewer`): fit-to-window, smooth zoom (wheel, +/-), drag to pan, 1:1, arrow keys browse the folder, checkerboard behind transparency; Files opens .png/.bmp/.ppm in it; launcher entry "Photos" opens ~/Pictures
@@ -93,3 +94,4 @@ Newest notes at the bottom of each phase.
 - Merged the scripting shell (if/for/while/case, functions, `$(..)`, `$((..))`, here-docs, builtins, Ctrl-R, `!!`, kernel `#!`; 162/162 in shtest.sh). Profiling it showed every spawn re-reading the whole unstripped ELF over PIO through a 32-block cache.
 - Audio (2026-10-22): AC'97 driver + `/dev/dsp`, `play`, `tone`, Piano app. Verified in QEMU against the captured WAV (440/1000 Hz tones, arpeggio notes within 1 Hz, 8-bit/8 kHz stereo resampled to 1000 Hz). Fixed: `irq_register` replaced the previous handler, so the AC'97 card on IRQ 11 silently killed the e1000.
 - Images: PNG/BMP/PPM codecs in libgui (own inflate + PNG encoder, 222 host checks vs Pillow under sanitizers), `/bin/viewer`, PrtSc screenshots via `/dev/screen` + `/bin/screenshot`, PNG in Paint and Files. Fixed along the way: a float bilinear resampler took >1 s per 800x480 frame under QEMU (frames lagged input), now packed-integer lerp + row-copy at 1:1.
+- Merged the browser-less agents (audio, Lua, images). A slow PrtSc led to the disk: writes ran at ~47 KB/s under KVM because `rep outsw` exits per word; reads were fine. DMA fixed it; e2fsck clean after a write-heavy session.

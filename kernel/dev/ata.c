@@ -1,5 +1,10 @@
-/* ata.c - ATA PIO disk driver: polling, no IRQs (nIEN), LBA28 */
+/* ata.c - ATA disk driver, LBA28: bus-master DMA through the PCI IDE controller when there is
+ * one, PIO otherwise.  Under KVM every word of a PIO write (rep outsw) is a separate exit to
+ * the host, ~2 ms per sector; DMA moves a 64 KiB run in one go.  While the drive is busy we
+ * halt until its IRQ rather than spin. */
 #include "vfs.h"
+#include "arch.h"
+#include "net.h"     /* pci_read */
 
 #define ST_ERR 0x01
 #define ST_DRQ 0x08
@@ -9,7 +14,7 @@
 #define SPIN   50000000     /* poll cap for when the timer isn't running */
 #define MAXRUN 128          /* sectors per command */
 
-struct ata { uint16_t io, ctl; uint8_t slave; bool unflushed; uint64_t last_flush; };
+struct ata { uint16_t io, ctl, bm; uint8_t slave; bool unflushed; uint64_t last_flush; };
 static struct { struct blockdev bd; struct ata a; } disks[4];
 static int ndisks, inited;
 
@@ -20,6 +25,16 @@ static inline void outsw(uint16_t p, const void *s, uint32_t n) {
     __asm__ volatile("rep outsw" : "+S"(s), "+c"(n) : "d"(p) : "memory");
 }
 
+static bool irqs_on;
+static void ata_irq(struct regs *r) { (void)r; inb(0x1F7); inb(0x177); }   /* reading status acks */
+
+/* wait a little: until the next interrupt if we may (IF set, IRQs wired), else spin */
+static void idle(void) {
+    uint32_t f;
+    __asm__ volatile("pushf; pop %0" : "=r"(f));
+    if (irqs_on && (f & 0x200)) hlt(); else __builtin_ia32_pause();
+}
+
 static void delay400(struct ata *a) { for (int i = 0; i < 4; i++) inb(a->ctl); }
 
 /* wait for BSY to clear; returns status or -EIO on timeout */
@@ -28,6 +43,7 @@ static int wait_bsy(struct ata *a) {
     for (int i = 0; i < SPIN && ticks_ms < until; i++) {
         uint8_t s = inb(a->ctl);
         if (!(s & ST_BSY)) return s;
+        idle();
     }
     kprintf("ata: timeout waiting for BSY\n");
     return -EIO;
@@ -39,12 +55,50 @@ static int ata_wait(struct ata *a, int drq) {
     uint64_t until = ticks_ms + TIMEOUT_MS;
     for (int i = 0; i < SPIN && ticks_ms < until; i++) {
         uint8_t s = inb(a->ctl);
-        if (s & ST_BSY) continue;
+        if (s & ST_BSY) { idle(); continue; }
         if (s & (ST_ERR | ST_DF)) { kprintf("ata: error status %x (err %x)\n", s, inb(a->io + 1)); return -EIO; }
         if (!drq || (s & ST_DRQ)) return 0;
     }
     kprintf("ata: timeout (drq=%d)\n", drq);
     return -EIO;
+}
+
+/* one PRD, one 64 KiB bounce buffer that never crosses a 64 KiB boundary (MAXRUN * 512) */
+static uint32_t *prd;
+static uint16_t dma_bm;
+static uint8_t *bounce;
+
+static int dma(struct ata *a, int wr, uint32_t n, uint8_t *p) {
+    if (wr) memcpy(bounce, p, n * 512);
+    prd[0] = (uint32_t)bounce;
+    prd[1] = 0x80000000u | ((n * 512) & 0xFFFF);        /* end of table; 0 means 64 KiB */
+    outb(a->bm, 0);                                     /* stop */
+    outl(a->bm + 4, (uint32_t)prd);
+    outb(a->bm + 2, 6);                                 /* clear IRQ + error */
+    outb(a->io + 7, wr ? 0xCA : 0xC8);                  /* WRITE/READ DMA */
+    outb(a->bm, wr ? 1 : 9);                            /* start; bit 3 = device -> memory */
+    uint64_t until = ticks_ms + TIMEOUT_MS;
+    uint8_t st;
+    while (!((st = inb(a->bm + 2)) & 4) && ticks_ms < until) idle();
+    outb(a->bm, 0);
+    int r = ata_wait(a, 0);
+    if (!(st & 4) || (st & 2)) { kprintf("ata: dma %s failed (bm %x)\n", wr ? "write" : "read", st); r = -EIO; }
+    outb(a->bm + 2, 6);
+    if (r == 0 && !wr) memcpy(p, bounce, n * 512);
+    return r;
+}
+
+/* the PCI IDE controller's bus-master registers (BAR4), found by scanning bus 0 */
+static uint16_t find_busmaster(void) {
+    for (int dev = 0; dev < 32; dev++) {
+        uint32_t id = pci_read(0, dev, 0, 0);
+        if ((id & 0xFFFF) == 0xFFFF || pci_read(0, dev, 1, 8) >> 16 != 0x0101) continue;
+        uint32_t bar = pci_read(0, dev, 1, 0x20);
+        if (!(bar & 1)) continue;
+        pci_write(0, dev, 1, 4, pci_read(0, dev, 1, 4) | 5);          /* I/O + bus master */
+        return bar & ~3u;
+    }
+    return 0;
 }
 
 static void select_drive(struct ata *a, uint32_t lba) {
@@ -72,10 +126,15 @@ static int ata_rw(struct blockdev *d, int wr, uint32_t lba, uint32_t cnt, void *
         outb(a->io + 3, lba);
         outb(a->io + 4, lba >> 8);
         outb(a->io + 5, lba >> 16);
-        outb(a->io + 7, wr ? 0x30 : 0x20);
-        for (uint32_t i = 0; i < n; i++, p += 512) {
-            if (ata_wait(a, 1) < 0) return -EIO;
-            if (wr) outsw(a->io, p, 256); else insw(a->io, p, 256);
+        if (a->bm) {
+            if (dma(a, wr, n, p) < 0) return -EIO;
+            p += 512 * n;
+        } else {
+            outb(a->io + 7, wr ? 0x30 : 0x20);
+            for (uint32_t i = 0; i < n; i++, p += 512) {
+                if (ata_wait(a, 1) < 0) return -EIO;
+                if (wr) outsw(a->io, p, 256); else insw(a->io, p, 256);
+            }
         }
         lba += n; cnt -= n;
         if (wr) {   /* let the drive finish; flush its cache at most once a second */
@@ -96,7 +155,7 @@ static int ata_read(struct blockdev *d, uint32_t lba, uint32_t cnt, void *buf) {
 static int ata_write(struct blockdev *d, uint32_t lba, uint32_t cnt, const void *buf) { return ata_rw(d, 1, lba, cnt, (void *)buf); }
 
 static void probe(uint16_t io, uint16_t ctl, int slave, char letter) {
-    struct ata a = { io, ctl, slave };
+    struct ata a = { .io = io, .ctl = ctl, .slave = slave };
     uint16_t id[256];
     if (ndisks >= (int)ARRAY_LEN(disks)) return;
     select_drive(&a, 0);
@@ -114,6 +173,7 @@ static void probe(uint16_t io, uint16_t ctl, int slave, char letter) {
     if (sectors > 0x0FFFFFFF) sectors = 0x0FFFFFFF;     /* LBA28 only */
     struct blockdev *bd = &disks[ndisks].bd;
     disks[ndisks].a = a;
+    if (bounce) disks[ndisks].a.bm = io == 0x1F0 ? dma_bm : dma_bm + 8;
     snprintf(bd->name, sizeof bd->name, "hd%c", letter);
     bd->sectors = sectors;
     bd->read = ata_read;
@@ -126,12 +186,23 @@ static void probe(uint16_t io, uint16_t ctl, int slave, char letter) {
 int ata_init(void) {
     if (inited) return ndisks;
     inited = 1;
-    outb(0x3F6, 2);                                     /* nIEN: no IRQs */
+    outb(0x3F6, 2);                                     /* nIEN while probing */
     outb(0x376, 2);
+    dma_bm = find_busmaster();
+    uint32_t mem = dma_bm ? pmm_alloc_contig(32) : 0;         /* 128 KiB: holds an aligned 64 KiB */
+    if (mem) {
+        bounce = (uint8_t *)ALIGN_UP(mem, 0x10000);
+        prd = (uint32_t *)(bounce == (uint8_t *)mem ? mem + 0x10000 : mem);
+    } else dma_bm = 0;
     probe(0x1F0, 0x3F6, 0, 'a');
     probe(0x1F0, 0x3F6, 1, 'b');
     probe(0x170, 0x376, 0, 'c');
     probe(0x170, 0x376, 1, 'd');
+    irq_register(14, ata_irq);
+    irq_register(15, ata_irq);
+    outb(0x3F6, 0);                                     /* IRQs on */
+    outb(0x376, 0);
+    irqs_on = true;
     return ndisks;
 }
 
