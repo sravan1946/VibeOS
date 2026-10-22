@@ -3,19 +3,23 @@
  * Every block starts with an 8-byte header { size | PREV_FREE, magic }. A free block also carries
  * next/prev links (in the payload) and a footer repeating its size, so free() merges with both
  * physical neighbours in O(1). Free blocks live in bins: one per 8-byte size up to 504 bytes, then
- * one per power of two. Heap memory is never returned to the kernel.
+ * one per power of two. Heap memory is never returned to the kernel, but blocks of BIG bytes or more
+ * get their own mmap (header { mapping size, MAGIC_MMAP }) and free() unmaps them.
  * The heap ends in a zero-size "used" sentinel so merging never runs off the end. */
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <stdint.h>
+#include <sys/mman.h>
 
 #define HDR 8
 #define MINBLK 24                       /* header + next + prev + footer */
 #define PREV_FREE 1u
 #define MAGIC_USED 0xA110C8EDu
 #define MAGIC_FREE 0xF4EEB10Cu
+#define MAGIC_MMAP 0x3A9B10C5u
+#define BIG (128 * 1024)
 #define CHUNK 65536
 #define NBINS 96
 
@@ -113,6 +117,14 @@ static void *take(struct blk *b, size_t need) {
 
 static void *heap_alloc(size_t n) {
     if (n > 0x7fffffff - 64) { errno = ENOMEM; return NULL; }
+    if (n >= BIG) {
+        size_t sz = (n + HDR + 4095) & ~(size_t)4095;
+        struct blk *b = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (b == MAP_FAILED) return NULL;
+        b->size = sz;
+        b->magic = MAGIC_MMAP;
+        return (char *)b + HDR;
+    }
     size_t need = ((n + 7) & ~(size_t)7) + HDR;
     if (need < MINBLK) need = MINBLK;
     for (int tries = 0; tries < 2; tries++) {
@@ -131,6 +143,7 @@ static void *heap_alloc(size_t n) {
 static void heap_free(void *p) {
     if (!p) return;
     struct blk *b = (struct blk *)((char *)p - HDR);
+    if (b->magic == MAGIC_MMAP) { b->magic = 0; munmap(b, b->size); return; }
     if (b->magic != MAGIC_USED) abort();                  /* double free / wild pointer */
     release(b, SZ(b));
 }
@@ -138,7 +151,7 @@ static void heap_free(void *p) {
 void *calloc(size_t n, size_t sz) {
     if (sz && n > 0x7fffffff / sz) { errno = ENOMEM; return NULL; }
     void *p = malloc(n * sz);
-    return p ? memset(p, 0, n * sz) : NULL;
+    return p && ((uint32_t *)p)[-1] != MAGIC_MMAP ? memset(p, 0, n * sz) : p;   /* fresh mappings are zero */
 }
 
 static void *heap_realloc(void *p, size_t n) {
@@ -146,6 +159,12 @@ static void *heap_realloc(void *p, size_t n) {
     if (!n) { free(p); return NULL; }
     if (n > 0x7fffffff - 64) { errno = ENOMEM; return NULL; }
     struct blk *b = (struct blk *)((char *)p - HDR);
+    if (b->magic == MAGIC_MMAP) {
+        if (n + HDR <= b->size && n >= BIG / 2) return p;  /* ponytail: no mremap, growing copies */
+        void *q = heap_alloc(n);
+        if (q) { memcpy(q, p, n < b->size - HDR ? n : b->size - HDR); heap_free(p); }
+        return q;
+    }
     if (b->magic != MAGIC_USED) abort();
     size_t need = ((n + 7) & ~(size_t)7) + HDR, size = SZ(b);
     if (need < MINBLK) need = MINBLK;

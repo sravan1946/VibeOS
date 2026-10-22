@@ -32,6 +32,8 @@ static inline void invlpg(uint32_t a) { __asm__ volatile("invlpg (%0)" :: "r"(a)
 #define USER_BASE   0x40000000u
 #define USER_TOP    0xC0000000u
 #define USER_STACK_TOP 0xBFFF0000u
+#define STACK_MAX   (8u << 20)      /* the main stack grows down on fault to here; nothing maps below it before 0xB0000000 */
+#define MMAP_TOP    0xA0000000u     /* mmap places top-down from here; window buffers sit at 0xA0000000-0xB0000000 */
 #define PTE_P 0x001
 #define PTE_W 0x002
 #define PTE_U 0x004
@@ -48,4 +50,9 @@ int       vmm_alloc_range(uint32_t dir, uint32_t va, uint32_t len, uint32_t flag
 void      vmm_unmap_range(uint32_t dir, uint32_t va, uint32_t len, bool free_frames);
 void      vmm_map_mmio(uint32_t pa, uint32_t len);   /* identity, kernel only */
 void      vmm_map_wc(uint32_t pa, uint32_t len);     /* same, write-combining (framebuffers) */
-bool      vmm_user_ok(uint32_t dir, uint32_t va, uint32_t len, bool write);
+bool      vmm_user_ok(uint32_t dir, uint32_t va, uint32_t len, bool write);   /* faults in lazy pages of current */
+void      vmm_protect(uint32_t dir, uint32_t va, uint32_t flags);   /* a present page's PTE_U/PTE_W */
+
+/* ---- demand paging + mmap (mm/mmap.c) ---- */
+int       uvm_fault(uint32_t va, bool write, uint32_t esp);  /* map current's lazy page at va: 0, or -1 = SIGSEGV;
+                                                               esp != 0 limits stack growth to 64 KiB below it */

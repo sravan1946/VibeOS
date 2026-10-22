@@ -1,5 +1,5 @@
 /* vmm.c - two-level x86 paging, see the layout in arch.h */
-#include "arch.h"
+#include "proc.h"
 
 static uint32_t *kdir;
 
@@ -104,12 +104,22 @@ void vmm_free_dir(uint32_t dir) {
     pmm_free(dir);
 }
 
+static bool user_page_ok(uint32_t dir, uint32_t a, bool write) {
+    uint32_t *pte = pte_for(dir, a, false);
+    return pte && (*pte & (PTE_P | PTE_U)) == (PTE_P | PTE_U) && (!write || (*pte & PTE_W));
+}
+
 bool vmm_user_ok(uint32_t dir, uint32_t va, uint32_t len, bool write) {
     if (va < USER_BASE || va + len < va || va + len > USER_TOP) return false;
-    for (uint32_t a = ALIGN_DOWN(va, PAGE_SIZE); a < va + len; a += PAGE_SIZE) {
-        uint32_t *pte = pte_for(dir, a, false);
-        if (!pte || !(*pte & PTE_P) || !(*pte & PTE_U)) return false;
-        if (write && !(*pte & PTE_W)) return false;
-    }
+    for (uint32_t a = ALIGN_DOWN(va, PAGE_SIZE); a < va + len; a += PAGE_SIZE)
+        if (!user_page_ok(dir, a, write) &&
+            (dir != current->dir || uvm_fault(a, write, 0) < 0 || !user_page_ok(dir, a, write))) return false;
     return true;
+}
+
+void vmm_protect(uint32_t dir, uint32_t va, uint32_t flags) {
+    uint32_t *pte = pte_for(dir, va, false);
+    if (!pte || !(*pte & PTE_P)) return;
+    *pte = (*pte & ~(PTE_U | PTE_W)) | flags;
+    if (dir == read_cr3()) invlpg(va);
 }

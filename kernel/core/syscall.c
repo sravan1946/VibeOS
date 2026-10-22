@@ -154,13 +154,11 @@ static int sys_spawn(const char *up, char *const *uargv, char *const *uenvp, con
     return r;
 }
 
+/* growth only moves the break: pages fault in on first touch (uvm_fault) */
 static int sys_sbrk(int32_t inc) {
     uint32_t old = current->proc->brk, nb = old + inc;
-    if (inc > 0 && (nb < old || nb > USER_STACK_TOP - (8u << 20))) return -ENOMEM;
+    if (inc > 0 && (nb < old || nb > uvm_brk_limit())) return -ENOMEM;
     if (inc < 0 && nb < current->proc->brk_start) return -EINVAL;
-    if (inc > 0 && vmm_alloc_range(current->dir, ALIGN_UP(old, PAGE_SIZE),
-                                   ALIGN_UP(nb, PAGE_SIZE) - ALIGN_UP(old, PAGE_SIZE), PTE_U | PTE_W) < 0)
-        return -ENOMEM;
     if (inc < 0) vmm_unmap_range(current->dir, ALIGN_UP(nb, PAGE_SIZE), ALIGN_UP(old, PAGE_SIZE) - ALIGN_UP(nb, PAGE_SIZE), true);
     current->proc->brk = nb;
     return old;
@@ -410,6 +408,9 @@ static void syscall_handler(struct regs *r) {
         ret = proc_thread_join(a, (int *)b); break;
     case SYS_gettid:   ret = current->pid; break;
     case SYS_futex:    ret = sys_futex((int *)a, b, c); break;
+    case SYS_mmap:     ret = uvm_mmap(a, b, c & 0xFF, c >> 8, d, e); break;
+    case SYS_munmap:   ret = uvm_munmap(a, b); break;
+    case SYS_mprotect: ret = uvm_mprotect(a, b, c); break;
     default:           ret = -ENOSYS;
     }
     if (hold) vfs_close(hold);

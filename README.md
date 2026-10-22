@@ -17,7 +17,7 @@ emulator, and a set of desktop apps and games.
 - Two-stage BIOS bootloader: A20, E820 memory map, VBE 32-bpp linear framebuffer, unreal-mode
   kernel load to 1 MiB. A boot splash with a progress bar crossfades into the desktop.
 - Paging with a separate address space per process, physical frame bitmap, kernel heap,
-  demand-grown user stacks.
+  demand paging (lazy brk, stacks and `mmap`), `mmap`/`munmap`/`mprotect`.
 - Preemptive scheduling of user programs, ring 3, ELF loading, `spawn`/`exec`/`waitpid`/signals, threads (`<pthread.h>`: mutexes, condvars),
   per-task FPU state, POSIX-style signal handlers (masks, `sigreturn`, SIGCHLD/SIGWINCH),
   ~50 syscalls (`common/abi.h`).
