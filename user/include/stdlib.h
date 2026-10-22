@@ -20,6 +20,7 @@ long long strtoll(const char *s, char **end, int base);
 unsigned long long strtoull(const char *s, char **end, int base);
 double strtod(const char *s, char **end);
 float strtof(const char *s, char **end);
+long double strtold(const char *s, char **end);   /* = strtod widened: 53-bit precision */
 int abs(int x);
 long labs(long x);
 long long llabs(long long x);

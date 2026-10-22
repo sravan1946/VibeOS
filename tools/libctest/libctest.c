@@ -153,6 +153,7 @@ static void test_conv(void) {
     NEAR(strtod("-2.5e3", NULL), -2500.0);
     NEAR(strtod("1e-5", NULL), 1e-5);
     NEAR(strtod(".5", NULL), 0.5);
+    { char *e; NEAR((double)strtold("2.5e2xyz", &e), 250.0); CHECK(*e == 'x'); }
     NEAR(strtod("1.7976931348623157e308", NULL), 1.7976931348623157e308);
     NEAR(strtod("123456789012345678901234567890", NULL), 1.2345678901234568e29);
     CHECK(strtod("0.1", NULL) == 0.1 && strtod("0.3", NULL) == 0.3 && strtod("2.2250738585072014e-308", NULL) == 2.2250738585072014e-308);

@@ -29,5 +29,6 @@ void _exit(int code) __attribute__((noreturn));
 int spawnv(const char *path, char *const argv[]);
 int spawnve(const char *path, char *const argv[], char *const envp[], const struct spawn_opts *o);
 int spawnvp(const char *file, char *const argv[]);          /* searches $PATH (default "/bin") */
+int execvp(const char *file, char *const argv[]);          /* emulated: spawn + wait + _exit (no exec in the kernel) */
 pid_t waitpid(pid_t pid, int *status, int flags);
 pid_t wait(int *status);

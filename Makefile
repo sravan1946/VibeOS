@@ -116,6 +116,14 @@ build/user/obj/third_party/%.o: third_party/%.c
 build/user/obj/bin/lua/%.o: UCFLAGS += $(LUA_FLAGS)
 build/user/obj/third_party/lua/src/lua.o: UCFLAGS += -DVIBE_LUA_FRONTEND
 
+# TinyCC 0.9.27 (third_party/tcc, unmodified): one translation unit (tcc.c #includes the rest), configured by
+# user/bin/tcc/config.h, its main renamed so user/bin/tcc/vibe.c can add the static/load-address defaults.
+TCC_FLAGS := -Ithird_party/tcc -Iuser/bin/tcc -Dmain=tcc_main -w
+UEXTRA_tcc := build/user/obj/third_party/tcc/tcc.o
+build/user/obj/third_party/tcc/%.o: third_party/tcc/%.c $(wildcard third_party/tcc/*.[ch])
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) $(TCC_FLAGS) -c $< -o $@
+
 $(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
 
 user: $(UBINS)
@@ -123,11 +131,25 @@ user: $(UBINS)
 -include $(shell find build/user -name '*.d' 2>/dev/null)
 
 # root/ is the static skeleton; user binaries land in /bin; empty dirs aren't tracked by the VCS
-build/root.ext2: $(shell find root 2>/dev/null) $(UBINS)
+# the in-OS toolchain's sdk (tcc is the compiler): headers in /usr/include, crt + libs in /usr/lib, tcc's own
+# runtime + headers in /usr/lib/tcc. libtcc1.a is plain gcc output (tcc's 64-bit divide/shift helpers, alloca).
+SDK_HDRS := user/lib/gui.h user/lib/ui.h user/lib/image.h common/abi.h common/gfx.h common/font.h
+build/user/libtcc1.a: third_party/tcc/lib/libtcc1.c third_party/tcc/lib/alloca86.S
+	$(CC) $(UCFLAGS) -fno-builtin -c third_party/tcc/lib/libtcc1.c -o build/user/libtcc1.o
+	objcopy --globalize-symbol=__udivmoddi4 build/user/libtcc1.o   # libc.a (gcc-built) calls it
+	$(CC) -m32 -c third_party/tcc/lib/alloca86.S -o build/user/alloca86.o
+	rm -f $@ && ar rcs $@ build/user/libtcc1.o build/user/alloca86.o
+
+build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(ULIBS) $(UCRT0) build/user/libtcc1.a $(wildcard user/include/*.h user/include/sys/*.h third_party/tcc/include/*.h) $(SDK_HDRS)
 	rm -rf build/rootfs
 	@mkdir -p build/rootfs/bin build/rootfs/dev build/rootfs/proc build/rootfs/tmp build/rootfs/home
 	@cp -a root/. build/rootfs/ 2>/dev/null || true
 	@for f in $(UBINS); do strip -o build/rootfs/bin/$$(basename $$f) $$f; done
+	@mkdir -p build/rootfs/usr/include build/rootfs/usr/lib/tcc/include
+	cp -a user/include/. build/rootfs/usr/include/ && cp $(SDK_HDRS) build/rootfs/usr/include/
+	cp third_party/tcc/include/*.h build/rootfs/usr/lib/tcc/include/ && cp build/user/libtcc1.a build/rootfs/usr/lib/tcc/
+	cp $(UCRT0) build/rootfs/usr/lib/crt1.o && $(CC) -m32 -x c -c /dev/null -o build/rootfs/usr/lib/crti.o && cp build/rootfs/usr/lib/crti.o build/rootfs/usr/lib/crtn.o
+	@for f in $(ULIBS); do strip -g -o build/rootfs/usr/lib/$$(basename $$f) $$f; done
 	rm -f $@
 	mke2fs -q -t ext2 -b 1024 -I 256 -L vibeos -d build/rootfs $@ $(FS_MB)M
 

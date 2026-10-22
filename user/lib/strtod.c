@@ -118,5 +118,7 @@ double strtod(const char *s, char **end) {
 }
 
 float strtof(const char *s, char **end) { return (float)strtod(s, end); }
+/* ponytail: strtold is strtod widened (53-bit mantissa); tcc only needs it to exist for long double literals */
+long double strtold(const char *s, char **end) { return strtod(s, end); }
 double atof(const char *s) { return strtod(s, NULL); }
 

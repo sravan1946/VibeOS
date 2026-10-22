@@ -1,0 +1,26 @@
+TinyCC in VibeOS
+================
+
+Version : TinyCC 0.9.27
+Origin  : https://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27.tar.bz2
+SHA-256 : de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c  (tcc-0.9.27.tar.bz2, as downloaded)
+Licence : LGPL 2.1, see LICENSE (COPYING of the tarball); lib/libtcc1.c is GPL with the runtime exception stated in it
+
+What is here: the i386 part of the tarball: tcc.c libtcc.c tccpp.c tccgen.c tccelf.c tccrun.c tccasm.c tcctools.c
+i386-*.c/h, headers, include/ (tcc's stdarg.h stddef.h float.h ...), lib/libtcc1.c + alloca86.S, README, Changelog,
+VERSION. Dropped: other targets (arm, arm64, x86_64, c67, PE/COFF), tests, win32, docs, bcheck.
+
+Patches: none. Every file here is byte-for-byte what the tarball contains.
+
+How it is built (see the "TinyCC" block in the top-level Makefile)
+------------------------------------------------------------------
+- tcc.c is one translation unit (ONE_SOURCE). tcc.h does `#include "config.h"`, which resolves to
+  user/bin/tcc/config.h: i386 target, static, paths under /usr, CONFIG_TCCBOOT (turns off the backtrace and
+  bounds-check code that needs ucontext/signal handlers). Compiled with -w and -Dmain=tcc_main.
+- user/bin/tcc/vibe.c is the real main(): adds `-static -Wl,-Ttext=0x40001000` (matches user/user.ld; tcc would
+  otherwise link at 0x08048000, which the kernel loader rejects) and calls tcc_main.
+- libtcc1.a (64-bit divide/shift/convert helpers, alloca) is built with gcc, `__udivmoddi4` made global since the
+  gcc-built libc.a calls it. crt1.o is crt0.o; crti.o/crtn.o are empty.
+- The rootfs gets /usr/include, /usr/lib, /usr/lib/tcc (Makefile, `build/root.ext2` rule).
+
+Upgrading: replace the files, update version/URL/checksum, `make`, then run the samples in ~/projects in the VM.
