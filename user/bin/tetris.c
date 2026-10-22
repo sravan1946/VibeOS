@@ -330,7 +330,7 @@ int main(void) {
     reset();
     state = PAUSED;
     for (;;) {
-        if (!ui_poll(&ui, 16)) break;
+        if (!ui_poll(&ui, state == PLAY || state == CLEARING ? 16 : 100)) break;
         uint32_t now = (uint32_t)uptime_ms();
         if (!ui.focused) {                         /* lost focus: drop held keys, pause */
             memset(dirdown, 0, sizeof dirdown);

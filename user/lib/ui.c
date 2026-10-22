@@ -55,7 +55,29 @@ bool ui_poll(struct ui *ui, int timeout_ms) {
 
 void ui_end(struct ui *ui) {
     if (ui->released) ui->active = 0;
-    gui_flip(ui->win);
+    struct gui_window *w = ui->win;
+    if (!ui->prev || ui->prev_w != w->w || ui->prev_h != w->h) {
+        free(ui->prev);
+        ui->prev = malloc((size_t)w->w * w->h * 4);
+        ui->prev_w = w->w; ui->prev_h = w->h;
+        if (ui->prev) for (int y = 0; y < w->h; y++) memcpy(ui->prev + y * w->w, w->pixels + y * w->stride, w->w * 4);
+        gui_flip(w);
+        return;
+    }
+    int x0 = w->w, y0 = -1, x1 = -1, y1 = -1;              /* bounding box of changed pixels */
+    for (int y = 0; y < w->h; y++) {
+        uint32_t *a = w->pixels + y * w->stride, *b = ui->prev + y * w->w;
+        if (!memcmp(a, b, w->w * 4)) continue;
+        int l = 0, r = w->w - 1;
+        while (a[l] == b[l]) l++;
+        while (a[r] == b[r]) r--;
+        if (l < x0) x0 = l;
+        if (r > x1) x1 = r;
+        if (y0 < 0) y0 = y;
+        y1 = y;
+        memcpy(b + l, a + l, (r - l + 1) * 4);
+    }
+    if (y0 >= 0) gui_flip_rect(w, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
 }
 
 void ui_clear(struct ui *ui) { gfx_fill(ui->c, 0, 0, ui->win->w, ui->win->h, UI_BG); }

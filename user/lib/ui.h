@@ -42,11 +42,13 @@ struct ui {
     bool closed, resized, focused, timeout;
     uint32_t last_click_ms;
     int last_click_x, last_click_y;
+    uint32_t *prev;                 /* last flipped frame: ui_end only flips what changed */
+    int prev_w, prev_h;
 };
 
 void ui_init(struct ui *ui, struct gui_window *win);
 bool ui_poll(struct ui *ui, int timeout_ms);   /* false once the window was closed */
-void ui_end(struct ui *ui);                    /* flip */
+void ui_end(struct ui *ui);                    /* flip the region that changed since last frame */
 void ui_clear(struct ui *ui);                  /* fill with UI_BG */
 
 bool ui_hover(struct ui *ui, int x, int y, int w, int h);
