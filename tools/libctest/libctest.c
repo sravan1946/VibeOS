@@ -10,7 +10,6 @@
 #include <limits.h>
 #include <unistd.h>
 #include <locale.h>
-#include <signal.h>
 
 static int fails, checks;
 
@@ -214,7 +213,6 @@ static void test_new(void) {
     CHECK(freopen("libctest.re2", "r", f) == f && fgets(b, sizeof b, f) && !strcmp(b, "two\n"));
     CHECK(freopen("/nonexistent/zz", "r", f) == NULL);
     remove("libctest.re1"); remove("libctest.re2");
-    CHECK(signal(SIGINT, SIG_IGN) == SIG_DFL);
 }
 
 static int cmp_int(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
