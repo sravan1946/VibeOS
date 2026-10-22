@@ -1,11 +1,12 @@
-/* viewer [file] - image viewer: PNG/BMP/PPM, fit-to-window, zoom (wheel, +/-), drag to pan, 1:1,
- * arrow keys browse the folder, checkerboard behind transparency. No argument opens ~/Pictures. */
+/* viewer [file] - image viewer: PNG/JPEG/GIF/BMP/PPM, fit-to-window, zoom (wheel, +/-), drag to pan, 1:1,
+ * arrow keys browse the folder, checkerboard behind transparency, animated GIFs play (p pauses). No argument opens ~/Pictures. */
 #include <ui.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <syscall.h>
 #include <math.h>
 #include "image.h"
 
@@ -17,7 +18,11 @@
 static char dir[PATH_MAX];
 static char (*names)[96];
 static int nnames, cur;
-static struct image im;
+static struct image im;                         /* a view of an.px[frame], owned by `an` */
+static struct image_anim an;
+static int frame, plays;
+static bool paused;
+static uint32_t next_ms;                        /* when the next GIF frame is due */
 static bool have, failed;
 static float zoom = 1, cx, cy;                  /* cx, cy: image point at the viewport centre */
 static bool fit = true, dragging;
@@ -41,16 +46,22 @@ static void scan(const char *keep) {
     for (int i = 0; i < nnames; i++) if (keep && !strcmp(names[i], keep)) cur = i;
 }
 
+static uint32_t frame_ms(void) { int d = an.delay[frame]; return d < 20 ? 100 : d; }     /* browsers treat 0/10 ms as 100 */
+
 static void load_cur(void) {
-    image_free(&im);
+    image_anim_free(&an);
+    im.w = im.h = 0; im.px = NULL;
     have = false;
+    frame = plays = 0;
+    paused = false;
     vkey.ok = false;
     fit = true;
     if (cur < 0 || cur >= nnames) { failed = false; return; }
     char p[PATH_MAX];
     snprintf(p, sizeof p, "%s%s%s", dir, strcmp(dir, "/") ? "/" : "", names[cur]);
-    have = image_load(p, &im) == 0;
+    have = image_load_anim(p, &an) == 0;
     failed = !have;
+    if (have) { im.w = an.w; im.h = an.h; im.px = an.px[0]; next_ms = (uint32_t)uptime_ms() + frame_ms(); }
     cx = im.w / 2.0f; cy = im.h / 2.0f;
 }
 
@@ -131,7 +142,18 @@ int main(int argc, char **argv) {
     if (nnames) load_cur();
     char title[96] = "", lasttitle[96] = "";
     int lx = 0, ly = 0;
+    int timeout = -1;
     do {
+        if (have && an.n > 1 && !paused && (int)((uint32_t)uptime_ms() - next_ms) >= 0) {     /* next GIF frame */
+            if (++frame == an.n) {
+                frame = 0;
+                if (an.loop && ++plays >= an.loop) { frame = an.n - 1; paused = true; }
+            }
+            im.px = an.px[frame];
+            vkey.ok = false;
+            next_ms += frame_ms();
+            if ((int)((uint32_t)uptime_ms() - next_ms) > 0) next_ms = (uint32_t)uptime_ms() + frame_ms();   /* fell behind: don't burst */
+        }
         int W = w->w, H = w->h, vw = W, vh = H - BAR_H;
         if (vh < 1) vh = 1;
         bool in_view = ui.my < vh && ui.my >= 0;
@@ -153,6 +175,7 @@ int main(int argc, char **argv) {
             else if (k.ch == '-' || k.ch == '_') zoom_at(zoom * 0.8f, vw / 2, vh / 2, vw, vh);
             else if (k.ch == '1') { if (fit || zoom != 1) zoom_at(1, vw / 2, vh / 2, vw, vh); else fit = true; }
             else if (k.ch == 'f' || k.ch == '0') fit = true;
+            else if (k.ch == 'p' && an.n > 1) { paused = !paused; if (!paused) { plays = 0; next_ms = (uint32_t)uptime_ms() + frame_ms(); } }
         }
         if (have) { if (fit) zoom = fit_zoom(vw, vh); clamp_pan(vw, vh); }
 
@@ -161,7 +184,7 @@ int main(int argc, char **argv) {
         gfx_fill(c, 0, 0, vw, vh, RGB(0x10, 0x0F, 0x1A));
         if (have) draw_image(c, vw, vh, !dragging);
         else gfx_text_center(c, &font_ui, 0, vh / 2 - 8, vw,
-                             failed ? "Cannot open this image (PNG, BMP and PPM are supported)" : "No images here. Open a PNG, BMP or PPM from Files.", UI_TEXT_DIM);
+                             failed ? "Cannot open this image (PNG, JPEG, GIF, BMP and PPM are supported)" : "No images here. Open a picture from Files.", UI_TEXT_DIM);
 
         /* bottom bar */
         gfx_fill(c, 0, vh, W, BAR_H, UI_PANEL);
@@ -175,7 +198,8 @@ int main(int argc, char **argv) {
         if (ui_tool(&ui, 212, by, 44, 28, "1:1", !fit && zoom == 1) && have) { if (zoom == 1 && !fit) fit = true; else zoom_at(1, vw / 2, vh / 2, vw, vh); }
         char info[128], z[16];
         snprintf(z, sizeof z, "%d%%", (int)(zoom * 100 + 0.5f));
-        if (have) snprintf(info, sizeof info, "%d x %d   %s   %d/%d", im.w, im.h, z, cur + 1, nnames);
+        if (have && an.n > 1) snprintf(info, sizeof info, "%d x %d   %s   frame %d/%d   %d/%d", im.w, im.h, z, frame + 1, an.n, cur + 1, nnames);
+        else if (have) snprintf(info, sizeof info, "%d x %d   %s   %d/%d", im.w, im.h, z, cur + 1, nnames);
         else snprintf(info, sizeof info, "%d image%s", nnames, nnames == 1 ? "" : "s");
         int iw = gfx_text_width(&font_ui, info);
         gfx_text(c, &font_ui, W - 14 - iw, vh + (BAR_H - font_ui.height) / 2, info, UI_TEXT_DIM);
@@ -185,7 +209,9 @@ int main(int argc, char **argv) {
         else snprintf(title, sizeof title, "Viewer");
         if (strcmp(title, lasttitle)) { gui_set_title(w, title); strcpy(lasttitle, title); }
         ui_end(&ui);
-    } while (ui_poll(&ui, -1));
+        timeout = -1;
+        if (have && an.n > 1 && !paused) { int d = (int)(next_ms - (uint32_t)uptime_ms()); timeout = d < 1 ? 1 : d; }
+    } while (ui_poll(&ui, timeout));
     gui_window_destroy(w);
     return 0;
 }

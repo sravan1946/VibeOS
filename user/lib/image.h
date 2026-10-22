@@ -1,4 +1,4 @@
-/* image.h - PNG/BMP/PPM decoding, PNG encoding, resampling. Pixels are 0xAARRGGBB, not premultiplied
+/* image.h - PNG/BMP/PPM/JPEG/GIF decoding, PNG encoding, resampling. Pixels are 0xAARRGGBB, not premultiplied
  * (the gfx format). Also builds on the host (tools/imagetest). Link libgui.a before libc.a. */
 #pragma once
 #include <stdint.h>
@@ -6,11 +6,24 @@
 
 struct image { int w, h; uint32_t *px; };      /* px is malloc'd, w*h entries */
 
+/* An animation: n full-canvas frames (each w*h pixels, malloc'd, already composited), delay[i] in ms. loop is
+ * the play count (0 = forever). Still pictures are 1 frame. GIF delays are as stored (0 happens; players clamp). */
+struct image_anim { int w, h, n, loop; uint32_t **px; int *delay; };
+
 /* 0 on success, -1 on a bad/unsupported file. Format is detected from the magic bytes. */
 int  image_decode(const uint8_t *data, size_t n, struct image *im);
 int  image_load(const char *path, struct image *im);
 void image_free(struct image *im);
-int  image_is_ext(const char *name);           /* 1 if the file name ends in .png/.bmp/.ppm/.pgm */
+int  image_is_ext(const char *name);           /* 1 if the file name ends in .png/.bmp/.ppm/.pgm/.jpg/.jpeg/.gif */
+
+/* All frames of a GIF (other formats give one frame). 0 / -1. image_decode on a GIF returns the first frame only. */
+int  image_decode_anim(const uint8_t *data, size_t n, struct image_anim *a);
+int  image_load_anim(const char *path, struct image_anim *a);
+void image_anim_free(struct image_anim *a);
+
+/* the codecs behind image_decode: JPEG (baseline + progressive, EXIF orientation applied) and GIF (maxf frames, 0 = all) */
+int  jpeg_decode(const uint8_t *d, size_t n, struct image *im);
+int  gif_decode(const uint8_t *d, size_t n, int maxf, struct image_anim *a);
 
 /* malloc'd PNG (RGB if fully opaque, else RGBA) with LZ77 + fixed Huffman; caller frees. NULL on OOM. */
 uint8_t *image_png_encode(const uint32_t *px, int w, int h, size_t *len);

@@ -60,8 +60,8 @@ emulator, and a set of desktop apps and games.
 - `/bin/tcc`: TinyCC 0.9.27 compiles C inside VibeOS against its own libc (`tcc hello.c -o hello`, `tcc -run`, `-lgui` for windows); see `~/projects/README.txt`.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc` (`nc -l` listens; `wget` does https:// with certificate checks), and `httpd` — run it inside `make run` and open http://localhost:8080 on the host. Audio: `play` (WAV files), `midi` (Standard MIDI Files through an OPL3 FM synth; needs the Freedoom WAD for its instruments), `tone`.
-- GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + basic CSS, images, forms, find-in-page), Paint (saves/opens PNG), Image
-  viewer (PNG/BMP/PPM, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
+- GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + basic CSS, PNG/JPEG/GIF images, forms, find-in-page), Paint (saves/opens PNG), Image
+  viewer (PNG/JPEG/GIF/BMP/PPM, animated GIFs, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
   Monitor, Settings, About, Piano (a polyphonic synth keyboard). PrtSc saves a PNG screenshot
   to `~/Pictures`.
 - Games: Snake, Tetris, Minesweeper, and **Doom** (doomgeneric + the BSD-licensed Freedoom, with sound effects and OPL3 FM music; `make doom-wad` fetches the game data).

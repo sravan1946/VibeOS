@@ -2,7 +2,7 @@
  * processes (NSLOT at a time, each one a `browser --fetch`), file:// images are read directly. A finished
  * body is decoded with the image library; anything wider than MAXDIM is shrunk right away to keep memory sane.
  * img_pixels() hands out one scaled copy per image, already composited over the page colour, so drawing
- * is a row copy. ponytail: decode runs in the UI process (one image per pump call), JPEG/GIF are unsupported. */
+ * is a row copy. ponytail: decode runs in the UI process (one image per pump call); GIFs show their first frame. */
 #include "browser.h"
 #include <stdlib.h>
 #include <string.h>

@@ -4,6 +4,10 @@
 Decoder: writes PNGs of every colour type / bit depth / interlace / filter / zlib mode with a small
 pure-python writer (Pillow can't write interlaced or most 16-bit/low-depth files), plus files Pillow
 itself writes (PNG, BMP, PPM), and compares our decode with Pillow's decode of the same file.
+JPEG: Pillow-written baseline/progressive files (sizes, subsamplings, qualities, restart intervals, optimised
+tables, greyscale, EXIF orientation) must match Pillow's libjpeg decode within JPEG_TOL per channel.
+GIF: Pillow-written and hand-written (own LZW encoder: offsets, local palettes, interlace, disposal 1/2/3,
+transparency) animations must match Pillow's composited frames exactly, delays included.
 Encoder: round-trips images through image_png_encode and opens them with Pillow (which checks CRCs).
 """
 import os, random, struct, subprocess, sys, tempfile, zlib
@@ -173,6 +177,239 @@ p = os.path.join(tmp, "c16.ppm")
 open(p, "wb").write(b"P6\n# hi\n2 1\n65535\n" + struct.pack(">HHHHHH", 65535, 0, 32768, 0, 65535, 256))
 check_dec("ppm16", p, Image.frombytes("RGB", (2, 1), bytes([255, 0, 128, 0, 255, 1])))
 
+# ---------- JPEG ----------
+JPEG_TOL = int(os.environ.get("JPEG_TOL", 1))
+
+def check_jpeg(name, file, im, tol=JPEG_TOL):
+    global fails, count
+    count += 1
+    ref = os.path.join(tmp, "ref")
+    ref_from(im, ref)
+    r = run("dec", file, ref, str(tol))
+    if r.returncode:
+        fails += 1
+        print(f"FAIL jpeg {name}: {r.stdout.strip()} {r.stderr[:300]}")
+
+def scene(w, h, mode="RGB"):
+    """smooth gradients + hard edges + noise: exercises chroma upsampling and every coefficient range"""
+    from PIL import ImageDraw
+    im = Image.new("RGB", (w, h))
+    px = im.load()
+    for y in range(h):
+        for x in range(w):
+            px[x, y] = ((x * 255 // max(1, w - 1)), (y * 255 // max(1, h - 1)), ((x + y) * 255 // max(1, w + h - 2)))
+    d = ImageDraw.Draw(im)
+    d.ellipse([w // 5, h // 5, w * 4 // 5, h * 3 // 4], fill=(230, 30, 40))
+    d.rectangle([w // 2, h // 3, w - 1, h // 2 + 2], fill=(20, 200, 60))
+    d.line([(0, 0), (w, h)], fill=(255, 255, 255), width=1 + w // 60)
+    for _ in range(w * h // 12): px[rnd.randrange(w), rnd.randrange(h)] = (rnd.randrange(256),) * 3
+    return im.convert(mode)
+
+SIZES = [(1, 1), (7, 9), (8, 8), (16, 16), (17, 33), (31, 5), (100, 75), (129, 255), (333, 211)]
+for (w, h) in SIZES:
+    im = scene(w, h)
+    for sub in (0, 1, 2):
+        for prog in (False, True):
+            q = (5, 40, 75, 95, 100)[(w + h + sub) % 5] if (w, h) != (100, 75) else 75
+            p = os.path.join(tmp, f"j_{w}x{h}_s{sub}_p{int(prog)}_q{q}.jpg")
+            try: im.save(p, quality=q, subsampling=sub, progressive=prog)
+            except OSError: print("skip (Pillow can't write)", os.path.basename(p)); continue
+            check_jpeg(os.path.basename(p), p, Image.open(p))
+for sub in ("4:4:0", "4:1:1"):
+    try:
+        im = scene(45, 38); p = os.path.join(tmp, f"j_sub{sub.replace(':', '')}.jpg")
+        im.save(p, quality=80, subsampling=sub); check_jpeg(f"sub{sub}", p, Image.open(p))
+    except Exception as e:
+        print("skip subsampling", sub, e)
+for (w, h) in ((64, 48), (101, 67)):
+    im = scene(w, h)
+    for kw in ({"restart_marker_blocks": 1}, {"restart_marker_blocks": 5}, {"restart_marker_rows": 1}, {"optimize": True},
+               {"progressive": True, "optimize": True}, {"progressive": True, "restart_marker_blocks": 3},
+               {"subsampling": 0, "restart_marker_blocks": 2}, {"quality": 1}, {"qtables": "web_high"}):
+        p = os.path.join(tmp, f"jk_{w}_{'_'.join(f'{k}{v}' for k, v in kw.items())}.jpg")
+        kw = dict(kw); kw.setdefault("quality", 85)
+        im.save(p, **kw)
+        check_jpeg(os.path.basename(p), p, Image.open(p))
+    g = scene(w, h, "L")
+    for prog in (False, True):
+        p = os.path.join(tmp, f"jg_{w}_{int(prog)}.jpg"); g.save(p, quality=90, progressive=prog)
+        check_jpeg(os.path.basename(p), p, Image.open(p))
+big = photoish(1280, 800, "RGB").convert("RGB"); p = os.path.join(tmp, "jbig.jpg"); big.save(p, quality=85); check_jpeg("big", p, Image.open(p))
+p = os.path.join(tmp, "jbig_p.jpg"); big.save(p, quality=85, progressive=True); check_jpeg("big progressive", p, Image.open(p))
+from PIL import ImageOps
+for o in range(1, 9):                                  # EXIF orientation, applied like ImageOps.exif_transpose
+    im = scene(40, 24)
+    ex = Image.Exif(); ex[0x0112] = o
+    p = os.path.join(tmp, f"jo{o}.jpg"); im.save(p, quality=95, exif=ex.tobytes(), subsampling=0)
+    check_jpeg(f"orient{o}", p, ImageOps.exif_transpose(Image.open(p)))
+    p = os.path.join(tmp, f"jo{o}_le.jpg")
+    mm = b"Exif\0\0MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01" + struct.pack(">H", o) + b"\0\0\0\0\0\0"   # big-endian TIFF
+    im.save(p, quality=95, exif=mm, subsampling=0)
+    check_jpeg(f"orient{o}b", p, ImageOps.exif_transpose(Image.open(p)))
+
+# ---------- GIF ----------
+def gif_ref(path, out):
+    im = Image.open(path)
+    n = getattr(im, "n_frames", 1)
+    b = bytearray(struct.pack("<III", im.size[0], im.size[1], n))
+    for i in range(n):
+        im.seek(i)
+        b += struct.pack("<I", im.info.get("duration", 0)) + im.convert("RGBA").tobytes()
+    open(out, "wb").write(b)
+
+def check_gif(name, file):
+    global fails, count
+    count += 1
+    ref = os.path.join(tmp, "gref")
+    gif_ref(file, ref)
+    r = run("anim", file, ref)
+    if r.returncode:
+        fails += 1
+        print(f"FAIL gif {name}: {r.stdout.strip()}")
+        if os.environ.get("KEEP"): import shutil; shutil.copy(file, os.environ["KEEP"])
+    im = Image.open(file); im.seek(0)                  # image_decode (first frame only) must equal frame 0
+    check_dec(name + " first", file, im)
+
+def lzw_enc(data, mb):
+    clear, eoi = 1 << mb, (1 << mb) + 1
+    out, acc, nb = bytearray(), 0, 0
+    def put(c, size):
+        nonlocal acc, nb
+        acc |= c << nb; nb += size
+        while nb >= 8: out.append(acc & 255); acc >>= 8; nb -= 8
+    size, nxt, tab, w = mb + 1, eoi + 1, {}, b""
+    put(clear, size)
+    for c in data:
+        wc = w + bytes([c])
+        if len(wc) == 1 or wc in tab: w = wc; continue
+        put(tab[w] if len(w) > 1 else w[0], size)
+        tab[wc] = nxt; nxt += 1
+        if nxt - 1 == 1 << size and size < 12: size += 1
+        if nxt == 4096: put(clear, size); tab, nxt, size = {}, eoi + 1, mb + 1
+        w = bytes([c])
+    if w: put(tab[w] if len(w) > 1 else w[0], size)
+    put(eoi, size)
+    if nb: out.append(acc & 255)
+    return bytes(out)
+
+def sub_blocks(b, step=255):
+    o = bytearray()
+    for i in range(0, len(b), step): o += bytes([min(step, len(b) - i)]) + b[i:i + step]
+    return bytes(o) + b"\0"
+
+def write_gif(path, W, H, frames, gpal=None, bg=0, loop=None):
+    """frame: dict(x, y, w, h, px=bytes row-major palette indices, pal=None|[(r,g,b)..], interlace, disp, tr, delay, mb)"""
+    o = bytearray(b"GIF89a" + struct.pack("<HH", W, H))
+    if gpal:
+        bits = max(1, (len(gpal) - 1).bit_length())
+        o += bytes([0x80 | (bits - 1) << 4 | (bits - 1), bg, 0]) + b"".join(bytes(c) for c in gpal) + bytes(3 * ((1 << bits) - len(gpal)))
+    else: o += bytes([0, bg, 0])
+    if loop is not None: o += b"\x21\xff\x0bNETSCAPE2.0\x03\x01" + struct.pack("<H", loop) + b"\0"
+    for f in frames:
+        o += b"\x21\xf9\x04" + bytes([f.get("disp", 0) << 2 | (1 if f.get("tr") is not None else 0)]) + struct.pack("<H", f.get("delay", 0)) + bytes([f.get("tr") or 0, 0])
+        px, w, h = f["px"], f["w"], f["h"]
+        if f.get("interlace"):
+            rows = [r for st, step in ((0, 8), (4, 8), (2, 4), (1, 2)) for r in range(st, h, step)]
+            px = b"".join(px[r * w:(r + 1) * w] for r in rows)
+        pal = f.get("pal"); flags = 0x40 if f.get("interlace") else 0
+        pb = b""
+        if pal:
+            bits = max(1, (len(pal) - 1).bit_length()); flags |= 0x80 | (bits - 1)
+            pb = b"".join(bytes(c) for c in pal) + bytes(3 * ((1 << bits) - len(pal)))
+        mb = f.get("mb", 2)
+        o += b"\x2c" + struct.pack("<HHHH", f["x"], f["y"], w, h) + bytes([flags]) + pb + bytes([mb]) + sub_blocks(lzw_enc(px, mb), f.get("chunk", 255))
+    o += b"\x3b"
+    open(path, "wb").write(o)
+
+def rpal(n): return [(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256)) for _ in range(n)]
+def rpx(w, h, n, runs=True):
+    b = bytearray()
+    while len(b) < w * h:
+        v = rnd.randrange(n); b += bytes([v]) * (rnd.randrange(1, 9) if runs else 1)
+    return bytes(b[:w * h])
+
+from PIL import ImageDraw
+def anim_frames(w, h, n):
+    fr = []
+    for i in range(n):
+        im = Image.new("RGB", (w, h), (10 * i, 40, 90))
+        ImageDraw.Draw(im).ellipse([i * 3, i * 2, i * 3 + w // 2, i * 2 + h // 2], fill=(250 - 20 * i, 200, 30 * i % 256))
+        fr.append(im)
+    return fr
+
+for (w, h) in ((1, 1), (9, 7), (33, 17), (64, 64), (130, 70)):          # Pillow-written
+    fr = anim_frames(w, h, 4)
+    p = os.path.join(tmp, f"g_{w}x{h}.gif"); fr[0].save(p, save_all=True, append_images=fr[1:], duration=[30, 50, 70, 0], loop=0)
+    check_gif(os.path.basename(p), p)
+    p = os.path.join(tmp, f"g_{w}x{h}_ni.gif"); fr[0].save(p, save_all=True, append_images=fr[1:], duration=40, interlace=False, optimize=False)
+    check_gif(os.path.basename(p), p)
+    p = os.path.join(tmp, f"g_{w}x{h}_still.gif"); fr[0].save(p); check_gif(os.path.basename(p), p)
+fr = anim_frames(50, 40, 5)
+for disp in (0, 1, 2, 3):                                   # with transparency, disposal is unambiguous
+    q = [f.convert("P", palette=Image.ADAPTIVE, colors=64) for f in fr]
+    p = os.path.join(tmp, f"g_disp{disp}.gif")
+    q[0].save(p, save_all=True, append_images=q[1:], duration=20, disposal=disp, transparency=0)
+    check_gif(os.path.basename(p), p)
+rgba = []
+for i in range(4):
+    im = Image.new("RGBA", (40, 30), (0, 0, 0, 0))
+    ImageDraw.Draw(im).rectangle([i * 6, 4, i * 6 + 12, 24], fill=(200, 40 * i, 90, 255))
+    rgba.append(im)
+p = os.path.join(tmp, "g_rgba.gif"); rgba[0].save(p, save_all=True, append_images=rgba[1:], duration=60, disposal=2, loop=3)
+check_gif("rgba disposal2", p)
+
+def compose(W, H, gp, frames):
+    """independent GIF compositor (spec semantics, disposal 2 -> transparent, 3 -> state before the frame): reference blob"""
+    cv, saved, prev, out = [(0, 0, 0, 0)] * (W * H), None, None, []
+    for f in frames:
+        if prev and prev["disp"] == 2:
+            for y in range(prev["y"], prev["y"] + prev["h"]):
+                for x in range(prev["x"], prev["x"] + prev["w"]): cv[y * W + x] = (0, 0, 0, 0)
+        elif prev and prev["disp"] == 3: cv = list(saved)
+        if f["disp"] == 3: saved = list(cv)
+        pal = f.get("pal") or gp
+        for i, v in enumerate(f["px"]):
+            if v != f.get("tr"): cv[(f["y"] + i // f["w"]) * W + f["x"] + i % f["w"]] = tuple(pal[v]) + (255,)
+        out.append(struct.pack("<I", f["delay"] * 10) + b"".join(bytes(c) for c in cv))
+        prev = f
+    return struct.pack("<III", W, H, len(frames)) + b"".join(out)
+
+def check_gif_own(name, file, W, H, gp, frames):
+    global fails, count
+    count += 1
+    ref = os.path.join(tmp, "gref2")
+    open(ref, "wb").write(compose(W, H, gp, frames))
+    r = run("anim", file, ref)
+    if r.returncode:
+        fails += 1
+        print(f"FAIL gif {name} (own reference): {r.stdout.strip()}")
+
+# hand-written: offsets, local palettes, interlace, disposal 1/2/3, transparency, odd sub-block sizes. Checked against
+# our own compositor above (Pillow disposes to the palette background and lags disposal 3, so it is only the oracle
+# for files with disposal 0/1)
+for case in range(24):
+    W, H = rnd.randrange(1, 70), rnd.randrange(1, 60)
+    gp = rpal(rnd.choice((2, 4, 16, 256)))
+    frames = []
+    for i in range(rnd.randrange(1, 6)):
+        fw, fh = rnd.randrange(1, W + 1), rnd.randrange(1, H + 1)
+        fx, fy = rnd.randrange(0, W - fw + 1), rnd.randrange(0, H - fh + 1)
+        local = rpal(rnd.choice((2, 8, 32))) if rnd.random() < .4 else None
+        n = len(local or gp)
+        tr = rnd.randrange(n) if rnd.random() < .5 else None
+        disp = rnd.choice((0, 1, 3)) if tr is None else rnd.choice((0, 1, 2, 3))
+        mb = max(2, (n - 1).bit_length())
+        frames.append(dict(x=fx, y=fy, w=fw, h=fh, px=rpx(fw, fh, n, rnd.random() < .7), pal=local, interlace=rnd.random() < .5,
+                           disp=disp, tr=tr, delay=rnd.randrange(0, 30), mb=rnd.choice((mb, 8)), chunk=rnd.choice((255, 7, 1))))
+    f0 = frames[0]                                          # first frame covers the screen (Pillow fills the rest with the background)
+    f0.update(x=0, y=0, w=W, h=H, px=rpx(W, H, len(f0.get("pal") or gp)))
+    p = os.path.join(tmp, f"gh{case}.gif"); write_gif(p, W, H, frames, gp, loop=rnd.choice((None, 0, 2)))
+    check_gif_own(f"hand{case}", p, W, H, gp, frames)
+    if all(f["disp"] < 2 for f in frames): check_gif(f"hand{case} vs Pillow", p)
+W, H = 200, 120                                             # incompressible: the 4096-entry table fills and resets
+p = os.path.join(tmp, "gh_big.gif"); write_gif(p, W, H, [dict(x=0, y=0, w=W, h=H, px=rpx(W, H, 256, False), mb=8)], rpal(256))
+check_gif("lzw table full", p)
+
 # ---------- encoder ----------
 def check_enc(name, im):
     global fails, count
@@ -209,7 +446,8 @@ r = run("sample")
 if r.returncode: fails += 1; print("FAIL sample:", r.stdout.strip(), r.stderr[:300])
 
 # ---------- robustness: corrupted input must not crash (ASan/UBSan when the binary has them) ----------
-for f in ("c6d8i1_33x17.png", "c3d4i1_13x11.png", "c0d16i0_33x17.png", "pil_RGB_0.png", "bmp2400.bmp", "pil_RGB_5.ppm"):
+for f in ("c6d8i1_33x17.png", "c3d4i1_13x11.png", "c0d16i0_33x17.png", "pil_RGB_0.png", "bmp2400.bmp", "pil_RGB_5.ppm", "j_100x75_s2_p0_q75.jpg", "j_100x75_s2_p1_q75.jpg", "jk_64_restart_marker_blocks5.jpg",
+          "jg_101_1.jpg", "jo6.jpg", "g_64x64.gif", "g_disp3.gif", "gh3.gif", "gh_big.gif"):
     count += 1
     r = run("fuzz", os.path.join(tmp, f))
     if r.returncode: fails += 1; print(f"FAIL fuzz {f}: {r.stderr[:400]}")

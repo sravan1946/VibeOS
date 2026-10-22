@@ -293,7 +293,7 @@ static void load_file(const char *url) {
         load_dir(u, path);
         return;
     }
-    if (ext_is(path, ".png.bmp.ppm.pgm")) {                      /* open the picture itself */
+    if (ext_is(path, ".png.bmp.ppm.pgm.jpg.jpeg.gif")) {                      /* open the picture itself */
         char key[URL_MAX];
         url_resolve("about:blank", url, key, sizeof key);
         show_image(url, key);

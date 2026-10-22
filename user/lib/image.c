@@ -1,4 +1,4 @@
-/* image.c - zlib inflate, PNG/BMP/PPM decoders, PNG encoder, resampler. See image.h. */
+/* image.c - zlib inflate, PNG/BMP/PPM decoders (JPEG and GIF live in jpeg.c / gif.c), PNG encoder, resampler. See image.h. */
 #include "image.h"
 #include <stdlib.h>
 #include <string.h>
@@ -392,21 +392,63 @@ int image_decode(const uint8_t *d, size_t n, struct image *im) {
     if (n >= 8 && !memcmp(d, "\x89PNG\r\n\x1a\n", 8)) return png_decode(d, n, im);
     if (n >= 2 && d[0] == 'B' && d[1] == 'M') return bmp_decode(d, n, im);
     if (n >= 2 && d[0] == 'P') return ppm_decode(d, n, im);
+    if (n >= 3 && d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF) return jpeg_decode(d, n, im);
+    if (n >= 6 && !memcmp(d, "GIF8", 4)) {
+        struct image_anim a;
+        if (gif_decode(d, n, 1, &a) < 0) return -1;
+        im->w = a.w; im->h = a.h; im->px = a.px[0];
+        free(a.px); free(a.delay);
+        return 0;
+    }
     return -1;
 }
 
-int image_load(const char *path, struct image *im) {
+int image_decode_anim(const uint8_t *d, size_t n, struct image_anim *a) {
+    if (n >= 6 && !memcmp(d, "GIF8", 4)) return gif_decode(d, n, 0, a);
+    struct image im;
+    memset(a, 0, sizeof *a);
+    if (image_decode(d, n, &im) < 0) return -1;
+    a->px = malloc(sizeof *a->px);
+    a->delay = calloc(1, sizeof *a->delay);
+    if (!a->px || !a->delay) { free(a->px); free(a->delay); free(im.px); memset(a, 0, sizeof *a); return -1; }
+    a->w = im.w; a->h = im.h; a->n = 1; a->loop = 1; a->px[0] = im.px;
+    return 0;
+}
+
+void image_anim_free(struct image_anim *a) {
+    for (int i = 0; i < a->n; i++) free(a->px[i]);
+    free(a->px); free(a->delay);
+    memset(a, 0, sizeof *a);
+}
+
+static uint8_t *slurp(const char *path, size_t *len) {
     FILE *f = fopen(path, "rb");
-    if (!f) return -1;
-    size_t cap = 1 << 16, len = 0, r;
+    if (!f) return NULL;
+    size_t cap = 1 << 16, r;
     uint8_t *b = malloc(cap);
-    while (b && (r = fread(b + len, 1, cap - len, f)) > 0) {
-        len += r;
-        if (len == cap) { uint8_t *nb = realloc(b, cap *= 2); if (!nb) { free(b); b = NULL; } else b = nb; }
+    *len = 0;
+    while (b && (r = fread(b + *len, 1, cap - *len, f)) > 0) {
+        *len += r;
+        if (*len == cap) { uint8_t *nb = realloc(b, cap *= 2); if (!nb) { free(b); b = NULL; } else b = nb; }
     }
     fclose(f);
+    return b;
+}
+
+int image_load(const char *path, struct image *im) {
+    size_t len;
+    uint8_t *b = slurp(path, &len);
     if (!b) return -1;
     int rc = image_decode(b, len, im);
+    free(b);
+    return rc;
+}
+
+int image_load_anim(const char *path, struct image_anim *a) {
+    size_t len;
+    uint8_t *b = slurp(path, &len);
+    if (!b) return -1;
+    int rc = image_decode_anim(b, len, a);
     free(b);
     return rc;
 }
@@ -416,7 +458,8 @@ void image_free(struct image *im) { free(im->px); im->px = NULL; im->w = im->h =
 int image_is_ext(const char *name) {
     const char *e = strrchr(name, '.');
     if (!e) return 0;
-    return !strcasecmp(e, ".png") || !strcasecmp(e, ".bmp") || !strcasecmp(e, ".ppm") || !strcasecmp(e, ".pgm");
+    return !strcasecmp(e, ".png") || !strcasecmp(e, ".bmp") || !strcasecmp(e, ".ppm") || !strcasecmp(e, ".pgm") ||
+           !strcasecmp(e, ".jpg") || !strcasecmp(e, ".jpeg") || !strcasecmp(e, ".gif");
 }
 
 /* ================= PNG encode: filter 0, LZ77 (one hash slot) + fixed Huffman ================= */
