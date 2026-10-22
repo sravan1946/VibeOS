@@ -1,0 +1,12 @@
+Welcome to VibeOS!
+
+A few things to try:
+  * Super (or the VibeOS pill) opens the launcher; right-click the desktop
+    for a menu and wallpaper themes.
+  * Drag a window to a screen edge to tile it, or use Super+Left/Right/Up.
+  * In the terminal: vibefetch, top, edit, less, ls -l /bin, fortune, cal.
+  * Networking: ifconfig, ping 10.0.2.2, wget http://example.com/
+  * Games: snake, tetris, mines.
+
+Everything here - bootloader, kernel, compositor, libc, shell and apps -
+was written from scratch for VibeOS.

@@ -1,0 +1,4 @@
+- [x] boot
+- [x] draw a window
+- [x] write a shell
+- [ ] take over the world
