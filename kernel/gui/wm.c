@@ -328,8 +328,10 @@ static void draw_taskbar(struct canvas *c) {
 
 /* ---- launcher menu ---- */
 #define MENU_W 300
-#define ITEM_H 42
 static int menu_items(void) { return napps + 2; }    /* apps + restart + shut down */
+/* rows shrink from 42 px when there are too many apps to fit above the taskbar */
+static int item_h(void) { int h = (TB_Y - 16 - 74) / menu_items(); return h > 42 ? 42 : h < 30 ? 30 : h; }
+#define ITEM_H item_h()
 static struct rect menu_rect(void) {
     int h = 56 + menu_items() * ITEM_H + 18;
     return (struct rect){ 8, TB_Y - h - 8, MENU_W, h };
@@ -354,7 +356,7 @@ static void draw_menu(struct canvas *c) {
         if (i < napps) { name = apps[i].name; col = apps[i].color; g = apps[i].glyph; }
         else if (i == napps) { name = "Restart"; col = RGB(0x5A, 0x64, 0x8C); g = 'R'; }
         else { name = "Shut down"; col = RGB(0xC2, 0x3B, 0x5A); g = 'X'; }
-        app_icon(c, m.x + 18, y + 6, 26, col, g);
+        app_icon(c, m.x + 18, y + (ITEM_H - 4 - 26) / 2, 26, col, g);
         gfx_text(c, &font_ui, m.x + 56, y + (ITEM_H - 4 - font_ui.height) / 2, name, C_TEXT);
     }
 }
