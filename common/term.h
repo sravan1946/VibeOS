@@ -4,11 +4,15 @@
 #pragma once
 #include <stdint.h>
 #include "gfx.h"
+#include "theme.h"
 
 #define TERM_DEFAULT_BG 0xFF11131Cu
 #define TERM_DEFAULT_FG 0xFFC8CEE8u
 
 struct term;
+
+/* switch every terminal to these colours (a theme's .term); callers repaint with term_render(.., full = 1) */
+void term_set_colors(const struct term_colors *c);
 
 struct term *term_create(int cols, int rows);              /* NULL on OOM */
 void term_destroy(struct term *t);

@@ -7,7 +7,7 @@ root=$here/../..
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 gcc -m32 -g -O1 -Wall -Wextra -Wno-unused-parameter -I"$root/common" \
-    "$here/termtest.c" "$root/common/term.c" "$root/common/gfx.c" "$root/common/fonts.c" "$root/common/termfonts.c" -o "$out/termtest"
+    "$here/termtest.c" "$root/common/term.c" "$root/common/theme.c" "$root/common/gfx.c" "$root/common/fonts.c" "$root/common/termfonts.c" -o "$out/termtest"
 "$out/termtest" "$out"
 for n in showcase boxes; do
     if command -v magick >/dev/null 2>&1; then magick "$out/$n.ppm" "$here/$n.png"

@@ -8,7 +8,7 @@ static int clamp255(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 struct blob { int x, y, r; int cr, cg, cb; int k; };   /* k: intensity /256 */
 
 /* each theme: background gradient top/bottom, then the five blob colours + intensities */
-static const struct theme {
+static const struct wp {
     const char *name;
     uint32_t top, bot, col[5];
     int k[5];
@@ -23,7 +23,7 @@ int wallpaper_count(void) { return WP_LEN(themes); }
 const char *wallpaper_name(int i) { return themes[i % WP_LEN(themes)].name; }
 
 void wallpaper_render(struct canvas *c, int theme) {
-    const struct theme *th = &themes[theme % WP_LEN(themes)];
+    const struct wp *th = &themes[theme % WP_LEN(themes)];
     int W = c->w, H = c->h;
     static const int pos[5][3] = { { 18, 22, 55 }, { 88, 12, 42 }, { 72, 100, 55 }, { 5, 95, 38 }, { 50, 55, 30 } };
     struct blob b[5];

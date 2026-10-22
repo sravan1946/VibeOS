@@ -65,14 +65,14 @@ static void hand(struct canvas *c, float cx, float cy, float ang, float len, flo
 /* the dial (shadow, ticks, numerals) never changes: render it once per radius into a buffer */
 static void draw_dial(struct canvas *c, int cx, int cy, int r) {
     gfx_shadow(c, cx - r, cy - r, 2 * r, 2 * r, r, 14, 90);
-    gfx_circle_fill(c, cx, cy, r, RGB(0x3A, 0x34, 0x58));
+    gfx_circle_fill(c, cx, cy, r, ui_th.hover);
     gfx_circle_fill(c, cx, cy, r - 3, UI_PANEL);
-    gfx_circle_fill(c, cx, cy, r - 5, RGB(0x1A, 0x18, 0x29));
+    gfx_circle_fill(c, cx, cy, r - 5, UI_BG);
     for (int i = 0; i < 60; i++) {
         float a = i * (float)M_PI / 30, s = sinf(a), co = cosf(a);
         bool major = i % 5 == 0;
         float r0 = r - (major ? 22 : 13), r1 = r - 9;
-        gfx_line_aa(c, cx + s * r0, cy - co * r0, cx + s * r1, cy - co * r1, major ? 3.0f : 1.4f, major ? UI_ACCENT : RGBA(255, 255, 255, 80));
+        gfx_line_aa(c, cx + s * r0, cy - co * r0, cx + s * r1, cy - co * r1, major ? 3.0f : 1.4f, major ? UI_ACCENT : UI_OV(80));
     }
     static const char *const num[] = { "12", "3", "6", "9" };
     static const int nx[] = { 0, 1, 0, -1 }, ny[] = { -1, 0, 1, 0 };
@@ -85,12 +85,14 @@ static void draw_dial(struct canvas *c, int cx, int cy, int r) {
 
 static uint32_t *dial_buf;
 static int dial_r;
+static uint32_t dial_ser;                      /* theme the cached dial was drawn in */
 #define DIAL_PAD 20
 
 static void draw_face(struct ui *ui, int cx, int cy, int r, double hh, double mm, double ss) {
     struct canvas *c = ui->c;
     int sz = 2 * (r + DIAL_PAD);
-    if (dial_r != r) {
+    if (dial_r != r || dial_ser != ui_th.accent + ui_th.bg) {
+        dial_ser = ui_th.accent + ui_th.bg;
         free(dial_buf);
         dial_buf = calloc(sz * sz, 4);
         dial_r = r;
@@ -204,7 +206,7 @@ static void tab_timer(struct ui *ui, int top) {
     int cx = W / 2, cy = top + 14 + r;
     /* ring */
     float frac = tm_set ? (float)left / (tm_set * 1000.0f) : 0;
-    gfx_circle_fill(ui->c, cx, cy, r + 2, RGB(0x2A, 0x27, 0x3D));
+    gfx_circle_fill(ui->c, cx, cy, r + 2, UI_SURFACE);
     gfx_circle_fill(ui->c, cx, cy, r - 12, UI_BG);
     if (tm_done) {
         bool flash = (uptime_ms() / 400) & 1;

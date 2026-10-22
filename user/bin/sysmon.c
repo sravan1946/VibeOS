@@ -77,7 +77,7 @@ static void bar(struct ui *ui, int x, int y, int w, const char *label, uint32_t 
     gfx_text(c, &font_ui_bold, x, y, label, UI_TEXT);
     snprintf(buf, sizeof buf, "%u / %u MiB  (%d%%)", used_kb / 1024, total_kb / 1024, pct);
     gfx_text(c, &font_ui, x + w - gfx_text_width(&font_ui, buf), y, buf, UI_TEXT_DIM);
-    gfx_round_fill(c, x, y + 24, w, 12, 6, RGB(0x12, 0x11, 0x1C));
+    gfx_round_fill(c, x, y + 24, w, 12, 6, UI_INPUT);
     int fw = w * pct / 100;
     if (fw < 12 && pct > 0) fw = 12;
     if (pct > 0) gfx_round_fill(c, x, y + 24, fw, 12, 6, pct > 90 ? UI_BAD : pct > 75 ? UI_WARN : col);
@@ -94,8 +94,8 @@ static void graph(struct ui *ui, int x, int y, int w, int h) {
     if (gw < 100) return;
     int lx = x + 120;                              /* graph sits to the right of the number */
     gx = lx; gw = x + w - 16 - lx;
-    gfx_round_fill(c, gx, gy, gw, gh, 6, RGB(0x12, 0x11, 0x1C));
-    for (int q = 1; q < 4; q++) gfx_fill(c, gx + 1, gy + gh * q / 4, gw - 2, 1, RGBA(255, 255, 255, 14));
+    gfx_round_fill(c, gx, gy, gw, gh, 6, UI_INPUT);
+    for (int q = 1; q < 4; q++) gfx_fill(c, gx + 1, gy + gh * q / 4, gw - 2, 1, UI_OV(14));
     struct canvas cc = *c;
     canvas_clip(&cc, gx, gy, gw, gh);
     float step = (float)gw / (HIST - 1);
@@ -105,7 +105,7 @@ static void graph(struct ui *ui, int x, int y, int w, int h) {
         float fy = gy + gh - 2 - (gh - 6) * cpu_hist[i] / 100.0f;
         int ix = (int)fx;
         int top = (int)fy;
-        gfx_fill(&cc, ix, top, (int)step + 1, gy + gh - top, RGBA(0xB3, 0x88, 0xFF, 36));
+        gfx_fill(&cc, ix, top, (int)step + 1, gy + gh - top, UI_ACC(36));
         if (i) gfx_line_aa(&cc, px, py, fx, fy, 2.0f, UI_ACCENT);
         px = fx; py = fy;
     }
@@ -159,7 +159,7 @@ int main(void) {
                 sample(); last = now;
             }
         } else {
-            gfx_round_fill(c, bx, hdrY - 2, btnW, 30, UI_RADIUS, RGBA(255, 255, 255, 10));
+            gfx_round_fill(c, bx, hdrY - 2, btnW, 30, UI_RADIUS, UI_OV(10));
             gfx_text_center(c, &font_ui, bx, hdrY + 4, btnW, "End Task", UI_TEXT_DIM);
         }
         if (status[0] && now < status_until) {
@@ -204,9 +204,9 @@ int main(void) {
             struct procinfo *p = &rows[i].p;
             bool hov = ui_hover(&ui, tx, y, tw - 12, rh) && y + rh <= ry0 + listH;
             if (hov && ui.pressed) sel_pid = p->pid;
-            if (p->pid == sel_pid) gfx_round_fill(&cc, tx, y, tw - 12, rh - 2, 6, RGBA(0xB3, 0x88, 0xFF, 80));
-            else if (hov) gfx_round_fill(&cc, tx, y, tw - 12, rh - 2, 6, RGBA(255, 255, 255, 14));
-            else if (i & 1) gfx_round_fill(&cc, tx, y, tw - 12, rh - 2, 6, RGBA(255, 255, 255, 5));
+            if (p->pid == sel_pid) gfx_round_fill(&cc, tx, y, tw - 12, rh - 2, 6, UI_ACC(80));
+            else if (hov) gfx_round_fill(&cc, tx, y, tw - 12, rh - 2, 6, UI_OV(14));
+            else if (i & 1) gfx_round_fill(&cc, tx, y, tw - 12, rh - 2, 6, UI_OV(5));
             char b[32];
             int ty2 = y + (rh - font_ui.height) / 2 - 1;
             snprintf(b, sizeof b, "%d", p->pid);

@@ -11,19 +11,26 @@
 #include "gui.h"
 #include <stdbool.h>
 
-#define UI_BG        RGB(0x16, 0x15, 0x22)
-#define UI_PANEL     RGB(0x1E, 0x1C, 0x2D)
-#define UI_SURFACE   RGB(0x2A, 0x27, 0x3D)
-#define UI_HOVER     RGB(0x35, 0x31, 0x4C)
-#define UI_PRESSED   RGB(0x22, 0x20, 0x33)
-#define UI_BORDER    RGBA(255, 255, 255, 26)
-#define UI_TEXT      RGB(0xED, 0xEB, 0xFF)
-#define UI_TEXT_DIM  RGB(0x9A, 0x96, 0xB8)
-#define UI_ACCENT    RGB(0xB3, 0x88, 0xFF)
-#define UI_ACCENT2   RGB(0xFF, 0x7A, 0xC6)
-#define UI_GOOD      RGB(0x4B, 0xE0, 0x8A)
-#define UI_WARN      RGB(0xFF, 0xC2, 0x4B)
-#define UI_BAD       RGB(0xFF, 0x5F, 0x7A)
+/* colours are the desktop theme's (ui_th, kept current by libgui); a change arrives as EV_THEME and ui_poll returns,
+ * so an app that redraws every frame follows it with no extra code. UI_OV / UI_ACC tint with an alpha. */
+#define UI_BG        (ui_th.bg)
+#define UI_PANEL     (ui_th.panel)
+#define UI_SURFACE   (ui_th.surface)
+#define UI_HOVER     (ui_th.hover)
+#define UI_PRESSED   (ui_th.pressed)
+#define UI_BORDER    (ui_th.border)
+#define UI_TEXT      (ui_th.text)
+#define UI_TEXT_DIM  (ui_th.dim)
+#define UI_FAINT     (ui_th.faint)         /* decorative: line numbers, close glyphs */
+#define UI_ACCENT    (ui_th.accent)
+#define UI_ACCENT2   (ui_th.accent2)
+#define UI_ON_ACCENT (ui_th.on_accent)     /* text on UI_ACCENT */
+#define UI_INPUT     (ui_th.input)         /* text boxes, editors */
+#define UI_GOOD      (ui_th.good)
+#define UI_WARN      (ui_th.warn)
+#define UI_BAD       (ui_th.bad)
+#define UI_OV(a)     TH_A(ui_th.ov, a)     /* white on dark themes, black on light ones, at alpha a */
+#define UI_ACC(a)    TH_A(ui_th.accent, a)
 #define UI_RADIUS    8
 
 enum { UI_NORMAL_BTN = 0, UI_ACCENT_BTN, UI_GHOST_BTN };

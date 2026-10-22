@@ -122,7 +122,7 @@ header shared by the kernel and libc: `common/abi.h`.
   offset and flags and are shared between fds via refcounts.
 * **ext2** (`kernel/fs/ext2.c`): read/write, 1/2/4 KiB blocks, indirect blocks, create/unlink/
   rename/mkdir/truncate; tested on the host against `e2fsck` (`tools/ext2test`).
-* **devfs** at `/dev`: `null zero random urandom tty kmsg clipboard screen notify` (+ `dsp mixer` with an AC'97 card; `screen` reads as `u32 w, u32 h` then the composed
+* **devfs** at `/dev`: `null zero random urandom tty kmsg clipboard screen notify display theme wallpaper` (+ `dsp mixer` with an AC'97 card; `screen` reads as `u32 w, u32 h` then the composed
   screen as ARGB rows, taken from the compositor's back buffer). **procfs** at `/proc`:
   `meminfo uptime cpuinfo version processes`.
 * **Pipes**: 8 KiB ring buffers with blocking read/write and EOF/EPIPE.
@@ -245,6 +245,20 @@ detection (`term_link_at`) so the window code stays free of cell-level logic.
   client may be mid-frame with the old stride. `boot_info` fb fields track the current mode.
 * `user/lib/gui.c` wraps that; `user/lib/ui.c` is an immediate-mode widget toolkit (buttons,
   checkboxes, sliders, text boxes, lists, panels) in the desktop's theme.
+* **Themes**: `common/theme.h` is one struct of named colours (widgets, compositor chrome, terminal palette and tab bar), `theme.c`
+  holds the five built-in tables (`dark` is the original look and the default), the accent presets, `theme_set_accent` (derives the
+  hover/pressed/key/on-accent colours and nudges the accent until it reads 3:1 on the theme's surfaces) and `theme_contrast`
+  (integer WCAG ratio; `tools/themetest` checks every pair of every theme and accent on the host). The kernel's active theme is
+  `cur_theme` (`kernel/gui/theme.c`): `wm.c`/`termwin.c` read it instead of constants (`OV(a)`/`ACC(a)` tint the theme's overlay and
+  accent colours, `OVE`/`ACE` are the outline variants a high-contrast theme strengthens), `term_set_colors` hands the terminal
+  palette to `common/term.c`. `/dev/theme` reads a `struct theme_state` and takes text (`NAME accent=RRGGBB|preset|default anim=0|1
+  zoom=0..3`); a write recolours, and the compositor thread then sends `EV_THEME` to every window: kernel terminals refit/repaint,
+  libgui re-reads `/dev/theme` into `ui_th` (the `UI_*` macros in `ui.h` are fields of it) and `ui_poll` returns, so any app that redraws
+  per frame follows without code. `/etc/theme` holds the same text and is applied in `wm_init` before the first frame.
+* **Wallpaper**: `/etc/wallpaper` names a procedural style or an image path. The kernel never decodes images: `/bin/theme -W` (spawned by
+  the compositor at boot, after a prefs reload or a mode change) decodes with libgui, scales to cover the screen and writes
+  `"WPIM", w, h` + XRGB pixels to `/dev/wallpaper`; the kernel stages them and copies into `wall` when complete. The procedural wallpaper
+  stands in until then. Settings > Wallpaper lists the styles plus PNG/JPEG in `/usr/share/wallpapers` and `/home/Pictures`.
 
 ## Files, desktop icons, associations and trash
 

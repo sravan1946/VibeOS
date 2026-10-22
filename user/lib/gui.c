@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
+#include "image.h"
 
 static void attach(struct gui_window *win, int w, int h, uint32_t *px, int stride) {
     win->w = w;
@@ -16,7 +17,70 @@ static void attach(struct gui_window *win, int w, int h, uint32_t *px, int strid
     canvas_init(&win->cv, px, w, h, stride);
 }
 
+struct theme ui_th;
+
+int gui_theme_state(struct theme_state *st) {
+    int fd = open("/dev/theme", O_RDONLY), r = -1;
+    if (fd >= 0) { r = read(fd, st, sizeof *st) == (int)sizeof *st && st->size == sizeof *st ? 0 : -1; close(fd); }
+    return r;
+}
+
+int gui_theme_load(void) {
+    struct theme_state st;
+    if (gui_theme_state(&st) < 0) { if (!ui_th.name[0]) ui_th = *theme_get(0); return -1; }   /* no /dev/theme: the built-in default */
+    ui_th = st.th;
+    return 0;
+}
+
+int gui_theme_set(const char *cmd) {
+    int fd = open("/dev/theme", O_WRONLY), r = -1, n = strlen(cmd);
+    if (fd >= 0) { r = write(fd, cmd, n) == n ? 0 : -1; close(fd); }
+    return r;
+}
+
+int gui_theme_save(void) {
+    struct theme_state st;
+    if (gui_theme_state(&st) < 0) return -1;
+    char acc[16] = "default", m[96];
+    if (st.accent) snprintf(acc, sizeof acc, "%06X", st.accent & 0xFFFFFF);
+    int n = snprintf(m, sizeof m, "%s accent=%s anim=%d zoom=%d\n", theme_get(st.index)->name, acc, (int)st.anim, (int)st.zoom), r = -1;
+    int fd = open("/etc/theme", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { r = write(fd, m, n) == n ? 0 : -1; close(fd); }
+    return r;
+}
+
+int gui_wallpaper_push(const char *path) {
+    struct image im;
+    struct sysinfo si;
+    if (image_load(path, &im) < 0) return -1;
+    sysinfo(&si);
+    int sw = si.screen_w, sh = si.screen_h, r = -1;
+    size_t bytes = 12 + (size_t)sw * sh * 4;
+    uint32_t *buf = malloc(bytes);
+    if (buf) {
+        float k = (float)sw / im.w > (float)sh / im.h ? (float)sw / im.w : (float)sh / im.h;    /* cover, centred */
+        buf[0] = 0x4D495057u; buf[1] = sw; buf[2] = sh;
+        image_sample(&im, buf + 3, sw, sh, sw, im.w / 2.0f - sw / (2 * k), im.h / 2.0f - sh / (2 * k), k, 1);
+        for (int i = 0; i < sw * sh; i++) buf[3 + i] = blend(0xFF000000u, buf[3 + i]);              /* transparency over black */
+        int fd = open("/dev/wallpaper", O_WRONLY);
+        if (fd >= 0) {
+            size_t off = 0;
+            while (off < bytes) {
+                int k2 = write(fd, (char *)buf + off, bytes - off > 262144 ? 262144 : bytes - off);
+                if (k2 <= 0) break;
+                off += k2;
+            }
+            r = off == bytes ? 0 : -1;
+            close(fd);
+        }
+        free(buf);
+    }
+    image_free(&im);
+    return r;
+}
+
 struct gui_window *gui_window_create(const char *title, int w, int h, int flags) {
+    if (!ui_th.name[0]) gui_theme_load();
     struct win_info wi;
     memset(&wi, 0, sizeof wi);
     wi.x = wi.y = -1;
@@ -57,6 +121,7 @@ int gui_next_event(struct gui_window *win, struct gui_event *ev, int timeout_ms)
     int r = poll(&p, 1, timeout_ms);
     if (r <= 0) return r;
     if (read(win->fd, ev, sizeof *ev) != sizeof *ev) return -1;
+    if (ev->type == EV_THEME) gui_theme_load();
     if (ev->type == EV_RESIZE)      /* same mapping; x = the new stride after a display mode change, else 0 */
         attach(win, ev->w, ev->h, win->pixels, ev->x ? ev->x : win->stride);
     return 1;

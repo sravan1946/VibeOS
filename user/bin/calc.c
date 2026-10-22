@@ -209,7 +209,7 @@ again:
         int dh = 128;
         /* display */
         ui_panel(&ui, m, m, W - 2 * m, dh);
-        gfx_vgradient(c, m + 6, m + 2, W - 2 * m - 12, 2, RGBA(0xB3, 0x88, 0xFF, 80), RGBA(0xB3, 0x88, 0xFF, 0));
+        gfx_vgradient(c, m + 6, m + 2, W - 2 * m - 12, 2, UI_ACC(80), UI_ACC(0));
         char disp[EXPR_MAX + 8], line[EXPR_MAX + 8];
         const char *src = done ? result : expr[0] ? expr : "0";
         int j = 0;
@@ -248,12 +248,12 @@ again:
                 bool hit = ui.released && ui.active == id && hov;
                 bool down = ui.active == id && (ui.buttons & 1) && hov;
                 color_t bg, fg = UI_TEXT;
-                if (kk->style == 3) bg = down ? RGB(0x95, 0x6C, 0xE0) : hov ? RGB(0xC4, 0xA0, 0xFF) : UI_ACCENT;
-                else if (kk->style == 1) bg = down ? RGB(0x3A, 0x2E, 0x5C) : hov ? RGB(0x4A, 0x3B, 0x78) : RGB(0x3B, 0x30, 0x62);
+                if (kk->style == 3) bg = down ? ui_th.accent_lo : hov ? ui_th.accent_hi : UI_ACCENT;
+                else if (kk->style == 1) bg = down ? ui_th.key_lo : hov ? ui_th.key_hi : ui_th.key;
                 else if (kk->style == 2) bg = down ? UI_PRESSED : hov ? UI_HOVER : UI_SURFACE;
                 else bg = down ? UI_PRESSED : hov ? UI_SURFACE : UI_PANEL;
-                if (kk->style == 3) fg = RGB(0x1A, 0x10, 0x2E);
-                if (kk->style == 1) fg = RGB(0xD9, 0xC4, 0xFF);
+                if (kk->style == 3) fg = UI_ON_ACCENT;
+                if (kk->style == 1) fg = ui_th.key_fg;
                 gfx_round_fill(c, x, y + down, bw, bh, UI_RADIUS + 2, bg);
                 if (kk->style != 3) gfx_round_rect(c, x, y + down, bw, bh, UI_RADIUS + 2, UI_BORDER);
                 if (kk->ico >= 0) icon(c, kk->ico, x + bw / 2, y + bh / 2 + down, kk->ico == 4 && !expr[0] && !done ? UI_TEXT_DIM : fg);

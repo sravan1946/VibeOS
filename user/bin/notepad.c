@@ -386,8 +386,8 @@ int main(int argc, char **argv) {
         }
 
         /* editor */
-        gfx_fill(c, ex, ey, ew, eh, RGB(0x12, 0x11, 0x1C));
-        gfx_fill(c, ex, ey, gutter, eh, RGB(0x19, 0x18, 0x26));
+        gfx_fill(c, ex, ey, ew, eh, UI_INPUT);
+        gfx_fill(c, ex, ey, gutter, eh, ui_th.gutter);
         gfx_fill(c, ex + gutter, ey, 1, eh, UI_BORDER);
         struct canvas cc = *c;
         canvas_clip(&cc, tx0, ey, ew - tx0 - 10, eh);
@@ -400,16 +400,16 @@ int main(int argc, char **argv) {
             int l = top + i, y = ey + 4 + i * LH;
             if (y > ey + eh) break;
             int s = lines[l], e = line_end(l);
-            if (l == curl && lo == hi) gfx_fill(&cc, tx0 - 4, y - 1, ew, LH, RGBA(0xB3, 0x88, 0xFF, 14));
+            if (l == curl && lo == hi) gfx_fill(&cc, tx0 - 4, y - 1, ew, LH, UI_ACC(14));
             char num[16];
             snprintf(num, sizeof num, "%d", l + 1);
-            gfx_text(&gc, &font_mono, ex + gutter - 12 - gfx_text_width(&font_mono, num), y + 1, num, l == curl ? UI_ACCENT : RGB(0x5E, 0x5A, 0x7C));
+            gfx_text(&gc, &font_mono, ex + gutter - 12 - gfx_text_width(&font_mono, num), y + 1, num, l == curl ? UI_ACCENT : UI_FAINT);
             /* selection */
             if (hi > lo && hi > s && lo <= e) {
                 int a = lo > s ? lo : s, b = hi < e ? hi : e;
                 int x0 = tx0 + vcol(l, a) * CW - hx, x1 = tx0 + vcol(l, b) * CW - hx;
                 if (hi > e) x1 += CW / 2;                       /* newline is selected too */
-                gfx_fill(&cc, x0, y - 1, x1 - x0, LH, RGBA(0xB3, 0x88, 0xFF, 100));
+                gfx_fill(&cc, x0, y - 1, x1 - x0, LH, UI_ACC(100));
             }
             int vc = 0;
             for (int j = s; j < e; j++) {
@@ -461,7 +461,7 @@ int main(int argc, char **argv) {
                 int pw = 400, ph = 130, px = (W - pw) / 2, py = (H - ph) / 2;
                 gfx_shadow(c, px, py, pw, ph, 12, 14, 120);
                 gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
-                gfx_round_rect(c, px, py, pw, ph, 12, RGBA(255, 255, 255, 40));
+                gfx_round_rect(c, px, py, pw, ph, 12, UI_OV(40));
                 gfx_text(c, &font_ui_bold, px + 20, py + 16, "Unsaved changes", UI_TEXT);
                 gfx_text(c, &font_ui, px + 20, py + 42, "Save before closing?", UI_TEXT_DIM);
                 if (ui_button(&ui, px + pw - 20 - 100, py + ph - 50, 100, 34, "Save", UI_ACCENT_BTN)) {

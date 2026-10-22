@@ -259,7 +259,7 @@ struct win_info {
 };
 
 enum { WIN_SET_TITLE = 1, WIN_SET_SIZE, WIN_SET_POS, WIN_SET_VISIBLE,
-       WIN_SET_PREFS };   /* PREFS: desktop re-reads /etc/wallpaper and /etc/tz */
+       WIN_SET_PREFS };   /* PREFS: desktop re-reads /etc/wallpaper (name or image path) and /etc/tz */
 
 /* reading a window fd yields struct gui_event records */
 enum {
@@ -273,6 +273,7 @@ enum {
     EV_FOCUS,          /* pressed = gained/lost */
     EV_MOUSE_LEAVE,
     EV_DROP,           /* x, y: a drag that started in another window (or this one) ended here and DRAG_FILE exists */
+    EV_THEME,          /* the desktop theme or accent changed: re-read /dev/theme (libgui does) and repaint; x = 1 if the terminal text size changed */
 };
 #define DRAG_FILE "/tmp/.drag"   /* drag payload: "move\n" then one absolute path per line; written by the dragger, consumed by the target */
 

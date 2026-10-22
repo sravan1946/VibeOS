@@ -1,6 +1,7 @@
-/* devfs.c - /dev (null zero random tty kmsg clipboard screen display) and /proc (text files) */
+/* devfs.c - /dev (null zero random tty kmsg clipboard screen display theme wallpaper) and /proc (text files) */
 #include "proc.h"
 #include "tty.h"
+#include "wm.h"
 
 struct snode { const char *name; struct vnode vn; };
 extern size_t klog_read(char *buf, size_t off, size_t n);
@@ -51,6 +52,7 @@ static uint32_t rng(void) {
     return rng_state;
 }
 
+static int null_truncate(struct vnode *v, uint32_t len) { return 0; }
 static int null_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { return 0; }
 static int sink_write(struct vnode *v, uint32_t off, const void *b, uint32_t n) { return n; }
 static int zero_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { memset(b, 0, n); return n; }
@@ -61,6 +63,7 @@ static int random_read(struct vnode *v, uint32_t off, void *b, uint32_t n) {
 static int kmsg_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { return klog_read(b, off, n); }
 static int screen_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { return wm_screen_read(off, b, n); }
 static int notify_write(struct vnode *v, uint32_t off, const void *b, uint32_t n) { wm_notify(b, n); return n; }
+static int wallpaper_write(struct vnode *v, uint32_t off, const void *b, uint32_t n) { return wm_wallpaper_write(off, b, n); }
 static int always_ready(struct vnode *v, int ev) { return ev & (POLLIN | POLLOUT); }
 
 static const struct vnode_ops null_ops = { .read = null_read, .write = sink_write, .poll = always_ready };
@@ -69,6 +72,7 @@ static const struct vnode_ops random_ops = { .read = random_read, .write = sink_
 static const struct vnode_ops kmsg_ops = { .read = kmsg_read, .poll = always_ready };
 static const struct vnode_ops screen_ops = { .read = screen_read, .poll = always_ready };
 static const struct vnode_ops notify_ops = { .write = notify_write, .poll = always_ready };
+static const struct vnode_ops wallpaper_ops = { .write = wallpaper_write, .truncate = null_truncate, .poll = always_ready };   /* see wm.c */
 static const struct vnode_ops tty_placeholder_ops = { 0 };
 
 /* /dev/clipboard: one shared buffer, a regular file so offsets advance; O_TRUNC + write replaces it */
@@ -109,6 +113,8 @@ static struct snode dev_nodes[] = {
     { "clipboard", { .mode = S_IFREG | 0666, .ino = 10, .refs = 1, .ops = &clip_ops } },
     CHR("notify", notify_ops, 12),
     { "display", { .mode = S_IFREG | 0666, .ino = 13, .refs = 1, .ops = &display_ops } },
+    { "theme", { .mode = S_IFREG | 0666, .ino = 14, .refs = 1, .ops = &theme_ops } },
+    { "wallpaper", { .mode = S_IFREG | 0222, .ino = 15, .refs = 1, .ops = &wallpaper_ops } },
     CHR("dsp", ac97_dsp_ops, 8), CHR("mixer", ac97_ops, 9),      /* listed only once ac97_init succeeds */
 };
 static struct sdir devdir = { { .mode = S_IFDIR | 0755, .ino = 1, .refs = 1, .ops = &sdir_ops }, dev_nodes, ARRAY_LEN(dev_nodes) - 2 };
