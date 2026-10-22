@@ -47,6 +47,7 @@ class VM:
             "-display", "none" if headless else "gtk,zoom-to-fit=off", "-name", "VibeOS (vmtest)",
             "-serial", f"file:{self.log}", "-no-reboot", "-nic", "user,model=e1000",
             "-device", "isa-debug-exit,iobase=0xf4,iosize=4", "-machine", "pc,vmport=off",  # relative PS/2 so monitor mouse_move works
+            "-accel", "kvm", "-accel", "tcg",  # KVM when available
             "-monitor", f"unix:{self.sock},server,nowait", *extra])
         for _ in range(100):
             if os.path.exists(self.sock): break
