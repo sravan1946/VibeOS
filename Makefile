@@ -2,7 +2,7 @@
 #   make            -> build/vibeos.img (bootable raw disk: MBR + stage2 + kernel + ext2 root)
 #   make run        -> boot it in QEMU
 #   make test       -> headless smoke test (tools/vmtest.py)
-#   make test-host  -> host unit tests (libc, image codecs, audio decoders)
+#   make test-host  -> host unit tests (libc, image codecs, terminal, audio decoders, make)
 #   make doom-wad   -> fetch Freedoom (for /bin/doom) into build/wads/
 
 CC      := gcc
@@ -258,6 +258,7 @@ test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audi
 	sh tools/adectest/run.sh
 	python3 tools/hashtest.py
 	sh tools/chesstest/run.sh
+	sh tools/maketest/run.sh
 
 test-tls:    # HTTPS against local test servers (needs openssl)
 	sh tools/tlstest/run.sh
