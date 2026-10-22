@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <syscall.h>
+#include "image.h"
 
 #define MAX_ENT 1024
 #define HIST_MAX 16
@@ -128,6 +129,9 @@ static void open_entry(int i) {
     if (e->exe) {
         argv[0] = e->name; argv[1] = NULL;
         pid = spawnv(p, argv);
+    } else if (image_is_ext(e->name)) {
+        argv[0] = "viewer"; argv[1] = p; argv[2] = NULL;
+        pid = spawnv("/bin/viewer", argv);
     } else {
         argv[0] = "notepad"; argv[1] = p; argv[2] = NULL;
         pid = spawnv("/bin/notepad", argv);

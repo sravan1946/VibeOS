@@ -2,6 +2,7 @@
 #   make            -> build/vibeos.img (bootable raw disk: MBR + stage2 + kernel + ext2 root)
 #   make run        -> boot it in QEMU
 #   make test       -> headless smoke test (tools/vmtest.py)
+#   make test-host  -> host unit tests (libc, image codecs)
 
 CC      := gcc
 LD      := ld -m elf_i386
@@ -62,8 +63,8 @@ UCFLAGS := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protecto
 ULIBC_SRC := $(wildcard user/lib/*.c)
 ULIBC_ASM := $(filter-out user/lib/crt0.asm,$(wildcard user/lib/*.asm))
 # gui.o + the shared gfx/fonts live in libgui.a so only GUI programs pay for the font data
-ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o build/user/obj/common/wallpaper.o
-ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o build/user/obj/lib/ui.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
+ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o build/user/obj/common/wallpaper.o
+ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
              $(patsubst user/%.asm,build/user/obj/%.o,$(ULIBC_ASM))
 ULIBS := build/user/libgui.a build/user/libc.a
 UBIN_SINGLE := $(basename $(notdir $(wildcard user/bin/*.c)))
@@ -139,10 +140,14 @@ run: build/vibeos.img
 debug: build/vibeos.img
 	$(QEMU) -s -S & gdb build/kernel.elf -ex 'target remote :1234'
 
+test-host:   # host-side unit tests (libc, image codecs)
+	sh tools/imagetest/run.sh
+	sh tools/libctest/run.sh
+
 test: build/vibeos.img
 	python3 tools/vmtest.py smoke
 
 clean:
 	rm -rf build
 
-.PHONY: all run debug test clean user
+.PHONY: all run debug test test-host clean user

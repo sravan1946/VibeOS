@@ -76,7 +76,8 @@ header shared by the kernel and libc: `common/abi.h`.
   offset and flags and are shared between fds via refcounts.
 * **ext2** (`kernel/fs/ext2.c`): read/write, 1/2/4 KiB blocks, indirect blocks, create/unlink/
   rename/mkdir/truncate; tested on the host against `e2fsck` (`tools/ext2test`).
-* **devfs** at `/dev`: `null zero random urandom tty kmsg`. **procfs** at `/proc`:
+* **devfs** at `/dev`: `null zero random urandom tty kmsg screen` (`screen` reads as `u32 w, u32 h` then the composed
+  screen as ARGB rows, taken from the compositor's back buffer). **procfs** at `/proc`:
   `meminfo uptime cpuinfo version processes`.
 * **Pipes**: 8 KiB ring buffers with blocking read/write and EOF/EPIPE.
 
@@ -106,6 +107,15 @@ procedurally drawn box-drawing glyphs, scrollback). Keys become escape sequences
 * `user/lib/gui.c` wraps that; `user/lib/ui.c` is an immediate-mode widget toolkit (buttons,
   checkboxes, sliders, text boxes, lists, panels) in the desktop's theme.
 
+## Images and screenshots
+
+`user/lib/image.c` (in libgui, also compiled on the host by `tools/imagetest`) holds a from-scratch zlib
+inflate, PNG/BMP/PPM decoders that produce `0xAARRGGBB` (non-premultiplied, like `gfx.h`), a PNG encoder
+(LZ77 with one hash slot + fixed Huffman) and `image_sample`, the resampler the viewer uses (area average
+down, bilinear up, row copy at 1:1). PrtSc is handled in the compositor, which only spawns `/bin/screenshot`;
+that process reads `/dev/screen`, encodes with `image_save_png` and shows a toast window. The kernel never
+touches PNG.
+
 ## Input
 
 PS/2 keyboard (scan set 1, modifiers, caps lock) and a hybrid mouse driver: PS/2 IntelliMouse
@@ -132,4 +142,5 @@ The kernel runs `#!interp [arg]` scripts itself (`proc_spawn_ex`, one level, 128
   keys, move/click/drag the mouse, wait for serial output, take screenshots.
 * `/etc/autostart` lists what the desktop opens at boot (`shell`, `term ARGV`, `run ARGV`).
 * Host-side unit tests: `tools/ext2test` (filesystem vs `e2fsck`), `tools/termtest`
-  (terminal emulator), `tools/libctest` (libc).
+  (terminal emulator), `tools/libctest` (libc), `tools/imagetest` (image codecs vs Pillow, ASan/UBSan);
+  `make test-host` runs the host tests.

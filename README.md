@@ -51,8 +51,9 @@ emulator, and a set of desktop apps and games.
   vibefetch` and more.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc`.
-- GUI apps: Files, Notepad, Paint, Calculator, Clock (with stopwatch and timer), System
-  Monitor, Settings, About.
+- GUI apps: Files, Notepad, Paint (saves/opens PNG), Image viewer (PNG/BMP/PPM, zoom, pan, browse),
+  Calculator, Clock (with stopwatch and timer), System Monitor, Settings, About. PrtSc saves a
+  PNG screenshot to `~/Pictures`.
 - Games: Snake, Tetris, Minesweeper.
 
 ## Building and running
@@ -80,8 +81,7 @@ python3 tools/vmtest.py smoke 'type:ls -l /bin\n' sleep:1 shot:build/ls.png
 
 `/etc/autostart` (in `root/etc/`, not committed) picks what the desktop opens at boot:
 `shell`, `term ARGV…` or `run ARGV…`. There are host-side tests for the ext2 driver
-(`tools/ext2test`, checked against `e2fsck`), the terminal emulator (`tools/termtest`) and
-libc (`tools/libctest`).
+(`tools/ext2test`, checked against `e2fsck`), the terminal emulator (`tools/termtest`), libc (`tools/libctest`) and the image codecs against Pillow (`tools/imagetest`, `make test-host`).
 
 ## Layout
 

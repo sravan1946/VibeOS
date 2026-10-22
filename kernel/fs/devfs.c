@@ -1,4 +1,4 @@
-/* devfs.c - /dev (null zero random tty kmsg) and /proc (text files) */
+/* devfs.c - /dev (null zero random tty kmsg screen) and /proc (text files) */
 #include "proc.h"
 #include "tty.h"
 
@@ -6,6 +6,7 @@ struct snode { const char *name; struct vnode vn; };
 extern size_t klog_read(char *buf, size_t off, size_t n);
 extern size_t klog_size(void);
 extern const char *cpu_brand(void);
+extern int wm_screen_read(uint32_t off, void *buf, uint32_t n);
 
 /* ---- tiny static directory helper ---- */
 struct sdir { struct vnode vn; struct snode *nodes; int n; };
@@ -55,18 +56,21 @@ static int random_read(struct vnode *v, uint32_t off, void *b, uint32_t n) {
     return n;
 }
 static int kmsg_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { return klog_read(b, off, n); }
+static int screen_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { return wm_screen_read(off, b, n); }
 static int always_ready(struct vnode *v, int ev) { return ev & (POLLIN | POLLOUT); }
 
 static const struct vnode_ops null_ops = { .read = null_read, .write = sink_write, .poll = always_ready };
 static const struct vnode_ops zero_ops = { .read = zero_read, .write = sink_write, .poll = always_ready };
 static const struct vnode_ops random_ops = { .read = random_read, .write = sink_write, .poll = always_ready };
 static const struct vnode_ops kmsg_ops = { .read = kmsg_read, .poll = always_ready };
+static const struct vnode_ops screen_ops = { .read = screen_read, .poll = always_ready };
 static const struct vnode_ops tty_placeholder_ops = { 0 };
 
 #define CHR(nm, o, i) { nm, { .mode = S_IFCHR | 0666, .ino = i, .refs = 1, .ops = &o } }
 static struct snode dev_nodes[] = {
     CHR("null", null_ops, 2), CHR("zero", zero_ops, 3), CHR("random", random_ops, 4),
     CHR("urandom", random_ops, 5), CHR("tty", tty_placeholder_ops, 6), CHR("kmsg", kmsg_ops, 7),
+    { "screen", { .mode = S_IFREG | 0444, .ino = 8, .refs = 1, .ops = &screen_ops } },   /* REG so the offset advances */
 };
 static struct sdir devdir = { { .mode = S_IFDIR | 0755, .ino = 1, .refs = 1, .ops = &sdir_ops }, dev_nodes, ARRAY_LEN(dev_nodes) };
 
