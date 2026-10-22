@@ -208,7 +208,7 @@ int main(void) {
                     else status[0] = 0;
                 }
             }
-            int ay = 84 + 2 * (ch + 36) + 4;
+            int ay = 84 + (theme_count() + 2) / 3 * (ch + 36) + 4;
             gfx_text(c, &font_ui_bold, x0, ay, "Accent colour", UI_TEXT_DIM);
             for (int i = 0; i <= THEME_ACCENTS; i++) {
                 int sx = x0 + i * 38, sy = ay + 26;

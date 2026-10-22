@@ -102,7 +102,7 @@ static void test_erase(void) {
     ROW(t, 0, "a   ef");
     /* erase uses the current background (BCE) */
     W(t, "\x1b[44m\x1b[2;1H\x1b[K\x1b[0m");
-    CHECK(term_cell_bg(t, 5, 1) == RGB(0x7A, 0xA2, 0xF7));
+    CHECK(term_cell_bg(t, 5, 1) == RGB(0x8F, 0xB0, 0xD9));
     /* ED 3 drops scrollback but keeps the screen */
     W(t, "\x1b[3;1H\n\n");
     CHECK(term_scrollback_lines(t) == 2);
@@ -139,7 +139,7 @@ static void test_alt_screen(void) {
 static void test_sgr(void) {
     struct term *t = term_create(40, 2);
     W(t, "\x1b[31mR\x1b[0mn");
-    CHECK(term_cell_fg(t, 0, 0) == RGB(0xF7, 0x76, 0x8E));
+    CHECK(term_cell_fg(t, 0, 0) == RGB(0xE5, 0x73, 0x6C));
     CHECK(term_cell_fg(t, 1, 0) == TERM_DEFAULT_FG);
     CHECK(term_cell_bg(t, 0, 0) == TERM_DEFAULT_BG);
     W(t, "\x1b[1;4;7mX\x1b[22mY\x1b[24mZ\x1b[27mW\x1b[0m");
@@ -153,13 +153,13 @@ static void test_sgr(void) {
     CHECK(term_cell_fg(t, 0, 0) == RGB(255, 0, 0));
     CHECK(term_cell_fg(t, 1, 0) == RGB(0, 0, 255));
     CHECK(term_cell_fg(t, 2, 0) == RGB(128, 128, 128));
-    CHECK(term_cell_fg(t, 3, 0) == RGB(0xFF, 0x89, 0x9D));
+    CHECK(term_cell_fg(t, 3, 0) == RGB(0xF0, 0x8C, 0x86));
     W(t, "\x1b[H\x1b[38;2;10;20;30;48;2;40;50;60mt\x1b[0m");
     CHECK(term_cell_fg(t, 0, 0) == RGB(10, 20, 30));
     CHECK(term_cell_bg(t, 0, 0) == RGB(40, 50, 60));
     W(t, "\x1b[H\x1b[91;102mu\x1b[39;49mv\x1b[48;5;232mw\x1b[0m");
-    CHECK(term_cell_fg(t, 0, 0) == RGB(0xFF, 0x89, 0x9D));
-    CHECK(term_cell_bg(t, 0, 0) == RGB(0xB3, 0xE0, 0x7E));
+    CHECK(term_cell_fg(t, 0, 0) == RGB(0xF0, 0x8C, 0x86));
+    CHECK(term_cell_bg(t, 0, 0) == RGB(0xA8, 0xD4, 0xB1));
     CHECK(term_cell_fg(t, 1, 0) == TERM_DEFAULT_FG && term_cell_bg(t, 1, 0) == TERM_DEFAULT_BG);
     CHECK(term_cell_bg(t, 2, 0) == RGB(8, 8, 8));
     W(t, "\x1b[H\x1b[mq");                                /* bare m == 0 */
@@ -184,7 +184,7 @@ static void test_cursor(void) {
     /* save / restore: position and pen */
     W(t, "\x1b[4;5H\x1b[31m\x1b" "7\x1b[H\x1b[0m\x1b" "8x");
     term_cursor(t, &cx, &cy); CHECK(cx == 5 && cy == 3);
-    CHECK(term_cell_fg(t, 4, 3) == RGB(0xF7, 0x76, 0x8E));
+    CHECK(term_cell_fg(t, 4, 3) == RGB(0xE5, 0x73, 0x6C));
     W(t, "\x1b[0m\x1b[7;7H\x1b[s\x1b[1;1H\x1b[u");
     term_cursor(t, &cx, &cy); CHECK(cx == 6 && cy == 6);
     /* cursor hide */
@@ -378,7 +378,7 @@ static void test_search(void) {
     int row = -1;
     for (int r = 0; r < 4; r++) if (term_cell_char(t, 0, r) == 'm' && term_cell_char(t, 5, r) == 't') row = r;
     CHECK(row >= 0);
-    CHECK(px[(row * ch + 1) * 200 + 5 * cw + 1] == RGB(0xE0, 0xAF, 0x68));             /* current match */
+    CHECK(px[(row * ch + 1) * 200 + 5 * cw + 1] == RGB(0xE8, 0xA3, 0x3D));             /* current match */
     CHECK(px[(row * ch + 1) * 200 + 1] == TERM_DEFAULT_BG);
     term_destroy(t);
     /* search scrolls with the ring: dropping the oldest line must not leave a stale current match */
@@ -416,7 +416,7 @@ static void test_links(void) {
     term_set_hover(t, 0, 4, 32);
     term_render(t, &c, 0, 0, 0, &d);
     int cw = term_cell_w(t), ch = term_cell_h(t);
-    CHECK(px[(ch - 3) * 600 + 4 * cw + 1] == RGB(0x7D, 0xCF, 0xFF));
+    CHECK(px[(ch - 3) * 600 + 4 * cw + 1] == RGB(0x8F, 0xB0, 0xD9));
     CHECK(px[(ch - 3) * 600 + 3 * cw + 1] == TERM_DEFAULT_BG);
     W(t, "z");
     term_render(t, &c, 0, 0, 0, &d);
@@ -614,11 +614,11 @@ static void showcase(const char *dir) {
     term_destroy(t);
 }
 
-/* every theme's terminal colours reach the cells; the dark theme is exactly the built-in default */
+/* every theme's terminal colours reach the cells; the graphite theme is exactly the built-in default */
 static void test_theme_colors(void) {
     for (int i = 0; i < theme_count(); i++) {
         const struct term_colors *c = &theme_get(i)->term;
-        if (i == 0) {                                    /* before the first term_set_colors: the built-in palette is the dark theme's */
+        if (i == 0) {                                    /* before the first term_set_colors: the built-in palette is graphite's */
             struct term *d = term_create(20, 1);
             for (int k = 0; k < 16; k++) { char e[16]; snprintf(e, sizeof e, "\x1b[38;5;%dm.", k); W(d, e); }
             for (int k = 0; k < 16; k++) CHECK(term_cell_fg(d, k, 0) == c->pal[k]);

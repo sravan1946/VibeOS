@@ -1,5 +1,6 @@
 /* theme.h - one set of named colours for the compositor, terminals and libgui/ui widgets.
- * The kernel holds the active theme (/dev/theme); apps fetch it and repaint on EV_THEME. Freestanding. */
+ * The kernel holds the active theme (/dev/theme); apps fetch it and repaint on EV_THEME. Freestanding.
+ * docs/DESIGN.md is the spec; sizes, radii and durations live in design.h. */
 #pragma once
 #include "gfx.h"
 
@@ -12,21 +13,31 @@ struct term_colors {
 };
 
 struct theme {
-    char name[12];                  /* id: `theme NAME`, /etc/theme */
+    char name[16];                  /* id: `theme NAME`, /etc/theme */
     char label[20];
     int dark;                       /* 1 = light text on dark surfaces */
-    /* widgets (libgui/ui.h) */
+    /* ---- Graphite tokens (docs/DESIGN.md §2): what new and restyled code draws with ---- */
+    color_t base, window, raised, overlay;          /* surfaces, one tone step apart (dark: each lighter) */
+    color_t line, line_strong, control;             /* separators/overlay outlines; secondary-button outline; 3:1 control edges and tracks */
+    color_t text, text2, text3, disabled;           /* primary, secondary (>=4.5 everywhere), placeholder/caption (>=4.5 on base/window/raised) */
+    color_t accent, accent_hover, accent_press, on_accent;
+    color_t accent_text, accent_line;               /* accent as text/links/focus ring (>=4.5); signal line and accent-fill rim (>=3) */
+    color_t selection, hover_ov, press_ov, scrim;   /* opaque selection fill; translucent hover/press backplates; modal scrim */
+    color_t danger, on_danger, warning, success, info;
+    color_t thumb, hilite, ring;                    /* switch thumb; dark-window inner top highlight; E2/E3 window ring */
+    int elev[5];                                    /* shadow alpha 0..255 for E0..E4 (geometry in design.h) */
+    /* ---- legacy names, derived from the tokens above (theme.c); unported code still reads these ---- */
     color_t bg, panel, surface, hover, pressed, border, input;
-    color_t text, dim, faint;       /* body text, secondary text, decorative (line numbers, close glyphs) */
-    color_t accent, accent_hi, accent_lo, on_accent, accent2;
-    color_t bad, warn, good;        /* status colours; also readable as text on bg/panel */
+    color_t dim, faint;
+    color_t accent_hi, accent_lo, accent2;
+    color_t bad, warn, good;
     color_t knob, knob_on, ov;      /* ov: the colour hover/divider overlays are drawn in (white on dark, black on light) */
     color_t key, key_hi, key_lo, key_fg, gutter;   /* accent-tinted key (Calculator operators), editor gutter */
     int edge;                       /* outline strength, percent (high contrast: strong) */
-    int shadow;                     /* window shadow strength, percent */
+    int shadow;                     /* legacy gfx_shadow strength, percent */
     /* compositor */
     color_t frame, frame_off, btn_off, cdim, body, on_pill;
-    color_t bar, launcher, popup, toast, switcher;     /* translucent, so alpha counts */
+    color_t bar, launcher, popup, toast, switcher;
     /* terminal */
     struct term_colors term;
     color_t tbar, tab, tab_off, tab_fg, tab_dim, tab_faint, tfind, tab_acc;
@@ -53,9 +64,9 @@ extern const struct theme_accent theme_accents[THEME_ACCENTS];
 
 int theme_count(void);
 const struct theme *theme_get(int i);                  /* the built-in table; i wraps */
-int theme_find(const char *name);                      /* -1 if unknown */
+int theme_find(const char *name);                      /* -1 if unknown; "dark"/"light" still name graphite/graphite-light */
 int theme_accent_find(const char *name);               /* index into theme_accents, -1 */
-/* t's accent set to rgb, with the hover/pressed/key/on-accent colours derived from it (rgb == 0: untouched) */
+/* t's accent set to rgb, with every accent-derived colour recomputed and nudged to its contrast floor (rgb == 0: untouched) */
 void theme_set_accent(struct theme *t, color_t rgb);
 /* WCAG contrast ratio of two opaque colours, times 100 (21:1 -> 2100) */
 int theme_contrast(color_t a, color_t b);

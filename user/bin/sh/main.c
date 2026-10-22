@@ -6,21 +6,11 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stddef.h>
-#include <theme.h>
 #include "sh.h"
 
 #define C(s) "\x1b[" s "m"
-#undef RGB                               /* gfx.h (via theme.h) has one; here it spells a truecolor SGR */
-#define RGB(r, g, b) "38;2;" #r ";" #g ";" #b
 
-/* the prompt keeps its colours on dark themes; light ones get darker shades of them */
-static int prompt_dark(void) {
-    struct theme_state st;
-    int fd = open("/dev/theme", O_RDONLY), r = fd >= 0 ? read(fd, &st, offsetof(struct theme_state, th)) : -1;
-    if (fd >= 0) close(fd);
-    return r < (int)offsetof(struct theme_state, th) || theme_get(st.index)->dark;
-}
-
+/* the prompt uses the terminal's ANSI palette, so it follows the theme: user@host green, path blue, punctuation dim */
 static void build_prompt(char *out, size_t n) {
     char cwd[PATH_MAX], title[PATH_MAX + 16];
     const char *home = getenv("HOME"), *user = getenv("USER"), *disp = cwd, *host = getenv("HOSTNAME");
@@ -33,16 +23,8 @@ static void build_prompt(char *out, size_t n) {
     }
     snprintf(title, sizeof title, "\x1b]0;sh: %s\x07", disp);
     write(1, title, strlen(title));
-    if (prompt_dark())
-        snprintf(out, n, C("1;" RGB(189, 147, 249)) "%s" C("0") C(RGB(98, 114, 164)) "@" C("0") C("1;" RGB(139, 233, 253)) "%s" C("0")
-                 " " C(RGB(241, 250, 140)) "%s" C("0") " %s>" C("0") " ",
-                 user && *user ? user : "vibe", host && *host ? host : "vibeos", disp,
-                 g_status ? C("1;" RGB(255, 85, 85)) : C("1;" RGB(80, 250, 123)));
-    else
-        snprintf(out, n, C("1;" RGB(106, 61, 216)) "%s" C("0") C(RGB(85, 82, 111)) "@" C("0") C("1;" RGB(11, 114, 133)) "%s" C("0")
-                 " " C(RGB(138, 90, 0)) "%s" C("0") " %s>" C("0") " ",
-                 user && *user ? user : "vibe", host && *host ? host : "vibeos", disp,
-                 g_status ? C("1;" RGB(194, 31, 63)) : C("1;" RGB(17, 128, 63)));
+    snprintf(out, n, C("32") "%s@%s" C("90") ":" C("34") "%s" C("%s") "$" C("0") " ",
+             user && *user ? user : "vibe", host && *host ? host : "vibeos", disp, g_status ? "31" : "90");
 }
 
 static char *tty_next(void *ctx, int cont) {

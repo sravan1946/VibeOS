@@ -6,8 +6,8 @@
 #include "gfx.h"
 #include "theme.h"
 
-#define TERM_DEFAULT_BG 0xFF11131Cu
-#define TERM_DEFAULT_FG 0xFFC8CEE8u
+#define TERM_DEFAULT_BG 0xFF111214u
+#define TERM_DEFAULT_FG 0xFFD7D9DCu
 
 struct term;
 
