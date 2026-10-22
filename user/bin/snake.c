@@ -152,7 +152,7 @@ int main(void) {
     state = PAUSED;                      /* start paused so the first key press begins */
     for (;;) {
         uint32_t now = (uint32_t)uptime_ms();
-        int wait = state == PLAY ? (int)(last_step + interval() - now) : 33;
+        int wait = state == PLAY ? (int)(last_step + interval() - now) : 100;    /* paused: the food glow can pulse at 10 fps */
         if (wait > 33) wait = 33;
         if (wait < 0) wait = 0;
         if (!ui_poll(&ui, wait)) break;
