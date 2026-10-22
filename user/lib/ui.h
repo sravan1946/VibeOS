@@ -40,6 +40,8 @@ struct ui {
     int ups[16], nups;              /* key codes released this frame (for games / DAS) */
     uint32_t hot, active, focus;    /* widget ids */
     bool closed, resized, focused, timeout;
+    bool dropped;                   /* EV_DROP this frame: a drag ended over this window at drop_x, drop_y */
+    int drop_x, drop_y;
     uint32_t last_click_ms;
     int last_click_x, last_click_y;
     uint32_t *back;                 /* private frame; ui_end copies + flips only what changed */

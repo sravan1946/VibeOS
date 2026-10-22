@@ -171,6 +171,14 @@ static void draw_window(struct canvas *c, struct window *w) {
     bool foc = w == focused;
     if (r.x - SHADOW >= c->cx1 || r.y - SHADOW >= c->cy1 || r.x + r.w + SHADOW <= c->cx0 || r.y + r.h + SHADOW + 6 <= c->cy0)
         return;
+    if (w->flags & WIN_FLAG_DESKTOP) {                  /* ARGB layer over the wallpaper: no shadow, alpha 0 is skipped */
+        int x0 = imax(c->cx0, w->x), x1 = imin(c->cx1, w->x + w->w), y0 = imax(c->cy0, w->y), y1 = imin(c->cy1, w->y + w->h);
+        for (int y = y0; y < y1; y++) {
+            uint32_t *d = &c->px[y * c->stride], *s = &w->buf[(y - w->y) * w->canvas.stride - w->x];
+            for (int x = x0; x < x1; x++) if (s[x]) d[x] = blend(d[x], s[x]);
+        }
+        return;
+    }
     if (w->flags & WIN_FLAG_FRAMELESS) {
         draw_shadow(c, r, foc ? 170 : 110);
         gfx_blit(c, w->x, w->y, w->buf, w->w, w->h, w->canvas.stride);
@@ -786,6 +794,7 @@ static void unlink_win(struct window *w) {
 
 static void raise(struct window *w) {
     unlink_win(w);
+    if (w->flags & WIN_FLAG_DESKTOP) { w->next = wins; wins = w; return; }    /* the desktop layer stays at the bottom */
     struct window **pp = &wins;
     while (*pp && (w->topmost || !(*pp)->topmost)) pp = &(*pp)->next;   /* topmost windows stay above the rest */
     w->next = *pp;
@@ -824,8 +833,11 @@ static void focus_top(void) {
 }
 
 struct window *wm_create(const char *title, int x, int y, int w, int h, int flags) {
-    w = imax(80, imin(w, SW - 20));
-    h = imax(40, imin(h, TB_Y - WM_TITLE_H - 10));
+    if (flags & WIN_FLAG_DESKTOP) { flags |= WIN_FLAG_FRAMELESS | WIN_FLAG_NORESIZE; x = y = 0; w = SW; h = TB_Y; }
+    else {
+        w = imax(80, imin(w, SW - 20));
+        h = imax(40, imin(h, TB_Y - WM_TITLE_H - 10));
+    }
     struct window *win = kzalloc(sizeof *win);
     if (!win) return 0;
     /* ponytail: every window gets a full-screen-sized buffer (stride = SW) so resizing
@@ -835,7 +847,7 @@ struct window *wm_create(const char *title, int x, int y, int w, int h, int flag
     uint32_t pa = pmm_alloc_contig(win->buf_frames);
     if (!pa) { kfree(win); return 0; }
     win->buf = (uint32_t *)pa;
-    memset32(win->buf, RGB(0x11, 0x13, 0x1C), (size_t)SW * h);
+    memset32(win->buf, flags & WIN_FLAG_DESKTOP ? 0 : RGB(0x11, 0x13, 0x1C), (size_t)SW * h);
     win->id = next_id++;
     win->ws = flags & WIN_FLAG_FRAMELESS ? -1 : cur_ws;
     win->born = ticks_ms;
@@ -1330,6 +1342,18 @@ static int menu_at(int x, int y) {
     return -1;
 }
 
+/* a drag ended (DRAG_FILE exists): tell the window under the pointer, which reads the payload */
+static void drop_event(int x, int y) {
+    struct vnode *v;
+    if (vfs_lookup("/", DRAG_FILE, &v) < 0) return;
+    vnode_put(v);
+    bool fr;
+    struct window *t = window_at(x, y, &fr);
+    if (!t || fr) return;
+    struct gui_event e = { .type = EV_DROP, .x = x - t->x, .y = y - t->y };
+    send(t, &e);
+}
+
 static void mouse_event(int x, int y, int b, int dz) {
     int ox = cur_x, oy = cur_y, ob = cur_b;
     cur_x = x; cur_y = y; cur_b = b;
@@ -1371,7 +1395,7 @@ static void mouse_event(int x, int y, int b, int dz) {
         struct window *w = capture_win;
         struct gui_event e = { .type = up ? EV_MOUSE_UP : EV_MOUSE_MOVE, .x = x - w->x, .y = y - w->y, .button = up ? 1 : b };
         send(w, &e);
-        if (up) capture_win = 0;
+        if (up) { capture_win = 0; drop_event(x, y); }
         return;
     }
 
@@ -1395,13 +1419,15 @@ static void mouse_event(int x, int y, int b, int dz) {
 
     bool in_frame = false;
     struct window *w = window_at(x, y, &in_frame);
+    struct window *desk = w && (w->flags & WIN_FLAG_DESKTOP) ? w : 0;
+    if (desk && (b & 2) && !(ob & 2) && !(desk->buf[(y - desk->y) * desk->canvas.stride + x - desk->x] >> 24 > 1)) w = desk = 0;   /* right-click on bare wallpaper: the desktop menu */
     int mitem = menu_at(x, y);
     int task = taskbar_at(x, y);
     struct rect m = menu_rect();
     bool in_menu = menu_open && x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h;
     if (in_menu || task != T_NONE) w = 0;
     int btn = w && in_frame ? title_button_at(w, x, y) : -1;
-    set_hover(w, btn, task == T_NONE ? -1 : task, mitem);
+    set_hover(desk ? 0 : w, btn, task == T_NONE ? -1 : task, mitem);
 
     if (w && !in_frame) {                                      /* motion inside a client (terminals take it too, for link hover) */
         static struct window *last_in;
@@ -1443,7 +1469,7 @@ static void mouse_event(int x, int y, int b, int dz) {
     if (task == T_VOL || task == T_NET) { qs_toggle(); return; }
     if (task == T_CLOCK) { cn_toggle(); return; }
     if (task == T_GAP) return;
-    if (!w) { if (focused) { struct window *o = focused; focused = 0; damage_window(o); wm_damage(0, TB_Y, SW, WM_TASKBAR_H); } return; }
+    if (!w || desk) { if (focused) { struct window *o = focused; focused = 0; damage_window(o); wm_damage(0, TB_Y, SW, WM_TASKBAR_H); } if (!w) return; }
 
     if ((keyboard_mods() & MOD_SUPER) && !(w->flags & WIN_FLAG_FRAMELESS)) {   /* Super+drag moves from anywhere */
         super_alone = false;
@@ -1616,7 +1642,7 @@ int win_syscall(int num, uint32_t a, uint32_t b, uint32_t c) {
         struct win_info *wi = (struct win_info *)a;
         if (!vmm_user_ok(current->dir, a, sizeof *wi, true)) return -EFAULT;
         wi->title[sizeof wi->title - 1] = 0;
-        struct window *w = wm_create(wi->title, wi->x, wi->y, wi->w, wi->h, wi->flags & 3);
+        struct window *w = wm_create(wi->title, wi->x, wi->y, wi->w, wi->h, wi->flags & 7);
         if (!w) return -ENOMEM;
         if (map_into_owner(w) < 0) { wm_destroy(w); kfree(w); return -ENOMEM; }
         w->vn.mode = S_IFCHR | 0600;
@@ -1741,6 +1767,7 @@ int wm_set_mode(int nw, int nh) {
             send(w, &e);
         }
         bool nores = w->flags & WIN_FLAG_NORESIZE;
+        if (w->flags & WIN_FLAG_DESKTOP) { set_geometry(w, 0, 0, SW, TB_Y); continue; }
         if (w->flags & WIN_FLAG_FRAMELESS) {
             set_geometry(w, imax(0, imin(w->x, SW - w->w)), imax(0, imin(w->y, SH - w->h)), w->w, w->h);
             continue;
@@ -1914,5 +1941,7 @@ void wm_init(void) {
     kthread_create("compositor", wm_thread, 0);
     kthread_create("chime", chime, 0);
     autostart();
+    struct vnode *dv;
+    if (vfs_lookup("/", "/bin/desktop", &dv) == 0) { vnode_put(dv); wm_spawn_app("/bin/desktop", 0); }     /* desktop icons */
     kprintf("[desktop] ready\n");
 }

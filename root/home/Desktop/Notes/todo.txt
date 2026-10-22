@@ -1,0 +1,2 @@
+- try dragging a file from Files onto the desktop
+- `open FILE` does what a double-click does

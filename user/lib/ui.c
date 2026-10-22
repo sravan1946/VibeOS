@@ -32,7 +32,7 @@ void ui_init(struct ui *ui, struct gui_window *win) {
 
 bool ui_poll(struct ui *ui, int timeout_ms) {
     if (ui->closed) return false;
-    ui->pressed = ui->released = ui->rpressed = ui->dbl = ui->resized = ui->timeout = false;
+    ui->pressed = ui->released = ui->rpressed = ui->dbl = ui->resized = ui->timeout = ui->dropped = false;
     ui->scroll = 0;
     ui->nkeys = 0;
     ui->nups = 0;
@@ -59,6 +59,7 @@ bool ui_poll(struct ui *ui, int timeout_ms) {
             else if (!ev.pressed && ui->nups < 16) ui->ups[ui->nups++] = ev.key;
             break;
         case EV_RESIZE: ui->resized = true; break;
+        case EV_DROP: ui->dropped = true; ui->drop_x = ev.x; ui->drop_y = ev.y; break;
         case EV_FOCUS: ui->focused = ev.pressed; break;
         case EV_CLOSE: ui->closed = true; return false;
         }

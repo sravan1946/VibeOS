@@ -69,8 +69,8 @@ build/ca.stamp: FORCE      # rebuild the rootfs when CA_BUNDLE points somewhere 
 FORCE:
 ULIBC_ASM := $(filter-out user/lib/crt0.asm,$(wildcard user/lib/*.asm))
 # gui.o + the shared gfx/fonts live in libgui.a so only GUI programs pay for the font data
-ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o build/user/obj/common/wallpaper.o
-ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/lib/tls.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
+ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/lib/fileicon.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o build/user/obj/common/wallpaper.o
+ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/lib/fileicon.o build/user/obj/lib/tls.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
              $(patsubst user/%.asm,build/user/obj/%.o,$(ULIBC_ASM))
 ULIBS := build/user/libgui.a build/user/libtls.a build/user/libc.a
 UBIN_SINGLE := $(basename $(notdir $(wildcard user/bin/*.c)))
@@ -229,7 +229,7 @@ user: $(UBINS)
 # root/ is the static skeleton; user binaries land in /bin; empty dirs aren't tracked by the VCS
 # the in-OS toolchain's sdk (tcc is the compiler): headers in /usr/include, crt + libs in /usr/lib, tcc's own
 # runtime + headers in /usr/lib/tcc. libtcc1.a is plain gcc output (tcc's 64-bit divide/shift helpers, alloca).
-SDK_HDRS := user/lib/gui.h user/lib/ui.h user/lib/image.h common/abi.h common/gfx.h common/font.h
+SDK_HDRS := user/lib/gui.h user/lib/ui.h user/lib/image.h user/lib/fsutil.h common/abi.h common/gfx.h common/font.h
 build/user/libtcc1.a: third_party/tcc/lib/libtcc1.c third_party/tcc/lib/alloca86.S Makefile
 	$(CC) $(UCFLAGS) -O0 -fno-builtin -c third_party/tcc/lib/libtcc1.c -o build/user/libtcc1.o   # -O0: at -O2 the static __udivmoddi4 gets regparm
 	objcopy --globalize-symbol=__udivmoddi4 build/user/libtcc1.o   # libc.a (gcc-built) calls it
@@ -286,6 +286,7 @@ test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audi
 	sh tools/chesstest/run.sh
 	sh tools/maketest/run.sh
 	python3 tools/pathtest.py
+	sh tools/filestest/run.sh
 
 test-tls:    # HTTPS against local test servers (needs openssl)
 	sh tools/tlstest/run.sh
