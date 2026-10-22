@@ -36,6 +36,7 @@ Newest notes at the bottom of each phase.
 - [x] PS/2 mouse driver
 - [x] Double-buffered compositor, window manager (drag, focus, z-order, close, minimise)
 - [x] Desktop right-click menu; 5 wallpaper themes (Aurora, Ocean, Sunset, Forest, Midnight), saved in /etc/wallpaper
+- [x] Smart window placement (least overlap on a 24 px grid, cascade when the screen is full)
 - [x] Window open animation (fade + rise, ease-out, 180 ms)
 - [x] Window snapping: drag to left/right edge to tile, top to maximise, with preview; drag a tiled window off to restore; Super+←/→/↑ tile, Super+↓ restore, Super tap opens the launcher
 - [x] Desktop: wallpaper, taskbar, launcher menu, clock

@@ -494,11 +494,23 @@ struct window *wm_create(const char *title, int x, int y, int w, int h, int flag
     win->id = next_id++;
     win->born = ticks_ms;
     win->w = w; win->h = h; win->flags = flags;
-    if (x < 0 || y < 0) {                               /* cascade */
+    if (x < 0 || y < 0) {          /* least-overlap placement on a 24 px grid, cascade on ties */
         static int slot;
-        x = 60 + (slot % 8) * 36 + (SW - 1280) / 4;
-        y = 50 + WM_TITLE_H + (slot % 8) * 30;
+        int bx = 60 + (slot % 8) * 36, by = 50 + WM_TITLE_H + (slot % 8) * 30;
+        int64_t best = -1;
         slot++;
+        for (int cy = 16 + WM_TITLE_H; cy + h + 16 <= TB_Y; cy += 24)
+            for (int cx = 16; cx + w + 16 <= SW; cx += 24) {
+                int64_t ov = 0;
+                for (struct window *o = wins; o; o = o->next) {
+                    if (!o->visible || o->minimized || (o->flags & WIN_FLAG_FRAMELESS)) continue;
+                    int ix = imin(cx + w, o->x + o->w) - imax(cx, o->x);
+                    int iy = imin(cy + h, o->y + o->h) - imax(cy - WM_TITLE_H, o->y - WM_TITLE_H);
+                    if (ix > 0 && iy > 0) ov += (int64_t)ix * iy;
+                }
+                if (best < 0 || ov < best) { best = ov; x = cx; y = cy; }
+            }
+        if (best * 10 > (int64_t)w * h * 6) { x = bx; y = by; }   /* mostly covered anyway: cascade */
         if (x + w > SW - 10) x = imax(10, SW - 10 - w);
         if (y + h > TB_Y - 10) y = imax(WM_TITLE_H + 10, TB_Y - 10 - h);
     }
