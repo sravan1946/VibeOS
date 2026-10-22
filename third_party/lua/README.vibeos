@@ -1,0 +1,29 @@
+Lua in VibeOS
+=============
+
+Version : Lua 5.4.9
+Origin  : https://www.lua.org/ftp/lua-5.4.9.tar.gz
+SHA-256 : 2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6
+          (matches the checksum in the https://www.lua.org/ftp/ listing)
+Licence : MIT, see LICENSE here and the copyright notice in src/lua.h
+
+What is here: src/ (every file of the tarball except luac.c and the upstream Makefile), README and
+doc/readme.html (which carries the licence text) from the tarball.
+
+Patches: none. Every file under src/ is byte-for-byte what the tarball contains.
+
+How it is built (see the "Lua 5.4" block in the top-level Makefile)
+-------------------------------------------------------------------
+- All src/*.c except luac.c are compiled with `-include user/bin/lua/vibe_luaconf.h`, which sets
+  the module search path and no C-module path. LUA_USE_POSIX / LUA_USE_DLOPEN are deliberately
+  NOT defined: Lua stays on plain ISO C (setjmp/longjmp, tmpnam, system, no popen, no dlopen).
+- `-fexcess-precision=standard`: the i686 x87 would otherwise keep doubles in 80-bit registers
+  between statements, which changes float results compared with real IEEE doubles.
+- lua.c itself is also unmodified. For that one file (-DVIBE_LUA_FRONTEND) the force-included
+  header redefines three macros that lua.c exposes as configuration points: lua_readline and
+  friends (our line editor, user/bin/lua/readline.c), lua_stdin_is_tty, and luaL_openlibs, which
+  becomes vibe_openlibs() in user/bin/lua/vibe.c (standard libraries + the `vibe` and `gui` modules).
+- The result is linked as /bin/lua together with user/bin/lua/*.c against libc.a and libgui.a.
+
+Upgrading: replace src/ with the new 5.4.x files (minus luac.c and Makefile), update the version,
+URL and checksum above, run `make` and `lua projects/luatest.lua` in the VM.

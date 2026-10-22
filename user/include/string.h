@@ -28,3 +28,5 @@ char *strtok_r(char *s, const char *delim, char **save);
 char *strdup(const char *s);
 char *strndup(const char *s, size_t n);
 char *strerror(int e);
+int strcoll(const char *a, const char *b);      /* "C" locale: strcmp */
+size_t strxfrm(char *d, const char *s, size_t n);

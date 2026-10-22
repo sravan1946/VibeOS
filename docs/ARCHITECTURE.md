@@ -134,7 +134,10 @@ coordinates, so the pointer isn't grabbed in a VM.
 
 `user/lib` is a small libc: string/ctype, `printf` family, `scanf`, stdio buffering, `malloc`,
 `stdlib`, `math`, `time`, `setjmp`, termios, dirents and the spawn API. Every
-`user/bin/NAME.c` or `user/bin/NAME/*.c` becomes `/bin/NAME`.
+`user/bin/NAME.c` or `user/bin/NAME/*.c` becomes `/bin/NAME`. `malloc` is a boundary-tag
+allocator with segregated free lists. `/bin/lua` builds the unmodified Lua 5.4 from
+`third_party/lua` plus `user/bin/lua/` (REPL line editor, the `vibe` and `gui` modules); see
+`third_party/lua/README.vibeos`.
 
 `/bin/sh` (`user/bin/sh/`) is a POSIX-style scripting shell: `parse.c` (lexer + recursive-descent parser
 into an arena-allocated AST; "incomplete" results drive the `> ` continuation prompt), `expand.c`
@@ -151,4 +154,4 @@ The kernel runs `#!interp [arg]` scripts itself (`proc_spawn_ex`, one level, 128
 * Sound is captured to `build/audio.wav` (`--audiodev` / `VIBE_AUDIODEV` to override) and checked with `tools/wavcheck.py`.
 * `/etc/autostart` lists what the desktop opens at boot (`shell`, `term ARGV`, `run ARGV`).
 * Host-side unit tests: `tools/ext2test` (filesystem vs `e2fsck`), `tools/termtest`
-  (terminal emulator), `tools/libctest` (libc).
+  (terminal emulator), `tools/libctest` (libc; also differential tests of printf, strtod and libm against the host's glibc).

@@ -9,6 +9,8 @@
 #include <errno.h>
 #include <limits.h>
 #include <unistd.h>
+#include <locale.h>
+#include <signal.h>
 
 static int fails, checks;
 
@@ -161,6 +163,59 @@ static void test_conv(void) {
     div_t dv = div(17, 5); CHECK(dv.quot == 3 && dv.rem == 2);
 }
 
+static void test_new(void) {
+    /* hex floats, %a */
+    CHECK(strtod("0x1p4", NULL) == 16 && strtod("0x.8", NULL) == 0.5 && strtod("0xA.8p1", NULL) == 21);
+    CHECK(strtod("0x1.fffffffffffffp1023", NULL) == 1.7976931348623157e308 && strtod("0x1p-1074", NULL) == 4.9406564584124654e-324);
+    char *e;
+    CHECK(strtod("0xg", &e) == 0 && !strcmp(e, "xg") && strtod("0x1p+", &e) == 1 && !strcmp(e, "p+"));
+    CHECK(strtod("0.1", NULL) == 0.1 && strtod("123456789.123456", NULL) == 123456789.123456 && strtod("1e22", NULL) == 1e22);
+    CHECK(strtod("9007199254740993", NULL) == 9007199254740992.0 && strtod("1.5e-7", NULL) == 1.5e-7);
+    FMT("0x1p+0 0x1.8p+0 -0x1.8p+1 0x0p+0 0x1.999999999999ap-4", "%a %a %a %a %a", 1.0, 1.5, -3.0, 0.0, 0.1);
+    FMT("0X1.FFP+7 0x1.00p+0 0x2p+0 0x0.0000000000001p-1022", "%A %.2a %.0a %a", 255.5, 1.0, 1.5, 5e-324);
+    FMT("0x001.8p+0|  0x1p+0|0x1p+0  |", "%#010.1a|%8a|%-8a|", 1.5, 1.0, 1.0);
+    /* libm odds and ends */
+    int ex;
+    CHECK(frexp(8, &ex) == 0.5 && ex == 4 && frexp(0, &ex) == 0 && ex == 0 && frexp(-0.75, &ex) == -0.75 && ex == 0);
+    CHECK(frexp(5e-324, &ex) == 0.5 && ex == -1073 && ldexp(1, 10) == 1024 && ldexp(0.5, -1073) == 5e-324 && ldexp(1, 5000) > 1e308);
+    double ip;
+    CHECK(modf(3.25, &ip) == 0.25 && ip == 3 && modf(-3.25, &ip) == -0.25 && ip == -3);
+    CHECK(signbit(ceil(-0.5)) && signbit(round(-0.4)) && !signbit(floor(0.5)) && signbit(sin(-0.0)));
+    CHECK(sqrt(2) == 1.4142135623730951 && sqrt(1e300) == 1e150);
+    /* strftime ISO week numbers and E/O modifiers */
+    char b[64];
+    struct tm tm;
+    time_t t = 1609632000;                   /* Sun 2021-01-03: ISO week 53 of 2020 */
+    gmtime_r(&t, &tm);
+    strftime(b, sizeof b, "%U %W %V %G %g %Ey %Od", &tm);
+    CHECK_STR(b, "01 00 53 2020 20 21 03");
+    t = 1735516800;                          /* Mon 2024-12-30: ISO week 1 of 2025 */
+    gmtime_r(&t, &tm);
+    strftime(b, sizeof b, "%U %W %V %G %g", &tm);
+    CHECK_STR(b, "52 53 01 2025 25");
+    t = 1700000000; gmtime_r(&t, &tm);
+    strftime(b, sizeof b, "%U %W %V %G %g", &tm);
+    CHECK_STR(b, "46 46 46 2023 23");
+    /* misc libc additions */
+    CHECK(strcoll("a", "b") < 0 && !strcoll("x", "x") && !strcmp(setlocale(LC_ALL, ""), "C") && setlocale(LC_ALL, "de_DE") == NULL);
+    CHECK_STR(localeconv()->decimal_point, ".");
+    FILE *f = tmpfile();
+    CHECK(f != NULL);
+    fputs("tmp data", f); rewind(f);
+    CHECK(fgets(b, sizeof b, f) && !strcmp(b, "tmp data"));
+    fclose(f);
+    char n1[L_tmpnam], n2[L_tmpnam];
+    CHECK(tmpnam(n1) && tmpnam(n2) && strcmp(n1, n2) && !strncmp(n1, "/tmp/", 5));
+    f = fopen("libctest.re1", "w"); fputs("one\n", f); fclose(f);
+    f = fopen("libctest.re2", "w"); fputs("two\n", f); fclose(f);
+    f = fopen("libctest.re1", "r");
+    CHECK(fgetc(f) == 'o');
+    CHECK(freopen("libctest.re2", "r", f) == f && fgets(b, sizeof b, f) && !strcmp(b, "two\n"));
+    CHECK(freopen("/nonexistent/zz", "r", f) == NULL);
+    remove("libctest.re1"); remove("libctest.re2");
+    CHECK(signal(SIGINT, SIG_IGN) == SIG_DFL);
+}
+
 static int cmp_int(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
 
 static void test_sort_rand(void) {
@@ -223,6 +278,40 @@ static void test_malloc(void) {
     s = realloc(s, 10000); CHECK_STR(s, "abc"); free(s);
 }
 
+/* randomised malloc/realloc/free with content checks; then everything must coalesce back into one block */
+static void test_malloc_stress(void) {
+    enum { N = 2000 };
+    static unsigned char *p[N];
+    static size_t len[N];
+    srand(7);
+    int bad = 0;
+    for (int op = 0; op < 60000; op++) {
+        int i = rand() % N;
+        size_t n = rand() % 7 == 0 ? rand() % 6000 : rand() % 120;
+        if (p[i]) {
+            for (size_t k = 0; k < len[i]; k++) bad += p[i][k] != (unsigned char)(i * 31 + k);
+            if (rand() % 3 == 0) { free(p[i]); p[i] = NULL; continue; }
+            unsigned char *q = realloc(p[i], n ? n : 1);
+            size_t keep = n < len[i] ? n : len[i];
+            for (size_t k = 0; k < keep; k++) bad += q[k] != (unsigned char)(i * 31 + k);
+            p[i] = q; len[i] = n ? n : 1;
+            for (size_t k = keep; k < len[i]; k++) q[k] = (unsigned char)(i * 31 + k);
+        } else {
+            p[i] = malloc(n ? n : 1); len[i] = n ? n : 1;
+            bad += !p[i] || ((unsigned)p[i] & 7);
+            for (size_t k = 0; k < len[i]; k++) p[i][k] = (unsigned char)(i * 31 + k);
+        }
+    }
+    CHECK(bad == 0);
+    for (int i = 0; i < N; i++) free(p[i]);
+    void *top = sbrk(0);
+    void *big = malloc(1 << 20);                 /* needs one contiguous block: only possible if all merged */
+    CHECK(big && (char *)sbrk(0) <= (char *)top + (1 << 20) + 65536 + 64);
+    free(big);
+    for (int i = 0; i < 100000; i++) p[i % N] = malloc(24 + i % 40);   /* many small blocks, freed in a scattered order */
+    for (int i = 0; i < N; i++) free(p[(i * 757) % N]);
+}
+
 static void test_time(void) {
     time_t t = 1700000000;                   /* Tue 2023-11-14 22:13:20 UTC */
     struct tm tm;
@@ -243,7 +332,7 @@ static void test_time(void) {
     localtime_r(&t, &tm);
     CHECK(tm.tm_mday == 15 && tm.tm_hour == 3 && tm.tm_min == 43 && tm.tm_wday == 3);
     strftime(b, sizeof b, "%H:%M %z %Z", &tm);
-    CHECK_STR(b, "03:43 +0530 TZ");
+    CHECK_STR(b, "03:43 +0530 UTC+05:30");
     CHECK(mktime(&tm) == t);
     setenv("TZ_OFFSET", "-300", 1);
     localtime_r(&t, &tm); CHECK(tm.tm_hour == 17 && tm.tm_mday == 14);
@@ -407,7 +496,7 @@ static void test_env(void) {
 
 int tmain(void) {
     test_string(); test_printf(); test_conv(); test_sort_rand(); test_malloc();
-    test_time(); test_scanf(); test_math(); test_setjmp(); test_stdio(); test_env();
+    test_new(); test_malloc_stress(); test_time(); test_scanf(); test_math(); test_setjmp(); test_stdio(); test_env();
     char b[64];
     snprintf(b, sizeof b, "%d checks, %d failed\n", checks, fails);
     write(1, b, strlen(b));

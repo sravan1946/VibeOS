@@ -98,12 +98,23 @@ $(addprefix build/user/bin/,$(UBIN_SINGLE)): build/user/bin/%: build/user/obj/bi
 	@mkdir -p $(dir $@)
 	$(LD) $(ULDFLAGS) -o $@ $(UCRT0) $< $(ULIBS) $(LIBGCC)
 
-# multi-file programs: user/bin/NAME/*.c
+# multi-file programs: user/bin/NAME/*.c (+ $(UEXTRA_NAME): third-party objects linked in as well)
 define UMULTI
-build/user/bin/$(1): $$(patsubst user/%.c,build/user/obj/%.o,$$(wildcard user/bin/$(1)/*.c)) $$(UCRT0) $$(ULIBS) user/user.ld
+build/user/bin/$(1): $$(patsubst user/%.c,build/user/obj/%.o,$$(wildcard user/bin/$(1)/*.c)) $$(UEXTRA_$(1)) $$(UCRT0) $$(ULIBS) user/user.ld
 	@mkdir -p $$(dir $$@)
 	$$(LD) $$(ULDFLAGS) -o $$@ $$(UCRT0) $$(filter-out $$(UCRT0),$$(filter %.o,$$^)) $$(ULIBS) $$(LIBGCC)
 endef
+# Lua 5.4 (third_party/lua, unmodified): configured through user/bin/lua/vibe_luaconf.h, force-included.
+# -fexcess-precision=standard makes the x87 round doubles at every assignment like real IEEE doubles.
+LUA_SRC := $(filter-out %/luac.c,$(wildcard third_party/lua/src/*.c))
+UEXTRA_lua := $(patsubst %.c,build/user/obj/%.o,$(LUA_SRC))
+LUA_FLAGS := -Ithird_party/lua/src -include user/bin/lua/vibe_luaconf.h
+build/user/obj/third_party/%.o: third_party/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) $(LUA_FLAGS) -fexcess-precision=standard -c $< -o $@
+build/user/obj/bin/lua/%.o: UCFLAGS += $(LUA_FLAGS)
+build/user/obj/third_party/lua/src/lua.o: UCFLAGS += -DVIBE_LUA_FRONTEND
+
 $(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
 
 user: $(UBINS)

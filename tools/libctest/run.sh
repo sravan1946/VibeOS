@@ -10,7 +10,7 @@ LIBGCC=$(gcc -m32 -print-libgcc-file-name)
 FLAGS="-m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
   -nostdinc -isystem $GCCINC -Iuser/include -Icommon -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-format"
 OBJS=""
-for f in string errno ctype malloc stdlib printf stdio scanf math time; do
+for f in string errno ctype malloc stdlib strtod locale printf stdio scanf math time; do
     X=""
     [ $f = string ] && X=-fno-tree-loop-distribute-patterns
     gcc $FLAGS $X -c user/lib/$f.c -o $T/$f.o
@@ -29,3 +29,17 @@ gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -I
     -Dasprintf=vibe_asprintf -Dvasprintf=vibe_vasprintf -w -c user/lib/printf.c -o $T/printf64.o
 gcc -O2 -Wall tools/libctest/printf_diff.c $T/printf64.o -o $T/printf_diff -lm
 $T/printf_diff
+
+echo "== strtod differential test vs glibc (64-bit build of user/lib/strtod.c)"
+gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -Icommon \
+    -Dstrtod=vibe_strtod -Dstrtof=vibe_strtof -Datof=vibe_atof -Derrno=vibe_errno -w -c user/lib/strtod.c -o $T/strtod64.o
+gcc -O2 -Wall tools/libctest/strtod_diff.c $T/strtod64.o -o $T/strtod_diff -lm
+$T/strtod_diff
+
+echo "== libm differential test vs glibc (64-bit build of user/lib/math.c)"
+R=""
+for n in sin cos tan asin acos atan atan2 sqrt pow exp log log2 log10 floor ceil fabs fmod round trunc sinh cosh tanh hypot \
+         frexp ldexp modf sinf cosf sqrtf fabsf floorf ceilf powf atan2f fmodf roundf; do R="$R -D$n=vibe_$n"; done
+gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -Icommon $R -w -c user/lib/math.c -o $T/math64.o
+gcc -O2 -Wall tools/libctest/math_diff.c $T/math64.o -o $T/math_diff -lm
+$T/math_diff

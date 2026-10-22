@@ -7,11 +7,16 @@
 #define M_PI_4 0.78539816339744830962
 #define M_SQRT2 1.41421356237309504880
 #define HUGE_VAL (__builtin_huge_val())
+#ifndef INFINITY                    /* gcc's float.h defines these too */
 #define INFINITY (__builtin_inff())
+#endif
+#ifndef NAN
 #define NAN (__builtin_nanf(""))
+#endif
 #define isnan(x) __builtin_isnan(x)
 #define isinf(x) __builtin_isinf(x)
 #define isfinite(x) __builtin_isfinite(x)
+#define signbit(x) __builtin_signbit(x)
 double sin(double x); double cos(double x); double tan(double x);
 double asin(double x); double acos(double x);
 double atan(double x); double atan2(double y, double x);
@@ -21,6 +26,7 @@ double floor(double x); double ceil(double x); double fabs(double x);
 double fmod(double x, double y); double round(double x); double trunc(double x);
 double sinh(double x); double cosh(double x); double tanh(double x);
 double hypot(double x, double y);
+double frexp(double x, int *e); double ldexp(double x, int e); double modf(double x, double *ip);
 float sinf(float x); float cosf(float x); float sqrtf(float x); float fabsf(float x);
 float floorf(float x); float ceilf(float x); float powf(float x, float y);
 float atan2f(float y, float x); float fmodf(float x, float y); float roundf(float x);

@@ -95,6 +95,18 @@ static const char *const wd[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "T
 static const char *const mn[] = { "January", "February", "March", "April", "May", "June", "July",
                                   "August", "September", "October", "November", "December" };
 
+static int iso_p(int y) { return (y + y / 4 - y / 100 + y / 400) % 7; }
+static int iso_weeks(int y) { return iso_p(y) == 4 || iso_p(y - 1) == 3 ? 53 : 52; }
+
+/* ISO 8601 week number; *year gets the ISO year */
+static int iso_week(const struct tm *tm, int *year) {
+    int y = tm->tm_year + 1900, w = (tm->tm_yday + 1 - (tm->tm_wday ? tm->tm_wday : 7) + 10) / 7;
+    if (w < 1) { y--; w = iso_weeks(y); }
+    else if (w > iso_weeks(y)) { w = 1; y++; }
+    *year = y;
+    return w;
+}
+
 size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm) {
     size_t n = 0;
     char tmp[64];
@@ -102,7 +114,7 @@ size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm) {
     for (; *fmt; fmt++) {
         const char *src = tmp;
         if (*fmt != '%') { tmp[0] = *fmt; tmp[1] = 0; }
-        else switch (*++fmt) {
+        else switch (*++fmt == 'E' || *fmt == 'O' ? *++fmt : *fmt) {    /* E/O modifiers: C locale, ignored */
         case 'a': snprintf(tmp, sizeof tmp, "%.3s", wd[tm->tm_wday % 7]); break;
         case 'A': src = wd[tm->tm_wday % 7]; break;
         case 'b': case 'h': snprintf(tmp, sizeof tmp, "%.3s", mn[tm->tm_mon % 12]); break;
@@ -126,6 +138,11 @@ size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm) {
         case 'S': snprintf(tmp, sizeof tmp, "%02d", tm->tm_sec); break;
         case 't': strcpy(tmp, "\t"); break;
         case 'T': case 'X': strftime(tmp, sizeof tmp, "%H:%M:%S", tm); break;
+        case 'U': snprintf(tmp, sizeof tmp, "%02d", (tm->tm_yday + 7 - tm->tm_wday) / 7); break;
+        case 'W': snprintf(tmp, sizeof tmp, "%02d", (tm->tm_yday + 7 - (tm->tm_wday + 6) % 7) / 7); break;
+        case 'V': { int y; snprintf(tmp, sizeof tmp, "%02d", iso_week(tm, &y)); break; }
+        case 'G': { int y; iso_week(tm, &y); snprintf(tmp, sizeof tmp, "%d", y); break; }
+        case 'g': { int y; iso_week(tm, &y); snprintf(tmp, sizeof tmp, "%02d", y % 100); break; }
         case 'u': snprintf(tmp, sizeof tmp, "%d", tm->tm_wday ? tm->tm_wday : 7); break;
         case 'w': snprintf(tmp, sizeof tmp, "%d", tm->tm_wday); break;
         case 'x': strftime(tmp, sizeof tmp, "%m/%d/%y", tm); break;
