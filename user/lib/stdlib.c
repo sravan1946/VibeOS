@@ -81,68 +81,6 @@ long long llabs(long long x) { return x < 0 ? -x : x; }
 div_t div(int a, int b) { div_t r = { a / b, a % b }; return r; }
 ldiv_t ldiv(long a, long b) { ldiv_t r = { a / b, a % b }; return r; }
 
-/* ---- floating point ---- */
-
-static int match_ci(const char *p, const char *w) {
-    while (*w && tolower((unsigned char)*p) == *w) p++, w++;
-    return *w == 0;
-}
-
-/* Accumulates up to 19 digits exactly, scales in x87 long double (64-bit mantissa), so
- * results are right to ~1 ulp of double; not guaranteed correctly rounded. */
-double strtod(const char *s, char **end) {
-    const char *p = s;
-    int neg = 0;
-    while (isspace((unsigned char)*p)) p++;
-    if (*p == '-' || *p == '+') neg = *p++ == '-';
-    if (match_ci(p, "inf")) {
-        p += match_ci(p, "infinity") ? 8 : 3;
-        if (end) *end = (char *)p;
-        return neg ? -__builtin_inf() : __builtin_inf();
-    }
-    if (match_ci(p, "nan")) {
-        if (end) *end = (char *)(p + 3);
-        return __builtin_nan("");
-    }
-    unsigned long long m = 0;
-    int nd = 0, exp10 = 0, any = 0, seen_dot = 0;
-    for (;; p++) {
-        if (isdigit((unsigned char)*p)) {
-            any = 1;
-            if (nd < 19) { m = m * 10 + (*p - '0'); if (m) nd++; if (seen_dot) exp10--; }
-            else if (!seen_dot) exp10++;                /* digit dropped from the integer part */
-        } else if (*p == '.' && !seen_dot) seen_dot = 1;
-        else break;
-    }
-    if (!any) { if (end) *end = (char *)s; return 0.0; }
-    if (*p == 'e' || *p == 'E') {
-        const char *q = p + 1;
-        int eneg = 0, e = 0;
-        if (*q == '-' || *q == '+') eneg = *q++ == '-';
-        if (isdigit((unsigned char)*q)) {
-            while (isdigit((unsigned char)*q)) { if (e < 10000) e = e * 10 + (*q - '0'); q++; }
-            exp10 += eneg ? -e : e;
-            p = q;
-        }
-    }
-    if (end) *end = (char *)p;
-    long double v = m;
-    if (v != 0) {
-        int e = exp10 < 0 ? -exp10 : exp10;
-        long double pw = 1, b = 10;
-        if (e > 5000) e = 5000;
-        for (; e; e >>= 1, b *= b)
-            if (e & 1) pw *= b;
-        v = exp10 < 0 ? v / pw : v * pw;
-    }
-    double d = (double)v;
-    if (__builtin_isinf(d)) errno = ERANGE;
-    return neg ? -d : d;
-}
-
-float strtof(const char *s, char **end) { return (float)strtod(s, end); }
-double atof(const char *s) { return strtod(s, NULL); }
-
 /* ---- qsort (heapsort: no recursion, no scratch memory, O(n log n) worst case) ---- */
 
 static void swap_bytes(char *a, char *b, size_t n) {
@@ -263,6 +201,14 @@ void exit(int code) {
     while (atexit_n) atexit_fns[--atexit_n]();
     fflush(NULL);
     _exit(code);
+}
+
+sighandler_t signal(int sig, sighandler_t h) {          /* ponytail: no delivery; the kernel kills on SIGINT */
+    static sighandler_t cur[32];
+    if (sig < 1 || sig > 31 || sig == SIGKILL) { errno = EINVAL; return SIG_ERR; }
+    sighandler_t old = cur[sig];
+    cur[sig] = h;
+    return old;
 }
 
 void abort(void) {

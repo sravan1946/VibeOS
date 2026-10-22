@@ -188,3 +188,11 @@ char *strndup(const char *s, size_t n) {
     p[n] = 0;
     return p;
 }
+
+/* the only locale is "C" */
+int strcoll(const char *a, const char *b) { return strcmp(a, b); }
+size_t strxfrm(char *d, const char *s, size_t n) {
+    size_t l = strlen(s);
+    if (n) strlcpy(d, s, n);
+    return l;
+}

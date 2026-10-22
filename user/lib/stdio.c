@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 int __vformat(void (*out)(void *, const char *, size_t), void *ctx, const char *fmt, va_list ap);
 
@@ -20,12 +21,13 @@ struct FILE {
     int unget;                          /* pushed-back char or -1 */
     int own_buf;
     struct FILE *next;
+    char *tmpname;                      /* tmpfile(): unlinked on fclose */
 };
 
 static unsigned char stdin_buf[BUFSIZ], stdout_buf[BUFSIZ];
-static struct FILE f_in = { 0, F_STATIC, D_NONE, _IOFBF, 1, 0, stdin_buf, BUFSIZ, 0, 0, -1, 0, NULL };
-static struct FILE f_out = { 1, F_STATIC, D_NONE, -1, 0, 1, stdout_buf, BUFSIZ, 0, 0, -1, 0, &f_in };
-static struct FILE f_err = { 2, F_STATIC, D_NONE, _IONBF, 0, 1, NULL, 0, 0, 0, -1, 0, &f_out };
+static struct FILE f_in = { 0, F_STATIC, D_NONE, _IOFBF, 1, 0, stdin_buf, BUFSIZ, 0, 0, -1, 0, NULL, NULL };
+static struct FILE f_out = { 1, F_STATIC, D_NONE, -1, 0, 1, stdout_buf, BUFSIZ, 0, 0, -1, 0, &f_in, NULL };
+static struct FILE f_err = { 2, F_STATIC, D_NONE, _IONBF, 0, 1, NULL, 0, 0, 0, -1, 0, &f_out, NULL };
 FILE *stdin = &f_in, *stdout = &f_out, *stderr = &f_err;
 static struct FILE *all = &f_err;
 
@@ -227,18 +229,62 @@ FILE *fdopen(int fd, const char *mode) {
     return f;
 }
 
-FILE *fopen(const char *path, const char *mode) {
+static int open_mode(const char *path, const char *mode) {
     int plus = strchr(mode, '+') != NULL, fl;
     switch (mode[0]) {
     case 'r': fl = plus ? O_RDWR : O_RDONLY; break;
     case 'w': fl = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_TRUNC; break;
     case 'a': fl = (plus ? O_RDWR : O_WRONLY) | O_CREAT | O_APPEND; break;
-    default: errno = EINVAL; return NULL;
+    default: errno = EINVAL; return -1;
     }
-    int fd = open(path, fl, 0644);
+    return open(path, fl, 0644);
+}
+
+FILE *fopen(const char *path, const char *mode) {
+    int fd = open_mode(path, mode);
     if (fd < 0) return NULL;
     FILE *f = fdopen(fd, mode);
     if (!f) close(fd);
+    return f;
+}
+
+/* reuse the FILE (and its buffer); fds 0-2 keep their number so stdin/stdout/stderr stay valid */
+FILE *freopen(const char *path, const char *mode, FILE *f) {
+    if (!path) { errno = EINVAL; return NULL; }          /* ponytail: no mode-change-only form */
+    fflush(f);
+    int fd = open_mode(path, mode), old = f->fd;
+    if (fd < 0) { fclose(f); return NULL; }
+    if (old <= 2) { dup2(fd, old); close(fd); fd = old; } else close(old);
+    int plus = strchr(mode, '+') != NULL;
+    f->fd = fd;
+    f->flags &= F_STATIC;
+    f->dir = D_NONE;
+    f->pos = f->len = 0;
+    f->unget = -1;
+    f->can_read = mode[0] == 'r' || plus;
+    f->can_write = mode[0] != 'r' || plus;
+    if (f != stderr) f->mode = -1;
+    return f;
+}
+
+char *tmpnam(char *buf) {
+    static char sbuf[L_tmpnam];
+    static unsigned n;
+    struct stat st;
+    if (!buf) buf = sbuf;
+    for (int i = 0; i < TMP_MAX; i++) {
+        snprintf(buf, L_tmpnam, "/tmp/t%x_%x", (unsigned)getpid() & 0xffff, ++n);
+        if (stat(buf, &st) < 0) return buf;
+    }
+    return NULL;
+}
+
+FILE *tmpfile(void) {
+    char name[L_tmpnam];
+    if (!tmpnam(name)) return NULL;
+    FILE *f = fopen(name, "w+");
+    if (!f) return NULL;
+    f->tmpname = strdup(name);
     return f;
 }
 
@@ -248,6 +294,7 @@ int fclose(FILE *f) {
     for (FILE **pp = &all; *pp; pp = &(*pp)->next)
         if (*pp == f) { *pp = f->next; break; }
     if (f->own_buf) free(f->buf);
+    if (f->tmpname) { unlink(f->tmpname); free(f->tmpname); }
     if (!(f->flags & F_STATIC)) free(f);
     return r;
 }

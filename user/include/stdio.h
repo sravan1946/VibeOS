@@ -10,8 +10,13 @@ extern FILE *stdin, *stdout, *stderr;
 #define _IOLBF 1
 #define _IONBF 2
 #define FILENAME_MAX 512
+#define L_tmpnam 24
+#define TMP_MAX 100000
 FILE *fopen(const char *path, const char *mode);
 FILE *fdopen(int fd, const char *mode);
+FILE *freopen(const char *path, const char *mode, FILE *f);   /* path must be non-NULL */
+FILE *tmpfile(void);                                          /* deleted on fclose (not on crash) */
+char *tmpnam(char *buf);                                      /* buf of L_tmpnam bytes, or NULL (static) */
 int fclose(FILE *f);
 size_t fread(void *p, size_t sz, size_t n, FILE *f);
 size_t fwrite(const void *p, size_t sz, size_t n, FILE *f);

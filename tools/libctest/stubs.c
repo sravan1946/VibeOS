@@ -25,6 +25,7 @@ off_t lseek(int fd, off_t o, int w) { return ret(lx(19, fd, o, w)); }
 int unlink(const char *p) { return ret(lx(10, (int)p, 0, 0)); }
 int rmdir(const char *p) { return ret(lx(40, (int)p, 0, 0)); }
 int rename(const char *a, const char *b) { return ret(lx(38, (int)a, (int)b, 0)); }
+int dup2(int a, int b) { return ret(lx(63, a, b, 0)); }
 int isatty(int fd) { return 0; }
 
 #define ARENA (16 << 20)

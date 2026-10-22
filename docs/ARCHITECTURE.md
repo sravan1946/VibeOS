@@ -116,7 +116,10 @@ coordinates, so the pointer isn't grabbed in a VM.
 
 `user/lib` is a small libc: string/ctype, `printf` family, `scanf`, stdio buffering, `malloc`,
 `stdlib`, `math`, `time`, `setjmp`, termios, dirents and the spawn API. Every
-`user/bin/NAME.c` or `user/bin/NAME/*.c` becomes `/bin/NAME`.
+`user/bin/NAME.c` or `user/bin/NAME/*.c` becomes `/bin/NAME`. `malloc` is a boundary-tag
+allocator with segregated free lists. `/bin/lua` builds the unmodified Lua 5.4 from
+`third_party/lua` plus `user/bin/lua/` (REPL line editor, the `vibe` and `gui` modules); see
+`third_party/lua/README.vibeos`.
 
 ## Testing
 
@@ -124,4 +127,4 @@ coordinates, so the pointer isn't grabbed in a VM.
   keys, move/click/drag the mouse, wait for serial output, take screenshots.
 * `/etc/autostart` lists what the desktop opens at boot (`shell`, `term ARGV`, `run ARGV`).
 * Host-side unit tests: `tools/ext2test` (filesystem vs `e2fsck`), `tools/termtest`
-  (terminal emulator), `tools/libctest` (libc).
+  (terminal emulator), `tools/libctest` (libc; also differential tests of printf, strtod and libm against the host's glibc).

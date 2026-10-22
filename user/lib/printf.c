@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <stddef.h>
 
 typedef void (*sink_t)(void *ctx, const char *s, size_t n);
@@ -161,6 +162,36 @@ static int fmt_g(char *out, double v, int prec, int alt) {
     return alt ? len : strip_zeros(out, len);
 }
 
+/* %a: hex mantissa digits + exponent, glibc style ("0x1.8p+1"; subnormals keep a 0 lead digit).
+ * v is non-negative and finite; the "0x" is added by the caller. */
+static int fmt_a(char *out, double v, int prec, int alt) {
+    union { double d; uint64_t u; } x = { v };
+    int ex = (x.u >> 52) & 0x7ff, e = ex ? ex - 1023 : (x.u << 1 ? -1022 : 0), o = 0;
+    uint64_t m = (x.u & ((1ull << 52) - 1)) | (ex ? 1ull << 52 : 0);   /* lead digit + 13 hex digits */
+    int nd = 13;
+    if (prec >= 0 && prec < 13) {                       /* round half-even to prec hex digits */
+        int sh = (13 - prec) * 4;
+        uint64_t rem = m & ((1ull << sh) - 1), half = 1ull << (sh - 1);
+        m >>= sh;
+        if (rem > half || (rem == half && (m & 1))) m++;
+        nd = prec;
+    } else if (prec < 0) {
+        while (nd && !(m & 0xf)) { m >>= 4; nd--; }     /* shortest exact */
+    }
+    out[o++] = '0' + (char)(m >> (nd * 4));
+    if (nd > 0 || prec > 13 || alt) out[o++] = '.';
+    for (int i = nd - 1; i >= 0; i--) out[o++] = "0123456789abcdef"[(m >> (i * 4)) & 15];
+    for (int i = 13; i < prec; i++) out[o++] = '0';
+    out[o++] = 'p';
+    out[o++] = e < 0 ? '-' : '+';
+    if (e < 0) e = -e;
+    char t[8];
+    int w = 0;
+    do t[w++] = '0' + e % 10; while (e /= 10);
+    while (w) out[o++] = t[--w];
+    return o;
+}
+
 /* ---- the engine ---- */
 
 static void pad(sink_t out, void *ctx, char c, int n) {
@@ -300,9 +331,9 @@ int __vformat(sink_t out, void *ctx, const char *fmt, va_list ap) {
             plen = 2;
             break;
         }
-        case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': {
+        case 'f': case 'F': case 'e': case 'E': case 'g': case 'G': case 'a': case 'A': {
             double v = len == L_BIGL ? (double)va_arg(ap, long double) : va_arg(ap, double);
-            int up = c == 'F' || c == 'E' || c == 'G';
+            int up = c == 'F' || c == 'E' || c == 'G' || c == 'A';
             body = fb;
             if (__builtin_signbit(v)) { pre = "-"; plen = 1; v = -v; }
             else if (plus) { pre = "+"; plen = 1; }
@@ -311,6 +342,17 @@ int __vformat(sink_t out, void *ctx, const char *fmt, va_list ap) {
                 memcpy(fb, __builtin_isnan(v) ? (up ? "NAN" : "nan") : (up ? "INF" : "inf"), 3);
                 blen = 3;
                 zero = 0;
+                break;
+            }
+            if (c == 'a' || c == 'A') {
+                if (prec > 100) prec = 100;
+                blen = fmt_a(fb, v, prec, alt);
+                memcpy(tmp, pre, plen);                  /* sign, then 0x: zero padding goes between */
+                tmp[plen++] = '0';
+                tmp[plen++] = up ? 'X' : 'x';
+                tmp[plen] = 0;
+                pre = tmp;
+                if (up) for (int i = 0; i < blen; i++) fb[i] = toupper((unsigned char)fb[i]);
                 break;
             }
             if (prec < 0) prec = 6;
