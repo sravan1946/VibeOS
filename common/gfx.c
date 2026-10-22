@@ -171,20 +171,30 @@ void gfx_line_aa(struct canvas *c, float x0, float y0, float x1, float y1, float
     float hw = width / 2;
     int bx0 = (int)((x0 < x1 ? x0 : x1) - hw - 1), bx1 = (int)((x0 > x1 ? x0 : x1) + hw + 2);
     int by0 = (int)((y0 < y1 ? y0 : y1) - hw - 1), by1 = (int)((y0 > y1 ? y0 : y1) + hw + 2);
+    bx0 = imax(bx0, c->cx0); bx1 = imin(bx1, c->cx1); by0 = imax(by0, c->cy0); by1 = imin(by1, c->cy1);
     float vx = x1 - x0, vy = y1 - y0, len2 = vx * vx + vy * vy;
-    for (int y = by0; y < by1; y++)
-        for (int x = bx0; x < bx1; x++) {
+    float avy = vy < 0 ? -vy : vy, slope = avy > 0.01f ? vx / vy : 0;
+    float reach = avy > 0.01f ? (hw + 1.5f) * sqrtf_(len2) / avy : 1e9f;   /* strip half-width per row */
+    float in2 = hw > 0.5f ? (hw - 0.5f) * (hw - 0.5f) : 0, out2 = (hw + 0.5f) * (hw + 0.5f);
+    for (int y = by0; y < by1; y++) {
+        int xa = bx0, xb = bx1;
+        if (reach < 1e8f) {                                   /* only the pixels near the line on this row */
+            float xc = x0 + slope * (y + 0.5f - y0);
+            xa = imax(xa, (int)(xc - reach)); xb = imin(xb, (int)(xc + reach) + 1);
+        }
+        for (int x = xa; x < xb; x++) {
             float px = x + 0.5f - x0, py = y + 0.5f - y0;
             float t = len2 > 0 ? (px * vx + py * vy) / len2 : 0;
             if (t < 0) t = 0;
             if (t > 1) t = 1;
-            float ex = px - t * vx, ey = py - t * vy;
-            float d = sqrtf_(ex * ex + ey * ey) - hw;   /* <0 inside */
-            float cov = 0.5f - d;
+            float ex = px - t * vx, ey = py - t * vy, d2 = ex * ex + ey * ey;
+            if (d2 >= out2) continue;
+            float cov = d2 <= in2 ? 1 : 0.5f - (sqrtf_(d2) - hw);
             if (cov <= 0) continue;
             if (cov > 1) cov = 1;
             gfx_pixel(c, x, y, with_alpha(col, (uint32_t)(cov * 255)));
         }
+    }
 }
 
 void gfx_blit(struct canvas *c, int x, int y, const uint32_t *src, int w, int h, int stride) {
