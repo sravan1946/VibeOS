@@ -1,124 +1,64 @@
-/* theme.c - the built-in themes (dark is the original look and the default), accent presets, contrast maths.
+/* theme.c - the built-in themes (graphite is the default), accent presets, contrast maths.
+ * Each table entry sets the Graphite tokens and the terminal palette; the legacy names are derived from them.
  * Freestanding; shared by the kernel, libgui and the host contrast test (tools/themetest). */
 #include "theme.h"
 
 #define H(x)     (0xFF000000u | (x))
 #define HA(x, a) ((uint32_t)(a) << 24 | (x))
 
-static const struct theme themes[] = {
-    {   /* the original look */
-        .name = "dark", .label = "Vibe Dark", .dark = 1,
-        .bg = H(0x161522), .panel = H(0x1E1C2D), .surface = H(0x2A273D), .hover = H(0x35314C), .pressed = H(0x222033),
-        .border = HA(0xFFFFFF, 26), .input = H(0x12111C),
-        .text = H(0xEDEBFF), .dim = H(0x9A96B8), .faint = H(0x5E5A7C),
-        .accent = H(0xB388FF), .accent_hi = H(0xC4A0FF), .accent_lo = H(0x956CE0), .on_accent = H(0x1A102E), .accent2 = H(0xFF7AC6),
-        .bad = H(0xFF5F7A), .warn = H(0xFFC24B), .good = H(0x4BE08A),
-        .knob = H(0xE8DFFF), .knob_on = H(0xFFFFFF), .ov = H(0xFFFFFF),
-        .key = H(0x3B3062), .key_hi = H(0x4A3B78), .key_lo = H(0x3A2E5C), .key_fg = H(0xD9C4FF), .gutter = H(0x191826),
-        .edge = 100, .shadow = 100,
-        .frame = H(0x242236), .frame_off = H(0x1B1A26), .btn_off = H(0x454358), .cdim = H(0x8C89A6), .body = H(0xC4C1DC), .on_pill = H(0xFFFFFF),
-        .bar = HA(0x0D0C16, 222), .launcher = HA(0x161422, 246), .popup = HA(0x161422, 248), .toast = HA(0x181626, 248), .switcher = HA(0x120F1E, 244),
-        .term = { { H(0x2A2E42), H(0xF7768E), H(0x9ECE6A), H(0xE0AF68), H(0x7AA2F7), H(0xBB9AF7), H(0x7DCFFF), H(0xA9B1D6),
-                    H(0x4E5575), H(0xFF899D), H(0xB3E07E), H(0xF5C27C), H(0x8DB0FF), H(0xC7A9FF), H(0xA4DAFF), H(0xE6EAFA) },
-                  H(0xC8CEE8), H(0x11131C), H(0xF2F4FB), H(0x4A3F7A), H(0x6A5622), H(0xE0AF68), H(0x11131C), H(0x7DCFFF) },
-        .tbar = H(0x161824), .tab = H(0x24283B), .tab_off = H(0x1D2031), .tab_fg = H(0xE6EAFA), .tab_dim = H(0x8D93B5), .tab_faint = H(0x6A7090),
-        .tfind = H(0x202438), .tab_acc = H(0x7AA2F7),
+static struct theme themes[] = {
+    {
+        .name = "graphite", .label = "Dark", .dark = 1,
+        .base = H(0x141517), .window = H(0x1B1C1F), .raised = H(0x232427), .overlay = H(0x2C2D31),
+        .line = H(0x34363B), .line_strong = H(0x45484E), .control = H(0x74777E),
+        .text = H(0xE6E7E9), .text2 = H(0xA4A7AD), .text3 = H(0x8A8D94), .disabled = HA(0xE6E7E9, 97),
+        .accent = H(0xE8A33D), .accent_hover = H(0xF0B358), .accent_press = H(0xD18F2B), .on_accent = H(0x1A1300),
+        .accent_text = H(0xE8A33D), .accent_line = H(0xE8A33D),
+        .selection = H(0x403424), .hover_ov = HA(0xE6E7E9, 15), .press_ov = HA(0xE6E7E9, 31), .scrim = HA(0x000000, 102),
+        .danger = H(0xF2706A), .on_danger = H(0x1A0605), .warning = H(0xD8B23E), .success = H(0x5BBF7A), .info = H(0x6AA3F0),
+        .thumb = H(0xE6E7E9), .hilite = HA(0xFFFFFF, 15), .ring = HA(0x000000, 128),
+        .elev = { 0, 77, 92, 102, 128 }, .edge = 100, .shadow = 100,
+        .term = { { H(0x2C2E33), H(0xE5736C), H(0x8FBF9A), H(0xD9B45E), H(0x8FB0D9), H(0xC29BC9), H(0x7FBFBF), H(0xC5C8CD),
+                    H(0x7C8088), H(0xF08C86), H(0xA8D4B1), H(0xE8C878), H(0xA9C4E6), H(0xD4B3DA), H(0x9AD2D1), H(0xEDEEF0) },
+                  H(0xD7D9DC), H(0x111214), H(0xF0F1F2), H(0x403424), H(0x4A3B1E), H(0xE8A33D), H(0x1A1300), H(0x8FB0D9) },
     },
     {
-        .name = "light", .label = "Vibe Light", .dark = 0,
-        .bg = H(0xF3F2F9), .panel = H(0xFFFFFF), .surface = H(0xE7E5F1), .hover = H(0xDAD7EA), .pressed = H(0xCFCCE2),
-        .border = HA(0x000000, 36), .input = H(0xFFFFFF),
-        .text = H(0x1B1830), .dim = H(0x55526F), .faint = H(0x8F8CA9),
-        .accent = H(0x6A3DD8), .accent_hi = H(0x7F57E6), .accent_lo = H(0x5429B8), .on_accent = H(0xFFFFFF), .accent2 = H(0xCC2E8C),
-        .bad = H(0xC21F3F), .warn = H(0x9A5B00), .good = H(0x11803F),
-        .knob = H(0x3B2F73), .knob_on = H(0x1B1830), .ov = H(0x000000),
-        .key = H(0xE0D8F7), .key_hi = H(0xD3C8F2), .key_lo = H(0xC9BCEE), .key_fg = H(0x4426A8), .gutter = H(0xF0EEF8),
-        .edge = 130, .shadow = 55,
-        .frame = H(0xE6E3F3), .frame_off = H(0xEFEDF7), .btn_off = H(0xC4C0D8), .cdim = H(0x5A5774), .body = H(0x3F3C5A), .on_pill = H(0xFFFFFF),
-        .bar = HA(0xF6F5FC, 228), .launcher = HA(0xFBFAFF, 246), .popup = HA(0xFBFAFF, 248), .toast = HA(0xFFFFFF, 248), .switcher = HA(0xF7F6FD, 244),
-        .term = { { H(0x2A2E42), H(0xC2203F), H(0x2F7D1A), H(0x8A5A00), H(0x2652C4), H(0x8A3BD1), H(0x0B7285), H(0x575C78),
-                    H(0x6E7390), H(0xD4294A), H(0x2E7D32), H(0x996400), H(0x2F61D6), H(0x9A48E0), H(0x0E7F96), H(0x2B2E45) },
-                  H(0x23213A), H(0xFBFAFF), H(0x0E0D1C), H(0xCFC6F5), H(0xF6E6A8), H(0xF3A93C), H(0x1B1830), H(0x0A63B8) },
-        .tbar = H(0xE3E1F0), .tab = H(0xFBFAFF), .tab_off = H(0xD8D5EA), .tab_fg = H(0x1B1830), .tab_dim = H(0x55526F), .tab_faint = H(0x7C7996),
-        .tfind = H(0xFFFFFF), .tab_acc = H(0x6A3DD8),
+        .name = "graphite-light", .label = "Light", .dark = 0,
+        .base = H(0xE9EAEC), .window = H(0xF4F5F6), .raised = H(0xFFFFFF), .overlay = H(0xFFFFFF),
+        .line = H(0xD6D8DB), .line_strong = H(0xB9BCC1), .control = H(0x82858C),
+        .text = H(0x1B1C1F), .text2 = H(0x55585E), .text3 = H(0x66696F), .disabled = HA(0x1B1C1F, 97),
+        .accent = H(0xE8A33D), .accent_hover = H(0xF0B358), .accent_press = H(0xD18F2B), .on_accent = H(0x1A1300),
+        .accent_text = H(0x965509), .accent_line = H(0xAC792D),
+        .selection = H(0xF1E3CD), .hover_ov = HA(0x1B1C1F, 15), .press_ov = HA(0x1B1C1F, 31), .scrim = HA(0x000000, 82),
+        .danger = H(0xB42C26), .on_danger = H(0xFFFFFF), .warning = H(0x7F6200), .success = H(0x1B6E3B), .info = H(0x2560C2),
+        .thumb = H(0xFFFFFF), .hilite = 0, .ring = HA(0x000000, 31),
+        .elev = { 0, 36, 41, 46, 61 }, .edge = 100, .shadow = 45,
+        .term = { { H(0x1B1C1F), H(0xB42C26), H(0x1B6E3B), H(0x7F6200), H(0x2560C2), H(0x8B3A8F), H(0x0E6E70), H(0x55585E),
+                    H(0x66696F), H(0xC2362F), H(0x237A45), H(0x8A6A00), H(0x2F6BD0), H(0x9A479E), H(0x13797B), H(0x2B2D31) },
+                  H(0x1B1C1F), H(0xFBFBFC), H(0x0E0F11), H(0xF1E3CD), H(0xF6E2AE), H(0xE8A33D), H(0x1A1300), H(0x2560C2) },
     },
-    {
-        .name = "nord", .label = "Nord", .dark = 1,
-        .bg = H(0x2E3440), .panel = H(0x343B49), .surface = H(0x3B4252), .hover = H(0x434C5E), .pressed = H(0x2A303B),
-        .border = HA(0xFFFFFF, 30), .input = H(0x2A303B),
-        .text = H(0xECEFF4), .dim = H(0xAEB8CB), .faint = H(0x6B7791),
-        .accent = H(0x88C0D0), .accent_hi = H(0xA1D0DE), .accent_lo = H(0x6EA6B8), .on_accent = H(0x2E3440), .accent2 = H(0xB48EAD),
-        .bad = H(0xF08A93), .warn = H(0xEBCB8B), .good = H(0xA3BE8C),
-        .knob = H(0xD8DEE9), .knob_on = H(0xFFFFFF), .ov = H(0xFFFFFF),
-        .key = H(0x445568), .key_hi = H(0x4F6277), .key_lo = H(0x3E4C5E), .key_fg = H(0xC5E4EC), .gutter = H(0x313746),
-        .edge = 100, .shadow = 100,
-        .frame = H(0x3B4252), .frame_off = H(0x313745), .btn_off = H(0x4C566A), .cdim = H(0xA3AEC2), .body = H(0xCBD3E1), .on_pill = H(0x2E3440),
-        .bar = HA(0x242933, 226), .launcher = HA(0x2E3440, 246), .popup = HA(0x2E3440, 248), .toast = HA(0x3B4252, 248), .switcher = HA(0x2B303B, 244),
-        .term = { { H(0x3B4252), H(0xF08A93), H(0xA3BE8C), H(0xEBCB8B), H(0x8BAFD6), H(0xB48EAD), H(0x88C0D0), H(0xE5E9F0),
-                    H(0x6A768F), H(0xEB8A92), H(0xB5CFA0), H(0xF2D9A0), H(0x9CB9D8), H(0xC6A3BF), H(0x9FD2E0), H(0xFFFFFF) },
-                  H(0xD8DEE9), H(0x2A2F3A), H(0xECEFF4), H(0x434C5E), H(0x45597A), H(0xEBCB8B), H(0x2E3440), H(0x88C0D0) },
-        .tbar = H(0x252A33), .tab = H(0x2A2F3A), .tab_off = H(0x30363F), .tab_fg = H(0xECEFF4), .tab_dim = H(0xA3AEC2), .tab_faint = H(0x7C88A2),
-        .tfind = H(0x3B4252), .tab_acc = H(0x88C0D0),
-    },
-    {
-        .name = "solarized", .label = "Solarized", .dark = 1,
-        .bg = H(0x002B36), .panel = H(0x03313D), .surface = H(0x073642), .hover = H(0x0F4755), .pressed = H(0x00252F),
-        .border = HA(0xEEE8D5, 36), .input = H(0x00232C),
-        .text = H(0xEEE8D5), .dim = H(0x93A1A1), .faint = H(0x586E75),
-        .accent = H(0x2F9BE0), .accent_hi = H(0x4FB0EE), .accent_lo = H(0x2480C0), .on_accent = H(0x002B36), .accent2 = H(0xD33682),
-        .bad = H(0xF5706C), .warn = H(0xD9A21B), .good = H(0x9DB300),
-        .knob = H(0x93A1A1), .knob_on = H(0xEEE8D5), .ov = H(0xEEE8D5),
-        .key = H(0x0F4F5E), .key_hi = H(0x175A6A), .key_lo = H(0x0B4552), .key_fg = H(0x8FD6EE), .gutter = H(0x00303B),
-        .edge = 100, .shadow = 100,
-        .frame = H(0x073642), .frame_off = H(0x04303B), .btn_off = H(0x586E75), .cdim = H(0xAAB7B7), .body = H(0xCFC9B5), .on_pill = H(0x002B36),
-        .bar = HA(0x00222B, 226), .launcher = HA(0x00303B, 246), .popup = HA(0x03313D, 248), .toast = HA(0x073642, 248), .switcher = HA(0x00252E, 244),
-        .term = { { H(0x073642), H(0xF0605C), H(0x9BB100), H(0xD0A010), H(0x3F9FE5), H(0xEC62A4), H(0x36B8AD), H(0xEEE8D5),
-                    H(0x6C858D), H(0xE8683A), H(0xA6C400), H(0xE3B21E), H(0x5DB2F0), H(0x8E93E0), H(0x4ECBC0), H(0xFDF6E3) },
-                  H(0xB0BDBD), H(0x002B36), H(0xEEE8D5), H(0x0B4452), H(0x4A4A12), H(0xB58900), H(0x002B36), H(0x3DBDB2) },
-        .tbar = H(0x00222B), .tab = H(0x002B36), .tab_off = H(0x03303A), .tab_fg = H(0xEEE8D5), .tab_dim = H(0x93A1A1), .tab_faint = H(0x6A8087),
-        .tfind = H(0x073642), .tab_acc = H(0x2F9BE0),
-    },
-    {
-        .name = "contrast", .label = "High Contrast", .dark = 1,
-        .bg = H(0x000000), .panel = H(0x0B0B0B), .surface = H(0x1C1C1C), .hover = H(0x333333), .pressed = H(0x101010),
-        .border = HA(0xFFFFFF, 150), .input = H(0x000000),
-        .text = H(0xFFFFFF), .dim = H(0xDADADA), .faint = H(0x9A9A9A),
-        .accent = H(0xFFD60A), .accent_hi = H(0xFFE45C), .accent_lo = H(0xE0B800), .on_accent = H(0x000000), .accent2 = H(0x4DD8FF),
-        .bad = H(0xFF7B7B), .warn = H(0xFFD60A), .good = H(0x5BFF8F),
-        .knob = H(0xFFFFFF), .knob_on = H(0xFFD60A), .ov = H(0xFFFFFF),
-        .key = H(0x4A4000), .key_hi = H(0x665A00), .key_lo = H(0x332C00), .key_fg = H(0xFFE45C), .gutter = H(0x0B0B0B),
-        .edge = 400, .shadow = 100,
-        .frame = H(0x1A1A1A), .frame_off = H(0x0A0A0A), .btn_off = H(0x6A6A6A), .cdim = H(0xD0D0D0), .body = H(0xF0F0F0), .on_pill = H(0x000000),
-        .bar = HA(0x000000, 240), .launcher = HA(0x000000, 250), .popup = HA(0x0A0A0A, 250), .toast = HA(0x0A0A0A, 250), .switcher = HA(0x000000, 250),
-        .term = { { H(0x000000), H(0xFF6B6B), H(0x5BFF8F), H(0xFFD60A), H(0x6EA8FF), H(0xE08CFF), H(0x4DD8FF), H(0xE0E0E0),
-                    H(0x8A8A8A), H(0xFF9A9A), H(0x8CFFB0), H(0xFFE55C), H(0x9CC4FF), H(0xEEB0FF), H(0x8CE8FF), H(0xFFFFFF) },
-                  H(0xFFFFFF), H(0x000000), H(0xFFFFFF), H(0x1A4DB3), H(0x705800), H(0xFFD60A), H(0x000000), H(0x4DD8FF) },
-        .tbar = H(0x111111), .tab = H(0x000000), .tab_off = H(0x262626), .tab_fg = H(0xFFFFFF), .tab_dim = H(0xD0D0D0), .tab_faint = H(0x909090),
-        .tfind = H(0x1A1A1A), .tab_acc = H(0xFFD60A),
+    {   /* high contrast: the same structure, black surfaces, white text and outlines */
+        .name = "contrast", .label = "High contrast", .dark = 1,
+        .base = H(0x000000), .window = H(0x0A0A0B), .raised = H(0x18181A), .overlay = H(0x1E1E21),
+        .line = H(0x8C8C90), .line_strong = H(0xD0D0D4), .control = H(0xFFFFFF),
+        .text = H(0xFFFFFF), .text2 = H(0xE4E4E6), .text3 = H(0xC8C8CC), .disabled = HA(0xFFFFFF, 115),
+        .accent = H(0xFFC24D), .accent_hover = H(0xFFD27A), .accent_press = H(0xE6A82E), .on_accent = H(0x000000),
+        .accent_text = H(0xFFC24D), .accent_line = H(0xFFC24D),
+        .selection = H(0x553C00), .hover_ov = HA(0xFFFFFF, 31), .press_ov = HA(0xFFFFFF, 56), .scrim = HA(0x000000, 166),
+        .danger = H(0xFF8A80), .on_danger = H(0x000000), .warning = H(0xFFD54F), .success = H(0x7BE495), .info = H(0x8AB8FF),
+        .thumb = H(0x000000), .hilite = 0, .ring = H(0x8C8C90),
+        .elev = { 0, 128, 140, 150, 170 }, .edge = 300, .shadow = 100,
+        .term = { { H(0x000000), H(0xFF8A80), H(0x7BE495), H(0xFFD54F), H(0x8AB8FF), H(0xF0A6FF), H(0x6FE3F0), H(0xE4E4E6),
+                    H(0x9A9A9E), H(0xFFB0A8), H(0xA6F0B8), H(0xFFE38A), H(0xB5D2FF), H(0xF7C8FF), H(0xA8F0F7), H(0xFFFFFF) },
+                  H(0xFFFFFF), H(0x000000), H(0xFFFFFF), H(0x553C00), H(0x6B5200), H(0xFFC24D), H(0x000000), H(0x8AB8FF) },
     },
 };
 #define NTHEMES (int)(sizeof themes / sizeof themes[0])
 
 const struct theme_accent theme_accents[THEME_ACCENTS] = {
-    { "violet", H(0x8B5CF6) }, { "blue", H(0x3B82F6) }, { "teal", H(0x14A39A) }, { "green", H(0x22A55B) }, { "yellow", H(0xF5B301) },
-    { "orange", H(0xF97316) }, { "red", H(0xEF4444) }, { "pink", H(0xEC4899) }, { "graphite", H(0x8A8FA3) },
+    { "amber", H(0xE8A33D) }, { "blue", H(0x4A8FE7) }, { "teal", H(0x2AA79B) }, { "green", H(0x4CAF6A) }, { "orange", H(0xF0813A) },
+    { "red", H(0xE5534B) }, { "pink", H(0xE0679E) }, { "violet", H(0x9A7AE0) }, { "graphite", H(0x9A9DA3) },
 };
-
-int theme_count(void) { return NTHEMES; }
-const struct theme *theme_get(int i) { return &themes[(i % NTHEMES + NTHEMES) % NTHEMES]; }
-
-static int streq(const char *a, const char *b) {
-    while (*a && *a == *b) a++, b++;
-    return *a == *b;
-}
-int theme_find(const char *name) {
-    for (int i = 0; i < NTHEMES; i++) if (streq(themes[i].name, name)) return i;
-    return -1;
-}
-int theme_accent_find(const char *name) {
-    for (int i = 0; i < THEME_ACCENTS; i++) if (streq(theme_accents[i].name, name)) return i;
-    return -1;
-}
 
 /* ---- contrast ---- */
 /* sRGB -> linear light, 0..65535 */
@@ -157,10 +97,14 @@ static color_t mixc(color_t a, color_t b, int t) {   /* t: 0..256 towards b, opa
     return 0xFF000000u | (rb & 0xFF00FF) | (g & 0x00FF00);
 }
 
-/* the first of the candidates that reads at 4.5:1 on bg (black always does once white can't) */
-static color_t readable(color_t bg, color_t first) {
+/* the first of the candidates that reads at 4.5:1 on every bg (black always does once white can't) */
+static color_t readable(const color_t *bg, int n, color_t first) {
     color_t c[3] = { first, H(0xFFFFFF), H(0x000000) };
-    for (int i = 0; i < 3; i++) if (theme_contrast(c[i], bg) >= 450) return c[i];
+    for (int i = 0; i < 3; i++) {
+        int ok = 1;
+        for (int j = 0; j < n; j++) if (theme_contrast(c[i], bg[j]) < 450) ok = 0;
+        if (ok) return c[i];
+    }
     return c[2];
 }
 
@@ -175,18 +119,76 @@ static color_t reach(color_t c, const color_t *bg, int n, int min, int towards_w
     return c;
 }
 
-void theme_set_accent(struct theme *t, color_t rgb) {
-    if (!rgb) return;
-    color_t surf[5] = { t->bg, t->panel, t->frame, t->popup, t->toast };
-    rgb = reach(rgb | 0xFF000000u, surf, 5, 300, t->dark);              /* a mark on the window, so 3:1 */
-    t->accent = rgb;
-    t->accent_hi = mixc(rgb, H(0xFFFFFF), 56);
-    t->accent_lo = mixc(rgb, H(0x000000), 46);
-    t->on_accent = readable(rgb, H(0x1A102E));
-    t->key = mixc(t->surface, rgb, 40);
-    t->key_hi = mixc(t->key, rgb, 24);
+/* the accent-dependent legacy names */
+static void accent_legacy(struct theme *t) {
+    t->accent_hi = t->accent_hover; t->accent_lo = t->accent_press; t->accent2 = t->accent;
+    t->on_pill = t->on_accent; t->tab_acc = t->accent_line;
+    t->key = mixc(t->raised, t->accent, 40);
+    t->key_hi = mixc(t->key, t->accent, 24);
     t->key_lo = mixc(t->key, H(0x000000), 20);
     color_t kb[3] = { t->key, t->key_hi, t->key_lo };
-    t->key_fg = reach(mixc(rgb, H(t->dark ? 0xFFFFFF : 0x000000), t->dark ? 128 : 150), kb, 3, 450, t->dark);
-    t->on_pill = readable(mixc(rgb, t->accent2, 128), H(0xFFFFFF));
+    t->key_fg = reach(mixc(t->accent, H(t->dark ? 0xFFFFFF : 0x000000), t->dark ? 128 : 150), kb, 3, 450, t->dark);
+}
+
+/* legacy names from the tokens: old code keeps working and simply looks graphite */
+static void derive(struct theme *t) {
+    t->bg = t->window; t->panel = t->base; t->surface = t->raised; t->input = t->raised;
+    t->hover = mixc(t->raised, t->text, 15); t->pressed = mixc(t->raised, t->text, 31);
+    t->border = t->line; t->dim = t->text2; t->faint = t->text3;
+    t->bad = t->danger; t->warn = t->warning; t->good = t->success;
+    t->knob = t->dark ? t->text : t->text2; t->knob_on = t->dark ? H(0xFFFFFF) : t->text;
+    t->ov = t->dark ? H(0xFFFFFF) : H(0x000000);
+    t->gutter = t->window;
+    t->frame = t->window; t->frame_off = t->base; t->btn_off = t->line_strong; t->cdim = t->text2; t->body = t->text2;
+    t->bar = t->base; t->launcher = t->popup = t->toast = t->switcher = t->overlay;
+    t->tbar = t->window; t->tab = t->window; t->tab_off = t->base; t->tfind = t->raised;
+    t->tab_fg = t->text; t->tab_dim = t->text2; t->tab_faint = t->text3;
+    accent_legacy(t);
+}
+
+int theme_count(void) { return NTHEMES; }
+const struct theme *theme_get(int i) {
+    static int ready;                                   /* ponytail: lazy, not locked; every caller derives the same values */
+    if (!ready) { for (int k = 0; k < NTHEMES; k++) derive(&themes[k]); ready = 1; }
+    return &themes[(i % NTHEMES + NTHEMES) % NTHEMES];
+}
+
+static int streq(const char *a, const char *b) {
+    while (*a && *a == *b) a++, b++;
+    return *a == *b;
+}
+int theme_find(const char *name) {
+    if (streq(name, "dark")) name = "graphite";         /* the old ids, as saved in /etc/theme */
+    else if (streq(name, "light")) name = "graphite-light";
+    for (int i = 0; i < NTHEMES; i++) if (streq(themes[i].name, name)) return i;
+    return -1;
+}
+int theme_accent_find(const char *name) {
+    for (int i = 0; i < THEME_ACCENTS; i++) if (streq(theme_accents[i].name, name)) return i;
+    return -1;
+}
+
+/* rgb moved up to k/256 towards to, but never so far that ink stops reading on it */
+static color_t shade(color_t rgb, color_t to, int k, color_t ink) {
+    color_t c;
+    while (theme_contrast(ink, c = mixc(rgb, to, k)) < 450 && k > 0) k -= 6;
+    return k > 0 ? c : rgb;
+}
+
+void theme_set_accent(struct theme *t, color_t rgb) {
+    if (!rgb) return;
+    color_t surf[4] = { t->base, t->window, t->raised, t->overlay };
+    rgb |= 0xFF000000u;
+    if (t->dark) rgb = reach(rgb, surf, 4, 300, 1);                     /* a mark on any dark surface, so 3:1; light fills get an accent_line rim */
+    t->accent = rgb;
+    t->on_accent = readable(&rgb, 1, H(0x1A1300));
+    t->accent_hover = shade(rgb, H(0xFFFFFF), 40, t->on_accent);
+    t->accent_press = shade(rgb, H(0x000000), 30, t->on_accent);
+    t->accent_text = reach(rgb, surf, 4, 450, t->dark);
+    int k = t->dark ? 46 : 51;                                           /* selection: accent ~18-20% over the window */
+    do t->selection = mixc(t->window, rgb, k);
+    while ((theme_contrast(t->text2, t->selection) < 450 || theme_contrast(t->text, t->selection) < 450) && (k -= 6) > 10);
+    color_t marks[4] = { t->base, t->window, t->raised, t->selection };
+    t->accent_line = reach(rgb, marks, 4, 300, t->dark);
+    accent_legacy(t);
 }

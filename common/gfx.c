@@ -1,5 +1,6 @@
 /* gfx.c - see gfx.h.  Freestanding: no libc, no floats except gfx_line_aa. */
 #include "gfx.h"
+#include "design.h"
 
 static inline int imin(int a, int b) { return a < b ? a : b; }
 static inline int imax(int a, int b) { return a > b ? a : b; }
@@ -71,58 +72,80 @@ void gfx_rect(struct canvas *c, int x, int y, int w, int h, color_t col) {
     gfx_fill(c, x + w - 1, y + 1, 1, h - 2, col);
 }
 
-/* coverage (0..255) of a corner pixel whose near edge is (dx,dy) pixels from
- * the corner circle's centre; 4x4 supersampled */
-static int corner_cov(int dx, int dy, int r) {
-    int cov = 0, rr = r * r * 64;
-    for (int sy = 0; sy < 4; sy++)
-        for (int sx = 0; sx < 4; sx++) {
-            int px = dx * 8 + sx * 2 + 1, py = dy * 8 + sy * 2 + 1;
-            if (px * px + py * py <= rr) cov++;
+/* ---- rounded rects: per-corner radii, fills and rings, from cached corner coverage masks ---- */
+/* coverage (0..255) of pixel (j,i) in the r x r box at a top-left corner whose circle centre is (r,r); g x g samples */
+static int cov_px(int r, int i, int j, int g) {
+    int n = 0, R = r * 2 * g, py, px;
+    for (int sy = 0; sy < g; sy++)
+        for (int sx = 0; sx < g; sx++) {
+            py = R - (i * 2 * g + sy * 2 + 1); px = R - (j * 2 * g + sx * 2 + 1);
+            n += px * px + py * py <= R * R;
         }
-    return cov * 255 / 16;
+    return n * 255 / (g * g);
 }
 
-void gfx_round_fill(struct canvas *c, int x, int y, int w, int h, int r, color_t col) {
-    if (r * 2 > w) r = w / 2;
-    if (r * 2 > h) r = h / 2;
-    if (r <= 0) { gfx_fill(c, x, y, w, h, col); return; }
-    gfx_fill(c, x, y + r, w, h - 2 * r, col);
-    for (int i = 0; i < r; i++) {                  /* rows of the top/bottom bands */
-        int dy = r - 1 - i;                        /* distance from centre row, pixel units */
-        for (int j = 0; j < r; j++) {
-            int dx = r - 1 - j;
-            int cov = corner_cov(dx, dy, r);
-            if (!cov) continue;
-            color_t cc = with_alpha(col, cov);
-            gfx_pixel(c, x + j, y + i, cc);
-            gfx_pixel(c, x + w - 1 - j, y + i, cc);
-            gfx_pixel(c, x + j, y + h - 1 - i, cc);
-            gfx_pixel(c, x + w - 1 - j, y + h - 1 - i, cc);
+#define MAXR 32                                         /* radii up to this are baked once at 16x16 samples */
+static uint8_t cmask[MAXR * (MAXR + 1) * (2 * MAXR + 1) / 6];
+static uint8_t cready[MAXR + 1];
+
+static inline int cc(int r, int i, int j) {             /* corner coverage; 255 past the arc */
+    if (i >= r || j >= r) return 255;
+    if (r > MAXR) return cov_px(r, i, j, 4);
+    uint8_t *m = cmask + (r - 1) * r * (2 * r - 1) / 6;
+    if (!cready[r]) {
+        for (int k = 0; k < r * r; k++) m[k] = cov_px(r, k / r, k % r, 16);
+        cready[r] = 1;
+    }
+    return m[i * r + j];
+}
+
+/* coverage of pixel (j,i) of a w x h rounded rect, minus the same rect inset by t (t = 0: no hole) */
+static int rr_cov(int i, int j, int w, int h, const int *r, int t) {
+    int top = i < h / 2, left = j < w / 2;
+    int ii = top ? i : h - 1 - i, jj = left ? j : w - 1 - j;
+    int rad = r[top ? (left ? 0 : 1) : (left ? 3 : 2)];
+    int v = cc(rad, ii, jj);
+    if (t) v -= ii < t || jj < t ? 0 : cc(rad > t ? rad - t : 0, ii - t, jj - t);
+    return v;
+}
+
+/* t = 0 fills, else draws a t px ring inside the edge; radii packs tl,tr,br,bl (RADII) */
+static void rr_draw(struct canvas *c, int x, int y, int w, int h, uint32_t radii, int t, color_t col) {
+    if (w <= 0 || h <= 0 || !ALPHA(col)) return;
+    int r[4], m = imin(w, h) / 2;
+    for (int k = 0; k < 4; k++) r[k] = imin(radii >> 8 * k & 255, m);
+    if (t < 0 || 2 * t >= w || 2 * t >= h) t = 0;
+    int bt = imax(imax(r[0], r[1]), t), bb = imax(imax(r[2], r[3]), t);   /* rows needing per-row work */
+    if (t) { gfx_fill(c, x, y + bt, t, h - bt - bb, col); gfx_fill(c, x + w - t, y + bt, t, h - bt - bb, col); }
+    else gfx_fill(c, x, y + bt, w, h - bt - bb, col);
+    for (int i = 0; i < h; i++) {
+        if (i == bt && (i = h - bb) >= h) break;
+        if (y + i < c->cy0 || y + i >= c->cy1) continue;
+        int top = i < h / 2, ii = top ? i : h - 1 - i;
+        int rl = r[top ? 0 : 3], rr = r[top ? 1 : 2];
+        int ls = imax(ii < rl ? rl : 0, t), rs = imax(ii < rr ? rr : 0, t);
+        for (int j = 0; j < ls; j++) {
+            int v = rr_cov(i, j, w, h, r, t);
+            if (v > 0) gfx_pixel(c, x + j, y + i, with_alpha(col, v));
         }
-        gfx_fill(c, x + r, y + i, w - 2 * r, 1, col);
-        gfx_fill(c, x + r, y + h - 1 - i, w - 2 * r, 1, col);
+        for (int j = w - rs; j < w; j++) {
+            int v = rr_cov(i, j, w, h, r, t);
+            if (v > 0) gfx_pixel(c, x + j, y + i, with_alpha(col, v));
+        }
+        if (!t || ii < t) gfx_fill(c, x + ls, y + i, w - ls - rs, 1, col);
     }
 }
 
-void gfx_round_rect(struct canvas *c, int x, int y, int w, int h, int r, color_t col) {
-    if (r <= 0) { gfx_rect(c, x, y, w, h, col); return; }
-    gfx_fill(c, x + r, y, w - 2 * r, 1, col);
-    gfx_fill(c, x + r, y + h - 1, w - 2 * r, 1, col);
-    gfx_fill(c, x, y + r, 1, h - 2 * r, col);
-    gfx_fill(c, x + w - 1, y + r, 1, h - 2 * r, col);
-    for (int i = 0; i < r; i++)
-        for (int j = 0; j < r; j++) {
-            int dx = r - 1 - j, dy = r - 1 - i;
-            int outer = corner_cov(dx, dy, r), inner = r > 1 ? corner_cov(dx, dy, r - 1) : 0;
-            int cov = outer - inner;
-            if (cov <= 0) continue;
-            color_t cc = with_alpha(col, cov);
-            gfx_pixel(c, x + j, y + i, cc);
-            gfx_pixel(c, x + w - 1 - j, y + i, cc);
-            gfx_pixel(c, x + j, y + h - 1 - i, cc);
-            gfx_pixel(c, x + w - 1 - j, y + h - 1 - i, cc);
-        }
+void gfx_rrect_fill(struct canvas *c, int x, int y, int w, int h, uint32_t radii, color_t col) { rr_draw(c, x, y, w, h, radii, 0, col); }
+void gfx_rrect_ring(struct canvas *c, int x, int y, int w, int h, uint32_t radii, int t, color_t col) { rr_draw(c, x, y, w, h, radii, t > 0 ? t : 1, col); }
+void gfx_round_fill(struct canvas *c, int x, int y, int w, int h, int r, color_t col) { rr_draw(c, x, y, w, h, RADII(r, r, r, r), 0, col); }
+void gfx_round_rect(struct canvas *c, int x, int y, int w, int h, int r, color_t col) { rr_draw(c, x, y, w, h, RADII(r, r, r, r), 1, col); }
+void gfx_ring_out(struct canvas *c, int x, int y, int w, int h, int r, color_t col) {
+    rr_draw(c, x - 1, y - 1, w + 2, h + 2, RADII(r + 1, r + 1, r + 1, r + 1), 1, col);
+}
+void gfx_focus_ring(struct canvas *c, int x, int y, int w, int h, int r, color_t col) {
+    int o = FOCUS_GAP + FOCUS_W, ro = r + o;
+    rr_draw(c, x - o, y - o, w + 2 * o, h + 2 * o, RADII(ro, ro, ro, ro), FOCUS_W, col);
 }
 
 void gfx_vgradient(struct canvas *c, int x, int y, int w, int h, color_t top, color_t bot) {
@@ -130,7 +153,7 @@ void gfx_vgradient(struct canvas *c, int x, int y, int w, int h, color_t top, co
         gfx_fill(c, x, y + i, w, 1, mix(top, bot, h > 1 ? i * 256 / (h - 1) : 0));
 }
 
-/* soft drop shadow: stacked translucent rounded rects */
+/* legacy soft shadow (stacked translucent rounded rects); new code uses gfx_elev */
 /* soft drop shadow for a (rounded) rect the caller then draws on top: only the four bands
  * around the edge are filled, since the inside is hidden by the content anyway */
 void gfx_shadow(struct canvas *c, int x, int y, int w, int h, int r, int spread, int strength) {
@@ -149,6 +172,89 @@ void gfx_shadow(struct canvas *c, int x, int y, int w, int h, int r, int spread,
             int a = strength * (spread - i + 1) / (spread * spread / 2 + 1);
             if (a <= 0) continue;
             gfx_round_fill(&cc, x - i, y - i + spread / 3, w + 2 * i, h + 2 * i, r + i, RGBA(0, 0, 0, a));
+        }
+    }
+}
+
+/* ---- baked 9-slice shadows ----
+ * One corner tile (c x c) and one edge profile (c) per (radius, blur): the blurred coverage of a rounded rect corner,
+ * three box passes of radius blur/2 (close to a Gaussian with sigma = blur/2), reaching e = 3 * (blur/2) px out.
+ * All four corners and edges are mirrors, so a shadow of any size is blits from these. */
+struct shtile { int r, blur, e, c; uint8_t *px, *edge; };
+static uint8_t shpool[32768];                           /* ponytail: one bump pool, wiped when full; fits E1-E4 at the 4/8 radii */
+static struct shtile sht[12];
+static int shused, nsh;
+
+static void box3(uint8_t *p, int n, int step, int rb) { /* 3 box passes along n samples: zero before 0, clamped after */
+    static uint8_t tmp[512];
+    int d = 2 * rb + 1;
+    for (int pass = 0; pass < 3; pass++) {
+        for (int i = 0; i < n; i++) tmp[i] = p[i * step];
+#define AT(k) ((k) < 0 ? 0 : tmp[(k) < n ? (k) : n - 1])
+        int sum = 0;
+        for (int k = -rb; k <= rb; k++) sum += AT(k);
+        for (int i = 0; i < n; i++) { p[i * step] = (sum + d / 2) / d; sum += AT(i + rb + 1) - AT(i - rb); }
+#undef AT
+    }
+}
+
+static const struct shtile *shtile(int r, int blur) {
+    for (int k = 0; k < nsh; k++) if (sht[k].r == r && sht[k].blur == blur) return &sht[k];
+    int rb = blur / 2 > 0 ? blur / 2 : 1, e = 3 * rb, cs = r + 2 * e, need = cs * cs + cs;
+    if (cs > 512 || need > (int)sizeof shpool) return 0;
+    if (nsh == (int)(sizeof sht / sizeof sht[0]) || shused + need > (int)sizeof shpool) nsh = shused = 0;
+    struct shtile *t = &sht[nsh];
+    *t = (struct shtile){ r, blur, e, cs, shpool + shused, shpool + shused + cs * cs };
+    for (int y = 0; y < cs; y++)
+        for (int x = 0; x < cs; x++) t->px[y * cs + x] = x < e || y < e ? 0 : cc(r, y - e, x - e);
+    for (int y = 0; y < cs; y++) box3(t->px + y * cs, cs, 1, rb);
+    for (int x = 0; x < cs; x++) box3(t->px + x, cs, cs, rb);
+    for (int y = 0; y < cs; y++) t->edge[y] = y < e ? 0 : 255;
+    box3(t->edge, cs, 1, rb);
+    shused += need; nsh++;
+    return t;
+}
+
+void gfx_shadow9(struct canvas *c, int x, int y, int w, int h, int r, int dy, int blur, int alpha) {
+    if (blur <= 0 || alpha <= 0 || w <= 0 || h <= 0) return;
+    r = imin(r, imin(w, h) / 2);
+    const struct shtile *t = shtile(r, blur);
+    if (!t) return;
+    int e = t->e, cs = t->c, W = w + 2 * e, H = h + 2 * e, sx0 = x - e, sy0 = y + dy - e;
+    int hy0 = y + r, hy1 = y + h - r;                   /* the caster's own rows (minus its corners) are left alone */
+    uint8_t lut[256];
+    for (int v = 0; v < 256; v++) lut[v] = (v * imin(alpha, 255) + 127) / 255;
+    int x0 = imax(sx0, c->cx0), x1 = imin(sx0 + W, c->cx1);
+    for (int yy = imax(sy0, c->cy0); yy < imin(sy0 + H, c->cy1); yy++) {
+        int ly = yy - sy0, ry = H - 1 - ly, vy = ly < cs && ly <= ry ? ly : ry < cs ? ry : -1;
+        uint32_t *row = &c->px[yy * c->stride];
+        int hole = yy >= hy0 && yy < hy1, ha = imax(x0, x), hb = imin(x1, x + w);
+        for (int xx = x0; xx < x1; xx++) {
+            if (hole && xx == ha && ha < hb) { xx = hb - 1; continue; }
+            int lx = xx - sx0, rx = W - 1 - lx, vx = lx < cs && lx <= rx ? lx : rx < cs ? rx : -1;
+            int v = vy < 0 ? (vx < 0 ? 255 : t->edge[vx]) : vx < 0 ? t->edge[vy] : t->px[vy * cs + vx];
+            if (lut[v]) row[xx] = blend(row[xx], (uint32_t)lut[v] << 24);
+        }
+    }
+}
+
+void gfx_elev(struct canvas *c, int x, int y, int w, int h, int r, int level, int alpha) {
+    if (level > E0 && level <= E4) gfx_shadow9(c, x, y, w, h, r, ELEV[level].dy, ELEV[level].blur, alpha);
+}
+
+/* ---- A8 masks (glyphs, icons) tinted with col; col's alpha scales the mask ---- */
+void gfx_mask(struct canvas *c, int x, int y, const uint8_t *a, int w, int h, int stride, color_t col) {
+    int x0 = imax(x, c->cx0), y0 = imax(y, c->cy0), x1 = imin(x + w, c->cx1), y1 = imin(y + h, c->cy1);
+    uint32_t ca = col >> 24, rgb = col & 0xFFFFFF;
+    if (!ca) return;
+    for (int yy = y0; yy < y1; yy++) {
+        const uint8_t *m = a + (yy - y) * stride - x;
+        uint32_t *row = &c->px[yy * c->stride];
+        for (int xx = x0; xx < x1; xx++) {
+            uint32_t v = m[xx];
+            if (!v) continue;
+            if (ca != 255) v = v * ca / 255;
+            row[xx] = blend(row[xx], v << 24 | rgb);
         }
     }
 }
@@ -270,22 +376,7 @@ int utf8_decode(const char *s, int n, uint32_t *cp) {
 
 int gfx_char(struct canvas *c, const struct font *f, int x, int y, uint32_t cp, color_t col) {
     const struct glyph *g = font_glyph(f, cp);
-    const uint8_t *a = f->alpha + g->off;
-    int gx = x + g->xoff, gy = y + g->yoff;
-    int ca = col >> 24;
-    for (int j = 0; j < g->h; j++) {
-        int yy = gy + j;
-        if (yy < c->cy0 || yy >= c->cy1) continue;
-        uint32_t *row = &c->px[yy * c->stride];
-        for (int i = 0; i < g->w; i++) {
-            int xx = gx + i;
-            if (xx < c->cx0 || xx >= c->cx1) continue;
-            uint32_t v = a[j * g->w + i];
-            if (!v) continue;
-            v = v * ca / 255;
-            row[xx] = blend(row[xx], (v << 24) | (col & 0xFFFFFF));
-        }
-    }
+    gfx_mask(c, x + g->xoff, y + g->yoff, f->alpha + g->off, g->w, g->h, g->w, col);
     return g->adv;
 }
 

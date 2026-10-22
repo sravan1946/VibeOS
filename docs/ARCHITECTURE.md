@@ -245,9 +245,12 @@ detection (`term_link_at`) so the window code stays free of cell-level logic.
   client may be mid-frame with the old stride. `boot_info` fb fields track the current mode.
 * `user/lib/gui.c` wraps that; `user/lib/ui.c` is an immediate-mode widget toolkit (buttons,
   checkboxes, sliders, text boxes, lists, panels) in the desktop's theme.
-* **Themes**: `common/theme.h` is one struct of named colours (widgets, compositor chrome, terminal palette and tab bar), `theme.c`
-  holds the five built-in tables (`dark` is the original look and the default), the accent presets, `theme_set_accent` (derives the
-  hover/pressed/key/on-accent colours and nudges the accent until it reads 3:1 on the theme's surfaces) and `theme_contrast`
+* **Themes**: `common/theme.h` is one struct of named colours: the Graphite tokens of `docs/DESIGN.md` (surfaces, lines, text,
+  accent, semantic colours, shadow alphas) plus legacy names derived from them for unported code, the terminal palette and tab bar.
+  `theme.c` holds the three built-in tables (`graphite` is the default, then `graphite-light` and `contrast`; `dark`/`light` still
+  resolve), the accent presets (amber first), `theme_set_accent` (derives hover/press/on-accent/accent-text/signal-line/selection and
+  nudges each to its contrast floor) and `theme_contrast`. Sizes, radii, elevation, focus, motion and type roles are in
+  `common/design.h`; the 9-slice shadows, per-corner rounded rects, rings and A8 masks they draw with are in `common/gfx.c`
   (integer WCAG ratio; `tools/themetest` checks every pair of every theme and accent on the host). The kernel's active theme is
   `cur_theme` (`kernel/gui/theme.c`): `wm.c`/`termwin.c` read it instead of constants (`OV(a)`/`ACC(a)` tint the theme's overlay and
   accent colours, `OVE`/`ACE` are the outline variants a high-contrast theme strengthens), `term_set_colors` hands the terminal

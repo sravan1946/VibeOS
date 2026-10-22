@@ -9,7 +9,7 @@ import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vmtest
 
-THEMES = ["dark", "light", "nord", "solarized", "contrast"]
+THEMES = ["graphite", "graphite-light", "contrast"]
 
 def boot():
     vm = vmtest.VM(absolute=True)

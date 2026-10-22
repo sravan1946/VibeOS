@@ -229,7 +229,7 @@ user: $(UBINS)
 # root/ is the static skeleton; user binaries land in /bin; empty dirs aren't tracked by the VCS
 # the in-OS toolchain's sdk (tcc is the compiler): headers in /usr/include, crt + libs in /usr/lib, tcc's own
 # runtime + headers in /usr/lib/tcc. libtcc1.a is plain gcc output (tcc's 64-bit divide/shift helpers, alloca).
-SDK_HDRS := user/lib/gui.h user/lib/ui.h user/lib/image.h user/lib/fsutil.h common/abi.h common/gfx.h common/font.h common/theme.h
+SDK_HDRS := user/lib/gui.h user/lib/ui.h user/lib/image.h user/lib/fsutil.h common/abi.h common/gfx.h common/font.h common/theme.h common/design.h
 build/user/libtcc1.a: third_party/tcc/lib/libtcc1.c third_party/tcc/lib/alloca86.S Makefile
 	$(CC) $(UCFLAGS) -O0 -fno-builtin -c third_party/tcc/lib/libtcc1.c -o build/user/libtcc1.o   # -O0: at -O2 the static __udivmoddi4 gets regparm
 	objcopy --globalize-symbol=__udivmoddi4 build/user/libtcc1.o   # libc.a (gcc-built) calls it
@@ -277,7 +277,7 @@ debug: build/vibeos.img
 doom-wad:    # download + verify Freedoom into build/wads/ (then `make` puts it in /usr/share/doom)
 	sh tools/getwad.sh
 
-test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audio decoders, theme contrast)
+test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audio decoders, theme contrast, gfx primitives)
 	sh tools/termtest/run.sh
 	sh tools/imagetest/run.sh
 	sh tools/libctest/run.sh
@@ -288,6 +288,7 @@ test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audi
 	python3 tools/pathtest.py
 	sh tools/filestest/run.sh
 	sh tools/themetest/run.sh
+	sh tools/gfxtest/run.sh
 
 test-tls:    # HTTPS against local test servers (needs openssl)
 	sh tools/tlstest/run.sh

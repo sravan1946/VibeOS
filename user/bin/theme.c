@@ -44,7 +44,7 @@ int main(int argc, char **argv) {
     if (i >= argc) {
         struct theme_state st;
         if (gui_theme_state(&st) < 0) { fprintf(stderr, "theme: no /dev/theme\n"); return 1; }
-        for (int k = 0; k < theme_count(); k++) printf("%c %-10s %s\n", k == st.index ? '*' : ' ', theme_get(k)->name, theme_get(k)->label);
+        for (int k = 0; k < theme_count(); k++) printf("%c %-15s %s\n", k == st.index ? '*' : ' ', theme_get(k)->name, theme_get(k)->label);
         printf("accent:    ");
         for (int k = 0; k < THEME_ACCENTS; k++) printf("%s ", theme_accents[k].name);
         if (st.accent) printf("(now %06X)\n", st.accent & 0xFFFFFF); else printf("(now default)\n");

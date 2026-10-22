@@ -33,7 +33,7 @@ emulator, and a set of desktop apps and games.
 **Desktop**
 - In-kernel compositor with damage tracking, soft shadows, rounded anti-aliased windows,
   window open animations, a procedural aurora wallpaper (5 styles) or any PNG/JPEG picture.
-- **Themes**: Vibe Dark (the default), Vibe Light, Nord, Solarized and High Contrast, plus nine accent colours and a window-animations switch;
+- **Themes**: Graphite dark (the default), Graphite light and High contrast (spec: `docs/DESIGN.md`), plus nine accent colours (amber by default) and a window-animations switch;
   one colour definition (`common/theme.h`) drives the compositor, the terminals and every libgui app, and a switch repaints all open windows
   at once. Settings > Appearance / Wallpaper, or `theme light`, `theme -s accent blue` in the shell (`-s` saves to `/etc/theme`).
   Every theme's text/background pairs are checked against WCAG 4.5:1 on the host (`make test-host`).
