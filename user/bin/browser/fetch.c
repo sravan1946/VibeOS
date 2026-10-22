@@ -49,7 +49,7 @@ int fetch_main(const char *url, const char *post) {
     char req[URL_MAX + 400], hh[160];
     if (port == (https ? 443 : 80)) snprintf(hh, sizeof hh, "%s", host); else snprintf(hh, sizeof hh, "%s:%d", host, port);
     int rl = snprintf(req, sizeof req, "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: VibeBrowser/1.0 (VibeOS)\r\n"
-                      "Accept: text/html,text/plain;q=0.9,image/png,image/bmp,*/*;q=0.5\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
+                      "Accept: text/html,text/plain;q=0.9,image/png,image/jpeg,image/gif,image/bmp,*/*;q=0.5\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
                       post ? "POST" : "GET", path, hh);
     if (post) rl += snprintf(req + rl, sizeof req - rl, "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %d\r\n", (int)strlen(post));
     rl += snprintf(req + rl, sizeof req - rl, "\r\n");

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Regenerates the procedural sample images in root/home/Pictures (Pillow, deterministic, no assets)."""
+"""Regenerates the procedural sample images in root/home/Pictures (Pillow, deterministic, no assets):
+PNGs, JPEGs (baseline, progressive, EXIF-rotated) and animated GIFs."""
 import colorsys, math, os, random
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -46,7 +47,28 @@ def shapes(s=480):                             # RGBA with soft-edged transparen
         im = Image.alpha_composite(im, layer.filter(ImageFilter.GaussianBlur(2)))
     return im
 
+def orbits(s=160, n=16):                       # balls circling on a transparent canvas: an animated GIF with disposal 2
+    frames = []
+    for i in range(n):
+        im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        d.ellipse([s // 2 - 14, s // 2 - 14, s // 2 + 14, s // 2 + 14], fill=(255, 220, 120, 255))
+        for k in range(5):
+            a = 2 * math.pi * (i / n + k / 5)
+            r = 28 + 12 * k
+            x, y = s / 2 + r * math.cos(a * (1 + k % 2)), s / 2 + r * math.sin(a * (1 + k % 2))
+            c = colorsys.hsv_to_rgb(k / 5, .65, 1)
+            d.ellipse([x - 9, y - 9, x + 9, y + 9], fill=(int(c[0] * 255), int(c[1] * 255), int(c[2] * 255), 255))
+        frames.append(im)
+    return frames
+
 mandelbrot().save(os.path.join(OUT, "mandelbrot.png"), optimize=True)
 dunes().save(os.path.join(OUT, "dunes.png"), optimize=True)
 shapes().save(os.path.join(OUT, "bubbles.png"), optimize=True)
+dunes().save(os.path.join(OUT, "dunes.jpg"), quality=72, optimize=True)                                    # 4:2:0 baseline
+mandelbrot(480, 300).save(os.path.join(OUT, "mandelbrot-progressive.jpg"), quality=60, progressive=True)     # progressive
+ex = Image.Exif(); ex[0x0112] = 6                                                                           # stored sideways, EXIF says rotate
+dunes(360, 240).rotate(90, expand=True).save(os.path.join(OUT, "dunes-rotated.jpg"), quality=75, subsampling=1, exif=ex.tobytes())
+fr = orbits()
+fr[0].save(os.path.join(OUT, "orbits.gif"), save_all=True, append_images=fr[1:], duration=60, loop=0, disposal=2)
 for f in sorted(os.listdir(OUT)): print(f, os.path.getsize(os.path.join(OUT, f)))
