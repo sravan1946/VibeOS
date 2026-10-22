@@ -57,8 +57,8 @@ int gui_next_event(struct gui_window *win, struct gui_event *ev, int timeout_ms)
     int r = poll(&p, 1, timeout_ms);
     if (r <= 0) return r;
     if (read(win->fd, ev, sizeof *ev) != sizeof *ev) return -1;
-    if (ev->type == EV_RESIZE)      /* kernel keeps the same mapping and stride; only w/h change */
-        attach(win, ev->w, ev->h, win->pixels, win->stride);
+    if (ev->type == EV_RESIZE)      /* same mapping; x = the new stride after a display mode change, else 0 */
+        attach(win, ev->w, ev->h, win->pixels, ev->x ? ev->x : win->stride);
     return 1;
 }
 

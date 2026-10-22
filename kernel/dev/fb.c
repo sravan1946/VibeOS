@@ -61,7 +61,13 @@ void fb_init(void) {
     splash_init();
 }
 
-void bootcon_enable(bool on) { con_on = on; }
+void fb_set_mode(uint32_t *px, int w, int h, int stride) {
+    canvas_init(&fb, px, w, h, stride);
+    con_x = 16; con_y = 12;
+    if (splash_on) { int p = splash_pct - 1; splash_pct = 0; splash_init(); splash_progress(p); splash_draw_status(); }
+}
+
+void bootcon_enable(bool on) { con_on = on; if (!on) splash_on = false; }
 
 static void con_newline(void) {
     int lh = con_font->height;

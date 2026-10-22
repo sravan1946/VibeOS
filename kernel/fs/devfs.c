@@ -1,4 +1,4 @@
-/* devfs.c - /dev (null zero random tty kmsg clipboard screen) and /proc (text files) */
+/* devfs.c - /dev (null zero random tty kmsg clipboard screen display) and /proc (text files) */
 #include "proc.h"
 #include "tty.h"
 
@@ -8,6 +8,7 @@ extern size_t klog_size(void);
 extern const char *cpu_brand(void);
 extern int wm_screen_read(uint32_t off, void *buf, uint32_t n);
 extern void wm_notify(const char *msg, int n);
+extern const struct vnode_ops display_ops;
 
 /* ---- tiny static directory helper ---- */
 struct sdir { struct vnode vn; struct snode *nodes; int n; };
@@ -106,6 +107,7 @@ static struct snode dev_nodes[] = {
     { "screen", { .mode = S_IFREG | 0444, .ino = 11, .refs = 1, .ops = &screen_ops } },   /* REG so the offset advances */
     { "clipboard", { .mode = S_IFREG | 0666, .ino = 10, .refs = 1, .ops = &clip_ops } },
     CHR("notify", notify_ops, 12),
+    { "display", { .mode = S_IFREG | 0666, .ino = 13, .refs = 1, .ops = &display_ops } },
     CHR("dsp", ac97_ops, 8), CHR("mixer", ac97_ops, 9),      /* listed only once ac97_init succeeds */
 };
 static struct sdir devdir = { { .mode = S_IFDIR | 0755, .ino = 1, .refs = 1, .ops = &sdir_ops }, dev_nodes, ARRAY_LEN(dev_nodes) - 2 };

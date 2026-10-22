@@ -163,9 +163,22 @@ procedurally drawn box-drawing glyphs, scrollback). Keys become escape sequences
   history; entries flagged `toast` are stacked top-right for 4 s (checked on the 250 ms tick). The center lists
   the history. The tray polls `ac97_volume()` and `ni` on the same tick and damages the tray only on change.
 * **User windows are file descriptors.** `win_create` maps a pixel buffer into the process at
-  `0xA0000000+` (8 MiB slots; buffers are full-screen-sized so resizes never reallocate);
+  `0xA0000000+` (16 MiB slots; buffers are full-screen-sized so resizes never reallocate);
   the app draws into it and calls `win_flip` with a damage rectangle. `read()` on the fd returns
   `struct gui_event`s and `poll()` works on it.
+* **Display modes**: stage2 picks the boot mode through VBE; after that `kernel/dev/display.c` drives the
+  Bochs/QEMU adapter (PCI 1234:1111, BAR0 = LFB) directly through its DISPI ports (0x1CE/0x1CF): disable,
+  XRES/YRES/BPP=32/VIRT_W, enable with LFB, read back to check. All of VRAM is mapped write-combining up
+  front. QEMU rounds XRES down to a multiple of 8, so 1366 is programmed as 1368 and the last two columns
+  stay black. `/dev/display` lists the modes VRAM allows (`WxH`, current one ` *`) and switches on a
+  `WxH` write; `/etc/display` is applied right after the root mount (the splash is redrawn at the new
+  size). `wm_set_mode` allocates first (back buffer, wallpaper, bigger window buffers; screen-sized
+  buffers come from the frame allocator, not the 32 MiB heap) so a failure leaves the old mode, then
+  programs the adapter, re-renders the wallpaper, keeps maximised/snapped windows filling their zone,
+  shrinks and pulls the others on-screen, and rescales the vmmouse pointer. Window buffers only grow:
+  one too small is copied into a bigger one, remapped at the same user address (hence 16 MiB slots), and
+  the client gets `EV_RESIZE` with `x` = the new stride (libgui applies it). They never shrink, because a
+  client may be mid-frame with the old stride. `boot_info` fb fields track the current mode.
 * `user/lib/gui.c` wraps that; `user/lib/ui.c` is an immediate-mode widget toolkit (buttons,
   checkboxes, sliders, text boxes, lists, panels) in the desktop's theme.
 

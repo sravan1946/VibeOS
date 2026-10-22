@@ -14,7 +14,7 @@ struct window {
     int x, y, w, h;                 /* client rect, screen coords */
     int flags;                      /* WIN_FLAG_* */
     char title[64];
-    uint32_t *buf;                  /* stride = screen width, sized for the whole screen */
+    uint32_t *buf;                  /* stride = canvas.stride (>= screen width), sized for the whole screen */
     uint32_t buf_frames;
     struct canvas canvas;           /* over buf, w x h */
     int owner_pid;
@@ -35,6 +35,7 @@ struct window {
 
 void wm_init(void);                         /* takes over the screen, starts the compositor thread */
 bool wm_running(void);
+int  wm_set_mode(int w, int h);              /* switch the display mode, re-lay-out the desktop */
 void wm_wake(void);
 struct window *wm_create(const char *title, int x, int y, int w, int h, int flags);
 void wm_destroy(struct window *w);

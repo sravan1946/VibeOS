@@ -22,7 +22,7 @@ emulator, and a set of desktop apps and games.
   per-task FPU state, POSIX-style signal handlers (masks, `sigreturn`, SIGCHLD/SIGWINCH),
   ~50 syscalls (`common/abi.h`).
 - VFS with mounts: read/write **ext2** root filesystem on ATA, `/dev` (null zero random tty
-  kmsg clipboard notify dsp), `/proc` (meminfo uptime cpuinfo version processes), pipes, `poll()`.
+  kmsg clipboard notify display dsp), `/proc` (meminfo uptime cpuinfo version processes), pipes, `poll()`.
 - TTY line discipline (canonical and raw modes, job control signals, window size).
 - **Networking**: PCI, Intel e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP, DHCP, DNS, TLS (BearSSL), and TCP
   (client and server), exposed as BSD-style socket fds.
@@ -35,6 +35,8 @@ emulator, and a set of desktop apps and games.
 - Drag, resize, maximise (double-click the title bar), minimise, edge snapping and Super+arrow
   tiling, smart window placement, a right-click window menu (always on top, move to workspace),
   Super+drag to move from anywhere, a desktop context menu.
+- Runtime resolution switching on the QEMU/Bochs display adapter (1024x768 up to 2560x1600): Settings >
+  Display with a "Keep this resolution?" revert, or `display 1920x1080` in the shell; saved in `/etc/display`.
 - 4 virtual workspaces (Super+1..4, Super+Shift+1..4 to move a window), an Alt+Tab switcher with
   live thumbnails, toast notifications and a notification center (Super+N; `notify TITLE BODY`,
   `/dev/notify`), a taskbar with launcher, workspace dots, volume and network tray, CPU meter and clock.

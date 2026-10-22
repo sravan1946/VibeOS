@@ -118,8 +118,9 @@ void kmain(struct boot_info *bi) {
     mount_root();
     net_init();
     if (ac97_init() == 0) devfs_audio();
-    splash_progress(60);
     mouse_init(bi->fb_width, bi->fb_height);
+    display_init();
+    splash_progress(60);
     splash_progress(75);
     wm_init();
     (void)start_init;
