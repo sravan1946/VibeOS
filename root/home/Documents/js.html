@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html><head><title>JavaScript demo</title>
+<style>
+body { background: #F7F5FF }
+.card { background: #FFFFFF; border: 1px solid #D8D0F0; padding: 10px 16px; margin: 12px 0 }
+.big { font-size: 24px; font-weight: bold; color: #6A3FD0 }
+.done { text-decoration: line-through; color: #8A86A0 }
+.dim { color: #8A86A0 }
+pre { background: #EEEAF8 }
+</style></head>
+<body>
+<h1>JavaScript demo</h1>
+<p class="dim">QuickJS runs the scripts on this page; the DOM changes are laid out again by the browser. Press F12 for the console.</p>
+
+<div class="card">
+<h2>Counter</h2>
+<p>Clicked <span id="count" class="big">0</span> times.
+<button id="inc">+1</button> <button id="dec">-1</button> <button onclick="setCount(0)">Reset</button></p>
+</div>
+
+<div class="card">
+<h2>Todo list</h2>
+<p><input id="todo" type="text" size="30" placeholder="Something to do"> <button id="add">Add</button>
+<span id="left" class="dim"></span></p>
+<ul id="todos"></ul>
+<p class="dim">Click an item to tick it off, Enter adds, <a href="#" id="clear">clear done items</a>.</p>
+</div>
+
+<div class="card">
+<h2>Timer</h2>
+<p><span id="clock" class="big">00:00.0</span>
+<button id="start">Start</button> <button id="stop">Stop</button></p>
+<p class="dim" id="now"></p>
+</div>
+
+<div class="card">
+<h2>Fetch</h2>
+<p><button id="load">Fetch todo.txt</button> <span id="status" class="dim">not fetched yet</span></p>
+<pre id="file">(the file shows up here)</pre>
+</div>
+
+<p><a href="jstest.html">JavaScript test page</a> &middot; <a href="about:home">start page</a></p>
+
+<script>
+// ---- counter ----
+let count = 0;
+const countEl = document.getElementById('count');
+function setCount(n) {
+    count = n;
+    countEl.textContent = count;
+    countEl.style.color = count < 0 ? '#C0303A' : '#6A3FD0';
+}
+document.getElementById('inc').addEventListener('click', () => setCount(count + 1));
+document.getElementById('dec').addEventListener('click', () => setCount(count - 1));
+
+// ---- todo list ----
+const todos = [{ text: 'boot VibeOS', done: true }, { text: 'run some JavaScript', done: false }];
+const list = document.querySelector('#todos'), input = document.getElementById('todo');
+function render() {
+    list.innerHTML = '';
+    todos.forEach((t, i) => {
+        const li = document.createElement('li');
+        li.textContent = (t.done ? '[x] ' : '[ ] ') + t.text;
+        if (t.done) li.classList.add('done');
+        li.addEventListener('click', () => { t.done = !t.done; render(); });
+        list.appendChild(li);
+    });
+    const left = todos.filter(t => !t.done).length;
+    document.getElementById('left').textContent = left + (left === 1 ? ' item' : ' items') + ' left';
+}
+function add() {
+    const v = input.value.trim();
+    if (!v) { alert('Type something to do first.'); return; }
+    todos.push({ text: v, done: false });
+    input.value = '';
+    render();
+}
+document.getElementById('add').onclick = add;
+input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+document.getElementById('clear').addEventListener('click', e => {
+    e.preventDefault();
+    for (let i = todos.length - 1; i >= 0; i--) if (todos[i].done) todos.splice(i, 1);
+    render();
+});
+render();
+
+// ---- timer ----
+let t0 = 0, acc = 0, tick = null;
+const clock = document.getElementById('clock');
+function show() {
+    const ms = acc + (tick ? performance.now() - t0 : 0), s = Math.floor(ms / 1000);
+    clock.textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0') + '.' + Math.floor(ms % 1000 / 100);
+}
+document.getElementById('start').addEventListener('click', () => {
+    if (tick) return;
+    t0 = performance.now();
+    tick = setInterval(show, 100);
+});
+document.getElementById('stop').addEventListener('click', () => {
+    if (!tick) return;
+    acc += performance.now() - t0;
+    clearInterval(tick);
+    tick = null;
+    show();
+});
+setInterval(() => { document.getElementById('now').textContent = 'Page clock: ' + new Date().toTimeString().slice(0, 8); }, 1000);
+
+// ---- fetch ----
+document.getElementById('load').addEventListener('click', async () => {
+    const st = document.getElementById('status');
+    st.textContent = 'loading...';
+    try {
+        const r = await fetch('todo.txt');
+        const text = await r.text();
+        document.getElementById('file').textContent = text;
+        st.textContent = r.status + ' ' + r.statusText + ', ' + text.length + ' bytes';
+    } catch (e) {
+        st.textContent = 'failed: ' + e.message;
+    }
+});
+console.log('demo ready:', todos.length, 'todos');
+</script>
+</body></html>

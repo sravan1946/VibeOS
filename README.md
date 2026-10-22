@@ -62,10 +62,11 @@ emulator, and a set of desktop apps and games.
   unified), `cmp`, `xargs`, `md5sum sha256sum`.
 - `/bin/lua`: Lua 5.4 with a REPL, plus `vibe` (system info, processes, beep) and `gui` (windows) modules.
 - `/bin/python`: MicroPython 1.29 with a line-editing REPL (history, Tab completion), scripts, file I/O through `open`/`os`, and `sys time math json re random struct collections os.path` plus `vibe`, `gui` (windows and events), `socket`/`select`/`ssl` (TCP/UDP, TLS client) modules; `projects/paint.py` is a launcher app (Python Paint).
+- `/bin/qjs`: QuickJS (ES2023+) with its REPL and the `std`/`os` modules (`qjs ~/projects/test.js`).
 - `/bin/tcc`: TinyCC 0.9.27 compiles C inside VibeOS against its own libc (`tcc hello.c -o hello`, `tcc -run`, `-lgui` for windows); see `~/projects/README.txt`.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc` (`nc -l` listens; `wget` does https:// with certificate checks), and `httpd` — run it inside `make run` and open http://localhost:8080 on the host. Audio: `play` (WAV files), `midi` (Standard MIDI Files through an OPL3 FM synth; needs the Freedoom WAD for its instruments), `tone`.
-- GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + basic CSS, PNG/JPEG/GIF images, forms, find-in-page), Paint (saves/opens PNG), **Code** (a small IDE: project sidebar, tabs, C and Lua highlighting, find/replace, Build with tcc and Run with an output pane, click an error to jump to it), Image
+- GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + basic CSS, PNG/JPEG/GIF images, forms, find-in-page, JavaScript with a DOM, events, timers and `fetch`), Paint (saves/opens PNG), **Code** (a small IDE: project sidebar, tabs, C and Lua highlighting, find/replace, Build with tcc and Run with an output pane, click an error to jump to it), Image
   viewer (PNG/JPEG/GIF/BMP/PPM, animated GIFs, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
   Monitor, Settings, About, Piano (a polyphonic synth keyboard), Music (library, playlist, shuffle/repeat, seek, album art; MP3/Ogg/WAV). PrtSc saves a PNG screenshot
   to `~/Pictures`.

@@ -1,0 +1,40 @@
+QuickJS in VibeOS
+=================
+
+Version : QuickJS 2026-06-04 (Fabrice Bellard and Charlie Gordon)
+Origin  : https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz
+SHA-256 : b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a  (of the tarball as downloaded; the
+          site publishes no checksum)
+Licence : MIT, see LICENSE here
+
+What is here: from the tarball, the engine (quickjs.c/h, quickjs-atom.h, quickjs-opcode.h, libregexp*, libunicode*,
+dtoa.c/h, cutils.c/h, list.h), quickjs-libc.c/h (the std and os modules), qjs.c and repl.js (the interpreter and its
+REPL), qjsc.c (only built on the host, see below), tests/*.js, examples/*.js, LICENSE, readme.txt, Changelog, VERSION.
+Left out: the Makefile, doc/, the test262 runner and the unicode table generator.
+
+Patches: none. Every file is byte-for-byte what the tarball contains.
+
+How it is built (see the "QuickJS" block in the top-level Makefile)
+--------------------------------------------------------------------
+- Every file is compiled with `-include user/bin/qjs/compat/vibe_qjs.h` and `-Iuser/bin/qjs/compat`. That header
+  fills what our libc lacks under qjs_* names behind macros (so a later libc addition can't collide): timespec and
+  clock_gettime, nanosleep, the C99 math QuickJS needs (lrint fmin fmax log1p expm1 cbrt asinh acosh atanh, on the
+  x87), a POSIX-shaped struct stat and termios converted to/from the kernel's, popen (sh -c on a pipe), and ENOSYS
+  stubs for fork/execve/symlink/readlink/utimes/setuid. compat/ also has single-threaded pthread.h (no-op locks,
+  pthread_create fails, so os.Worker throws), an empty fenv.h and a dlfcn.h whose dlopen always fails.
+  The non-inline functions are in user/bin/qjs/sys.c.
+- The libc grew malloc_usable_size (malloc.h) and struct tm's tm_gmtoff, which QuickJS uses for memory accounting and
+  the time zone offset.
+- -fexcess-precision=standard: doubles are rounded at every assignment on the x87, as in the Lua port.
+- repl.js is turned into bytecode (build/user/qjs/repl.c) by qjsc built for the host with the system compiler. The
+  bytecode doesn't depend on the word size (a 32-bit host qjsc produces byte-identical output).
+- /bin/qjs links the engine, quickjs-libc, qjs.c and the REPL bytecode; /bin/browser links only the engine (its DOM
+  bindings are user/bin/browser/js.c and dom_js.c).
+- tests/ and examples/ are copied to /usr/share/quickjs in the root filesystem.
+
+Status in the VM: tests/test_language.js, test_builtin.js (with --std), test_closure.js, test_bigint.js and
+test_loop.js pass; test_std.js passes until it reaches os.exec, which needs fork. /home/projects/test.js is our own
+check of the language, builtins, std/os and timers.
+
+Upgrading: replace the files above with the new release's, update the version, URL and checksum here and the
+CONFIG_VERSION in the Makefile, run `make`, then `qjs /home/projects/test.js` and the tests/ in the VM.

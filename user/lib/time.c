@@ -58,6 +58,7 @@ struct tm *gmtime_r(const time_t *t, struct tm *o) {
     o->tm_wday = (int)(((days + 4) % 7 + 7) % 7);        /* 1970-01-01 was a Thursday */
     o->tm_yday = days - days_from_civil(y, 1, 1);
     o->tm_isdst = 0;
+    o->tm_gmtoff = 0;
     return o;
 }
 
@@ -68,7 +69,9 @@ struct tm *gmtime(const time_t *t) {
 
 struct tm *localtime_r(const time_t *t, struct tm *o) {
     time_t l = *t + tz_off() * 60;
-    return gmtime_r(&l, o);
+    gmtime_r(&l, o);
+    o->tm_gmtoff = tz_off() * 60L;
+    return o;
 }
 
 struct tm *localtime(const time_t *t) {

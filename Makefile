@@ -195,6 +195,31 @@ UEXTRA_play := $(ADEC_OBJ)
 UEXTRA_music := $(ADEC_OBJ)
 build/user/obj/bin/play/%.o build/user/obj/bin/music/%.o: UCFLAGS += -Iuser/music
 
+# QuickJS 2026-06-04 (third_party/quickjs, MIT, unmodified): the engine goes into /bin/qjs (with quickjs-libc's std/os
+# modules and qjs.c's REPL) and /bin/browser. compat/vibe_qjs.h is force-included to fill libc gaps under qjs_* names.
+# repl.js becomes bytecode through a host build of qjsc (QuickJS bytecode doesn't depend on the word size).
+QJS_DIR := third_party/quickjs
+QJS_DEF := -D_GNU_SOURCE -DCONFIG_VERSION='"2026-06-04"'
+# compat/ first: its single-threaded pthread.h must win over the real one in user/include
+QJS_FLAGS := -Iuser/bin/qjs/compat -I$(QJS_DIR) -include user/bin/qjs/compat/vibe_qjs.h $(QJS_DEF) -fexcess-precision=standard
+QJS_CORE := $(patsubst %,build/user/obj/$(QJS_DIR)/%.o,quickjs dtoa libregexp libunicode cutils)
+QJS_OBJ := $(QJS_CORE) $(patsubst %,build/user/obj/$(QJS_DIR)/%.o,quickjs-libc qjs)
+$(QJS_OBJ): build/user/obj/$(QJS_DIR)/%.o: $(QJS_DIR)/%.c user/bin/qjs/compat/vibe_qjs.h
+	@mkdir -p $(dir $@)
+	$(CC) $(QJS_FLAGS) $(UCFLAGS) -w -c $< -o $@
+build/host/qjsc: $(addprefix $(QJS_DIR)/,qjsc.c quickjs.c dtoa.c libregexp.c libunicode.c cutils.c quickjs-libc.c)
+	@mkdir -p $(dir $@)
+	gcc -O1 -w $(QJS_DEF) $^ -o $@ -lm -lpthread -ldl
+build/user/qjs/repl.c: $(QJS_DIR)/repl.js build/host/qjsc
+	@mkdir -p $(dir $@)
+	build/host/qjsc -s -c -o $@ -m $<
+build/user/obj/qjs/repl.o: build/user/qjs/repl.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -w -c $< -o $@
+UEXTRA_qjs := $(QJS_OBJ) build/user/obj/qjs/repl.o
+UEXTRA_browser := $(QJS_CORE)
+build/user/obj/bin/browser/%.o: UCFLAGS += -I$(QJS_DIR)
+
 $(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
 
 user: $(UBINS)
@@ -221,6 +246,7 @@ build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(ULIBS) $(UCRT0) build
 	cp third_party/tcc/include/*.h build/rootfs/usr/lib/tcc/include/ && cp build/user/libtcc1.a build/rootfs/usr/lib/tcc/
 	cp $(UCRT0) build/rootfs/usr/lib/crt1.o && $(CC) -m32 -x c -c /dev/null -o build/rootfs/usr/lib/crti.o && cp build/rootfs/usr/lib/crti.o build/rootfs/usr/lib/crtn.o
 	@for f in $(ULIBS); do strip -g -o build/rootfs/usr/lib/$$(basename $$f) $$f; done
+	@mkdir -p build/rootfs/usr/share/quickjs && cp -a $(QJS_DIR)/tests $(QJS_DIR)/examples build/rootfs/usr/share/quickjs/
 	@mkdir -p build/rootfs/etc/ssl
 	@if [ -f $(CA_BUNDLE) ]; then cp $(CA_BUNDLE) build/rootfs/etc/ssl/cert.pem; fi
 	@if [ -f build/wads/freedoom1.wad ]; then mkdir -p build/rootfs/usr/share/doom; \

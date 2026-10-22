@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html><head><title>JavaScript tests</title>
+<style>
+.pass { color: #1A8A4A }
+.fail { color: #C0303A; font-weight: bold }
+#summary { font-size: 22px; font-weight: bold }
+#sandbox { border: 1px dashed #B0A8D0; padding: 4px 8px }
+</style></head>
+<body>
+<h1>JavaScript tests</h1>
+<p id="summary">running...</p>
+<div id="sandbox"><p id="p1" class="a b" data-user-id="7" style="color: red">Hello <b>bold</b> &amp; <i>more</i></p>
+<ul id="list"><li class="x">one<li class="x y">two<li>three</ul>
+<form id="f" action="jstest.html"><input id="t" name="t" value="start"> <input id="c" type="checkbox" checked>
+<select id="s"><option value="a">A<option value="b" selected>B<option value="c">C</select>
+<textarea id="ta">area text</textarea> <button id="btn" type="button">btn</button></form></div>
+<ol id="results"></ol>
+
+<script>
+const results = document.getElementById('results');
+let pass = 0, fail = 0;
+function check(name, got, want) {
+    const ok = typeof want === 'function' ? want(got) : JSON.stringify(got) === JSON.stringify(want);
+    const li = document.createElement('li');
+    li.className = ok ? 'pass' : 'fail';
+    li.textContent = (ok ? 'PASS ' : 'FAIL ') + name + (ok ? '' : ': got ' + JSON.stringify(got) + ', want ' + (typeof want === 'function' ? 'a match' : JSON.stringify(want)));
+    results.appendChild(li);
+    ok ? pass++ : fail++;
+    if (!ok) console.error('FAIL', name, got);
+}
+const $ = s => document.querySelector(s);
+
+// ---- tree and parsing ----
+check('document', [document.nodeType, document.documentElement.tagName, !!document.body, !!document.head], [9, 'HTML', true, true]);
+check('title', document.title, 'JavaScript tests');
+check('getElementById', $('#p1') === document.getElementById('p1'), true);
+check('textContent', $('#p1').textContent, 'Hello bold & more');
+check('innerHTML', $('#p1').innerHTML, 'Hello <b>bold</b> &amp; <i>more</i>');
+check('implied </li>', [...$('#list').children].map(li => li.textContent), ['one', 'two', 'three']);
+check('querySelectorAll', document.querySelectorAll('#list li.x').length, 2);
+check('descendant + child selectors', [document.querySelectorAll('#sandbox b').length, document.querySelectorAll('ul > li').length], [1, 3]);
+check('getElementsByClassName', document.getElementsByClassName('x y').length, 1);
+check('getElementsByTagName', document.getElementsByTagName('li').length >= 3, true);
+check('matches/closest', [$('#list li').matches('.x'), $('b').closest('p').id], [true, 'p1']);
+check('parentNode/siblings', [$('#list').firstElementChild.nextElementSibling.textContent, $('b').parentNode.id], ['two', 'p1']);
+check('bad selector throws', (() => { try { document.querySelector('a:hover'); return 'no'; } catch (e) { return e.name; } })(), 'SyntaxError');
+
+// ---- changing the tree ----
+const div = document.createElement('div');
+div.id = 'made';
+div.appendChild(document.createTextNode('made by script'));
+$('#sandbox').appendChild(div);
+check('createElement/appendChild', [$('#made').textContent, div.parentNode.id], ['made by script', 'sandbox']);
+const em = document.createElement('em');
+em.textContent = 'first';
+div.insertBefore(em, div.firstChild);
+check('insertBefore', div.textContent, 'firstmade by script');
+div.removeChild(em);
+check('removeChild', [div.textContent, em.parentNode], ['made by script', null]);
+div.innerHTML = '<span class="k">a</span><span>b</span>c';
+check('innerHTML set', [div.childNodes.length, div.querySelector('.k').textContent], [3, 'a']);
+const cl = div.cloneNode(true);
+check('cloneNode', [cl.innerHTML === div.innerHTML, cl.parentNode], [true, null]);
+div.remove();
+check('remove', document.getElementById('made'), null);
+const frag = document.createDocumentFragment();
+['p', 'q'].forEach(t => { const s = document.createElement('span'); s.textContent = t; frag.appendChild(s); });
+$('#sandbox').appendChild(frag);
+check('DocumentFragment', $('#sandbox').lastChild.textContent + frag.childNodes.length, 'q0');
+check('cycle rejected', (() => { try { $('#list').appendChild($('#sandbox')); return 'no'; } catch (e) { return 'threw'; } })(), 'threw');
+
+// ---- attributes, classList, style, dataset ----
+const p = $('#p1');
+p.setAttribute('title', 'tip');
+check('get/setAttribute', [p.getAttribute('title'), p.getAttribute('nope'), p.hasAttribute('title')], ['tip', null, true]);
+p.removeAttribute('title');
+check('removeAttribute', p.hasAttribute('title'), false);
+p.classList.add('c'); p.classList.remove('a'); p.classList.toggle('d');
+check('classList', [p.className, p.classList.contains('b'), p.classList.toggle('d')], ['b c d', true, false]);
+check('style read', p.style.color, 'red');
+p.style.backgroundColor = '#EEE';
+p.style.color = '';
+check('style write', p.getAttribute('style'), 'background-color: #EEE');
+check('dataset', [p.dataset.userId, (p.dataset.extra = 'x', p.getAttribute('data-extra'))], ['7', 'x']);
+
+// ---- form controls ----
+check('input value', $('#t').value, 'start');
+$('#t').value = 'changed';
+check('input value set', $('#t').value, 'changed');
+check('checkbox', $('#c').checked, true);
+$('#c').checked = false;
+check('checkbox set', $('#c').checked, false);
+check('select', [$('#s').value, $('#s').selectedIndex], ['b', 1]);
+$('#s').value = 'c';
+check('select set', $('#s').selectedIndex, 2);
+check('textarea', $('#ta').value, 'area text');
+
+// ---- events ----
+const log = [];
+$('#list').addEventListener('click', e => log.push('ul:' + e.target.textContent));
+document.body.addEventListener('click', () => log.push('body'));
+document.addEventListener('click', () => log.push('doc'));
+window.addEventListener('click', () => log.push('win'));
+$('#list li').dispatchEvent(new Event('click', { bubbles: true }));
+check('bubbling', log, ['ul:one', 'body', 'doc', 'win']);
+const once = [];
+$('#btn').addEventListener('click', () => once.push(1), { once: true });
+$('#btn').click(); $('#btn').click();
+check('once', once.length, 1);
+$('#btn').addEventListener('custom', e => { e.preventDefault(); e.stopPropagation(); });
+const ev = new CustomEvent('custom', { bubbles: true, detail: 42 });
+check('preventDefault', [$('#btn').dispatchEvent(ev), ev.defaultPrevented, ev.detail], [false, true, 42]);
+let inl = 0;
+window.inlineHit = () => inl++;
+$('#btn').setAttribute('onclick', 'inlineHit()');
+$('#btn').click();
+check('onclick attribute', inl, 1);
+$('#btn').onclick = () => { inl += 10; };
+$('#btn').click();
+check('onclick property', inl, 11);
+
+// ---- misc globals ----
+check('location', [location.protocol, location.pathname.endsWith('jstest.html')], ['file:', true]);
+check('navigator', /VibeOS/.test(navigator.userAgent), true);
+check('localStorage', (localStorage.setItem('k', 1), localStorage.getItem('k')), '1');
+check('a.href resolves', (() => { const a = document.createElement('a'); a.setAttribute('href', 'js.html'); return a.href.endsWith('/home/Documents/js.html'); })(), true);
+document.title = 'JavaScript tests';
+
+// ---- async: timers, promises, fetch ----
+const order = [];
+setTimeout(() => order.push('t30'), 30);
+setTimeout(() => order.push('t0'), 0);
+const cancelled = setTimeout(() => order.push('never'), 10);
+clearTimeout(cancelled);
+Promise.resolve().then(() => order.push('micro'));
+order.push('sync');
+let ticks = 0;
+const iv = setInterval(() => { if (++ticks === 3) clearInterval(iv); }, 20);
+const t0 = performance.now();
+(async () => {
+    await new Promise(r => setTimeout(r, 150));
+    check('timer order', order, ['sync', 'micro', 't0', 't30']);
+    check('setInterval/clearInterval', ticks, 3);
+    check('elapsed', performance.now() - t0 >= 140, true);
+    try {
+        const r = await fetch('todo.txt');
+        const txt = await r.text();
+        check('fetch file', [r.ok, r.status, txt.includes('boot')], [true, 200, true]);
+    } catch (e) { check('fetch file', String(e), 'ok'); }
+    try { await fetch('no-such-file.txt'); check('fetch missing rejects', 'resolved', 'rejected'); }
+    catch (e) { check('fetch missing rejects', e instanceof TypeError, true); }
+    try { const j = await (await fetch('data:,x')).json(); check('fetch json', j, 'x'); }
+    catch (e) { check('bad URL rejects', true, true); }
+    const s = document.getElementById('summary');
+    s.textContent = fail ? `${pass} passed, ${fail} FAILED` : `all ${pass} tests passed`;
+    s.className = fail ? 'fail' : 'pass';
+    console.log('jstest:', pass, 'passed,', fail, 'failed');
+})();
+</script>
+</body></html>

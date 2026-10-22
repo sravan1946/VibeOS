@@ -1,5 +1,5 @@
 /* browser - Vibe Browser: address bar, history, loading state, scrolling, built-in pages.
- * Networking lives in fetch.c (helper process), rendering in html.c. */
+ * Networking lives in fetch.c (helper process), rendering in html.c, scripts in js.c. */
 #include "browser.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,8 +47,18 @@ static char needle[64], last_needle[64];
 static int find_count;
 static bool img_dirty, keep_imgs;
 static uint32_t last_relayout;
+static char *alert_msg;                      /* alert() text being shown */
+static bool console_open;                    /* F12: the console panel */
 
 static void say(bool bad, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(status, sizeof status, fmt, ap);
+    va_end(ap);
+    status_bad = bad;
+}
+
+void browser_status(int bad, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(status, sizeof status, fmt, ap);
@@ -85,7 +95,7 @@ static const char HOME_HTML[] =
     "<html><head><title>Vibe Browser</title></head>"
     "<body bgcolor=\"#16152A\" text=\"#EDEBFF\" link=\"#B388FF\">"
     "<center><h1>Vibe Browser</h1>"
-    "<p>A small web browser for VibeOS &mdash; plain HTTP, HTML without scripts, no frills.</p></center>"
+    "<p>A small web browser for VibeOS &mdash; HTTP and HTTPS, HTML, a little CSS and JavaScript.</p></center>"
     "<hr>"
     "<h2>Try the web</h2>"
     "<ul>"
@@ -98,6 +108,7 @@ static const char HOME_HTML[] =
     "<ul>"
     "<li><a href=\"file:///home/Documents/test.html\">Rendering test page</a> &ndash; lists, tables, code, quotes"
     "<li><a href=\"file:///home/Documents/css.html\">CSS test</a>, <a href=\"file:///home/Documents/images.html\">image test</a>, <a href=\"file:///home/Documents/forms.html\">forms test</a>"
+    "<li><a href=\"file:///home/Documents/js.html\">JavaScript demo</a> &ndash; counter, todo list, timer, fetch; <a href=\"file:///home/Documents/jstest.html\">JavaScript tests</a>"
     "<li><a href=\"file:///home/welcome.txt\">welcome.txt</a> &ndash; plain text in a mono font"
     "<li><a href=\"file:///home/\">/home</a> &ndash; a directory listing"
     "<li><a href=\"about:blank\">about:blank</a>"
@@ -105,7 +116,7 @@ static const char HOME_HTML[] =
     "<h2>Keys</h2>"
     "<blockquote>"
     "<b>Ctrl+L</b> address bar &middot; <b>Ctrl+R</b> or <b>F5</b> reload &middot; <b>Alt+&larr;</b> / <b>Alt+&rarr;</b> history<br>"
-    "<b>Space</b>, <b>PgDn</b>, <b>PgUp</b>, <b>Home</b>, <b>End</b>, arrows and the wheel scroll &middot; <b>Ctrl+F</b> find &middot; <b>Esc</b> stops loading"
+    "<b>Space</b>, <b>PgDn</b>, <b>PgUp</b>, <b>Home</b>, <b>End</b>, arrows and the wheel scroll &middot; <b>Ctrl+F</b> find &middot; <b>Esc</b> stops loading &middot; <b>F12</b> console"
     "</blockquote>"
     "<hr><center><em>made on VibeOS</em></center>"
     "</body></html>";
@@ -147,7 +158,14 @@ static void commit(const char *url, char *raw, size_t n, int html) {
     last_needle[0] = 0; find_count = 0; mk.find = 0;
     doc.title[0] = 0;
     layout_w = view_w();
+    free(alert_msg);
+    alert_msg = 0;
+    if (html && js_page(pg.raw, pg.n, url)) {          /* scripts: lay out the DOM (js.c) instead of the source */
+        free(pg.raw);
+        pg.raw = js_html(&pg.n);
+    } else js_reset();
     doc_layout(&doc, pg.raw, pg.n, html, layout_w, cur_url);
+    js_attach(&doc);
     if (!doc.title[0]) {
         const char *b = base_name(url);
         strlcpy(doc.title, *b ? b : url, sizeof doc.title);
@@ -470,7 +488,7 @@ static void relayout(void) {
 
 /* ---------- forms, selection, find ---------- */
 static void submit(int btn, int form) {
-    if (form < 0) return;
+    if (form < 0 || js_event(doc.fm[form].node, "submit", 0, 0, 0)) return;
     char url[URL_MAX], body[sizeof post_body];
     int post = form_submit(&doc, form, btn, cur_url, url, sizeof url, body, sizeof body);
     if (post && url_is_web(url)) { strlcpy(post_body, body, sizeof post_body); has_post = true; }
@@ -482,6 +500,66 @@ static const struct item *ctl_item(int ci) { return doc.ct[ci].item >= 0 ? &doc.
 static int ctl_by_ord(int ord) { for (int i = 0; i < doc.nct; i++) if (doc.ct[i].ord == ord) return i; return -1; }
 
 static void scroll_to_y(int y, int vh) { target = y - vh / 3; clamp_scroll(); }
+
+static int ctl_by_node(int node) { for (int i = 0; node && i < doc.nct; i++) if (doc.ct[i].node == node) return i; return -1; }
+
+/* a script changed the DOM: lay out the new tree, keeping the scroll position and the focused field */
+static void js_relayout(void) {
+    int ci = ctl_by_ord(fo), fnode = ci >= 0 ? doc.ct[ci].node : 0;
+    js_sync();
+    free(pg.raw);
+    pg.raw = js_html(&pg.n);
+    fs_reset();
+    layout_w = view_w();
+    doc_layout(&doc, pg.raw, pg.n, 1, layout_w, cur_url);
+    last_relayout = uptime_ms();
+    mk.from_it = mk.to_it = -1; mk.find_it = -1; last_needle[0] = 0;
+    sel_ci = -1;
+    ci = ctl_by_node(fnode);
+    fo = ci >= 0 ? doc.ct[ci].ord : -1;
+    clamp_scroll();
+}
+
+/* alert(): a box over the page with the text word-wrapped; returns true when dismissed */
+static bool alert_box(struct ui *ui, const char *text) {
+    int W = win->w, H = win->h, pw = W - 40 < 460 ? W - 40 : 460, lines = 0, starts[12], lens[12];
+    for (const char *p = text; *p && lines < 12; ) {             /* wrap at spaces (and newlines) to the box width */
+        int n = 0, best = 0;
+        while (p[n] && p[n] != '\n') {
+            n++;
+            if (gfx_text_width_n(&font_ui, p, n) > pw - 40) break;
+            if (p[n] == ' ' || !p[n] || p[n] == '\n') best = n;
+        }
+        if (!best || !p[n] || p[n] == '\n') best = n;
+        starts[lines] = p - text; lens[lines++] = best;
+        p += best;
+        while (*p == ' ') p++;
+        if (*p == '\n') p++;
+    }
+    int ph = 100 + lines * 20, px = (W - pw) / 2, py = (H - ph) / 3;
+    gfx_fill(ui->c, 0, TB, W, H - TB, RGBA(0, 0, 0, 90));
+    gfx_round_fill(ui->c, px, py, pw, ph, 10, UI_SURFACE);
+    gfx_round_rect(ui->c, px, py, pw, ph, 10, UI_BORDER);
+    gfx_text(ui->c, &font_ui_bold, px + 20, py + 16, "This page says", UI_TEXT);
+    for (int i = 0; i < lines; i++) gfx_text_n(ui->c, &font_ui, px + 20, py + 44 + i * 20, text + starts[i], lens[i], UI_TEXT_DIM);
+    bool done = ui_button(ui, px + pw - 110, py + ph - 48, 90, 32, "OK", UI_ACCENT_BTN);
+    struct gui_event k;
+    while (ui_key(ui, &k)) if (k.key == KEY_ESC || k.key == KEY_ENTER || k.key == ' ') done = true;
+    return done;
+}
+
+/* F12: the last console lines over the bottom of the page */
+static void console_panel(struct ui *ui, int vw, int vh) {
+    int ph = vh / 3 < 120 ? 120 : vh / 3, y0 = TB + vh - ph, rows = (ph - 30) / 18, n = js_log_count();
+    gfx_fill(ui->c, 0, y0, vw, ph, UI_PANEL);
+    gfx_fill(ui->c, 0, y0, vw, 1, UI_BORDER);
+    gfx_text(ui->c, &font_ui_bold, 10, y0 + 6, js_active() ? "Console" : "Console (no scripts on this page)", UI_TEXT);
+    for (int i = n > rows ? n - rows : 0, r = 0; i < n; i++, r++) {
+        int kind;
+        const char *t = js_log_line(i, &kind);
+        ui_text_fit(ui, &font_mono, 10, y0 + 28 + r * 18, vw - 20, t, kind == 2 ? UI_BAD : kind == 1 ? UI_WARN : UI_TEXT_DIM);
+    }
+}
 
 static void focus_next(int dir, int vh) {                 /* Tab / Shift+Tab through the text fields */
     int cur = ctl_by_ord(fo), n = doc.nct;
@@ -545,7 +623,8 @@ int main(int argc, char **argv) {
     char last_title[96] = "";
 
     for (;;) {
-        int timeout = loading || img_busy() ? 40 : -1;
+        int timeout = loading || img_busy() || js_busy() ? 40 : -1, jt = js_timeout();
+        if (jt >= 0 && (timeout < 0 || jt < timeout)) timeout = jt;
         if (scroll != target) timeout = 16;
         struct pollfd pf[2] = { { win->fd, POLLIN, 0 }, { fe.fd, POLLIN, 0 } };
         poll(pf, loading ? 2 : 1, timeout);
@@ -570,6 +649,7 @@ int main(int argc, char **argv) {
             else if ((k.mods & MOD_ALT) && k.key == KEY_RIGHT) go_hist(1);
             else if (ctrl && (c == 'f' || k.ch == 6)) { find_open = true; ui.focus = ui_id(W - SB - 340, TB + 6, 240, 32); fo = -1; }
             else if (k.key == KEY_F3 || (ctrl && (c == 'g' || k.ch == 7))) { if (find_open) find_go((k.mods & MOD_SHIFT) ? -1 : 1, vh, false); else handled = 0; }
+            else if (k.key == KEY_F12) console_open = !console_open;
             else if (k.key == KEY_ESC) {
                 if (sel_ci >= 0) sel_ci = -1;
                 else if (find_open) { find_open = false; mk.find = 0; }
@@ -608,7 +688,8 @@ int main(int argc, char **argv) {
         /* content */
         int hover = -1;
         int fx = W - SB - 340, fy = TB + 6; uint32_t fid = ui_id(fx, fy, 240, 32);
-        bool in_view = ui.mx >= 0 && ui.mx < vw && ui.my >= TB && ui.my < TB + vh;
+        bool modal = alert_msg != 0;
+        bool in_view = !modal && ui.mx >= 0 && ui.mx < vw && ui.my >= TB && ui.my < TB + vh;
         bool over_find = find_open && ui.mx >= fx - 8 && ui.mx < W - SB && ui.my >= TB && ui.my < TB + 44;
         if (ui.focus == aid) fo = -1;
         bool consumed = false;
@@ -628,7 +709,7 @@ int main(int argc, char **argv) {
                 if (sel_scroll > no - prows) sel_scroll = no - prows;
                 if (sel_scroll < 0) sel_scroll = 0;
                 if (ui.pressed) {
-                    if (inp) fs_get(&doc, sel_ci)->sel = sel_scroll + (ui.my - py) / rh;
+                    if (inp) { fs_get(&doc, sel_ci)->sel = sel_scroll + (ui.my - py) / rh; js_event(doc.ct[sel_ci].node, "change", 0, 0, 0); }
                     sel_ci = -1;
                     consumed = true;
                 }
@@ -636,19 +717,28 @@ int main(int argc, char **argv) {
         }
         if (in_view && !over_find && sel_ci < 0) hover = doc_hit(&doc, ui.mx, ui.my - TB + scroll);
         if (ui.pressed && !consumed && in_view && !over_find) {
-            int dx = ui.mx, dy = ui.my - TB + scroll, ci = doc_ctl_at(&doc, dx, dy);
+            int dx = ui.mx, dy = ui.my - TB + scroll, ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
             fo = -1;
             mk.from_it = mk.to_it = -1;
-            if (ci >= 0) {
+            if (ci >= 0) {                                   /* the page sees the click first; preventDefault skips our part */
                 const struct ctl *c = &doc.ct[ci];
                 const struct item *it = ctl_item(ci);
-                if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = ctl_caret_at(&doc, ci, dx - it->x, dy - it->y); }
-                else if (c->kind == C_BTN) { if (c->sub == 1) submit(ci, c->form); else if (c->sub == 2) form_reset(&doc, c->form); }
-                else if (c->kind == C_CHECK || c->kind == C_RADIO) ctl_toggle(&doc, ci);
+                if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = ctl_caret_at(&doc, ci, dx - it->x, dy - it->y); js_event(node, "click", 0, dx, dy); }
+                else if (c->kind == C_BTN) { if (!js_event(node, "click", 0, dx, dy)) { if (c->sub == 1) submit(ci, c->form); else if (c->sub == 2) form_reset(&doc, c->form); } }
+                else if (c->kind == C_CHECK || c->kind == C_RADIO) {
+                    struct fstate *fs = fs_get(&doc, ci);
+                    int was = fs->on;
+                    ctl_toggle(&doc, ci);
+                    if (js_event(node, "click", 0, dx, dy)) fs->on = was;   /* (a radio's old partner stays off) */
+                    else if (fs->on != was) { js_event(node, "input", 0, dx, dy); js_event(node, "change", 0, dx, dy); }
+                }
                 else if (c->kind == C_SELECT) { sel_ci = ci; sel_scroll = fs_get(&doc, ci)->sel - 5; }
                 hover = -1;
-            } else if (hover >= 0) { follow(hover); hover = -1; }
-            else if (doc_pos_at(&doc, dx, dy, &anc_it, &anc_ch)) { selecting = true; sel_moved = false; }
+            } else if (hover >= 0) { if (!js_event(node, "click", 0, dx, dy)) follow(hover); hover = -1; }
+            else {
+                js_event(node, "click", 0, dx, dy);
+                if (doc_pos_at(&doc, dx, dy, &anc_it, &anc_ch)) { selecting = true; sel_moved = false; }
+            }
         }
         if (selecting) {
             if (ui.buttons & 1) {
@@ -665,13 +755,13 @@ int main(int argc, char **argv) {
         if (ui.scroll && ui.my >= TB) target += ui.scroll * 64;
         struct gui_event k;
         bool find_focus = find_open && ui.focus == fid;
-        while (ui_key(&ui, &k)) {
+        while (!modal && ui_key(&ui, &k)) {
             bool shift = k.mods & MOD_SHIFT, ctrl = k.mods & MOD_CTRL;
             if (sel_ci >= 0) {                                /* dropdown keys */
                 struct fstate *fsx = fs_get(&doc, sel_ci);
                 if (k.key == KEY_DOWN && fsx->sel < doc.ct[sel_ci].no - 1) fsx->sel++;
                 else if (k.key == KEY_UP && fsx->sel > 0) fsx->sel--;
-                else if (k.key == KEY_ENTER || k.key == ' ') sel_ci = -1;
+                else if (k.key == KEY_ENTER || k.key == ' ') { js_event(doc.ct[sel_ci].node, "change", 0, 0, 0); sel_ci = -1; }
                 if (sel_ci >= 0) { if (fsx->sel < sel_scroll) sel_scroll = fsx->sel; if (fsx->sel >= sel_scroll + 12) sel_scroll = fsx->sel - 11; }
                 continue;
             }
@@ -688,12 +778,21 @@ int main(int argc, char **argv) {
                 else if (!ctrl && k.ch >= 32 && k.ch < 127 && n < (int)sizeof needle - 1) { needle[n] = k.ch; needle[n + 1] = 0; }
                 continue;
             }
-            if (fo >= 0) {                                    /* typing into a form field */
-                int ci = ctl_by_ord(fo);
+            if (fo >= 0) {                                    /* typing into a form field: keydown, the edit, input */
+                int ci = ctl_by_ord(fo), node = ci >= 0 ? doc.ct[ci].node : 0;
+                if (js_event(node, "keydown", &k, 0, 0)) continue;
                 if (k.key == KEY_TAB) focus_next(shift ? -1 : 1, vh);
-                else if (ci >= 0 && ctl_key(&doc, ci, &k, &caret)) submit(-1, doc.ct[ci].form);
+                else if (ci >= 0) {
+                    struct fstate *fs = fs_get(&doc, ci);
+                    char *before = js_active() && fs->val ? strdup(fs->val) : 0;
+                    int enter = ctl_key(&doc, ci, &k, &caret);
+                    if (before && fs->val && strcmp(before, fs->val)) js_event(node, "input", 0, 0, 0);
+                    free(before);
+                    if (enter) submit(-1, doc.ct[ci].form);
+                }
                 continue;
             }
+            if (js_event(0, "keydown", &k, 0, 0)) continue;  /* to the page's body */
             switch (k.key) {
             case KEY_DOWN: target += 48; break;
             case KEY_UP: target -= 48; break;
@@ -723,6 +822,13 @@ int main(int argc, char **argv) {
             if (!step) step = d > 0 ? 1 : -1;
             scroll += step;
         }
+        if (pg.have && js_pump()) js_relayout();           /* scripts, timers, fetches; one relayout per frame */
+        int fr = js_focus_req(), fci = ctl_by_node(fr);
+        if (fci >= 0) { fo = doc.ct[fci].ord; caret = fs_get(&doc, fci)->val ? strlen(fs_get(&doc, fci)->val) : 0; }
+        char *al = js_alert();
+        if (al) { free(alert_msg); alert_msg = al; }
+        const char *jn = js_nav();
+        if (jn) { char u[URL_MAX]; strlcpy(u, jn, sizeof u); navigate(u, 1, -1); }
         doc_draw(&ui, &doc, 0, TB, vw, vh, scroll, hover, &mk, fo, caret);
         if (sel_ci >= 0 && prows) {                      /* dropdown on top of the page */
             const struct ctl *c = &doc.ct[sel_ci];
@@ -747,6 +853,7 @@ int main(int argc, char **argv) {
             snprintf(fc, sizeof fc, !needle[0] ? "Ctrl+F" : find_count ? "%d match%s" : "No matches", find_count, find_count == 1 ? "" : "es");
             gfx_text(ui.c, &font_ui, fx + 250, fy + (32 - font_ui.height) / 2, fc, !needle[0] || find_count ? UI_TEXT_DIM : UI_BAD);
         }
+        if (console_open) console_panel(&ui, vw, vh);
         gfx_fill(ui.c, vw, TB, SB, vh, UI_PANEL);
         int sp = scroll;
         ui_vscroll(&ui, vw + 1, TB, vh, doc.height, vh, &sp);
@@ -758,11 +865,13 @@ int main(int argc, char **argv) {
         ui_text_fit(&ui, &font_ui, 10, H - STH + (STH - font_ui.height) / 2, W - 20, hover >= 0 ? hover_url : img_busy() ? "Loading images..." : status,
                     hover >= 0 ? UI_ACCENT : status_bad ? UI_BAD : UI_TEXT_DIM);
 
+        if (alert_msg && alert_box(&ui, alert_msg)) { free(alert_msg); alert_msg = 0; }
         char t[96];
         snprintf(t, sizeof t, strcmp(doc.title, "Vibe Browser") ? "%s - Vibe Browser" : "%s", doc.title);
         if (strcmp(t, last_title)) { gui_set_title(win, t); strlcpy(last_title, t, sizeof last_title); }
         ui_end(&ui);
     }
     cancel_load();
+    js_reset();
     return 0;
 }

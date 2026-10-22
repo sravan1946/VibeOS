@@ -45,12 +45,13 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
 enum { K_PX, K_PCT, K_AUTO };                    /* value kinds; colours are K_PX with the colour in v (0 = transparent) */
 enum { D_NONE = 1, D_BLOCK, D_INLINE };
 struct cprops { uint32_t set; int v[P_N]; uint8_t k[P_N]; };
-struct el { char name[16], id[32], cls[64]; int tag; };   /* one open element, for selector matching */
+struct el { char name[16], id[32], cls[64]; int tag, js; };   /* one open element, for selector matching; js: DOM node id */
 void css_reset(void);
 void css_add(const char *s, size_t n);           /* append a stylesheet */
 int  css_any(void);
 void css_cascade(const struct el *st, int n, const char *style, struct cprops *out);   /* st[n-1] is the subject */
 int  css_color(const char *s, color_t *out, int legacy);   /* names, #rgb, #rrggbb, rgb()/rgba(); legacy: bare hex too */
+int  css_match(const char *sel, const struct el *st, int n);   /* selector list vs st[n-1]: 1/0, -1 = nothing parsable */
 
 /* ---- img.c: per-page image cache. Images are fetched by helper processes (two at a time), decoded
  * in-process and kept (plus one scaled copy) until the next page. ---- */
@@ -65,14 +66,14 @@ int  img_add_data(const char *url, const uint8_t *d, size_t n);   /* decode a bo
 
 /* ---- html.c ---- */
 enum { C_TEXT, C_PASS, C_AREA, C_BTN, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT };
-struct ctl { uint8_t kind, sub, chk; int form, ord, item; uint32_t name, val; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits */
+struct ctl { uint8_t kind, sub, chk; int form, ord, item, node; uint32_t name, val; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits */
 struct opt { uint32_t lab, val; };
-struct form { uint32_t action; uint8_t post; };
+struct form { uint32_t action; uint8_t post; int node; };
 #define FL_UL 1
 #define FL_STRIKE 2
 #define FL_IMG 4
 #define FL_CTL 8
-struct item { int x, y; short w, h, bel; uint8_t font, flags; uint16_t len; color_t col; int link; uint32_t off; int ref; };
+struct item { int x, y; short w, h, bel; uint8_t font, flags; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
 struct decor { int x, y, w, h; color_t col; };
 struct anchor { char name[40]; int y; };
 struct doc {
@@ -99,6 +100,8 @@ int  doc_hit(const struct doc *d, int x, int y);          /* link index at docum
 int  doc_pos_at(const struct doc *d, int x, int y, int *item, int *ch);   /* text run + byte offset nearest the point (for selecting) */
 int  doc_ctl_at(const struct doc *d, int x, int y);       /* control index under the point, or -1 */
 int  doc_anchor(const struct doc *d, const char *name);   /* y, or -1 */
+int  doc_node_at(const struct doc *d, int x, int y);      /* DOM node (js.c) of the innermost item under the point, or 0 */
+void html_unescape(char *s);                              /* decode entities in place */
 char *doc_text(const struct doc *d, int a_it, int a_ch, int b_it, int b_ch);   /* malloc'd selection text (a <= b) */
 int  doc_find(const struct doc *d, const char *needle, int from_it, int from_off, int dir, int *it, int *off);   /* 1 = found */
 int  doc_count(const struct doc *d, const char *needle);
@@ -107,6 +110,7 @@ int  doc_count(const struct doc *d, const char *needle);
 struct fstate { char *val; int cap, on, sel, init, sx, sy; };   /* sx/sy: text scroll */
 struct fstate *fs_get(const struct doc *d, int ci);      /* state of control ci (lazily initialised) */
 struct fstate *fs_ord(int ord);                          /* by ordinal, or NULL */
+void fs_set(struct fstate *s, const char *v);
 void fs_reset(void);
 void ctl_draw(struct canvas *c, const struct doc *d, const struct ctl *t, int x, int y, int w, int h, int focused, int caret);
 int  ctl_key(const struct doc *d, int ci, const struct gui_event *k, int *caret);   /* 1 = Enter pressed */
@@ -115,3 +119,24 @@ void ctl_toggle(const struct doc *d, int ci);            /* click on a checkbox 
 void form_reset(const struct doc *d, int form);
 /* URL (GET) or body (POST) for submitting `form`, pressed by control `btn` (or -1): returns 1 for POST, 0 for GET */
 int  form_submit(const struct doc *d, int form, int btn, const char *base, char *url, int ucap, char *body, int bcap);
+
+/* ---- js.c: <script> and a DOM over QuickJS. A page with scripts is kept as a node tree; layout runs on the tree
+ * serialised back to HTML with data-vjs="ID" on every element, so items, controls and forms know their node. ---- */
+int  js_page(const char *src, size_t n, const char *url);   /* new page: 1 = it has scripts (the DOM takes over) */
+char *js_html(size_t *n);                         /* the tree as HTML for doc_layout (malloc'd) */
+void js_attach(struct doc *d);                    /* the doc laid out from the last js_html() */
+void js_sync(void);                               /* copy form state into the tree before a relayout */
+int  js_pump(void);                               /* run scripts, timers, fetches: 1 = the tree changed (relayout) */
+int  js_timeout(void);                            /* ms until the next timer, -1 = none */
+int  js_busy(void);                               /* script or fetch downloads in flight */
+void js_reset(void);                              /* leave the page */
+/* dispatch `type` (bubbling) at node (0 = window); k: key event or NULL. Returns 1 if a handler called preventDefault */
+int  js_event(int node, const char *type, const struct gui_event *k, int x, int y);
+int  js_active(void);
+const char *js_nav(void);                         /* location set by a script: navigate there (consumes it), or NULL */
+int  js_focus_req(void);                          /* element.focus() target (consumes it), or 0 */
+char *js_alert(void);                             /* pending alert() text (malloc'd, consumed), or NULL */
+int  js_log_count(void);                          /* console lines (oldest first) */
+const char *js_log_line(int i, int *kind);        /* kind: 0 log, 1 warn, 2 error */
+extern const char js_prelude[];                   /* dom_js.c: the DOM classes over the natives */
+void browser_status(int bad, const char *fmt, ...);   /* main.c: the status bar */

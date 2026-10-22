@@ -70,6 +70,7 @@ static struct {
 } L;
 #define S (L.fr[L.nfr - 1].s)
 static int right(void) { return L.R - S.rin; }
+static int cur_node(void) { return L.nel ? L.el[L.nel - 1].js : 0; }   /* js.c's node id of the innermost element (0 = none) */
 
 static int dark(color_t c) { return (((c >> 16) & 255) * 3 + ((c >> 8) & 255) * 6 + (c & 255)) / 10 < 110; }
 
@@ -196,7 +197,7 @@ static void emit(const char *s, int n, int w, int sp) {
     struct item *last = L.nln ? &L.ln[L.nln - 1] : 0;
     int hg = L.hgap;
     L.hgap = 0;
-    if (last && !hg && last->font == S.font && last->flags == flags && last->col == S.col && last->link == S.link &&
+    if (last && !hg && last->font == S.font && last->flags == flags && last->col == S.col && last->link == S.link && last->node == cur_node() &&
         last->off + last->len == L.d->ntxt && last->len + n + 1 < 400) {   /* same style: one longer run */
         if (sp) arena(" ", 1);
         arena(s, n);
@@ -208,7 +209,7 @@ static void emit(const char *s, int n, int w, int sp) {
     struct item *it = &L.ln[L.nln++];
     it->x = L.x + (sp ? sw : 0) + hg;
     it->w = w; it->h = f->height; it->font = S.font; it->flags = flags; it->col = S.col; it->link = S.link;
-    it->len = n; it->off = arena(s, n);
+    it->len = n; it->off = arena(s, n); it->node = cur_node();
     L.x = it->x + w;
     if (f->ascent > L.lasc) L.lasc = f->ascent;
     if (f->height - f->ascent > L.ldesc) L.ldesc = f->height - f->ascent;
@@ -382,7 +383,7 @@ static struct item *place_box(int w, int h, int bel, uint8_t flags) {
     if (!L.nln) { L.x = L.lleft = left(); L.lcenter = S.center; sp = 0; }
     if (L.nln >= LN_MAX) return &sink;
     struct item *it = &L.ln[L.nln++];
-    *it = (struct item){ .x = L.x + (sp ? sw : 0) + L.hgap, .w = w, .h = h, .bel = bel, .font = S.font, .flags = flags, .col = S.col, .link = S.link };
+    *it = (struct item){ .x = L.x + (sp ? sw : 0) + L.hgap, .w = w, .h = h, .bel = bel, .font = S.font, .flags = flags, .col = S.col, .link = S.link, .node = cur_node() };
     L.hgap = 0;
     L.x = it->x + w;
     if (h - bel > L.lasc) L.lasc = h - bel;
@@ -456,6 +457,7 @@ static void ent_inplace(char *s) {
     }
     *o = 0;
 }
+void html_unescape(char *s) { ent_inplace(s); }
 
 static void parse_attrs(char *p) {
     nat = 0;
@@ -534,7 +536,7 @@ static void parse_options(const char *s, int n, struct ctl *c) {
 static void open_ctl(int t) {
     struct doc *d = L.d;
     const char *ty = A("type"), *v;
-    struct ctl c = { .form = L.curform, .ord = L.nord++, .item = -1 };
+    struct ctl c = { .form = L.curform, .ord = L.nord++, .item = -1, .node = cur_node() };
     char name[120], val[400], lab[200];
     int avail = right() - left(), w = 0, h = 26, bel = 9, cols;
     strlcpy(name, (v = A("name")) ? v : "", sizeof name);
@@ -751,7 +753,7 @@ static void open_tag(int t) {
         GROW(L.d->fm, L.d->nfm, L.d->fmcap);
         if (L.d->nfm < L.d->fmcap) {
             const char *m = A("method");
-            L.d->fm[L.d->nfm] = (struct form){ .action = astr(A("action") ? A("action") : ""), .post = m && !strcasecmp(m, "post") };
+            L.d->fm[L.d->nfm] = (struct form){ .action = astr(A("action") ? A("action") : ""), .post = m && !strcasecmp(m, "post"), .node = cur_node() };
             L.curform = L.d->nfm++;
         }
         break;
@@ -923,6 +925,7 @@ static void css_apply(struct frame *f, const struct cprops *p, int blk, int isbo
 /* open an element: cascade, display:none, frames. Returns 1 when the caller should skip its whole subtree. */
 static int start_el(int t, const char *name, const char *content, int clen) {
     int vd = is_void(name), pushed = 0;
+    const char *v;
     el_implicit(name);
     const char *id = A("id"), *cls = A("class"), *sty = A("style");
     if (L.nel < 64) {
@@ -930,6 +933,7 @@ static int start_el(int t, const char *name, const char *content, int clen) {
         strlcpy(e->name, name, sizeof e->name);
         strlcpy(e->id, id ? id : "", sizeof e->id);
         strlcpy(e->cls, cls ? cls : "", sizeof e->cls);
+        e->js = (v = A("data-vjs")) ? atoi(v) : 0;
         pushed = 1;
     }
     struct cprops cp;
@@ -1294,6 +1298,15 @@ int doc_hit(const struct doc *d, int x, int y) {
         if (it->link >= 0 && x >= it->x && x < it->x + it->w && y >= it->y && y < it->y + it->h) return it->link;
     }
     return -1;
+}
+
+int doc_node_at(const struct doc *d, int x, int y) {
+    int node = 0;
+    for (int i = first_item(d, y); i < d->nit && d->it[i].y <= y; i++) {
+        const struct item *it = &d->it[i];
+        if (it->node && x >= it->x && x < it->x + it->w && y >= it->y && y < it->y + it->h) node = it->node;
+    }
+    return node;
 }
 
 int doc_anchor(const struct doc *d, const char *name) {
