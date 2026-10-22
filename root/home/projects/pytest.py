@@ -233,6 +233,240 @@ if sys.platform == "vibeos":                        # this port's own additions 
     check("vibe.ps", any(p[5] == "python" and p[2] == "running" for p in vibe.ps()), vibe.ps())
     check("vibe.uptime", vibe.uptime() > 0)
 
+# ---- sockets and select over loopback (also runs on upstream's unix port) ----
+import socket, select
+
+def oserr(fn):
+    try:
+        fn()
+    except OSError as e:
+        return e.args[0]
+    return None
+
+PORT = 18999
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", PORT))
+srv.listen(2)
+srv.settimeout(3)
+eq("accept times out", oserr(lambda: (srv.settimeout(0.2), srv.accept())), errno.ETIMEDOUT)
+srv.setblocking(False)
+eq("accept non-blocking", oserr(srv.accept), errno.EAGAIN)
+srv.settimeout(3)
+cli = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+cli.connect(("127.0.0.1", PORT))
+conn, peer = srv.accept()
+eq("accept peer", peer[0], "127.0.0.1")
+eq("send", cli.send(b"hello"), 5)
+conn.settimeout(3)
+eq("recv", conn.recv(100), b"hello")
+conn.sendall(b"line one\nline two\n")
+f = cli.makefile("rb")
+eq("readline", (f.readline(), f.readline()), (b"line one\n", b"line two\n"))
+big = bytes(range(256)) * 78                        # 19968 bytes: fits the send + receive buffers
+cli.sendall(big)
+got = b""
+while len(got) < len(big):
+    got += conn.recv(4096)
+eq("sendall 20 KB", got, big)
+cli.settimeout(0.2)
+eq("recv times out", oserr(lambda: cli.recv(1)), errno.ETIMEDOUT)
+cli.setblocking(False)
+eq("recv non-blocking", oserr(lambda: cli.recv(1)), errno.EAGAIN)
+cli.settimeout(None)
+eq("gettimeout", (cli.gettimeout(), conn.gettimeout()), (None, 3.0))
+rl, wl, _ = select.select([cli, conn], [conn], [], 0)
+eq("select idle", (len(rl), len(wl)), (0, 1))
+conn.send(b"x")
+rl, _, _ = select.select([cli], [], [], 2)
+eq("select readable", rl, [cli])
+po = select.poll()
+po.register(cli, select.POLLIN)
+po.register(conn, select.POLLIN | select.POLLOUT)
+ev = dict((id(o), e) for o, e in po.poll(1000))
+eq("poll", (ev[id(cli)] & select.POLLIN, ev[id(conn)] & select.POLLOUT), (select.POLLIN, select.POLLOUT))
+po.unregister(conn)
+eq("poll after unregister", [o is cli for o, e in po.poll(0)], [True])
+eq("recv after select", cli.recv(5), b"x")
+conn.close()
+cli.settimeout(3)
+eq("recv at EOF", cli.recv(5), b"")
+cli.close()
+srv.close()
+raises("closed socket", OSError, lambda: cli.send(b"x"))
+eq("connection refused", oserr(lambda: socket.socket().connect(("127.0.0.1", 18998))), errno.ECONNREFUSED)
+
+u1 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+u2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+u1.bind(("0.0.0.0", PORT))
+u1.settimeout(3)
+u2.sendto(b"ping", ("127.0.0.1", PORT))
+data, frm = u1.recvfrom(100)
+eq("udp recvfrom", (data, frm[0]), (b"ping", "127.0.0.1"))
+u1.sendto(b"pong", frm)
+u2.settimeout(3)
+eq("udp reply", u2.recvfrom(100)[0], b"pong")
+u1.close()
+u2.close()
+
+# ssl: a peer that hangs up during the handshake is an OSError, not a hang
+import ssl
+srv = socket.socket(); srv.bind(("127.0.0.1", PORT)); srv.listen(1)
+cli = socket.socket(); cli.connect(("127.0.0.1", PORT))
+srv.accept()[0].close()
+raises("ssl handshake fails", OSError, lambda: ssl.wrap_socket(cli, server_hostname="localhost"))
+cli.close()
+srv.close()
+
+if sys.platform == "vibeos":                        # the port's own socket extras, ssl policy and the gui module
+    eq("getaddrinfo", socket.getaddrinfo("127.0.0.1", 80)[0][-1], ("127.0.0.1", 80))
+    eq("gethostbyname", socket.gethostbyname("localhost"), "127.0.0.1")
+    eq("inet_aton/ntoa", socket.inet_ntoa(socket.inet_aton("10.1.2.3")), "10.1.2.3")
+    raises("ssl needs a host name", ValueError, lambda: ssl.wrap_socket(socket.socket()))
+    raises("ssl context can't skip checks", ValueError, lambda: (lambda c: (setattr(c, "verify_mode", ssl.CERT_NONE), c.wrap_socket(None))[1])(ssl.create_default_context()))
+
+    # ---- os.path ----
+    P = os.path
+    eq("join", (P.join("/a", "b", "c"), P.join("a", "/b"), P.join("a/", "b"), P.join("", "b")), ("/a/b/c", "/b", "a/b", "b"))
+    eq("split", (P.split("/a/b/c.txt"), P.split("/x"), P.split("x"), P.split("a//b//")), (("/a/b", "c.txt"), ("/", "x"), ("", "x"), ("a//b", "")))
+    eq("basename/dirname", (P.basename("/a/b.c"), P.dirname("/a/b.c"), P.dirname("b"), P.basename("/a/")), ("b.c", "/a", "", ""))
+    eq("splitext", (P.splitext("a/b.tar.gz"), P.splitext(".bashrc"), P.splitext("a.b/c"), P.splitext("x.")), (("a/b.tar", ".gz"), (".bashrc", ""), ("a.b/c", ""), ("x", ".")))
+    eq("normpath", (P.normpath("/a/./b//c/.."), P.normpath("../x/../.."), P.normpath(""), P.normpath("//a")), ("/a/b", "../..", ".", "//a"))
+    os.chdir("/bin")
+    eq("abspath", (P.abspath("python"), P.abspath("../etc/./x"), P.abspath("/a/..")), ("/bin/python", "/etc/x", "/"))
+    os.chdir(cwd)
+    eq("isabs", (P.isabs("/x"), P.isabs("x")), (True, False))
+    eq("exists", (P.exists("/bin"), P.exists("/bin/python"), P.exists("/no/such")), (True, True, False))
+    eq("isdir/isfile", (P.isdir("/bin"), P.isdir("/bin/python"), P.isfile("/bin/python"), P.isfile("/bin"), P.isfile("/no/such")), (True, False, True, False, False))
+    eq("getsize", P.getsize("/etc/tz"), os.stat("/etc/tz")[6])
+    eq("expanduser", P.expanduser("~/x"), os.getenv("HOME", "/home").rstrip("/") + "/x")
+    eq("os.path via import", __import__("os.path").path, P)
+    eq("os still has its builtins", (os.getcwd() == cwd, os.sep, hasattr(os, "listdir")), (True, "/", True))
+
+    # ---- gui ----
+    import gui
+    eq("gui.rgb", (gui.rgb(1, 2, 3), gui.rgb(255, 0, 0)), (0x010203, 0xff0000))
+    check("gui.text_size", gui.text_size("abc")[0] > 0 and gui.text_size("abc", "big")[1] > gui.text_size("abc")[1], gui.text_size("abc"))
+    with gui.Window("pytest", 200, 120, resizable=False) as w:
+        eq("window size", (w.width, w.height), (200, 120))
+        w.fill(0x102030)
+        eq("fill/pixel", (w.pixel(5, 5), w.pixel(199, 119), w.pixel(200, 5), w.pixel(-1, 0)), (0x102030, 0x102030, 0, 0))
+        w.fill(10, 20, 30, 40, (255, 0, 0))
+        eq("fill rect", (w.pixel(10, 20), w.pixel(39, 59), w.pixel(40, 60), w.pixel(9, 20)), (0xff0000, 0xff0000, 0x102030, 0x102030))
+        w.rect(100, 10, 20, 20, 0x00ff00, fill=False)
+        eq("rect outline", (w.pixel(100, 10), w.pixel(119, 29), w.pixel(110, 20)), (0x00ff00, 0x00ff00, 0x102030))
+        w.rect(100, 40, 10, 10, 0x0000ff)
+        eq("rect fill", w.pixel(105, 45), 0x0000ff)
+        w.line(0, 100, 50, 100, 0xffffff)
+        eq("line", (w.pixel(0, 100), w.pixel(25, 100), w.pixel(25, 101)), (0xffffff, 0xffffff, 0x102030))
+        w.line(60, 80, 100, 80, 0xffff00, width=5)
+        eq("wide line", (w.pixel(80, 80), w.pixel(80, 78), w.pixel(80, 90)), (0xffff00, 0xffff00, 0x102030))
+        w.circle(150, 90, 10, 0xff00ff)
+        eq("circle", (w.pixel(150, 90), w.pixel(150, 82), w.pixel(150, 105)), (0xff00ff, 0xff00ff, 0x102030))
+        w.pixel(1, 1, 0x123456)
+        eq("pixel set", w.pixel(1, 1), 0x123456)
+        adv = w.text(4, 4, "Hi", 0xffffff)
+        check("text", adv > 0 and any(w.pixel(x, y) != 0x102030 for x in range(4, 4 + adv) for y in range(4, 20)), adv)
+        eq("text advance", adv, gui.text_size("Hi")[0])
+        raises("bad font", ValueError, lambda: w.text(0, 0, "x", 0xffffff, font="nope"))
+        px = bytes([0x11, 0x22, 0x33, 0xff]) * 4         # little-endian 0xAARRGGBB
+        w.blit(150, 10, px, 2, 2)
+        eq("blit", (w.pixel(150, 10), w.pixel(151, 11), w.pixel(152, 10)), (0x332211, 0x332211, 0x102030))
+        w.blit(160, 10, bytes([0, 0, 255, 128]) * 4, 2, 2, alpha=True)
+        check("blit alpha", 0x7c <= w.pixel(160, 10) >> 16 <= 0x94, hex(w.pixel(160, 10)))
+        raises("blit too small", ValueError, lambda: w.blit(0, 0, b"\0" * 8, 2, 2))
+        raises("bad colour", ValueError, lambda: w.fill((1, 2)))
+        w.present()
+        w.events(100)                                    # the window manager's focus event
+        eq("no events", (w.poll(), w.events()), (None, []))
+        w.set_title("pytest 2")
+        check("fileno", w.fileno() > 2, w.fileno())
+    check("closed", w.closed)
+    raises("closed window", ValueError, lambda: w.fill(0))
+    w = gui.Window("pytest resize", 240, 160)
+    w.resize(300, 200)
+    ev = None
+    for _ in range(20):
+        r, _, _ = select.select([w], [], [], 0.5)       # a window is selectable through fileno()
+        if not r:
+            break
+        for e in w.events():
+            if e.type == "resize":
+                ev = e
+        if ev:
+            break
+    check("resize event", ev is not None and ev.type == "resize" and (ev.w, ev.h) == (300, 200) and (w.width, w.height) == (300, 200), ev)
+    check("event fields", ev is None or (ev.x >= 0 and ev.key == 0 and ev.ch == "" and ev.pressed is False and len(ev) == 11), ev)
+    w.close()
+
+# ---- host network checks: `python pytest.py net`, driven by tools/pynettest/run.sh (servers on the host, QEMU user net) ----
+if sys.argv[1:2] == ["net"]:
+    HOST = "10.0.2.2"
+    rep = socket.socket()
+    rep.connect((HOST, 18702))                       # the harness: gets "listening" and the final result
+
+    s = socket.socket()
+    s.connect((HOST, 18700))
+    eq("host getaddrinfo", socket.getaddrinfo(HOST, 18700)[0][-1], (HOST, 18700))
+    s.sendall(b"hello host\n")
+    eq("echo from the host", s.recv(100), b"hello host\n")
+    data = bytes(range(256)) * 400                   # 100 KB, sent and read back in steps
+    back = b""
+    for i in range(0, len(data), 4096):
+        s.sendall(data[i:i + 4096])
+        want = len(data[i:i + 4096])
+        while want:
+            b = s.recv(want)
+            back += b
+            want -= len(b)
+    eq("100 KB echo", back == data, True)
+    s.close()
+
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    u.settimeout(5)
+    u.sendto(b"udp host", (HOST, 18701))
+    eq("udp echo from the host", u.recvfrom(100)[0], b"udp host")
+    u.close()
+
+    def https(port, path="/"):
+        c = socket.socket()
+        c.connect((HOST, port))
+        t = ssl.wrap_socket(c, server_hostname=HOST)
+        t.write(b"GET " + path.encode() + b" HTTP/1.0\r\nHost: x\r\n\r\n")
+        out = b""
+        while True:
+            b = t.read(4096)
+            if not b:
+                break
+            out += b
+        t.close()
+        return out
+    r = https(18443, "/blob")
+    head, _, body = r.partition(b"\r\n\r\n")
+    eq("https status", head[:12], b"HTTP/1.0 200")
+    eq("https body", len(body), 300000)
+    rep.send(("blobsum %d\n" % (sum(body) & 0xffffff)).encode())
+    for port, want in ((18444, "not trusted"), (18445, "different host")):
+        try:
+            https(port)
+            check("https rejects " + want, False, "connected")
+        except OSError as e:
+            check("https rejects " + want, want in str(e.args[0]), e.args)
+
+    srv = socket.socket()
+    srv.bind(("0.0.0.0", 8081))
+    srv.listen(1)
+    srv.settimeout(40)
+    rep.send(b"listening\n")
+    c, _ = srv.accept()
+    req = c.recv(100)
+    c.sendall(req.upper())
+    c.close()
+    srv.close()
+    eq("served the host's client", req, b"ping from host")
+    rep.send(("RESULT %d %d\n" % (passed, failed)).encode())
+    rep.close()
+
 big = [bytearray(1024) for _ in range(20000)]        # 20 MiB: the GC heap has to grow past its first 1 MiB
 eq("heap growth", len(big), 20000)
 del big

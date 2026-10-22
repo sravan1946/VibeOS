@@ -59,7 +59,7 @@ emulator, and a set of desktop apps and games.
 - Text processing: `grep` (BRE/ERE/fixed, context, `-o -w -r`), `sed`, `awk`, `tr cut paste nl tac rev`, `diff` (normal and
   unified), `cmp`, `xargs`, `md5sum sha256sum`.
 - `/bin/lua`: Lua 5.4 with a REPL, plus `vibe` (system info, processes, beep) and `gui` (windows) modules.
-- `/bin/python`: MicroPython 1.29 with a line-editing REPL (history, Tab completion), scripts, file I/O through `open`/`os`, and `sys time math json re random struct collections` plus a `vibe` module.
+- `/bin/python`: MicroPython 1.29 with a line-editing REPL (history, Tab completion), scripts, file I/O through `open`/`os`, and `sys time math json re random struct collections os.path` plus `vibe`, `gui` (windows and events), `socket`/`select`/`ssl` (TCP/UDP, TLS client) modules; `projects/paint.py` is a launcher app (Python Paint).
 - `/bin/tcc`: TinyCC 0.9.27 compiles C inside VibeOS against its own libc (`tcc hello.c -o hello`, `tcc -run`, `-lgui` for windows); see `~/projects/README.txt`.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc` (`nc -l` listens; `wget` does https:// with certificate checks), and `httpd` — run it inside `make run` and open http://localhost:8080 on the host. Audio: `play` (WAV files), `midi` (Standard MIDI Files through an OPL3 FM synth; needs the Freedoom WAD for its instruments), `tone`.

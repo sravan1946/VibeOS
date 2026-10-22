@@ -227,7 +227,7 @@ build/vibeos.img: build/stage1.bin build/stage2.bin build/kernel.bin build/root.
 	dd if=build/kernel.bin of=$@ bs=512 seek=$(KERNEL_LBA) conv=notrunc status=none
 	dd if=build/root.ext2 of=$@ bs=512 seek=$(FS_LBA) conv=notrunc status=none
 
-QEMU := qemu-system-i386 -accel kvm -accel tcg -m 256 -drive file=build/vibeos.img,format=raw,if=ide \
+QEMU := qemu-system-i386 -accel kvm -accel tcg -m 256 -display gtk,zoom-to-fit=on -drive file=build/vibeos.img,format=raw,if=ide \
         -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot \
         -nic user,model=e1000,hostfwd=tcp:127.0.0.1:8080-:80   # httpd in the VM -> http://localhost:8080
 
@@ -246,9 +246,11 @@ test-host:   # host-side unit tests (libc, image codecs)
 	sh tools/libctest/run.sh
 	python3 tools/hashtest.py
 	sh tools/chesstest/run.sh
+	python3 tools/pathtest.py
 
 test-tls:    # HTTPS against local test servers (needs openssl)
 	sh tools/tlstest/run.sh
+	sh tools/pynettest/run.sh
 
 test: build/vibeos.img
 	python3 tools/vmtest.py smoke

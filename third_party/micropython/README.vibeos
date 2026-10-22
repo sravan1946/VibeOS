@@ -23,6 +23,10 @@ Nothing is modified. The VibeOS port lives in user/bin/python/:
 - vibe_os.inc, vibe_time.inc  included by extmod/modos.c and modtime.c through their INCLUDEFILE hooks:
                   getenv/putenv/system/errno, and time.time/gmtime/localtime/mktime/strftime through libc
 - modvibe.c       the `vibe` module (sysinfo ps beep uptime notify)
+- modgui.c        the `gui` module: Window (drawing, present, poll/events as attr tuples, fileno)
+- modsocket.c, modselect.c, modssl.c   `socket`, `select` and `_ssl` (TLS client over libtls); vibe_io.h is the
+                  shared EINTR-aware poll. root/lib/python/ssl.py wraps `_ssl`; root/lib/python/os/ is a package
+                  (`from uos import *` + os.path) because a filesystem `os` replaces the built-in one
 
 How it is built (see the "MicroPython" block in the top-level Makefile)
 -----------------------------------------------------------------------
