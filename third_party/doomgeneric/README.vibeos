@@ -1,0 +1,18 @@
+doomgeneric in VibeOS
+=====================
+
+Origin  : https://github.com/ozkl/doomgeneric
+Commit  : e257a09527062bfb986b6e5e0780839b6cbd5b71 (2026-10-11)
+SHA-256 : 26f8f60daa6c6e4d3c01e5eac9fb700d592dede803d13ac848154ff356b2a2e7
+          (of https://github.com/ozkl/doomgeneric/archive/e257a09527062bfb986b6e5e0780839b6cbd5b71.tar.gz)
+Licence : GPL-2.0, see LICENSE (README.md is upstream's)
+
+What is here: src/ is upstream's doomgeneric/ directory, byte-for-byte, minus the other platforms'
+files (doomgeneric_{sdl,xlib,win,...}.c, i_sdl*/i_allegro*, icon.c, the Makefiles and the Visual
+Studio files). The files built are the object list of upstream's Makefile.soso.
+
+Nothing is modified. The VibeOS platform layer lives in user/bin/doom/ (video, input, timing,
+the sound module, a few shims); the Makefile builds this directory with its own flags.
+
+The game data is NOT here. Freedoom (BSD-licensed) is fetched on demand: `make doom-wad`
+(tools/getwad.sh), which verifies a pinned release zip and caches freedoom1.wad in build/wads/.

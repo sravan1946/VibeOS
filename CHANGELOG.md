@@ -84,6 +84,14 @@ Newest notes at the bottom of each phase.
 - [x] vmtest: AC'97 + `wav` audiodev (`build/audio.wav`, configurable), `tools/wavcheck.py` to find tones/RMS in the capture
 - [ ] Sample-rate conversion in the kernel (VRA), recording, `/dev/dsp` mixing of several writers
 
+## Doom
+- [x] doomgeneric (GPL-2.0, pinned commit, unmodified) vendored in `third_party/doomgeneric/`; platform layer in `user/bin/doom/` (libgui window, `uptime_ms` clock, key queue with real key-up events, no stuck keys on focus loss)
+- [x] Freedoom 0.13.0 (BSD) fetched on demand: `make doom-wad` / `tools/getwad.sh` (pinned zip, sha256-checked, cached in `build/wads/`, never committed); the rootfs build copies it to `/usr/share/doom/`; `FS_MB` 64 -> 96
+- [x] `/bin/doom`: finds the IWAD or says so (terminal message, or a window when started from the launcher); `-iwad FILE` works; config + savegames in `/home/.doom`; Quit menu and the close button exit cleanly; launcher entry
+- [x] SFX through `/dev/dsp`: 16-channel mixer, Doom panning, 11025 -> 48 kHz linear resampling, ~40 ms queued via `AUDIO_GETQ`, never blocks the game loop; verified in the captured WAV
+- [x] libc: only `inttypes.h` was missing; everything else doomgeneric needs already linked
+- [ ] Music (needs MUS -> OPL/MIDI synthesis; the music module is a stub), mouse look, resizable scaling (frame is centred, fixed 2x), `/dev/dsp` shared with other writers
+
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
 - Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.
@@ -96,3 +104,4 @@ Newest notes at the bottom of each phase.
 - Audio (2026-10-22): AC'97 driver + `/dev/dsp`, `play`, `tone`, Piano app. Verified in QEMU against the captured WAV (440/1000 Hz tones, arpeggio notes within 1 Hz, 8-bit/8 kHz stereo resampled to 1000 Hz). Fixed: `irq_register` replaced the previous handler, so the AC'97 card on IRQ 11 silently killed the e1000.
 - Images: PNG/BMP/PPM codecs in libgui (own inflate + PNG encoder, 222 host checks vs Pillow under sanitizers), `/bin/viewer`, PrtSc screenshots via `/dev/screen` + `/bin/screenshot`, PNG in Paint and Files. Fixed along the way: a float bilinear resampler took >1 s per 800x480 frame under QEMU (frames lagged input), now packed-integer lerp + row-copy at 1:1.
 - Merged the audio, Lua and image agents. A slow PrtSc led to the disk: writes ran at ~47 KB/s under KVM because `rep outsw` exits per word; reads were fine. DMA fixed it; e2fsck clean after a write-heavy session.
+- Doom (2026-10-22): doomgeneric + Freedoom run in a 640x400 desktop window with sound. `-timedemo demo1` renders 202 fps uncapped (7117 tics in 35 s, KVM), so the 35 fps cap has plenty of headroom: doom itself uses <10% CPU, but the in-kernel compositor spends ~85% of the CPU re-composing a 640x400 window 35 times a second (a pre-existing cost of full-window damage; worth optimising). Gotchas: doomkeys.h `#define`s names that `abi.h` declares as enum constants (so abi.h is force-included first and the platform layer captures our codes before including doomkeys.h), and doomgeneric's `I_Quit` returns instead of exiting (an `I_AtExit` hook does the `exit`).

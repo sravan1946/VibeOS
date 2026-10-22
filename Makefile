@@ -3,6 +3,7 @@
 #   make run        -> boot it in QEMU
 #   make test       -> headless smoke test (tools/vmtest.py)
 #   make test-host  -> host unit tests (libc, image codecs)
+#   make doom-wad   -> fetch Freedoom (for /bin/doom) into build/wads/
 
 CC      := gcc
 LD      := ld -m elf_i386
@@ -19,7 +20,7 @@ KGFXFLAGS := $(CBASE) -Ikernel/include
 
 KERNEL_LBA := 64
 FS_LBA     := 8192
-FS_MB      := 64
+FS_MB      := 96
 FS_SECTORS := $(shell echo $$(( $(FS_MB) * 2048 )))
 
 KSRC  := $(wildcard kernel/*/*.c)
@@ -116,6 +117,15 @@ build/user/obj/third_party/%.o: third_party/%.c
 build/user/obj/bin/lua/%.o: UCFLAGS += $(LUA_FLAGS)
 build/user/obj/third_party/lua/src/lua.o: UCFLAGS += -DVIBE_LUA_FRONTEND
 
+# Doom (third_party/doomgeneric, GPL-2.0, unmodified; warnings silenced per file; abi.h first so its KEY_* enums precede doomkeys.h macros) + the platform layer in user/bin/doom/
+DOOM_SRC := $(wildcard third_party/doomgeneric/src/*.c)
+UEXTRA_doom := $(patsubst %.c,build/user/obj/%.o,$(DOOM_SRC))
+DOOM_FLAGS := -Ithird_party/doomgeneric/src -Iuser/bin/doom/compat -include abi.h -DNORMALUNIX -DLINUX -DFEATURE_SOUND
+$(UEXTRA_doom): build/user/obj/third_party/doomgeneric/src/%.o: third_party/doomgeneric/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) $(DOOM_FLAGS) -w -c $< -o $@
+build/user/obj/bin/doom/%.o: UCFLAGS += $(DOOM_FLAGS)
+
 $(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
 
 user: $(UBINS)
@@ -123,11 +133,13 @@ user: $(UBINS)
 -include $(shell find build/user -name '*.d' 2>/dev/null)
 
 # root/ is the static skeleton; user binaries land in /bin; empty dirs aren't tracked by the VCS
-build/root.ext2: $(shell find root 2>/dev/null) $(UBINS)
+build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(wildcard build/wads/freedoom1.wad)
 	rm -rf build/rootfs
 	@mkdir -p build/rootfs/bin build/rootfs/dev build/rootfs/proc build/rootfs/tmp build/rootfs/home
 	@cp -a root/. build/rootfs/ 2>/dev/null || true
 	@for f in $(UBINS); do strip -o build/rootfs/bin/$$(basename $$f) $$f; done
+	@if [ -f build/wads/freedoom1.wad ]; then mkdir -p build/rootfs/usr/share/doom; \
+	  cp build/wads/freedoom1.wad build/rootfs/usr/share/doom/; cp build/wads/freedoom-COPYING.txt build/rootfs/usr/share/doom/COPYING 2>/dev/null || true; fi
 	rm -f $@
 	mke2fs -q -t ext2 -b 1024 -I 256 -L vibeos -d build/rootfs $@ $(FS_MB)M
 
@@ -151,6 +163,9 @@ run: build/vibeos.img
 debug: build/vibeos.img
 	$(QEMU) -s -S & gdb build/kernel.elf -ex 'target remote :1234'
 
+doom-wad:    # download + verify Freedoom into build/wads/ (then `make` puts it in /usr/share/doom)
+	sh tools/getwad.sh
+
 test-host:   # host-side unit tests (libc, image codecs)
 	sh tools/imagetest/run.sh
 	sh tools/libctest/run.sh
@@ -161,4 +176,4 @@ test: build/vibeos.img
 clean:
 	rm -rf build
 
-.PHONY: all run debug test test-host clean user
+.PHONY: all run debug test test-host clean user doom-wad

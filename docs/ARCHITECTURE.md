@@ -99,6 +99,20 @@ Userland: `play`, `tone`, and the Piano app generate audio in 10 ms chunks and k
 `AUDIO_GETQ` instead of blocking in `write`. `tools/vmtest.py` records the card to `build/audio.wav` (QEMU `wav`
 audiodev); `tools/wavcheck.py` reports tones and RMS in it.
 
+## Doom
+
+`/bin/doom` is [doomgeneric](https://github.com/ozkl/doomgeneric) (`third_party/doomgeneric`, unmodified, see its
+`README.vibeos`) plus `user/bin/doom/`: `doomgeneric_vibeos.c` (a 640x400 libgui window, copied from Doom's 2x frame; key
+events including releases, all held keys released when focus is lost; `DG_SleepMs` waits in `poll()` on the window fd),
+`i_vibesound.c` (doomgeneric's sound module: 16 channels mixed in 8 ms chunks into `/dev/dsp`, linear 11025 -> 48 kHz,
+~40 ms kept queued with `AUDIO_GETQ`, topped up every tic and while Doom sleeps; music is a stub) and `main.c` (IWAD lookup,
+config and saves in `/home/.doom`). Keys: arrows move, Ctrl fire, Space use, Shift run, Alt strafe, `,` `.` strafe, 1-7
+weapons, Tab map, Esc menu. The Makefile builds the upstream sources with their own flags (`-w`, `-include abi.h`).
+
+The game data is not in the repository. `make doom-wad` (`tools/getwad.sh`) downloads the pinned Freedoom 0.13.0 zip, checks
+its sha256 and caches `freedoom1.wad` in `build/wads/`; the next `make` copies it to `/usr/share/doom/` in the root filesystem.
+Without it `doom` says so (in a window when started from the launcher). `doom -iwad FILE` uses another IWAD.
+
 ## TTY and terminal
 
 `kernel/core/tty.c` is the line discipline: canonical mode with echo, `^C ^D ^U` and erase,
