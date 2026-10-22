@@ -3,7 +3,9 @@
 #include <stdint.h>
 
 struct glyph { uint8_t w, h; int8_t xoff, yoff; uint8_t adv; uint32_t off; };
-struct font { int height, ascent; const uint8_t *alpha; struct glyph g[95]; };
+/* g[] covers ASCII 32..126; xcp/xg are sorted extra codepoints (see font_glyph) */
+struct font { int height, ascent; const uint8_t *alpha; struct glyph g[95];
+              int nx; const uint32_t *xcp; const struct glyph *xg; };
 
 extern const struct font font_mono;
 extern const struct font font_mono_bold;

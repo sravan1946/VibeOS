@@ -37,8 +37,11 @@ void gfx_blit(struct canvas *c, int x, int y, const uint32_t *src, int w, int h,
 void gfx_blit_alpha(struct canvas *c, int x, int y, const uint32_t *src, int w, int h, int stride);
 void gfx_blit_scaled(struct canvas *c, int x, int y, int dw, int dh, const uint32_t *src, int sw, int sh, int stride);
 
-int  gfx_char(struct canvas *c, const struct font *f, int x, int y, char ch, color_t col);  /* returns advance */
+int  gfx_char(struct canvas *c, const struct font *f, int x, int y, uint32_t cp, color_t col);  /* codepoint; returns advance */
+const struct glyph *font_glyph(const struct font *f, uint32_t cp);   /* '?' if the font lacks it */
+int  utf8_decode(const char *s, int n, uint32_t *cp);                 /* bytes consumed, >= 1 */
 int  gfx_text(struct canvas *c, const struct font *f, int x, int y, const char *s, color_t col);
+/* text is UTF-8; n limits bytes */
 int  gfx_text_n(struct canvas *c, const struct font *f, int x, int y, const char *s, int n, color_t col);
 int  gfx_text_width(const struct font *f, const char *s);
 int  gfx_text_width_n(const struct font *f, const char *s, int n);

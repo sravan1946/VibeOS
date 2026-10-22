@@ -714,7 +714,7 @@ static void draw_cell(struct canvas *c, int x, int y, int cw, int ch, const stru
     if (cp >= 0x2500 && cp <= 0x259F) draw_box(c, x, y, cw, ch, cp, fg, bg);
     else if (cp > ' ') {
         /* ponytail: italic is not synthesised; everything outside ASCII becomes '?' */
-        gfx_char(c, bold ? &font_mono_bold : &font_mono, x, y, cp < 127 ? (char)cp : '?', fg);
+        gfx_char(c, bold ? &font_mono_bold : &font_mono, x, y, cp, fg);
     }
     if (e->attr & TERM_A_UNDER) gfx_fill(c, x, y + ch - 3, cw, 1, fg);
     if (e->attr & TERM_A_STRIKE) gfx_fill(c, x, y + ch / 2, cw, 1, fg);

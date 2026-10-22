@@ -219,9 +219,33 @@ void gfx_blit_scaled(struct canvas *c, int x, int y, int dw, int dh, const uint3
     }
 }
 
-int gfx_char(struct canvas *c, const struct font *f, int x, int y, char ch, color_t col) {
-    if (ch < 32 || ch > 126) ch = '?';
-    const struct glyph *g = &f->g[ch - 32];
+const struct glyph *font_glyph(const struct font *f, uint32_t cp) {
+    if (cp >= 32 && cp < 127) return &f->g[cp - 32];
+    int lo = 0, hi = f->nx - 1;                               /* extras are sorted */
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if (f->xcp[m] == cp) return &f->xg[m];
+        if (f->xcp[m] < cp) lo = m + 1; else hi = m - 1;
+    }
+    return &f->g['?' - 32];
+}
+
+/* decode one UTF-8 sequence from s (at most n bytes), returns bytes used (>= 1) */
+int utf8_decode(const char *s, int n, uint32_t *cp) {
+    const uint8_t *u = (const uint8_t *)s;
+    int len = u[0] < 0x80 ? 1 : u[0] >= 0xF0 ? 4 : u[0] >= 0xE0 ? 3 : u[0] >= 0xC2 ? 2 : 0;
+    if (!len || len > n) { *cp = 0xFFFD; return 1; }
+    uint32_t v = len == 1 ? u[0] : u[0] & (0x7F >> len);
+    for (int i = 1; i < len; i++) {
+        if ((u[i] & 0xC0) != 0x80) { *cp = 0xFFFD; return i; }
+        v = v << 6 | (u[i] & 0x3F);
+    }
+    *cp = v;
+    return len;
+}
+
+int gfx_char(struct canvas *c, const struct font *f, int x, int y, uint32_t cp, color_t col) {
+    const struct glyph *g = font_glyph(f, cp);
     const uint8_t *a = f->alpha + g->off;
     int gx = x + g->xoff, gy = y + g->yoff;
     int ca = col >> 24;
@@ -243,7 +267,11 @@ int gfx_char(struct canvas *c, const struct font *f, int x, int y, char ch, colo
 
 int gfx_text_n(struct canvas *c, const struct font *f, int x, int y, const char *s, int n, color_t col) {
     int x0 = x;
-    for (int i = 0; i < n && s[i]; i++) x += gfx_char(c, f, x, y, s[i], col);
+    uint32_t cp;
+    for (int i = 0; i < n && s[i]; ) {
+        i += utf8_decode(s + i, n - i, &cp);
+        x += gfx_char(c, f, x, y, cp, col);
+    }
     return x - x0;
 }
 
@@ -253,10 +281,10 @@ int gfx_text(struct canvas *c, const struct font *f, int x, int y, const char *s
 
 int gfx_text_width_n(const struct font *f, const char *s, int n) {
     int w = 0;
-    for (int i = 0; i < n && s[i]; i++) {
-        char ch = s[i];
-        if (ch < 32 || ch > 126) ch = '?';
-        w += f->g[ch - 32].adv;
+    uint32_t cp;
+    for (int i = 0; i < n && s[i]; ) {
+        i += utf8_decode(s + i, n - i, &cp);
+        w += font_glyph(f, cp)->adv;
     }
     return w;
 }
