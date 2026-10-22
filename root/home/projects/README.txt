@@ -9,6 +9,7 @@ Programs here
   tcc bounce.c -lgui -o bounce && ./bounce     a GUI program (-lgui = windows + ui.h widgets)
   tcc threads.c -o threads && ./threads        pthreads (in libc: create/join, mutexes, condvars)
   tcc -c a.c ; tcc a.o b.o -o prog             separate compile and link
+  cd wordfreq && make && ./wordfreq ../README.txt     a Makefile project (make test, make clean)
 
 Headers are in /usr/include (libc, gui.h, ui.h), crt1.o / libc.a / libgui.a in /usr/lib.
 tcc is C99-ish with no gcc builtins; `tcc -h` lists options. Output is a static ELF linked

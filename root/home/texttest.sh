@@ -456,6 +456,149 @@ sha256sum -c h1.sum > /dev/null 2>&1; t sha256-check-fail 1 $?
 t md5-check-fail "h1: FAILED" "$(md5sum -c h1.md5 2> /dev/null)"
 sha256sum nonexist > /dev/null 2>&1; t sha256-missing 1 $?
 
+# ---- sort -k/-t/-n/-r/-u, tail -n +N, join, ls in a pipe (expected values are GNU's)
+printf 'b 2 x\na 10 y\nc 1 x\na 2 z\nb 10 x\n' > s1
+printf 'k1,b,3\nk10,a,1\nk2,c,2\n' > s2
+printf '1\n2\n3\n4\n5\n' > n5
+printf '1 a\n2 b\n2 bb\n4 d\n' > j1
+printf '2 x\n2 xx\n3 y\n4 z\n5 w\n' > j2
+printf 'a:1:x\nb:2:y\nc:3:z\n' > jt1
+printf '1:p\n2:q\n4:r\n' > jt2
+mkdir lsd; touch lsd/a lsd/b
+t sort-k2 "c 1 x
+b 10 x
+a 10 y
+b 2 x
+a 2 z" "$(sort -k2 s1)"
+t sort-k2n "c 1 x
+a 2 z
+b 2 x
+a 10 y
+b 10 x" "$(sort -k2n s1)"
+t sort-k2nr "a 10 y
+b 10 x
+a 2 z
+b 2 x
+c 1 x" "$(sort -k2nr s1)"
+t sort-nk2 "c 1 x
+a 2 z
+b 2 x
+a 10 y
+b 10 x" "$(sort -nk2 s1)"
+t sort-k2-2n "c 1 x
+a 2 z
+b 2 x
+a 10 y
+b 10 x" "$(sort -k2,2n s1)"
+t sort-two-keys "b 10 x
+b 2 x
+c 1 x
+a 10 y
+a 2 z" "$(sort -k3,3 -k2,2nr s1)"
+t sort-r-k2n "c 1 x
+b 2 x
+a 2 z
+b 10 x
+a 10 y" "$(sort -r -k2n s1)"
+t sort-u-k3 "b 2 x
+a 10 y
+a 2 z" "$(sort -u -k3,3 s1)"
+t sort-u-k1 "a 10 y
+b 2 x
+c 1 x" "$(sort -u -k1,1 s1)"
+t sort-nru "10
+2
+1" "$(printf '2\n10\n1\n2\n' | sort -nru)"
+t sort-n-u-key "c 1 x
+b 2 x
+a 10 y" "$(sort -n -u -k2,2 s1)"
+t sort-t "k10,a,1
+k1,b,3
+k2,c,2" "$(sort -t, -k2 s2)"
+t sort-t-n "k10,a,1
+k2,c,2
+k1,b,3" "$(sort -t, -k3n s2)"
+t sort-t-r "k2,c,2
+k1,b,3
+k10,a,1" "$(sort -t, -k2,2 -r s2)"
+t sort-char-offset "c 1 x
+b 10 x
+a 10 y
+b 2 x
+a 2 z" "$(sort -k1.2 s1)"
+t sort-b "c 1 x
+b 10 x
+a 10 y
+b 2 x
+a 2 z" "$(sort -k2b s1)"
+t sort-s "b 2 x
+c 1 x
+b 10 x
+a 10 y
+a 2 z" "$(sort -s -k3,3 s1)"
+t sort-f "A
+a
+B
+b" "$(printf 'b\nA\na\nB\n' | sort -f)"
+t tail-plus "3
+4
+5" "$(tail -n +3 n5)"
+t tail-plus-1 "1
+2
+3
+4
+5" "$(tail -n +1 n5)"
+t tail-plus-big "" "$(tail -n +9 n5)"
+t tail-c-plus "3
+4
+5" "$(tail -c +5 n5)"
+t tail-plain "4
+5" "$(tail -n 2 n5)"
+t join-basic "2 b x
+2 b xx
+2 bb x
+2 bb xx
+4 d z" "$(join j1 j2)"
+t join-a1 "1 a
+2 b x
+2 b xx
+2 bb x
+2 bb xx
+4 d z" "$(join -a 1 j1 j2)"
+t join-a2 "2 b x
+2 b xx
+2 bb x
+2 bb xx
+3 y
+4 d z
+5 w" "$(join -a 2 j1 j2)"
+t join-v1 "1 a" "$(join -v 1 j1 j2)"
+t join-v2 "3 y
+5 w" "$(join -v 2 j1 j2)"
+t join-o "2 b x
+2 b xx
+2 bb x
+2 bb xx
+4 d z" "$(join -o 0,1.2,2.2 j1 j2)"
+t join-e "1 a NA
+2 b x
+2 b xx
+2 bb x
+2 bb xx
+4 d z" "$(join -a 1 -e NA -o 0,1.2,2.2 j1 j2)"
+t join-t "1:a:x:p
+2:b:y:q" "$(join -t: -1 2 -2 1 jt1 jt2)"
+t join-t-a1 "1:a:x:p
+2:b:y:q
+3:c:z" "$(join -t: -1 2 -2 1 -a 1 jt1 jt2)"
+t join-i "B 1 X
+a 2 Y" "$(printf 'B 1\na 2\n' > ji1; printf 'b X\nA Y\n' > ji2; join -i ji1 ji2)"
+t ls-pipe "a
+b" "$(ls lsd | cat)"
+t ls-C "a  b" "$(ls -C lsd | cat)"
+t ls-1 "a
+b" "$(ls -1 lsd)"
+
 rm -rf $TMP
 echo
 echo "== $pass passed, $fail failed =="

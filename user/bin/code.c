@@ -674,7 +674,18 @@ static bool file_mentions(const char *p, const char *needle) {   /* does the fil
     return strstr(b, needle) != NULL;
 }
 
-/* Ctrl+B / F5. A .c file directly in the project folder is its own program; inside a subfolder, every .c file there
+static bool has_makefile(const char *dir) {
+    static const char *const n[] = { "GNUmakefile", "makefile", "Makefile" };
+    for (int i = 0; i < 3; i++) {
+        char p[PATH_MAX];
+        struct stat st;
+        snprintf(p, sizeof p, "%s/%s", dir, n[i]);
+        if (stat(p, &st) == 0) return true;
+    }
+    return false;
+}
+
+/* Ctrl+B / F5. With a Makefile next to the file, /bin/make builds the project (F5 then runs ./<folder name>). Otherwise a .c file directly in the project folder is its own program; inside a subfolder, every .c file there
  * is built together (sieve/main.c + sieve.c). The result goes to /tmp. */
 static void build(bool and_run) {
     if (proc_pid > 0) { say(true, "%s", "Already running - press Stop first"); return; }
@@ -697,6 +708,19 @@ static void build(bool and_run) {
     char dir[PATH_MAX], names[32][96];
     int nf = 0;
     dir_of(d->path, dir);
+    if (has_makefile(dir)) {
+        snprintf(last_dir, sizeof last_dir, "%s", dir);
+        snprintf(last_exe, sizeof last_exe, "%s/%s", dir, base(dir));
+        snprintf(run_target, sizeof run_target, "%s", last_exe);
+        run_lang = L_C;
+        out_open = true;
+        outlen = 0; nmarks = 0; out_top = 0; out_stick = true;
+        out_puts("$ make\n");
+        run_after_build = and_run;
+        char *mv[] = { "make", NULL };
+        start_proc(1, "/bin/make", mv, dir);
+        return;
+    }
     size_t bl = strlen(base(d->path));
     if (!strcmp(dir, root)) {
         if (!strcmp(base(d->path) + bl - 2, ".h")) { say(true, "%s", "Open a .c file to build"); return; }

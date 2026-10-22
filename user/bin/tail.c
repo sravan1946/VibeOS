@@ -1,15 +1,19 @@
-/* tail [-n N | -N] [-c N] [-f] [file...]   (reads the whole input; -f follows one file) */
+/* tail [-n [+]N | -N] [-c [+]N] [-f] [file...]   (+N: start at line/byte N; reads the whole input; -f follows one file) */
 #include <vutil.h>
 
 static long nl = 10, nc = -1;
-static int follow;
+static int follow, plus_l, plus_c;
 
 static int tail(const char *name, int fd) {
     size_t len;
     char *b = readall(fd, &len);
     if (!b) { WARN("tail", name); return 1; }
     size_t start;
-    if (nc >= 0) start = (size_t)nc < len ? len - nc : 0;
+    if (plus_c) start = nc > 1 ? ((size_t)nc - 1 < len ? (size_t)nc - 1 : len) : 0;
+    else if (plus_l) {
+        start = 0;
+        for (long k = 1; k < nl && start < len; k++) { char *e = memchr(b + start, '\n', len - start); start = e ? (size_t)(e - b) + 1 : len; }
+    } else if (nc >= 0) start = (size_t)nc < len ? len - nc : 0;
     else {
         start = len;
         long seen = 0;
@@ -28,8 +32,8 @@ int main(int argc, char **argv) {
     for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
         if (!strcmp(argv[i], "--")) { i++; break; }
         if (!strcmp(argv[i], "-f")) follow = 1;
-        else if (!strcmp(argv[i], "-n") && i + 1 < argc) nl = atol(argv[++i]);
-        else if (!strcmp(argv[i], "-c") && i + 1 < argc) nc = atol(argv[++i]);
+        else if (!strcmp(argv[i], "-n") && i + 1 < argc) { plus_l = argv[i + 1][0] == '+'; nl = atol(argv[++i]); }
+        else if (!strcmp(argv[i], "-c") && i + 1 < argc) { plus_c = argv[i + 1][0] == '+'; nc = atol(argv[++i]); }
         else if (argv[i][1] >= '0' && argv[i][1] <= '9') nl = atol(argv[i] + 1);
         else { fprintf(stderr, "usage: tail [-n N] [-c N] [-f] [file...]\n"); return 2; }
     }

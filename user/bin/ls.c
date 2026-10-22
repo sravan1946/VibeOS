@@ -1,4 +1,4 @@
-/* ls [-l] [-a] [path...]   dirs blue bold, executables green, colour only on a tty */
+/* ls [-l] [-a] [-1] [-C] [path...]   dirs blue bold, executables green; colour and the one-line layout only on a tty (-1: one name per line, -C: one line) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,7 +8,7 @@
 #include <time.h>
 #include <sys/stat.h>
 
-static int opt_l, opt_a, color;
+static int opt_l, opt_a, color, one;
 
 struct ent { char *name; struct stat st; };
 
@@ -68,7 +68,7 @@ static int list_dir(const char *path) {
     qsort(v, n, sizeof *v, by_name);
     for (size_t i = 0; i < n; i++) {
         if (opt_l) print_long(&v[i]);
-        else { print_name(&v[i]); fputs(i + 1 < n ? "  " : "\n", stdout); }
+        else { print_name(&v[i]); fputs(i + 1 < n && !one ? "  " : "\n", stdout); }
         free(v[i].name);
     }
     free(v);
@@ -77,13 +77,16 @@ static int list_dir(const char *path) {
 
 int main(int argc, char **argv) {
     int i = 1, rc = 0, npaths;
+    color = isatty(1);
+    one = !color;
     for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++)
         for (const char *f = argv[i] + 1; *f; f++) {
             if (*f == 'l') opt_l = 1;
             else if (*f == 'a') opt_a = 1;
-            else { fprintf(stderr, "usage: ls [-la] [path...]\n"); return 2; }
+            else if (*f == '1') one = 1;
+            else if (*f == 'C') one = 0;
+            else { fprintf(stderr, "usage: ls [-la1C] [path...]\n"); return 2; }
         }
-    color = isatty(1);
     npaths = argc - i;
     if (!npaths) return list_dir(".");
     for (; i < argc; i++) {
