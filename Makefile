@@ -129,6 +129,7 @@ DOOM_SRC := $(wildcard third_party/doomgeneric/src/*.c)
 UEXTRA_doom := $(patsubst %.c,build/user/obj/%.o,$(DOOM_SRC))
 DOOM_FLAGS := -Ithird_party/doomgeneric/src -Iuser/bin/doom/compat -include abi.h -DNORMALUNIX -DLINUX -DFEATURE_SOUND
 $(UEXTRA_doom): build/user/obj/third_party/doomgeneric/src/%.o: third_party/doomgeneric/src/%.c
+	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(DOOM_FLAGS) -w -c $< -o $@
 build/user/obj/bin/doom/%.o: UCFLAGS += $(DOOM_FLAGS)
 
