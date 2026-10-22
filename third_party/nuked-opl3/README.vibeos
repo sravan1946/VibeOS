@@ -1,0 +1,12 @@
+Nuked-OPL3 in VibeOS
+====================
+
+Origin  : https://github.com/nukeykt/Nuked-OPL3
+Commit  : 765ec962e473aeb767e4cba74ffdc8f588ffbfe8 (master, 2026-08-24; upstream has no release tags)
+SHA-256 : 2fad908c3904d3ef51b55e0d6a8980c7142942e2d0baa7e99bf038cf0a41199d
+          (of https://codeload.github.com/nukeykt/Nuked-OPL3/tar.gz/765ec962e473aeb767e4cba74ffdc8f588ffbfe8)
+Licence : LGPL-2.1+, see LICENSE
+
+opl3.c, opl3.h and LICENSE are upstream's, byte-for-byte; nothing is modified. A cycle-accurate
+YMF262 (OPL3) emulator in plain integer C. The synth in user/music/ drives it for Doom's music
+and for /bin/midi (it is linked statically into both programs).

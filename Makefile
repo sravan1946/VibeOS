@@ -144,11 +144,20 @@ build/user/obj/third_party/tcc/%.o: third_party/tcc/%.c $(wildcard third_party/t
 # Doom (third_party/doomgeneric, GPL-2.0, unmodified; warnings silenced per file; abi.h first so its KEY_* enums precede doomkeys.h macros) + the platform layer in user/bin/doom/
 DOOM_SRC := $(wildcard third_party/doomgeneric/src/*.c)
 UEXTRA_doom := $(patsubst %.c,build/user/obj/%.o,$(DOOM_SRC))
-DOOM_FLAGS := -Ithird_party/doomgeneric/src -Iuser/bin/doom/compat -include abi.h -DNORMALUNIX -DLINUX -DFEATURE_SOUND
+DOOM_FLAGS := -Iuser/music -Ithird_party/doomgeneric/src -Iuser/bin/doom/compat -include abi.h -DNORMALUNIX -DLINUX -DFEATURE_SOUND
 $(UEXTRA_doom): build/user/obj/third_party/doomgeneric/src/%.o: third_party/doomgeneric/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) $(DOOM_FLAGS) -w -c $< -o $@
 build/user/obj/bin/doom/%.o: UCFLAGS += $(DOOM_FLAGS)
+# OPL3 music synth (user/music/ over Nuked-OPL3, LGPL-2.1, unmodified) linked into doom and midi
+MUSIC_OBJ := build/user/obj/music/music.o build/user/obj/third_party/nuked-opl3/opl3.o
+build/user/obj/third_party/nuked-opl3/opl3.o: third_party/nuked-opl3/opl3.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -w -c $< -o $@
+build/user/obj/music/music.o: UCFLAGS += -Ithird_party/nuked-opl3
+UEXTRA_doom += $(MUSIC_OBJ)
+UEXTRA_midi := $(MUSIC_OBJ)
+build/user/obj/bin/midi/%.o: UCFLAGS += -Iuser/music
 
 $(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
 

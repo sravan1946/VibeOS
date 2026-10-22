@@ -112,9 +112,22 @@ audiodev); `tools/wavcheck.py` reports tones and RMS in it.
 `README.vibeos`) plus `user/bin/doom/`: `doomgeneric_vibeos.c` (a 640x400 libgui window, copied from Doom's 2x frame; key
 events including releases, all held keys released when focus is lost; `DG_SleepMs` waits in `poll()` on the window fd),
 `i_vibesound.c` (doomgeneric's sound module: 16 channels mixed in 8 ms chunks into `/dev/dsp`, linear 11025 -> 48 kHz,
-~40 ms kept queued with `AUDIO_GETQ`, topped up every tic and while Doom sleeps; music is a stub) and `main.c` (IWAD lookup,
+~40 ms kept queued with `AUDIO_GETQ`, topped up every tic and while Doom sleeps; music is mixed into the same chunks, see below) and `main.c` (IWAD lookup,
 config and saves in `/home/.doom`). Keys: arrows move, Ctrl fire, Space use, Shift run, Alt strafe, `,` `.` strafe, 1-7
 weapons, Tab map, Esc menu. The Makefile builds the upstream sources with their own flags (`-w`, `-include abi.h`).
+
+### Music
+
+`user/music/music.c` (+ `music.h`) is the synth and sequencer shared by Doom and `/bin/midi`. A song is a flat, time-sorted
+list of MIDI events in 48 kHz frames: `mus_parse_mus` converts a Doom MUS lump (140 Hz ticks, percussion channel 15 -> 9,
+MUS controllers -> CCs) and `mus_parse_smf` a Standard MIDI File (tracks merged by tick, tempo map applied; PPQ timing only).
+`mus_render(acc, n)` runs the sequencer and the chip together, so tempo follows however fast the caller pulls audio and
+nothing needs a timer or a thread. The chip is [Nuked-OPL3](third_party/nuked-opl3/README.vibeos) (LGPL, unmodified,
+integer-only) in OPL3 mode: 18 two-operator voices with left/right per voice (MIDI pan CC10). Instruments come from the
+`GENMIDI` lump of the WAD (175 patches; double-voice patches take two chip voices; percussion = patches 128..174 for
+notes 35..81); velocity, CC7 and CC11 scale the carrier level, pitch bend is +-2 semitones, CC64 sustain. GENMIDI's base note
+offsets are ignored (applying them drops every melodic note an octave). Voice stealing prefers released voices, then the oldest.
+Doom's `I_SetMusicVolume` (menu slider, 0..127) is `mus_volume`. Native cost is ~3% of one core for 34 s of dense 5-part music.
 
 The game data is not in the repository. `make doom-wad` (`tools/getwad.sh`) downloads the pinned Freedoom 0.13.0 zip, checks
 its sha256 and caches `freedoom1.wad` in `build/wads/`; the next `make` copies it to `/usr/share/doom/` in the root filesystem.

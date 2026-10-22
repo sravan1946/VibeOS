@@ -1,7 +1,8 @@
 /* i_vibesound.c - doomgeneric sound module for /dev/dsp (48 kHz stereo s16le).
  * SFX lumps (8-bit mono, mostly 11025 Hz) are mixed in 8 ms chunks with linear resampling; the
  * mixer only runs while a sound is playing and keeps ~40 ms queued (polled via AUDIO_GETQ), so
- * the game loop never blocks in write(). Music: not implemented (stub module; needs OPL/MIDI). */
+ * the game loop never blocks in write(). Music: MUS lumps are turned into MIDI events and played by the
+ * OPL3 synth in user/music/ (GENMIDI instruments); it is rendered into the same 8 ms mix chunks. */
 #include <audio.h>
 #include <stdlib.h>
 #include "doomtype.h"
@@ -10,6 +11,7 @@
 #include "w_wad.h"
 #include "deh_str.h"
 #include "z_zone.h"
+#include "music.h"
 
 #define NCH 16
 #define CHUNK 384                               /* frames per write: 8 ms */
@@ -102,6 +104,8 @@ static int mix(short *out) {
         }
         if (i < CHUNK) ch[c].s = NULL; else { ch[c].pos = pos; live++; }
     }
+    mus_render(acc, CHUNK);
+    live += mus_playing();
     for (int i = 0; i < CHUNK * 2; i++) out[i] = acc[i] > 32767 ? 32767 : acc[i] < -32768 ? -32768 : acc[i];
     return live;
 }
@@ -112,6 +116,7 @@ void vibe_sound_pump(void) {
     int any = 0;
     if (fd < 0) return;
     for (int c = 0; c < NCH; c++) any |= ch[c].s != NULL;
+    any |= mus_playing();
     for (int q = audio_queued(fd); any && q < TARGET; q += CHUNK * 4) {
         any = mix(out) > 0;
         write(fd, out, sizeof out);              /* ring has room: queued < target */
@@ -126,16 +131,29 @@ sound_module_t DG_sound_module = {
     snd_params, snd_start, snd_stop, snd_playing, NULL,
 };
 
-/* ---- music: nothing yet ---- */
-static boolean mus_init(void) { return true; }
-static void mus_nop(void) {}
-static void mus_vol(int v) {}
-static void *mus_reg(void *d, int n) { return d; }
-static void mus_unreg(void *h) {}
-static void mus_play(void *h, boolean loop) {}
-static boolean mus_playing(void) { return false; }
+/* ---- music: MUS (or MIDI) lump -> OPL3 synth; GENMIDI comes from the WAD ---- */
+static int music_up;
+static boolean mm_init(void) {
+    int l = W_CheckNumForName("GENMIDI");
+    if (fd < 0 || l < 0 || mus_init() < 0) return false;
+    music_up = mus_genmidi(W_CacheLumpNum(l, PU_STATIC), W_LumpLength(l)) == 0;
+    return music_up;
+}
+static void mm_shutdown(void) { mus_stop(); }
+static void mm_vol(int v) { mus_volume(v); }
+static void mm_pause(void) { mus_pause(1); }
+static void mm_resume(void) { mus_pause(0); }
+static void *mm_reg(void *d, int n) {
+    if (!music_up) return NULL;
+    struct song *s = mus_parse_mus(d, n);
+    return s ? s : mus_parse_smf(d, n);
+}
+static void mm_unreg(void *h) { mus_stop(); mus_free(h); }
+static void mm_play(void *h, boolean loop) { if (h) mus_play(h, loop); }
+static void mm_stop(void) { mus_stop(); }
+static boolean mm_playing(void) { return mus_playing(); }
 
 music_module_t DG_music_module = {
-    devs, sizeof devs / sizeof *devs, mus_init, mus_nop, mus_vol, mus_nop, mus_nop,
-    mus_reg, mus_unreg, mus_play, mus_nop, mus_playing, mus_nop,
+    devs, sizeof devs / sizeof *devs, mm_init, mm_shutdown, mm_vol, mm_pause, mm_resume,
+    mm_reg, mm_unreg, mm_play, mm_stop, mm_playing, NULL,
 };
