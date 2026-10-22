@@ -212,6 +212,29 @@ detection (`term_link_at`) so the window code stays free of cell-level logic.
 * `user/lib/gui.c` wraps that; `user/lib/ui.c` is an immediate-mode widget toolkit (buttons,
   checkboxes, sliders, text boxes, lists, panels) in the desktop's theme.
 
+## Files, desktop icons, associations and trash
+
+* `user/lib/fsutil.c` (plain libc, also built on the host by `tools/filestest`) holds the logic the apps share:
+  `fs_assoc_text` resolves a path against `/etc/open.conf` (lines `ext,ext program[|fallback]`; first existing program wins;
+  no extension entry and an executable file means "run itself"; `*` is the fallback), `fs_open` starts the result detached,
+  `fs_trash_*` implement `/home/.trash/{files,info}/NAME` (info = original path + deletion time; restore recreates a missing
+  parent and never overwrites), plus `fs_copy`, `fs_rmrf`, `fs_unique` ("a (2).txt") and a bounded `fs_du`. `user/lib/fileicon.c`
+  (libgui) draws the scalable type icons.
+* `/bin/files` is one immediate-mode loop over `ui.h`: entries are sorted in place and filtered into an `ord[]` index list;
+  grid and list share one layout (`struct lay`, row-granular scrolling); selection lives on the entries; modifier state comes
+  from the key events (clicks carry none). Thumbnails are decoded one per frame (files under 3 MiB) into an LRU cache.
+* **The desktop** is `/bin/desktop`, an ordinary client that the compositor starts after `autostart`. Its window has
+  `WIN_FLAG_DESKTOP`: created at 0,0 and screen-wide, kept at the bottom of the z-order, on all workspaces, never in the taskbar
+  or Alt+Tab, resized by `wm_set_mode`, and composited with alpha (`draw_window` skips alpha-0 pixels) instead of copied. Pointer
+  events reach it wherever no window covers the screen; the only transparency test is for a right-click, which falls through to
+  the compositor's own menu when the pixel under it has alpha 0. Because `gfx` always produces opaque pixels, the app draws
+  translucent items as *sprites*: each is rendered on black and on white and the alpha recovered from the difference.
+* **Drag and drop across windows**: the dragger writes `DRAG_FILE` (`/tmp/.drag`: `move`, then one absolute path per line) when
+  the drag starts. When a captured mouse press is released and that file exists, the compositor sends `EV_DROP` (client
+  coordinates) to the window under the pointer, itself included. The receiver reads and deletes the file (Files moves the paths
+  into the folder under the pointer or its own folder, the desktop moves them into `/home/Desktop` and places the icon);
+  a dragger whose own `EV_DROP` arrives on the next frame knows the drop landed on itself.
+
 ## Images and screenshots
 
 `user/lib/image.c` (in libgui, also compiled on the host by `tools/imagetest`) holds a from-scratch zlib
@@ -279,6 +302,7 @@ selection, find bar, select dropdowns. inflate in `image.c` is table-driven (9-b
 
 ## Testing
 
+* `tools/filestest/vm.sh` is the visible-VM walkthrough of Files, the desktop icons and the trash (real pointer events, `--abs`); `tools/filestest/run.sh` tests `fsutil.c` on the host and `/home/filestest.sh` checks `open -w` and `trash` inside VibeOS.
 * `tools/vmtest.py` boots the image in QEMU and drives it through the monitor: type text, send
   keys, move/click/drag the mouse, wait for serial output, take screenshots.
 * Sound is captured to `build/audio.wav` (`--audiodev` / `VIBE_AUDIODEV` to override) and checked with `tools/wavcheck.py`.

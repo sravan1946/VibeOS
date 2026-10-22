@@ -231,6 +231,7 @@ struct win_rect { int x, y, w, h; };
 
 #define WIN_FLAG_NORESIZE 1
 #define WIN_FLAG_FRAMELESS 2   /* no title bar: panels, popups */
+#define WIN_FLAG_DESKTOP 4     /* the desktop layer: full screen above the taskbar, bottom of the z-order, ARGB (alpha 0 = see the wallpaper) */
 struct win_info {
     int x, y, w, h;           /* client area; x/y = -1 for auto placement */
     int flags;
@@ -253,7 +254,9 @@ enum {
     EV_CLOSE,          /* close button pressed */
     EV_FOCUS,          /* pressed = gained/lost */
     EV_MOUSE_LEAVE,
+    EV_DROP,           /* x, y: a drag that started in another window (or this one) ended here and DRAG_FILE exists */
 };
+#define DRAG_FILE "/tmp/.drag"   /* drag payload: "move\n" then one absolute path per line; written by the dragger, consumed by the target */
 
 /* key codes: printable keys use their ASCII; specials below */
 enum {

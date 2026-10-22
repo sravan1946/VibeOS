@@ -10,6 +10,7 @@ emulator, and a set of desktop apps and games.
 |---|---|
 | ![Files and Notepad](docs/screenshots/apps.png) | ![Paint](docs/screenshots/paint.png) |
 | ![Games](docs/screenshots/games.png) | ![Editor in the terminal](docs/screenshots/edit.png) |
+| ![Files: grid view with thumbnails](docs/screenshots/files.png) | ![Desktop icons and a drop from Files](docs/screenshots/desktop-icons.png) |
 
 ## Features
 
@@ -44,6 +45,7 @@ emulator, and a set of desktop apps and games.
   alternate screen, scroll regions, scrollback, UTF-8) with mouse selection; a system clipboard shared by
   every app. Terminal windows have tabs (Ctrl+Shift+T/W, Ctrl+PgUp/PgDn), scrollback search (Ctrl+Shift+F),
   zoom (Ctrl+= / Ctrl+- / Ctrl+0), Ctrl+Shift+C/V and Ctrl+click on a URL to open it in the browser.
+- **Files and desktop icons**: Files has icon-grid (with image thumbnails) and list views, a sidebar, history, a typeable path bar, search, multi-select (Ctrl/Shift/rubber band), copy/cut/paste, rename, a Trash with restore, a Properties dialog, right-click menus and drag and drop; `/home/Desktop` shows as icons on the wallpaper (drag them, double-click to open, drop files on them). Double-clicks go through `/etc/open.conf` (extension -> program), also reachable as `open FILE`; `trash FILE` is the shell side of the Trash.
 - Fonts (JetBrains Mono, Noto Sans) rasterised into the build with Latin-1, arrows, symbols
   and box/block glyphs.
 - Apps are ordinary processes: a window is a file descriptor whose buffer is mapped into the

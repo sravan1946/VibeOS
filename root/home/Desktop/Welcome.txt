@@ -1,0 +1,5 @@
+Welcome to the VibeOS desktop.
+
+Files in /home/Desktop appear here as icons: drag them around, double-click to open
+(the program comes from /etc/open.conf), right-click for Open / Show in Files / Move to Trash.
+Drag files from Files onto the wallpaper to put them here.
