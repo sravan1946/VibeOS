@@ -57,3 +57,4 @@ dkms.conf
 build/
 build/
 .claude/
+root/etc/autostart
