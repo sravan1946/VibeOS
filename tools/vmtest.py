@@ -6,10 +6,11 @@
 steps:
   wait:TEXT        wait until TEXT shows up in the serial log
   type:TEXT        type TEXT (\\n = Enter, \\t = Tab)
-  key:NAME         QEMU sendkey name, e.g. ctrl-c, up, esc
+  key:NAME         QEMU sendkey name, e.g. ctrl-c, up, esc (prtsc = print)
   mclick           middle click (rclick right, dclick double)
   sleep:SECS
   shot:PATH.png    screenshot
+  wheel:DZ         scroll wheel (negative = up)
   moveto:X,Y       move the pointer (absolute pixels)   click / rclick / dclick / down / up
   drag:X0,Y0,X1,Y1 left-drag
   smoke            = wait for the desktop and take build/smoke.png
@@ -147,7 +148,7 @@ def main(argv):
                 if not vm.wait(arg, timeout):
                     print(f"FAIL: timed out waiting for {arg!r}"); ok = False; break
             elif kind == "type": vm.type(arg)
-            elif kind == "key": vm.hmp("sendkey " + arg)
+            elif kind == "key": vm.hmp("sendkey " + {"prtsc": "print"}.get(arg, arg))
             elif kind == "sleep": time.sleep(float(arg))
             elif kind == "shot": vm.shot(arg); print("screenshot:", arg)
             elif kind in ("mouse", "moveto"):   # absolute pixel target via relative PS/2 moves
@@ -166,6 +167,9 @@ def main(argv):
                     vm.m.sendall(b"mouse_button 1\n"); time.sleep(0.04)
                     vm.m.sendall(b"mouse_button 0\n"); time.sleep(0.04)
                 vm.drain()
+            elif kind == "wheel":
+                vm.hmp(f"mouse_move 0 0 {int(arg)}")
+                for _ in range(4): time.sleep(0.03); vm.hmp("mouse_move 0 0")   # flush the parked packet
             elif kind == "click": vm.hmp("mouse_button 1"); time.sleep(0.05); vm.hmp("mouse_button 0")
             elif kind == "down": vm.hmp("mouse_button 1"); time.sleep(0.05)
             elif kind == "up": vm.hmp("mouse_button 0"); time.sleep(0.05)

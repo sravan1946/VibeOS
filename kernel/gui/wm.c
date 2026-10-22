@@ -876,7 +876,9 @@ static void key_event(const struct gui_event *ev) {
         if ((mods & MOD_ALT) && ev->key == KEY_F4) { if (focused) close_window(focused); return; }
         if (ev->key == KEY_ESC && menu_open) { launch(-1); return; }
         if (ev->key == KEY_F11 && focused) { toggle_max(focused); return; }
+        if (ev->key == KEY_PRTSC) { wm_spawn_app("/bin/screenshot", 0); return; }
     }
+    if (ev->key == KEY_PRTSC) return;
     if (focused) send(focused, ev);
 }
 
@@ -896,6 +898,20 @@ static void irq_key(const struct gui_event *ev) {
     in->kind = 2; in->ev = *ev;
     inq_h++;
     wakeup(&wm_chan);
+}
+
+/* /dev/screen: u32 w, u32 h, then the composed screen as 0xAARRGGBB rows (what a user process encodes for PrtSc) */
+int wm_screen_read(uint32_t off, void *buf, uint32_t n) {
+    if (!running) return 0;
+    uint32_t total = 8 + (uint32_t)SW * SH * 4, done = 0;
+    uint8_t *o = buf;
+    while (done < n && off + done < total) {
+        uint32_t p = off + done, k;
+        if (p < 8) { uint32_t hdr[2] = { SW, SH }; k = imin(8 - p, n - done); memcpy(o + done, (uint8_t *)hdr + p, k); }
+        else { k = imin(total - p, n - done); memcpy(o + done, (uint8_t *)bb.px + (p - 8), k); }
+        done += k;
+    }
+    return done;
 }
 
 /* ================= user windows (fd + syscalls) ================= */

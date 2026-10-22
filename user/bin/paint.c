@@ -1,4 +1,4 @@
-/* paint - bitmap canvas with pencil, line, rectangle, ellipse, bucket fill, eraser, undo, BMP export */
+/* paint - bitmap canvas with pencil, line, rectangle, ellipse, bucket fill, eraser, undo, PNG/BMP save, PNG/BMP/PPM open */
 #include <ui.h>
 #include <stdio.h>
 #include <string.h>
@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <syscall.h>
+#include "image.h"
 
 #define DOC_W 800
 #define DOC_H 520
@@ -38,8 +39,8 @@ static const color_t palette[] = {
 static char msg[128];
 static uint32_t msg_until;
 static bool msg_bad;
-static char savepath[PATH_MAX] = "/home/drawing.bmp";
-static bool saving;
+static char savepath[PATH_MAX] = "/home/Pictures/drawing.png";
+static bool saving, opening;
 
 static void say(bool bad, const char *fmt, const char *arg) {
     snprintf(msg, sizeof msg, fmt, arg);
@@ -203,6 +204,26 @@ static bool save_bmp(const char *path) {
     return ok;
 }
 
+/* the format follows the extension: .bmp is a 24-bit BMP, anything else a PNG */
+static bool save_doc(const char *path) {
+    const char *e = strrchr(path, '.');
+    if (e && !strcasecmp(e, ".bmp")) return save_bmp(path);
+    return image_save_png(path, doc, DOC_W, DOC_H) == 0;
+}
+
+/* load an image onto a fresh canvas, top-left aligned and cropped (transparency shows the background colour) */
+static bool open_doc(const char *path) {
+    struct image im;
+    if (image_load(path, &im)) return false;
+    push_undo();
+    again = true;
+    for (int i = 0; i < DOC_W * DOC_H; i++) doc[i] = bg;
+    gfx_blit_alpha(&dc, 0, 0, im.px, im.w, im.h, im.w);
+    image_free(&im);
+    dirty = false;
+    return true;
+}
+
 /* ---- tool icons ---- */
 static void tool_icon(struct canvas *c, int t, int cx, int cy, color_t col) {
     switch (t) {
@@ -257,7 +278,7 @@ int main(void) {
     do {
         int W = w->w, H = w->h;
         int sideW = 88, palH = 72;
-        bool modal = saving;
+        bool modal = saving || opening;
         int smx = ui.mx, smy = ui.my;
         bool sp = ui.pressed, sr = ui.released, srp = ui.rpressed;
         int nk = ui.nkeys;
@@ -277,6 +298,7 @@ int main(void) {
             if (k.mods & MOD_CTRL) {
                 if (k.key == 'z') { do_undo(); drawing = false; }
                 else if (k.key == 's') saving = true;
+                else if (k.key == 'o') opening = true;
             } else if (k.ch == '[' && brush > 1) brush--;
             else if (k.ch == ']' && brush < 40) brush++;
             else if (k.ch >= '1' && k.ch <= '6') tool = k.ch - '1';
@@ -362,6 +384,7 @@ redraw:
         if (ui_button(&ui, 10, by, sideW - 20, 32, "Undo", UI_NORMAL_BTN)) { do_undo(); drawing = false; }
         if (ui_button(&ui, 10, by + 40, sideW - 20, 32, "Clear", UI_NORMAL_BTN)) clear_doc();
         if (ui_button(&ui, 10, by + 80, sideW - 20, 32, "Save", UI_ACCENT_BTN)) saving = true;
+        if (ui_button(&ui, 10, by + 120, sideW - 20, 32, "Open", UI_NORMAL_BTN)) opening = true;
 
         /* palette bar */
         gfx_fill(c, 0, H - palH, W, palH, UI_PANEL);
@@ -396,15 +419,20 @@ redraw:
             memcpy(ui.keys, saved, sizeof saved);
         }
         if (saving) {
-            int r = ui_prompt(&ui, "Save as BMP", "Save", savepath, sizeof savepath);
+            int r = ui_prompt(&ui, "Save as PNG or BMP", "Save", savepath, sizeof savepath);
             if (r == 1) {
                 gfx_text_center(ui.c, &font_ui_bold, 0, H / 2 + 60, W, "Saving...", UI_TEXT);   /* the ext2 write takes a few seconds */
                 ui_end(&ui);                                          /* show it before the slow write */
-                if (save_bmp(savepath)) { say(false, "Saved %s", savepath); dirty = false; }
+                if (save_doc(savepath)) { say(false, "Saved %s", savepath); dirty = false; }
                 else say(true, "Could not write %s", savepath);
             }
             if (r) saving = false;
+        } else if (opening) {
+            int r = ui_prompt(&ui, "Open image", "Open", savepath, sizeof savepath);
+            if (r == 1) { if (open_doc(savepath)) say(false, "Opened %s", savepath); else say(true, "Cannot open %s", savepath); }
+            if (r) opening = false;
         }
+        if (again) { again = false; ui.pressed = ui.released = ui.rpressed = false; goto redraw; }   /* the open replaced the canvas */
         ui_end(&ui);
     } while (ui_poll(&ui, -1));
     gui_window_destroy(w);

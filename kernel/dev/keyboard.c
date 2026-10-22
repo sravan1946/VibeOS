@@ -20,6 +20,7 @@ static int special(uint8_t sc, bool ext) {
         case 0x1D: return KEY_RCTRL; case 0x38: return KEY_RALT;
         case 0x5B: case 0x5C: return KEY_SUPER;
         case 0x5D: return KEY_MENU;
+        case 0x37: return KEY_PRTSC;
         case 0x1C: return KEY_ENTER;
         case 0x35: return '/';
         default: return 0;
