@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Vibe Browser rendering test</title>
+<style>body { color: red; }</style>
+<script>alert("scripts are skipped");</script>
+</head>
+<body>
+<h1>Rendering test page</h1>
+<p>This page exercises the HTML subset: <b>bold</b>, <strong>strong</strong>, <em>emphasis</em>, <i>italic</i>,
+<u>underline</u>, <s>strike</s>, <code>inline code</code>, and a <a href="http://example.com/">link to example.com</a>.
+Entities: &amp; &lt; &gt; &quot; &#65; &#x42; &nbsp;&nbsp;&copy; 2026 &mdash; caf&eacute; &hellip; &euro;
+and some UTF-8: naïve café — “quotes” → ← ✓ (unknown glyph shows ?).</p>
+
+<h2>Headings</h2>
+<h3>Third level</h3>
+<h4>Fourth level</h4>
+<h5>Fifth level</h5>
+<h6>Sixth level</h6>
+
+<h2>Lists</h2>
+<ul>
+  <li>First item
+  <li>Second item with a much longer description that needs to wrap onto another line when the window is narrow enough to force it
+  <li>Nested:
+    <ul>
+      <li>inner one
+      <li>inner two
+    </ul>
+  <li>Last item
+</ul>
+<ol>
+  <li>Step one
+  <li>Step two
+  <li>Step three
+</ol>
+<dl>
+  <dt>Term<dd>Its definition, indented below the term.
+  <dt>Another<dd>Another definition.
+</dl>
+
+<h2>Quote and code</h2>
+<blockquote>The best way to predict the future is to invent it. A blockquote gets an indent and a bar on its left edge.</blockquote>
+<pre>
+int main(void) {
+    printf("hello, vibe\n");   /* preformatted: spaces and
+                                  line breaks are kept */
+    return 0;
+}
+</pre>
+
+<h2>Table</h2>
+<table border="1">
+  <tr><th>Name</th><th>Kind</th><th>Size</th></tr>
+  <tr><td>alpha</td><td>file</td><td>12 KB</td></tr>
+  <tr><td>beta</td><td>folder</td><td>-</td></tr>
+  <tr><td>gamma</td><td>file</td><td>3 MB</td></tr>
+</table>
+
+<h2>Misc</h2>
+<center>A centred paragraph of text.</center>
+<p>Line one<br>line two after a break<br><br>and a blank line before this one.</p>
+<hr>
+<p>An image placeholder: <img src="x.png" alt="a cat"> and without alt: <img src="y.png">.</p>
+<p>A very long unbreakable word: Pneumonoultramicroscopicsilicovolcanoconiosis_Pneumonoultramicroscopicsilicovolcanoconiosis_Pneumonoultramicroscopicsilicovolcanoconiosis</p>
+<p><a href="#bottom">Jump to the bottom of this page</a> &middot; <a href="about:home">Start page</a> &middot; <a href="../welcome.txt">welcome.txt</a> &middot; <a href="https://example.com/">an https link</a></p>
+<!-- a comment <b>that is not rendered</b> -->
+<p>Malformed &unknown; &#xZZ; < not a tag <b>unclosed bold
+<p>Another paragraph, still bold (the unclosed b stays open until the end, like in browsers).
+
+<h2>Scrolling</h2>
+<p>Some filler so this page is long enough to scroll.</p>
+<ul>
+<li>one<li>two<li>three<li>four<li>five<li>six<li>seven<li>eight<li>nine<li>ten
+<li>eleven<li>twelve<li>thirteen<li>fourteen<li>fifteen<li>sixteen<li>seventeen<li>eighteen
+</ul>
+<h2><a name="bottom">The bottom</a></h2>
+<p>You made it to the end.</p>
+</body>
+</html>

@@ -44,6 +44,7 @@ Newest notes at the bottom of each phase.
 - [x] Terminal windows (multiple shells)
 - [x] Window syscalls + userland GUI library (libgui: gui.h windows/events, ui.h immediate-mode widgets)
 - [x] GUI apps: system monitor, paint, calculator, clock, file manager, text editor (`user/bin/{sysmon,paint,calc,clock,files,notepad}.c`) — agent
+- [x] Vibe Browser (`user/bin/browser/`): HTTP/1.1 GET in a helper process (redirects, chunked, timeout, Stop), HTML subset renderer (headings, lists, tables, pre, links, entities, UTF-8), history, anchors, `file://` + directory listings, built-in start page, friendly HTTPS-unsupported page; verified in QEMU against info.cern.ch, example.com, neverssl.com, httpbin redirects and a local test server
 - [x] About VibeOS app (first ui.h app, verified open/close in QEMU)
 - [x] Games: snake, tetris (SRS, hold, ghost, DAS), minesweeper (3 levels, chording) — agent
 

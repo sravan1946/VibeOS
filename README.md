@@ -50,7 +50,7 @@ emulator, and a set of desktop apps and games.
   vibefetch` and more.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc`.
-- GUI apps: Files, Notepad, Paint, Calculator, Clock (with stopwatch and timer), System
+- GUI apps: Files, Notepad, Browser (HTTP + HTML subset), Paint, Calculator, Clock (with stopwatch and timer), System
   Monitor, About.
 - Games: Snake, Tetris, Minesweeper.
 
