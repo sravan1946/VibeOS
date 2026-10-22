@@ -21,7 +21,7 @@ static void seg_send(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
     *t = (struct tcph){ sport, dport, htonl(seq), htonl(ack), hl / 4 << 4, flags, htons(win), 0, 0 };
     if (flags & SYN) { b[20] = 2; b[21] = 4; b[22] = TCP_MSS >> 8; b[23] = TCP_MSS & 255; }
     if (n) memcpy(b + hl, data, n);
-    t->csum = l4_csum(6, src ? src : ni.ip, dst, b, hl + n);
+    t->csum = l4_csum(6, src ? src : ip_src(dst), dst, b, hl + n);
     ip_send(6, src, dst, b, hl + n);
 }
 

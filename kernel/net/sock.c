@@ -94,6 +94,7 @@ static int dns_parse(const uint8_t *p, uint32_t n, uint16_t id, uint32_t *out) {
 
 static int dns_resolve(const char *name, uint32_t *out) {
     if (!ip_parse(name, out)) return 0;
+    if (!strcmp(name, "localhost")) { *out = IP4(127, 0, 0, 1); return 0; }
     int r = net_wait_cfg();
     if (r < 0) return r;
     if (!ni.dns) return -ENETDOWN;

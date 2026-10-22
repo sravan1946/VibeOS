@@ -114,10 +114,40 @@ static void arp_rx(const uint8_t *p, uint32_t n) {
 }
 
 /* ---- IPv4 ---- */
+static bool is_lo(uint32_t ip) { return (ip & 0xFF) == 127; }
+uint32_t ip_src(uint32_t dst) { return is_lo(dst) ? dst : ni.ip; }
+
+/* loopback: packets to 127/8 or our own address are queued and fed to ip_rx by the net thread */
+struct lopkt { struct lopkt *next; uint32_t n; uint8_t p[]; };
+static struct lopkt *lo_h, *lo_t;
+
+static struct lopkt *lo_pop(void) {
+    uint32_t f = irq_save();
+    struct lopkt *k = lo_h;
+    if (k && !(lo_h = k->next)) lo_t = 0;
+    irq_restore(f);
+    return k;
+}
+
 int ip_send(uint8_t proto, uint32_t src, uint32_t dst, const void *p, uint32_t n) {
     static uint16_t id;
     uint8_t mac[6];
     if (n > 1480) return -EMSGSIZE;
+    if (is_lo(dst) || (dst == ni.ip && ni.ip)) {
+        struct lopkt *k = kmalloc(sizeof *k + sizeof(struct iph) + n);
+        if (!k) return -ENOMEM;
+        struct iph *h = (void *)k->p;
+        *h = (struct iph){ 0x45, 0, htons(sizeof *h + n), htons(++id), 0, 64, proto, 0, src ? src : ip_src(dst), dst };
+        h->csum = ip_csum(h, sizeof *h);
+        memcpy(k->p + sizeof *h, p, n);
+        k->n = sizeof *h + n; k->next = 0;
+        uint32_t f = irq_save();
+        if (lo_t) lo_t->next = k; else lo_h = k;
+        lo_t = k;
+        irq_restore(f);
+        wakeup(&net_chan);
+        return 0;
+    }
     if (dst == 0xFFFFFFFF || (ni.mask && dst == (ni.ip | ~ni.mask))) memcpy(mac, bcast, 6);
     else {
         uint32_t nh = ((dst ^ ni.ip) & ni.mask) == 0 ? dst : ni.gw;
@@ -156,7 +186,7 @@ int udp_send(uint32_t src, uint16_t sport, uint32_t dst, uint16_t dport, const v
     struct udph *u = (void *)d;
     *u = (struct udph){ sport, dport, htons(sizeof *u + n), 0 };
     memcpy(d + sizeof *u, p, n);
-    u->csum = l4_csum(17, src ? src : ni.ip, dst, d, sizeof *u + n);
+    u->csum = l4_csum(17, src ? src : ip_src(dst), dst, d, sizeof *u + n);
     if (!u->csum) u->csum = 0xFFFF;
     return ip_send(17, src, dst, d, sizeof *u + n);
 }
@@ -259,7 +289,7 @@ static void ip_rx(const uint8_t *p, uint32_t n) {
     uint32_t hl = (h->vihl & 15) * 4, tl = ntohs(h->len);
     if (hl < sizeof *h || tl < hl || tl > n) return;
     if (h->frag & htons(0x3FFF)) return;                 /* fragments: not reassembled */
-    bool mine = h->dst == ni.ip || h->dst == 0xFFFFFFFF || (ni.mask && h->dst == (ni.ip | ~ni.mask)) || !ni.ip;
+    bool mine = h->dst == ni.ip || is_lo(h->dst) || h->dst == 0xFFFFFFFF || (ni.mask && h->dst == (ni.ip | ~ni.mask)) || !ni.ip;
     if (!mine) return;
     p += hl; tl -= hl;
     switch (h->proto) {
@@ -298,9 +328,10 @@ static int net_thread(void *arg) {
     for (;;) {
         uint32_t f = irq_save();
         uint8_t *fr; uint32_t n;
-        if (!e1000_rx_peek(&fr, &n)) sleep_on(&net_chan, 50);
+        if (!e1000_rx_peek(&fr, &n) && !lo_h) sleep_on(&net_chan, 50);
         irq_restore(f);
         while (e1000_rx_peek(&fr, &n)) { net_rx(fr, n); e1000_rx_pop(); }
+        for (struct lopkt *k; (k = lo_pop()); kfree(k)) ip_rx(k->p, k->n);
         tcp_timer();
         dhcp_timer();
     }

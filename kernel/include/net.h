@@ -30,7 +30,8 @@ extern struct task *net_task;
 void     net_init(void);
 int      net_wait_cfg(void);                             /* wait for the DHCP lease: 0 / -ENODEV / -ENETDOWN */
 int      nwait(void *chan, uint32_t ms);                 /* sleep_on with irqs masked */
-int      ip_send(uint8_t proto, uint32_t src, uint32_t dst, const void *p, uint32_t n);
+int      ip_send(uint8_t proto, uint32_t src, uint32_t dst, const void *p, uint32_t n);   /* src 0: ip_src(dst) */
+uint32_t ip_src(uint32_t dst);                           /* our address as seen from dst (127/8 talks to itself) */
 int      udp_send(uint32_t src, uint16_t sport, uint32_t dst, uint16_t dport, const void *p, uint32_t n);
 uint16_t l4_csum(uint8_t proto, uint32_t src, uint32_t dst, const void *seg, uint32_t n);
 uint16_t ip_csum(const void *p, uint32_t n);
