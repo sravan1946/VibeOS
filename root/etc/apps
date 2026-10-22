@@ -1,4 +1,5 @@
 # launcher entries: name|path|arg|RRGGBB|glyph
+Browser|/bin/browser||24B8E8|B
 Files|/bin/files||3D8BFD|F
 Text Editor|/bin/notepad||2EC5A0|E
 Paint|/bin/paint||FF8A3D|P

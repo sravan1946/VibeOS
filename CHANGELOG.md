@@ -45,6 +45,7 @@ Newest notes at the bottom of each phase.
 - [x] Terminal windows (multiple shells)
 - [x] Window syscalls + userland GUI library (libgui: gui.h windows/events, ui.h immediate-mode widgets)
 - [x] GUI apps: system monitor, paint, calculator, clock, file manager, text editor (`user/bin/{sysmon,paint,calc,clock,files,notepad}.c`) — agent
+- [x] Vibe Browser (`user/bin/browser/`): HTTP/1.1 GET in a helper process (redirects, chunked, timeout, Stop), HTML subset renderer (headings, lists, tables, pre, links, entities, UTF-8), history, anchors, `file://` + directory listings, built-in start page, friendly HTTPS-unsupported page; verified in QEMU against info.cern.ch, example.com, neverssl.com, httpbin redirects and a local test server
 - [x] About VibeOS app (first ui.h app, verified open/close in QEMU)
 - [x] Games: snake, tetris (SRS, hold, ghost, DAS), minesweeper (3 levels, chording) — agent
 
@@ -94,4 +95,4 @@ Newest notes at the bottom of each phase.
 - Merged the scripting shell (if/for/while/case, functions, `$(..)`, `$((..))`, here-docs, builtins, Ctrl-R, `!!`, kernel `#!`; 162/162 in shtest.sh). Profiling it showed every spawn re-reading the whole unstripped ELF over PIO through a 32-block cache.
 - Audio (2026-10-22): AC'97 driver + `/dev/dsp`, `play`, `tone`, Piano app. Verified in QEMU against the captured WAV (440/1000 Hz tones, arpeggio notes within 1 Hz, 8-bit/8 kHz stereo resampled to 1000 Hz). Fixed: `irq_register` replaced the previous handler, so the AC'97 card on IRQ 11 silently killed the e1000.
 - Images: PNG/BMP/PPM codecs in libgui (own inflate + PNG encoder, 222 host checks vs Pillow under sanitizers), `/bin/viewer`, PrtSc screenshots via `/dev/screen` + `/bin/screenshot`, PNG in Paint and Files. Fixed along the way: a float bilinear resampler took >1 s per 800x480 frame under QEMU (frames lagged input), now packed-integer lerp + row-copy at 1:1.
-- Merged the browser-less agents (audio, Lua, images). A slow PrtSc led to the disk: writes ran at ~47 KB/s under KVM because `rep outsw` exits per word; reads were fine. DMA fixed it; e2fsck clean after a write-heavy session.
+- Merged the audio, Lua and image agents. A slow PrtSc led to the disk: writes ran at ~47 KB/s under KVM because `rep outsw` exits per word; reads were fine. DMA fixed it; e2fsck clean after a write-heavy session.
