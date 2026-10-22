@@ -23,6 +23,21 @@ void vmm_map_mmio(uint32_t pa, uint32_t len) {
     }
 }
 
+/* Write-combining through PAT entry 1 (selected by PWT), so framebuffer blits aren't uncached stores:
+ * under KVM on AMD the guest's UC is honoured and cost ~260 cycles per pixel. Falls back to UC without PAT. */
+void vmm_map_wc(uint32_t pa, uint32_t len) {
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1));
+    if (!(d & (1u << 16))) { vmm_map_mmio(pa, len); return; }
+    __asm__ volatile("rdmsr" : "=a"(a), "=d"(d) : "c"(0x277));
+    a = (a & ~0xFF00u) | 0x0100;                           /* PA1: WT -> WC */
+    __asm__ volatile("wbinvd; wrmsr" :: "a"(a), "d"(d), "c"(0x277) : "memory");
+    for (uint32_t x = ALIGN_DOWN(pa, 0x400000); x < pa + len && x >= ALIGN_DOWN(pa, 0x400000); x += 0x400000) {
+        kdir[x >> 22] = x | PTE_P | PTE_W | PTE_PS | 0x08;   /* PWT -> PAT entry 1 */
+        invlpg(x);
+    }
+}
+
 uint32_t vmm_new_dir(void) {
     uint32_t *d = (uint32_t *)pmm_alloc();
     if (!d) return 0;

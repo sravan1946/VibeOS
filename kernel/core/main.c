@@ -100,7 +100,7 @@ void kmain(struct boot_info *bi) {
     if (!heap) panic("no memory for kernel heap");
     heap_init(heap, heap_bytes);
     vmm_init();
-    vmm_map_mmio(bi->fb_addr, bi->fb_pitch * bi->fb_height);
+    vmm_map_wc(bi->fb_addr, bi->fb_pitch * bi->fb_height);
     kprintf("memory: %u MiB usable, %u MiB kernel heap\n", ram_mb, heap_bytes >> 20);
 
     splash_progress(15);

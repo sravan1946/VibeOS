@@ -47,4 +47,5 @@ uint32_t  vmm_translate(uint32_t dir, uint32_t va);   /* 0 if unmapped */
 int       vmm_alloc_range(uint32_t dir, uint32_t va, uint32_t len, uint32_t flags);  /* zeroed pages */
 void      vmm_unmap_range(uint32_t dir, uint32_t va, uint32_t len, bool free_frames);
 void      vmm_map_mmio(uint32_t pa, uint32_t len);   /* identity, kernel only */
+void      vmm_map_wc(uint32_t pa, uint32_t len);     /* same, write-combining (framebuffers) */
 bool      vmm_user_ok(uint32_t dir, uint32_t va, uint32_t len, bool write);
