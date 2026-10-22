@@ -119,14 +119,17 @@ void url_from_input(const char *in, char *out, int cap) {
     url_resolve("about:blank", t, out, cap);
 }
 
+int url_is_web(const char *url) { return !strncasecmp(url, "http://", 7) || !strncasecmp(url, "https://", 8); }
+
 int url_split_http(const char *url, char *host, int hcap, int *port, char *path, int pcap) {
-    if (strncasecmp(url, "http://", 7)) return -1;
-    const char *p = url + 7;
+    int tls = !strncasecmp(url, "https://", 8);
+    if (!tls && strncasecmp(url, "http://", 7)) return -1;
+    const char *p = url + (tls ? 8 : 7);
     int al = strcspn(p, "/?#");
     const char *at = memchr(p, '@', al);
     if (at) { al -= at + 1 - p; p = at + 1; }
     int hl = al;
-    *port = 80;
+    *port = tls ? 443 : 80;
     const char *col = memchr(p, ':', al);
     if (col) { hl = col - p; *port = atoi(col + 1); if (*port <= 0 || *port > 65535) return -1; }
     if (hl <= 0 || hl >= hcap) return -1;

@@ -62,12 +62,17 @@ UCFLAGS := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protecto
            -fno-asynchronous-unwind-tables -nostdinc -isystem $(GCCINC) \
            -Iuser/include -Iuser/lib -Icommon -O2 -g $(CWARN) -MMD -MP
 ULIBC_SRC := $(wildcard user/lib/*.c)
+# trust anchors for TLS: the host's Mozilla bundle becomes /etc/ssl/cert.pem (override with CA_BUNDLE=...)
+CA_BUNDLE ?= /etc/ssl/certs/ca-certificates.crt
+build/ca.stamp: FORCE      # rebuild the rootfs when CA_BUNDLE points somewhere else
+	@mkdir -p build; echo '$(CA_BUNDLE)' | cmp -s - $@ || echo '$(CA_BUNDLE)' > $@
+FORCE:
 ULIBC_ASM := $(filter-out user/lib/crt0.asm,$(wildcard user/lib/*.asm))
 # gui.o + the shared gfx/fonts live in libgui.a so only GUI programs pay for the font data
 ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o build/user/obj/common/wallpaper.o
-ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
+ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/tls.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
              $(patsubst user/%.asm,build/user/obj/%.o,$(ULIBC_ASM))
-ULIBS := build/user/libgui.a build/user/libc.a
+ULIBS := build/user/libgui.a build/user/libtls.a build/user/libc.a
 UBIN_SINGLE := $(basename $(notdir $(wildcard user/bin/*.c)))
 UBIN_MULTI := $(notdir $(patsubst %/,%,$(wildcard user/bin/*/)))
 UBINS := $(addprefix build/user/bin/,$(UBIN_SINGLE) $(UBIN_MULTI))
@@ -91,6 +96,18 @@ build/user/obj/lib/string.o: UCFLAGS += -fno-tree-loop-distribute-patterns
 build/user/libc.a: $(ULIBC_OBJ)
 	rm -f $@ && ar rcs $@ $^
 build/user/libgui.a: $(ULIBGUI_OBJ)
+	rm -f $@ && ar rcs $@ $^
+
+# libtls.a: user/lib/tls.c over BearSSL 0.6 (third_party/bearssl, unmodified; configured by -D, see README.vibeos)
+BEARSSL_SRC := $(shell find third_party/bearssl/src -name '*.c')
+BEARSSL_OBJ := $(patsubst %.c,build/user/obj/%.o,$(BEARSSL_SRC))
+BEARSSL_FLAGS := -Ithird_party/bearssl/inc -Ithird_party/bearssl/src -DBR_64=0 -DBR_USE_URANDOM=1 -DBR_USE_UNIX_TIME=1 \
+                 -DBR_AES_X86NI=0 -DBR_SSE2=0 -DBR_RDRAND=0 -DBR_POWER8=0
+$(BEARSSL_OBJ): build/user/obj/third_party/bearssl/src/%.o: third_party/bearssl/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) $(BEARSSL_FLAGS) -w -c $< -o $@
+build/user/obj/lib/tls.o: UCFLAGS += -Ithird_party/bearssl/inc
+build/user/libtls.a: build/user/obj/lib/tls.o $(BEARSSL_OBJ)
 	rm -f $@ && ar rcs $@ $^
 
 ULDFLAGS := -T user/user.ld -z max-page-size=4096 -z noexecstack --no-warn-rwx-segments
@@ -149,7 +166,7 @@ build/user/libtcc1.a: third_party/tcc/lib/libtcc1.c third_party/tcc/lib/alloca86
 	$(CC) -m32 -c third_party/tcc/lib/alloca86.S -o build/user/alloca86.o
 	rm -f $@ && ar rcs $@ build/user/libtcc1.o build/user/alloca86.o
 
-build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(ULIBS) $(UCRT0) build/user/libtcc1.a $(wildcard user/include/*.h user/include/sys/*.h third_party/tcc/include/*.h) $(SDK_HDRS) $(wildcard build/wads/freedoom1.wad)
+build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(ULIBS) $(UCRT0) build/user/libtcc1.a $(wildcard user/include/*.h user/include/sys/*.h third_party/tcc/include/*.h) $(SDK_HDRS) $(wildcard build/wads/freedoom1.wad $(CA_BUNDLE)) build/ca.stamp
 	rm -rf build/rootfs
 	@mkdir -p build/rootfs/bin build/rootfs/dev build/rootfs/proc build/rootfs/tmp build/rootfs/home
 	@cp -a root/. build/rootfs/ 2>/dev/null || true
@@ -159,6 +176,8 @@ build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(ULIBS) $(UCRT0) build
 	cp third_party/tcc/include/*.h build/rootfs/usr/lib/tcc/include/ && cp build/user/libtcc1.a build/rootfs/usr/lib/tcc/
 	cp $(UCRT0) build/rootfs/usr/lib/crt1.o && $(CC) -m32 -x c -c /dev/null -o build/rootfs/usr/lib/crti.o && cp build/rootfs/usr/lib/crti.o build/rootfs/usr/lib/crtn.o
 	@for f in $(ULIBS); do strip -g -o build/rootfs/usr/lib/$$(basename $$f) $$f; done
+	@mkdir -p build/rootfs/etc/ssl
+	@if [ -f $(CA_BUNDLE) ]; then cp $(CA_BUNDLE) build/rootfs/etc/ssl/cert.pem; fi
 	@if [ -f build/wads/freedoom1.wad ]; then mkdir -p build/rootfs/usr/share/doom; \
 	  cp build/wads/freedoom1.wad build/rootfs/usr/share/doom/; cp build/wads/freedoom-COPYING.txt build/rootfs/usr/share/doom/COPYING 2>/dev/null || true; fi
 	rm -f $@
@@ -191,10 +210,13 @@ test-host:   # host-side unit tests (libc, image codecs)
 	sh tools/imagetest/run.sh
 	sh tools/libctest/run.sh
 
+test-tls:    # HTTPS against local test servers (needs openssl)
+	sh tools/tlstest/run.sh
+
 test: build/vibeos.img
 	python3 tools/vmtest.py smoke
 
 clean:
 	rm -rf build
 
-.PHONY: all run debug test test-host clean user doom-wad
+.PHONY: all run debug test test-host test-tls clean user doom-wad FORCE

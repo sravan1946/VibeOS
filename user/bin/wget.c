@@ -1,4 +1,4 @@
-/* wget [-O file] http://host[:port]/path - HTTP/1.0 GET (follows a few redirects; no TLS) */
+/* wget [-O file] http[s]://host[:port]/path - HTTP/1.0 GET (follows a few redirects; https via libtls) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,15 +7,21 @@
 #include <errno.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <tls.h>
 
 static char url[512];
+
+struct conn { int fd; struct tls *t; };
+static ssize_t c_read(struct conn *c, void *b, size_t n) { return c->t ? tls_read(c->t, b, n) : read(c->fd, b, n); }
+static ssize_t c_write(struct conn *c, const void *b, size_t n) { return c->t ? tls_write(c->t, b, n) : write(c->fd, b, n); }
+static void c_close(struct conn *c) { if (c->t) tls_close(c->t); else close(c->fd); }
 
 /* fetch `url`; body goes to fd out. Returns 0, or 1 + new url in `url` on redirect, or -1 on error */
 static int fetch(int out, int *status) {
     char host[128], path[400] = "/", *p = url;
-    int port = 80;
-    if (strncasecmp(p, "http://", 7)) { fprintf(stderr, "wget: only http:// URLs are supported\n"); return -1; }
-    p += 7;
+    int https = !strncasecmp(p, "https://", 8), port = https ? 443 : 80;
+    if (!https && strncasecmp(p, "http://", 7)) { fprintf(stderr, "wget: only http:// and https:// URLs are supported\n"); return -1; }
+    p += https ? 8 : 7;
     size_t hl = strcspn(p, "/:");
     if (!hl || hl >= sizeof host) { fprintf(stderr, "wget: bad URL\n"); return -1; }
     memcpy(host, p, hl); host[hl] = 0;
@@ -31,18 +37,20 @@ static int fetch(int out, int *status) {
         fprintf(stderr, "wget: connect %s:%d: %s\n", host, port, strerror(errno));
         return -1;
     }
+    struct conn c = { fd, 0 };
+    if (https && !(c.t = tls_open(fd, host))) { fprintf(stderr, "wget: %s: TLS: %s\n", host, tls_error()); close(fd); return -1; }
     char req[700];
     int rl = snprintf(req, sizeof req, "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: vibeos-wget\r\nAccept: */*\r\nConnection: close\r\n\r\n", path, host);
-    if (write(fd, req, rl) != rl) { fprintf(stderr, "wget: send: %s\n", strerror(errno)); close(fd); return -1; }
+    if (c_write(&c, req, rl) != rl) { fprintf(stderr, "wget: send: %s\n", c.t ? tls_error() : strerror(errno)); c_close(&c); return -1; }
 
     char buf[2048], hdr[2048];
     int hn = 0, in_body = 0, rc = 0;
     long total = 0;
     for (;;) {
-        struct pollfd pf = { fd, POLLIN, 0 };
-        if (poll(&pf, 1, 15000) <= 0) { fprintf(stderr, "wget: timed out\n"); rc = -1; break; }
-        ssize_t n = read(fd, buf, sizeof buf);
-        if (n < 0) { fprintf(stderr, "wget: read: %s\n", strerror(errno)); rc = -1; break; }
+        struct pollfd pf = { fd, POLLIN, 0 };                 /* (TLS may hold decrypted bytes: no poll there) */
+        if (!c.t && poll(&pf, 1, 15000) <= 0) { fprintf(stderr, "wget: timed out\n"); rc = -1; break; }
+        ssize_t n = c_read(&c, buf, sizeof buf);
+        if (n < 0) { fprintf(stderr, "wget: read: %s\n", c.t ? tls_error() : strerror(errno)); rc = -1; break; }
         if (n == 0) break;
         char *data = buf;
         if (!in_body) {
@@ -63,7 +71,7 @@ static int fetch(int out, int *status) {
                         size_t len = strcspn(v, "\r\n");
                         if (len >= sizeof url) break;
                         memcpy(url, v, len); url[len] = 0;
-                        close(fd);
+                        c_close(&c);
                         return 1;
                     }
             }
@@ -71,12 +79,12 @@ static int fetch(int out, int *status) {
         }
         for (ssize_t o = 0; o < n; ) {
             ssize_t w = write(out, data + o, n - o);
-            if (w <= 0) { fprintf(stderr, "wget: write error: %s\n", w < 0 ? strerror(errno) : "short write"); close(fd); return -1; }
+            if (w <= 0) { fprintf(stderr, "wget: write error: %s\n", w < 0 ? strerror(errno) : "short write"); c_close(&c); return -1; }
             o += w;
         }
         total += n;
     }
-    close(fd);
+    c_close(&c);
     if (rc == 0) fprintf(stderr, "wget: %ld bytes\n", total);
     return rc;
 }
@@ -85,7 +93,7 @@ int main(int argc, char **argv) {
     const char *outfile = 0;
     int i = 1;
     if (i + 1 < argc && !strcmp(argv[i], "-O")) { outfile = argv[i + 1]; i += 2; }
-    if (i != argc - 1) { fprintf(stderr, "usage: wget [-O file] http://host[:port]/path\n"); return 2; }
+    if (i != argc - 1) { fprintf(stderr, "usage: wget [-O file] http[s]://host[:port]/path\n"); return 2; }
     strlcpy(url, argv[i], sizeof url);
     int out = outfile ? open(outfile, O_WRONLY | O_CREAT | O_TRUNC) : 1;
     if (out < 0) { fprintf(stderr, "wget: %s: %s\n", outfile, strerror(errno)); return 1; }

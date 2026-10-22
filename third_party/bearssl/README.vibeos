@@ -1,0 +1,7 @@
+BearSSL 0.6, unmodified: src/, inc/ and LICENSE.txt (MIT) from
+https://bearssl.org/bearssl-0.6.tar.gz
+sha256 6705bba1714961b41a728dfc5debbe348d2966c117649392f8c8139efc83ff14
+
+Built into build/user/libbearssl.a by the Makefile; configuration is passed as -D flags
+(BR_USE_URANDOM, BR_USE_UNIX_TIME, no x86 intrinsics), so src/config.h stays stock.
+VibeOS's TLS wrapper is user/lib/tls.c (user/include/tls.h).

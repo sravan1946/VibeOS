@@ -1,4 +1,4 @@
-/* fetch.c - HTTP/1.1 GET (Connection: close). The child half does DNS+connect+read and
+/* fetch.c - HTTP/1.1 GET/POST over plain TCP or TLS (Connection: close). The child half does DNS+connect+read and
  * streams the raw response to stdout ("VBERR:kind:text" instead on failure); the parent half
  * collects it without ever blocking, then parses status, headers and chunked bodies. */
 #include "browser.h"
@@ -12,6 +12,7 @@
 #include <syscall.h>
 #include <ctype.h>
 #include <sys/socket.h>
+#include <tls.h>
 
 #define HDR_MAX 16384
 
@@ -42,23 +43,28 @@ int fetch_main(const char *url, const char *post) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in sa = { AF_INET, htons(port), ip, { 0 } };
     if (fd < 0 || connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) return fail("connect", fd < 0 ? strerror(errno) : "connection refused or timed out");
+    int https = !strncasecmp(url, "https:", 6);
+    struct tls *t = https ? tls_open(fd, host) : 0;
+    if (https && !t) return fail("tls", tls_error());
     char req[URL_MAX + 400], hh[160];
-    if (port == 80) snprintf(hh, sizeof hh, "%s", host); else snprintf(hh, sizeof hh, "%s:%d", host, port);
+    if (port == (https ? 443 : 80)) snprintf(hh, sizeof hh, "%s", host); else snprintf(hh, sizeof hh, "%s:%d", host, port);
     int rl = snprintf(req, sizeof req, "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: VibeBrowser/1.0 (VibeOS)\r\n"
                       "Accept: text/html,text/plain;q=0.9,image/png,image/bmp,*/*;q=0.5\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
                       post ? "POST" : "GET", path, hh);
     if (post) rl += snprintf(req + rl, sizeof req - rl, "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %d\r\n", (int)strlen(post));
     rl += snprintf(req + rl, sizeof req - rl, "\r\n");
-    if (write(fd, req, rl) != rl || (post && write(fd, post, strlen(post)) != (ssize_t)strlen(post))) return fail("send", strerror(errno));
+    if (t ? tls_write(t, req, rl) != rl || (post && tls_write(t, post, strlen(post)) < 0)
+          : write(fd, req, rl) != rl || (post && write(fd, post, strlen(post)) != (ssize_t)strlen(post)))
+        return fail("send", t ? tls_error() : strerror(errno));
     char buf[4096];
     for (;;) {
-        struct pollfd pf = { fd, POLLIN, 0 };
-        if (poll(&pf, 1, 25000) <= 0) return 0;          /* parent has its own timeout */
-        ssize_t n = read(fd, buf, sizeof buf);
+        struct pollfd pf = { fd, POLLIN, 0 };            /* TLS may hold decrypted bytes the fd doesn't show */
+        if (!t && poll(&pf, 1, 25000) <= 0) return 0;    /* parent has its own timeout */
+        ssize_t n = t ? tls_read(t, buf, sizeof buf) : read(fd, buf, sizeof buf);
         if (n <= 0) break;
         out_all(buf, n);
     }
-    close(fd);
+    if (t) tls_close(t); else close(fd);
     return 0;
 }
 

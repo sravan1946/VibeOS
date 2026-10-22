@@ -11,7 +11,8 @@
 /* ---- url.c ---- */
 void url_resolve(const char *base, const char *ref, char *out, int cap);
 void url_from_input(const char *in, char *out, int cap);       /* address-bar text -> absolute URL */
-int  url_split_http(const char *url, char *host, int hcap, int *port, char *path, int pcap);
+int  url_split_http(const char *url, char *host, int hcap, int *port, char *path, int pcap);   /* http:// or https:// */
+int  url_is_web(const char *url);
 void url_unescape(const char *s, char *out, int cap);          /* %XX -> byte */
 void url_strip_frag(char *url);                                /* in place */
 void url_file_path(const char *url, char *out, int cap);       /* file: URL -> filesystem path */

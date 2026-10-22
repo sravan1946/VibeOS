@@ -24,7 +24,7 @@ emulator, and a set of desktop apps and games.
 - VFS with mounts: read/write **ext2** root filesystem on ATA, `/dev` (null zero random tty
   kmsg clipboard notify dsp), `/proc` (meminfo uptime cpuinfo version processes), pipes, `poll()`.
 - TTY line discipline (canonical and raw modes, job control signals, window size).
-- **Networking**: PCI, Intel e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP, DHCP, DNS, and TCP
+- **Networking**: PCI, Intel e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP, DHCP, DNS, TLS (BearSSL), and TCP
   (client and server), exposed as BSD-style socket fds.
 - PS/2 keyboard and mouse with wheel, plus the VMware/QEMU absolute pointer; CMOS clock;
   PC speaker; **AC'97 sound** (`/dev/dsp`, 48 kHz stereo).
@@ -57,8 +57,8 @@ emulator, and a set of desktop apps and games.
 - `/bin/lua`: Lua 5.4 with a REPL, plus `vibe` (system info, processes, beep) and `gui` (windows) modules.
 - `/bin/tcc`: TinyCC 0.9.27 compiles C inside VibeOS against its own libc (`tcc hello.c -o hello`, `tcc -run`, `-lgui` for windows); see `~/projects/README.txt`.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
-- Network tools: `ifconfig ping nslookup wget nc` (`nc -l` listens), and `httpd` — run it inside `make run` and open http://localhost:8080 on the host. Audio: `play` (WAV files), `tone`.
-- GUI apps: Files, Notepad, Browser (HTTP, HTML + basic CSS, images, forms, find-in-page), Paint (saves/opens PNG), Image
+- Network tools: `ifconfig ping nslookup wget nc` (`nc -l` listens; `wget` does https:// with certificate checks), and `httpd` — run it inside `make run` and open http://localhost:8080 on the host. Audio: `play` (WAV files), `tone`.
+- GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + basic CSS, images, forms, find-in-page), Paint (saves/opens PNG), Image
   viewer (PNG/BMP/PPM, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
   Monitor, Settings, About, Piano (a polyphonic synth keyboard). PrtSc saves a PNG screenshot
   to `~/Pictures`.

@@ -101,7 +101,7 @@ static int pump_slot(struct slot *s) {
         char next[URL_MAX];
         url_resolve(s->cur, rs.loc, next, sizeof next);
         free(rs.body);
-        if (++p->hops > MAX_HOPS || strncasecmp(next, "http://", 7)) { fail(s); return 1; }
+        if (++p->hops > MAX_HOPS || !url_is_web(next)) { fail(s); return 1; }
         begin(s, next);
         return 0;
     }
@@ -128,7 +128,7 @@ int img_pump(void) {
             changed = 1;
             continue;
         }
-        if (strncasecmp(u, "http://", 7)) { P[q].state = IMG_FAILED; changed = 1; continue; }
+        if (!url_is_web(u)) { P[q].state = IMG_FAILED; changed = 1; continue; }
         int f = 0;
         while (f < NSLOT && sl[f].idx >= 0) f++;
         if (f == NSLOT) break;

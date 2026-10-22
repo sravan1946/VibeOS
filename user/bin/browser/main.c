@@ -92,7 +92,7 @@ static const char HOME_HTML[] =
     "<li><a href=\"http://info.cern.ch/\">info.cern.ch</a> &ndash; the first website ever made"
     "<li><a href=\"http://example.com/\">example.com</a> &ndash; the canonical example domain"
     "<li><a href=\"http://neverssl.com/\">neverssl.com</a> &ndash; plain HTTP, on purpose"
-    "<li><a href=\"https://www.wikipedia.org/\">wikipedia.org</a> &ndash; HTTPS, which shows the friendly &ldquo;not yet&rdquo; page"
+    "<li><a href=\"https://www.wikipedia.org/\">wikipedia.org</a> &ndash; over HTTPS (TLS 1.2, certificates checked)"
     "</ul>"
     "<h2>On this computer</h2>"
     "<ul>"
@@ -173,22 +173,6 @@ static void show_msg(const char *url, const char *title, const char *heading, co
 
 static const char *HOME_LINK = "<p><a href=\"about:home\">Go to the start page</a></p>";
 
-static void page_https(const char *url) {
-    struct sb h = { 0 };
-    char httpurl[URL_MAX];
-    snprintf(httpurl, sizeof httpurl, "http%s", url + 5);
-    sb_add(&h, "<ul><li>Try the <a href=\"");
-    sb_esc(&h, httpurl);
-    sb_add(&h, "\">http:// version</a> of this address (many sites will just redirect back to https).<li>Open a plain-HTTP site such as "
-               "<a href=\"http://example.com/\">example.com</a> or <a href=\"http://info.cern.ch/\">info.cern.ch</a>.</ul>");
-    sb_add(&h, HOME_LINK);
-    char t[URL_MAX + 80];
-    snprintf(t, sizeof t, "This browser can't open %s because it doesn't speak TLS yet, so encrypted pages can't be loaded.", url);
-    show_msg(url, "HTTPS isn't supported yet", "HTTPS isn't supported yet", t, h.p ? h.p : "");
-    free(h.p);
-    say(true, "HTTPS isn't supported yet");
-}
-
 static void net_error(const char *url, const char *err) {
     char heading[96], text[400], kind[16];
     const char *detail = strchr(err, ':');
@@ -203,6 +187,9 @@ static void net_error(const char *url, const char *err) {
     } else if (!strcmp(kind, "timeout")) {
         strlcpy(heading, "The server took too long to respond", sizeof heading);
         snprintf(text, sizeof text, "No data arrived for %d seconds.", TIMEOUT_MS / 1000);
+    } else if (!strcmp(kind, "tls")) {
+        strlcpy(heading, "Secure connection failed", sizeof heading);
+        snprintf(text, sizeof text, "The HTTPS connection couldn't be established safely: %s.", detail);
     } else if (!strcmp(kind, "enc")) {
         strlcpy(heading, "Unsupported content encoding", sizeof heading);
         snprintf(text, sizeof text, "The server sent %s-compressed data, which this browser can't decode.", detail);
@@ -421,8 +408,7 @@ static void cancel_load(void) {
 }
 
 static void load_url(const char *url) {
-    if (!strncasecmp(url, "http://", 7)) start_fetch(url);
-    else if (!strncasecmp(url, "https://", 8)) page_https(url);
+    if (url_is_web(url)) start_fetch(url);
     else if (!strncasecmp(url, "file:", 5)) load_file(url);
     else if (!strcmp(url, "about:home")) { commit(url, strdup(HOME_HTML), sizeof HOME_HTML - 1, 1); strlcpy(doc.title, "Vibe Browser", sizeof doc.title); say(false, "Start page"); }
     else if (!strcmp(url, "about:blank")) { commit(url, strdup(""), 0, 1); strlcpy(doc.title, "New tab", sizeof doc.title); say(false, "Blank page"); }
@@ -487,7 +473,7 @@ static void submit(int btn, int form) {
     if (form < 0) return;
     char url[URL_MAX], body[sizeof post_body];
     int post = form_submit(&doc, form, btn, cur_url, url, sizeof url, body, sizeof body);
-    if (post && !strncasecmp(url, "http://", 7)) { strlcpy(post_body, body, sizeof post_body); has_post = true; }
+    if (post && url_is_web(url)) { strlcpy(post_body, body, sizeof post_body); has_post = true; }
     navigate(url, 1, -1);
     has_post = false;
 }
