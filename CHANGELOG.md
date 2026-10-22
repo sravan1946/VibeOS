@@ -49,6 +49,13 @@ Newest notes at the bottom of each phase.
 - [x] About VibeOS app (first ui.h app, verified open/close in QEMU)
 - [x] Games: snake, tetris (SRS, hold, ghost, DAS), minesweeper (3 levels, chording) — agent
 
+## Browser
+- [x] Images: `<img>` PNG/BMP/PPM from http and file URLs, width/height attributes, shrunk to the column, placeholders while loading, two helper-process downloads at a time, per-page cache of decoded + scaled images, direct viewing of image URLs; inflate is table-driven (`tools/imagetest` 222/222)
+- [x] CSS: `<style>` + `style=""`, selectors (type, .class, #id, descendant, `>`, comma lists), cascade with specificity/`!important`; color, background(-color), font-weight/size/family, text-align, text-decoration, margin/padding, border(-top/-bottom/-left/-right), width/max-width with `margin: auto`, display none/block/inline, list-style none; colours as names, #rgb, #rrggbb, rgb()/rgba()
+- [x] Forms: GET and POST, text/search/password/hidden/checkbox/radio/submit/button/reset inputs, textarea, select dropdown, `<button>`; fields edit inline (caret, paste), Enter submits, Tab moves
+- [x] Find in page (Ctrl+F, Enter / Shift+Enter, F3), mouse text selection with Ctrl+C to the system clipboard, Ctrl+A
+- [ ] External stylesheets (`<link>`), tables as a grid, JPEG/GIF, HTTPS
+
 ## Networking
 - [x] PCI enumeration, e1000 (82540EM) driver with RX/TX rings + IRQ, net thread (`kernel/net/`)
 - [x] Ethernet, ARP cache, IPv4, ICMP echo (answer + send), UDP, DHCP at boot, DNS resolver, TCP client (retransmit, FIN/RST)
@@ -96,3 +103,4 @@ Newest notes at the bottom of each phase.
 - Audio (2026-10-22): AC'97 driver + `/dev/dsp`, `play`, `tone`, Piano app. Verified in QEMU against the captured WAV (440/1000 Hz tones, arpeggio notes within 1 Hz, 8-bit/8 kHz stereo resampled to 1000 Hz). Fixed: `irq_register` replaced the previous handler, so the AC'97 card on IRQ 11 silently killed the e1000.
 - Images: PNG/BMP/PPM codecs in libgui (own inflate + PNG encoder, 222 host checks vs Pillow under sanitizers), `/bin/viewer`, PrtSc screenshots via `/dev/screen` + `/bin/screenshot`, PNG in Paint and Files. Fixed along the way: a float bilinear resampler took >1 s per 800x480 frame under QEMU (frames lagged input), now packed-integer lerp + row-copy at 1:1.
 - Merged the audio, Lua and image agents. A slow PrtSc led to the disk: writes ran at ~47 KB/s under KVM because `rep outsw` exits per word; reads were fine. DMA fixed it; e2fsck clean after a write-heavy session.
+- Browser: images, CSS, forms, find and selection (see Browser). Rendering pitfalls found on the way: first_item() assumed items are under 40 px tall, so a tall textarea/image scrolled partly off-screen vanished or couldn't be clicked (now tracks the tallest item); a positional struct initialiser silently put a colour into `link` after a field was added. inflate went from bit-at-a-time to a 9-bit table (1.7x on a synthetic 4.5 MB stream).

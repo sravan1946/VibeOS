@@ -157,6 +157,18 @@ into an arena-allocated AST; "incomplete" results drive the `> ` continuation pr
 that is sent the exported environment, plain variables, function definitions, positionals and `-e/-x`.
 The kernel runs `#!interp [arg]` scripts itself (`proc_spawn_ex`, one level, 128-byte line).
 
+`/bin/browser` (`user/bin/browser/`) is the Vibe Browser. `fetch.c` runs HTTP in a helper process (`browser --fetch URL [POST-BODY]`)
+so DNS/connect never block the UI; `url.c` resolves URLs; `html.c` is a tolerant tokenizer plus a one-pass block/inline layout
+into a flat display list (items sorted by y, so drawing and hit tests binary-search; layout reruns only on a new page, a resize,
+or when an image's size becomes known). `css.c` parses `<style>`/`style=""` (type, class, id, descendant, child, comma selectors;
+specificity, `!important`) and the layout asks it for the cascaded properties of every element as its tag streams past, keeping an
+element stack for ancestry; properties land on the layout frame (colour, weight, alignment, margins, padding, 1-6px borders,
+background boxes patched to their final height when the element closes, centred `width`/`max-width` columns, `display`). `img.c` is the
+per-page image cache: `<img>` queues a URL, two helper processes download, `image_decode` (user/lib/image.c) decodes in-process, and one
+scaled copy composited over the page colour is kept per image. `form.c` holds control state keyed by control ordinal (so it survives
+relayout), draws inline controls, edits text, and builds the GET query / POST body. `main.c` is the window: toolbar, history,
+selection, find bar, select dropdowns. inflate in `image.c` is table-driven (9-bit lookup, slow path for long codes).
+
 ## Testing
 
 * `tools/vmtest.py` boots the image in QEMU and drives it through the monitor: type text, send

@@ -52,7 +52,7 @@ emulator, and a set of desktop apps and games.
 - `/bin/lua`: Lua 5.4 with a REPL, plus `vibe` (system info, processes, beep) and `gui` (windows) modules.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc`. Audio: `play` (WAV files), `tone`.
-- GUI apps: Files, Notepad, Browser (HTTP + an HTML subset), Paint (saves/opens PNG), Image
+- GUI apps: Files, Notepad, Browser (HTTP, HTML + basic CSS, images, forms, find-in-page), Paint (saves/opens PNG), Image
   viewer (PNG/BMP/PPM, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
   Monitor, Settings, About, Piano (a polyphonic synth keyboard). PrtSc saves a PNG screenshot
   to `~/Pictures`.

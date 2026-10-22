@@ -150,3 +150,13 @@ void url_unescape(const char *s, char *out, int cap) {
 }
 
 void url_strip_frag(char *url) { char *h = strchr(url, '#'); if (h) *h = 0; }
+
+/* file:///a%20b/c.png -> /a b/c.png */
+void url_file_path(const char *url, char *out, int cap) {
+    const char *p = url + 5;
+    char raw[URL_MAX];
+    if (p[0] == '/' && p[1] == '/') { p += 2; p += strcspn(p, "/"); }
+    snprintf(raw, sizeof raw, "%.*s", (int)strcspn(p, "?#"), p);
+    url_unescape(raw, out, cap);
+    if (!out[0]) strlcpy(out, "/", cap);
+}

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html><head><title>Image test</title>
+<style>
+img { border-bottom: 3px solid #b388ff; }
+.small img { margin-right: 6px; }
+</style></head>
+<body>
+<h1>Image test</h1>
+<p>PNG, BMP and PPM from file:// URLs, scaled with width/height attributes and shrunk to the window.</p>
+<h2>Natural size</h2>
+<p class="small"><img src="img/gradient.bmp" alt="BMP gradient"> <img src="img/squares.ppm" alt="PPM squares"> <img src="img/badge.png" alt="transparent PNG badge"></p>
+<h2>Sized with attributes</h2>
+<p><img src="img/badge.png" width="40" height="40" alt="small"> <img src="img/badge.png" width="200" alt="width only"> <img src="img/gradient.bmp" width="300" height="40" alt="stretched"></p>
+<h2>Larger than the window</h2>
+<p><img src="../Pictures/dunes.png" alt="dunes (800 wide)"></p>
+<p><img src="../Pictures/mandelbrot.png" alt="mandelbrot"> <a href="../Pictures/bubbles.png"><img src="../Pictures/bubbles.png" width="160" alt="bubbles (click to open)"></a></p>
+<h2>Broken</h2>
+<p><img src="img/missing.png" alt="missing file"> <img src="img/missing.png" width="120" height="60" alt="sized broken image"></p>
+<p>End of page.</p>
+</body></html>

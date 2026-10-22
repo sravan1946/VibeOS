@@ -9,36 +9,63 @@
 
 #define MAXDIM 16384
 
-/* ================= inflate (puff-style canonical Huffman) ================= */
-struct inf { const uint8_t *in; size_t n, pos; uint32_t bb; int bc; uint8_t *out; size_t len, cap; int err; };
-struct huff { uint16_t count[16], sym[288]; };
+/* ================= inflate (table-driven canonical Huffman) ================= */
+struct inf { const uint8_t *in; size_t n, pos; uint32_t bb; int bc, extra; uint8_t *out; size_t len, cap; int err; };
+/* fast[]: 9-bit lookup (len << 9 | sym, 0 = code longer than FASTB); count/sym: canonical tables for the slow path */
+#define FASTB 9
+struct huff { uint16_t count[16], sym[288], fast[1 << FASTB]; };
 
-static int getbits(struct inf *s, int need) {
+/* keep at least `need` (<= 25) bits buffered; past the end of input we feed zeros and count them */
+static inline void refill(struct inf *s, int need) {
     while (s->bc < need) {
-        if (s->pos >= s->n) { s->err = 1; return 0; }
-        s->bb |= (uint32_t)s->in[s->pos++] << s->bc;
+        if (s->pos < s->n) s->bb |= (uint32_t)s->in[s->pos++] << s->bc; else s->extra++;
         s->bc += 8;
     }
+}
+
+static int getbits(struct inf *s, int need) {
+    if (!need) return 0;
+    refill(s, need);
+    if (s->extra * 8 > s->bc) { s->err = 1; return 0; }
     int v = s->bb & ((1u << need) - 1);
     s->bb >>= need; s->bc -= need;
     return v;
 }
 
 static void huff_build(struct huff *h, const uint8_t *len, int n) {
-    uint16_t offs[16];
+    uint16_t offs[16], next[16];
     memset(h->count, 0, sizeof h->count);
+    memset(h->fast, 0, sizeof h->fast);
     for (int i = 0; i < n; i++) h->count[len[i]]++;
     h->count[0] = 0;
     offs[1] = 0;
     for (int i = 1; i < 15; i++) offs[i + 1] = offs[i] + h->count[i];
-    for (int i = 0; i < n; i++) if (len[i]) h->sym[offs[len[i]]++] = i;
+    unsigned code = 0;
+    for (int l = 1; l < 16; l++) { code = (code + h->count[l - 1]) << 1; next[l] = code; }
+    for (int i = 0; i < n; i++) {
+        int l = len[i];
+        if (!l) continue;
+        h->sym[offs[l]++] = i;
+        unsigned c = next[l]++;
+        if (l > FASTB) continue;
+        unsigned r = 0;                                  /* deflate packs codes MSB first into an LSB-first stream */
+        for (int k = 0; k < l; k++) r |= (c >> k & 1) << (l - 1 - k);
+        for (unsigned k = r; k < (1u << FASTB); k += 1u << l) h->fast[k] = l << 9 | i;
+    }
 }
 
 static int huff_dec(struct inf *s, const struct huff *h) {
+    refill(s, 15);
+    unsigned e = h->fast[s->bb & ((1u << FASTB) - 1)];
+    if (e) {
+        int l = e >> 9;
+        s->bb >>= l; s->bc -= l;
+        return e & 511;
+    }
     int code = 0, first = 0, index = 0;
-    for (int l = 1; l <= 15; l++) {
-        code |= getbits(s, 1);
-        if (s->err) return -1;
+    for (int l = 1; l <= 15; l++) {                      /* long codes: puff-style, one bit at a time */
+        code |= s->bb & 1;
+        s->bb >>= 1; s->bc--;
         int count = h->count[l];
         if (code - count < first) return h->sym[index + (code - first)];
         index += count; first += count; first <<= 1; code <<= 1;
@@ -64,11 +91,12 @@ static int inf_room(struct inf *s, size_t more) {
 static int inf_codes(struct inf *s, const struct huff *lc, const struct huff *dc) {
     for (;;) {
         int sym = huff_dec(s, lc);
-        if (sym < 0) return -1;
+        if (sym < 0 || (s->extra && s->extra * 8 > s->bc)) return -1;
         if (sym < 256) {
-            if (inf_room(s, 1)) return -1;
+            if (s->len >= s->cap && inf_room(s, 1)) return -1;
             s->out[s->len++] = sym;
-        } else if (sym == 256) return 0;
+        }
+        else if (sym == 256) return 0;
         else {
             sym -= 257;
             if (sym >= 29) return -1;
@@ -76,8 +104,13 @@ static int inf_codes(struct inf *s, const struct huff *lc, const struct huff *dc
             int ds = huff_dec(s, dc);
             if (ds < 0 || ds >= 30) return -1;
             size_t dist = DBASE[ds] + getbits(s, DEXT[ds]);
-            if (s->err || dist > s->len || inf_room(s, len)) return -1;
-            for (; len; len--, s->len++) s->out[s->len] = s->out[s->len - dist];
+            if (s->err || (s->extra && s->extra * 8 > s->bc) || dist > s->len) return -1;
+            if (s->len + len > s->cap && inf_room(s, len)) return -1;
+            uint8_t *o = s->out + s->len;
+            const uint8_t *f = o - dist;
+            s->len += len;
+            if (dist >= len) memcpy(o, f, len);
+            else while (len--) *o++ = *f++;
         }
     }
 }
@@ -93,7 +126,8 @@ int zlib_inflate(const uint8_t *in, size_t n, uint8_t **out, size_t *olen, size_
         int type = getbits(&s, 2);
         if (s.err) { rc = -1; break; }
         if (type == 0) {
-            s.bb = 0; s.bc = 0;
+            if (s.extra > s.bc / 8) { rc = -1; break; }
+            s.pos -= s.bc / 8 - s.extra; s.bb = 0; s.bc = 0; s.extra = 0;     /* give back whole buffered bytes */
             if (s.pos + 4 > s.n) { rc = -1; break; }
             size_t len = in[s.pos] | (in[s.pos + 1] << 8);
             if ((len ^ 0xFFFF) != (size_t)(in[s.pos + 2] | (in[s.pos + 3] << 8))) { rc = -1; break; }
@@ -136,7 +170,7 @@ int zlib_inflate(const uint8_t *in, size_t n, uint8_t **out, size_t *olen, size_
             huff_build(&dc, l + nl, nd);
             rc = inf_codes(&s, &lc, &dc);
         } else rc = -1;
-        if (s.err) rc = -1;
+        if (s.err || (s.extra && s.extra * 8 > s.bc)) rc = -1;
     } while (!last && !rc);
     if (rc) { free(s.out); return -1; }
     *out = s.out ? s.out : malloc(1);

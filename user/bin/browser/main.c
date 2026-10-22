@@ -34,6 +34,19 @@ static bool loading;
 static int pend_push, pend_restore = -1, hops, layout_w;
 static int scroll, target;
 static uint32_t load_t0;
+static char post_body[2048];                 /* body for the next http fetch (form POST), consumed by start_fetch */
+static bool has_post;
+/* page interaction state */
+static int fo = -1, caret;                   /* focused control (ordinal) and caret byte offset */
+static int sel_ci = -1, sel_scroll;          /* open <select> dropdown (control index) */
+static struct docmark mk = { -1, 0, -1, 0, 0, 0, 0 };
+static bool selecting, sel_moved;
+static int anc_it, anc_ch;                   /* selection anchor */
+static bool find_open;
+static char needle[64], last_needle[64];
+static int find_count;
+static bool img_dirty, keep_imgs;
+static uint32_t last_relayout;
 
 static void say(bool bad, const char *fmt, ...) {
     va_list ap;
@@ -84,6 +97,7 @@ static const char HOME_HTML[] =
     "<h2>On this computer</h2>"
     "<ul>"
     "<li><a href=\"file:///home/Documents/test.html\">Rendering test page</a> &ndash; lists, tables, code, quotes"
+    "<li><a href=\"file:///home/Documents/css.html\">CSS test</a>, <a href=\"file:///home/Documents/images.html\">image test</a>, <a href=\"file:///home/Documents/forms.html\">forms test</a>"
     "<li><a href=\"file:///home/welcome.txt\">welcome.txt</a> &ndash; plain text in a mono font"
     "<li><a href=\"file:///home/\">/home</a> &ndash; a directory listing"
     "<li><a href=\"about:blank\">about:blank</a>"
@@ -91,7 +105,7 @@ static const char HOME_HTML[] =
     "<h2>Keys</h2>"
     "<blockquote>"
     "<b>Ctrl+L</b> address bar &middot; <b>Ctrl+R</b> or <b>F5</b> reload &middot; <b>Alt+&larr;</b> / <b>Alt+&rarr;</b> history<br>"
-    "<b>Space</b>, <b>PgDn</b>, <b>PgUp</b>, <b>Home</b>, <b>End</b>, arrows and the wheel scroll &middot; <b>Esc</b> stops loading"
+    "<b>Space</b>, <b>PgDn</b>, <b>PgUp</b>, <b>Home</b>, <b>End</b>, arrows and the wheel scroll &middot; <b>Ctrl+F</b> find &middot; <b>Esc</b> stops loading"
     "</blockquote>"
     "<hr><center><em>made on VibeOS</em></center>"
     "</body></html>";
@@ -126,9 +140,14 @@ static void commit(const char *url, char *raw, size_t n, int html) {
         hcur = nhist++;
     }
     strlcpy(cur_url, url, sizeof cur_url);
+    if (!keep_imgs) img_reset();
+    keep_imgs = false;
+    fs_reset();
+    fo = sel_ci = -1; mk.from_it = mk.to_it = -1; selecting = false; img_dirty = false;
+    last_needle[0] = 0; find_count = 0; mk.find = 0;
     doc.title[0] = 0;
     layout_w = view_w();
-    doc_layout(&doc, pg.raw, pg.n, html, layout_w);
+    doc_layout(&doc, pg.raw, pg.n, html, layout_w, cur_url);
     if (!doc.title[0]) {
         const char *b = base_name(url);
         strlcpy(doc.title, *b ? b : url, sizeof doc.title);
@@ -207,6 +226,13 @@ static void unsupported(const char *url, const char *what, size_t n) {
     say(true, "Unsupported content");
 }
 
+/* a page that is just one picture (already in the image cache under `key`) */
+static void show_image(const char *url, const char *key) {
+    struct sb b = { 0 };
+    sb_add(&b, "<html><head><title>"); sb_esc(&b, base_name(url)); sb_add(&b, "</title></head><body><img src=\""); sb_esc(&b, key); sb_add(&b, "\"></body></html>");
+    commit(url, b.p, b.n, 1);
+}
+
 /* ---------- file:// ---------- */
 static int cmp_name(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
@@ -280,6 +306,13 @@ static void load_file(const char *url) {
         load_dir(u, path);
         return;
     }
+    if (ext_is(path, ".png.bmp.ppm.pgm")) {                      /* open the picture itself */
+        char key[URL_MAX];
+        url_resolve("about:blank", url, key, sizeof key);
+        show_image(url, key);
+        say(false, "%s - %lu bytes", path, (unsigned long)st.st_size);
+        return;
+    }
     int fd = open(path, O_RDONLY);
     size_t size = st.st_size > MAX_PAGE ? MAX_PAGE : (size_t)st.st_size, got = 0;
     char *buf = fd >= 0 ? malloc(size + 1) : 0;
@@ -306,7 +339,9 @@ static void load_url(const char *url);
 
 static void start_fetch(const char *url) {
     strlcpy(pend_url, url, sizeof pend_url);
-    if (fetch_start(&fe, url) < 0) { net_error(url, "net:couldn't start the network helper"); return; }
+    const char *pb = has_post ? post_body : 0;
+    has_post = false;
+    if (fetch_start(&fe, url, pb) < 0) { net_error(url, "net:couldn't start the network helper"); return; }
     loading = true;
     load_t0 = fe.last;
     char host[128], path[8];
@@ -330,7 +365,20 @@ static void finish_fetch(void) {
     }
     int html = -1;
     const char *ct = rs.ctype;
-    if (!strncmp(ct, "image/", 6) || !strncmp(ct, "audio/", 6) || !strncmp(ct, "video/", 6)) { unsupported(pend_url, ct, rs.blen); free(rs.body); return; }
+    if (!strncmp(ct, "image/", 6) && rs.body) {                 /* a picture on its own: show it in a page of its own */
+        char key[URL_MAX];
+        url_resolve("about:blank", pend_url, key, sizeof key);
+        img_reset();
+        if (img_add_data(key, (uint8_t *)rs.body, rs.blen) >= 0) {
+            free(rs.body);
+            keep_imgs = true;
+            show_image(pend_url, key);
+            say(false, "%d %s - %s", rs.status, rs.text, ct);
+            return;
+        }
+        unsupported(pend_url, ct, rs.blen); free(rs.body); return;
+    }
+    if (!strncmp(ct, "audio/", 6) || !strncmp(ct, "video/", 6)) { unsupported(pend_url, ct, rs.blen); free(rs.body); return; }
     if (strstr(ct, "html")) html = 1;
     else if (!ct[0]) { const char *s = rs.body; while (isspace((unsigned char)*s)) s++; html = *s == '<'; }
     else if (!strncmp(ct, "text/", 5) || strstr(ct, "json") || strstr(ct, "xml") || strstr(ct, "javascript")) html = 0;
@@ -425,18 +473,82 @@ static void follow(int link) {
 static void relayout(void) {
     int old = doc.height ? doc.height : 1;
     layout_w = view_w();
-    doc_layout(&doc, pg.raw, pg.n, pg.html, layout_w);
+    doc_layout(&doc, pg.raw, pg.n, pg.html, layout_w, cur_url);
+    last_relayout = uptime_ms();
+    mk.from_it = mk.to_it = -1; mk.find_it = -1; last_needle[0] = 0;
     if (!doc.title[0]) strlcpy(doc.title, base_name(cur_url), sizeof doc.title);
     scroll = (int)((long long)scroll * doc.height / old);
     target = scroll;
     clamp_scroll();
 }
 
+/* ---------- forms, selection, find ---------- */
+static void submit(int btn, int form) {
+    if (form < 0) return;
+    char url[URL_MAX], body[sizeof post_body];
+    int post = form_submit(&doc, form, btn, cur_url, url, sizeof url, body, sizeof body);
+    if (post && !strncasecmp(url, "http://", 7)) { strlcpy(post_body, body, sizeof post_body); has_post = true; }
+    navigate(url, 1, -1);
+    has_post = false;
+}
+
+static const struct item *ctl_item(int ci) { return doc.ct[ci].item >= 0 ? &doc.it[doc.ct[ci].item] : 0; }
+static int ctl_by_ord(int ord) { for (int i = 0; i < doc.nct; i++) if (doc.ct[i].ord == ord) return i; return -1; }
+
+static void scroll_to_y(int y, int vh) { target = y - vh / 3; clamp_scroll(); }
+
+static void focus_next(int dir, int vh) {                 /* Tab / Shift+Tab through the text fields */
+    int cur = ctl_by_ord(fo), n = doc.nct;
+    for (int k = 1; k <= n; k++) {
+        int i = ((cur < 0 ? (dir > 0 ? -1 : 0) : cur) + dir * k % n + n) % n;
+        int kind = doc.ct[i].kind;
+        if ((kind == C_TEXT || kind == C_PASS || kind == C_AREA) && ctl_item(i)) {
+            fo = doc.ct[i].ord;
+            caret = strlen(fs_get(&doc, i)->val ? fs_get(&doc, i)->val : "");
+            const struct item *it = ctl_item(i);
+            if (it->y < scroll || it->y + it->h > scroll + vh) scroll_to_y(it->y, vh);
+            return;
+        }
+    }
+}
+
+static int pos_cmp(int ai, int ac, int bi, int bc) { return ai != bi ? ai - bi : ac - bc; }
+
+static void set_sel(int ai, int ac, int bi, int bc) {
+    if (pos_cmp(ai, ac, bi, bc) <= 0) { mk.from_it = ai; mk.from_ch = ac; mk.to_it = bi; mk.to_ch = bc; }
+    else { mk.from_it = bi; mk.from_ch = bc; mk.to_it = ai; mk.to_ch = ac; }
+}
+
+static void copy_sel(void) {
+    if (mk.from_it < 0) return;
+    char *t = doc_text(&doc, mk.from_it, mk.from_ch, mk.to_it, mk.to_ch);
+    if (t && *t) { gui_clip_set(t, strlen(t)); say(false, "Copied %d characters", (int)strlen(t)); }
+    free(t);
+}
+
+static void find_go(int dir, int vh, bool from_view) {
+    if (!needle[0]) { mk.find_it = -1; return; }
+    int it = mk.find_it, off = mk.find_off;
+    if (from_view || it < 0) {                              /* start from the first line on screen */
+        it = 0;
+        while (it < doc.nit && doc.it[it].y < scroll) it++;
+        off = 0;
+    } else off += dir > 0 ? 1 : -1;
+    if (off < 0) { it--; off = 1 << 20; }
+    if (it < 0) it = doc.nit - 1;
+    int fi, fo2;
+    if (doc_find(&doc, needle, it, off, dir, &fi, &fo2)) {
+        mk.find_it = fi; mk.find_off = fo2;
+        const struct item *m = &doc.it[fi];
+        if (m->y < scroll + 20 || m->y + m->h > scroll + vh - 20) scroll_to_y(m->y, vh);
+    } else mk.find_it = -1;
+}
+
 /* ---------- main loop ---------- */
 static void drop_key(struct ui *ui, int i) { memmove(ui->keys + i, ui->keys + i + 1, (--ui->nkeys - i) * sizeof ui->keys[0]); }
 
 int main(int argc, char **argv) {
-    if (argc == 3 && !strcmp(argv[1], "--fetch")) return fetch_main(argv[2]);
+    if (argc >= 3 && !strcmp(argv[1], "--fetch")) return fetch_main(argv[2], argc > 3 ? argv[3] : 0);
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;
@@ -447,13 +559,15 @@ int main(int argc, char **argv) {
     char last_title[96] = "";
 
     for (;;) {
-        int timeout = loading ? 80 : -1;
+        int timeout = loading || img_busy() ? 40 : -1;
         if (scroll != target) timeout = 16;
         struct pollfd pf[2] = { { win->fd, POLLIN, 0 }, { fe.fd, POLLIN, 0 } };
         poll(pf, loading ? 2 : 1, timeout);
         if (!ui_poll(&ui, 0)) break;
         fetch_reap();
         if (loading) service_fetch();
+        if (pg.have && img_pump()) img_dirty = true;
+        if (img_dirty && pg.have && (!img_busy() || uptime_ms() - last_relayout > 400)) { relayout(); img_dirty = false; }
 
         int W = win->w, H = win->h, vw = view_w(), vh = view_h();
         if (pg.have && vw != layout_w) relayout();
@@ -468,7 +582,16 @@ int main(int argc, char **argv) {
             else if ((ctrl && (c == 'r' || k.ch == 18)) || k.key == KEY_F5) navigate(hist[hcur].url, 0, scroll);
             else if ((k.mods & MOD_ALT) && k.key == KEY_LEFT) go_hist(-1);
             else if ((k.mods & MOD_ALT) && k.key == KEY_RIGHT) go_hist(1);
-            else if (k.key == KEY_ESC) { if (loading) { cancel_load(); say(false, "Stopped"); } ui.focus = 0; }
+            else if (ctrl && (c == 'f' || k.ch == 6)) { find_open = true; ui.focus = ui_id(W - SB - 340, TB + 6, 240, 32); fo = -1; }
+            else if (k.key == KEY_F3 || (ctrl && (c == 'g' || k.ch == 7))) { if (find_open) find_go((k.mods & MOD_SHIFT) ? -1 : 1, vh, false); else handled = 0; }
+            else if (k.key == KEY_ESC) {
+                if (sel_ci >= 0) sel_ci = -1;
+                else if (find_open) { find_open = false; mk.find = 0; }
+                else if (fo >= 0) fo = -1;
+                else if (loading) { cancel_load(); say(false, "Stopped"); }
+                else mk.from_it = mk.to_it = -1;
+                ui.focus = 0;
+            }
             else handled = 0;
             if (handled) drop_key(&ui, i); else i++;
         }
@@ -498,15 +621,93 @@ int main(int argc, char **argv) {
 
         /* content */
         int hover = -1;
+        int fx = W - SB - 340, fy = TB + 6; uint32_t fid = ui_id(fx, fy, 240, 32);
         bool in_view = ui.mx >= 0 && ui.mx < vw && ui.my >= TB && ui.my < TB + vh;
-        if (in_view) hover = doc_hit(&doc, ui.mx, ui.my - TB + scroll);
-        if (ui.pressed && hover >= 0) { follow(hover); hover = -1; }
+        bool over_find = find_open && ui.mx >= fx - 8 && ui.mx < W - SB && ui.my >= TB && ui.my < TB + 44;
+        if (ui.focus == aid) fo = -1;
+        bool consumed = false;
+        int px = 0, py = 0, pw = 0, prows = 0;
+        const int rh = 22;
+        if (sel_ci >= 0) {                                   /* an open <select>: a list under (or above) the field */
+            const struct item *it = ctl_item(sel_ci);
+            if (!it) sel_ci = -1;
+            else {
+                int no = doc.ct[sel_ci].no;
+                prows = no < 12 ? no : 12;
+                px = it->x; pw = it->w < 120 ? 120 : it->w;
+                py = TB + it->y - scroll + it->h;
+                if (py + prows * rh > H - STH) py = TB + it->y - scroll - prows * rh;
+                bool inp = ui.mx >= px && ui.mx < px + pw && ui.my >= py && ui.my < py + prows * rh;
+                if (inp && ui.scroll) { sel_scroll += ui.scroll; ui.scroll = 0; }
+                if (sel_scroll > no - prows) sel_scroll = no - prows;
+                if (sel_scroll < 0) sel_scroll = 0;
+                if (ui.pressed) {
+                    if (inp) fs_get(&doc, sel_ci)->sel = sel_scroll + (ui.my - py) / rh;
+                    sel_ci = -1;
+                    consumed = true;
+                }
+            }
+        }
+        if (in_view && !over_find && sel_ci < 0) hover = doc_hit(&doc, ui.mx, ui.my - TB + scroll);
+        if (ui.pressed && !consumed && in_view && !over_find) {
+            int dx = ui.mx, dy = ui.my - TB + scroll, ci = doc_ctl_at(&doc, dx, dy);
+            fo = -1;
+            mk.from_it = mk.to_it = -1;
+            if (ci >= 0) {
+                const struct ctl *c = &doc.ct[ci];
+                const struct item *it = ctl_item(ci);
+                if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = ctl_caret_at(&doc, ci, dx - it->x, dy - it->y); }
+                else if (c->kind == C_BTN) { if (c->sub == 1) submit(ci, c->form); else if (c->sub == 2) form_reset(&doc, c->form); }
+                else if (c->kind == C_CHECK || c->kind == C_RADIO) ctl_toggle(&doc, ci);
+                else if (c->kind == C_SELECT) { sel_ci = ci; sel_scroll = fs_get(&doc, ci)->sel - 5; }
+                hover = -1;
+            } else if (hover >= 0) { follow(hover); hover = -1; }
+            else if (doc_pos_at(&doc, dx, dy, &anc_it, &anc_ch)) { selecting = true; sel_moved = false; }
+        }
+        if (selecting) {
+            if (ui.buttons & 1) {
+                int my = ui.my < TB ? TB : ui.my > TB + vh - 1 ? TB + vh - 1 : ui.my, i, ch;
+                if (ui.my < TB + 6) target -= 24; else if (ui.my > TB + vh - 6) target += 24;
+                if (doc_pos_at(&doc, ui.mx, my - TB + scroll, &i, &ch)) {
+                    if (i != anc_it || ch != anc_ch) sel_moved = true;
+                    if (sel_moved) set_sel(anc_it, anc_ch, i, ch);
+                }
+            } else selecting = false;
+        }
         char hover_url[URL_MAX];
         if (hover >= 0) url_resolve(cur_url, doc.link[hover], hover_url, sizeof hover_url);
         if (ui.scroll && ui.my >= TB) target += ui.scroll * 64;
         struct gui_event k;
+        bool find_focus = find_open && ui.focus == fid;
         while (ui_key(&ui, &k)) {
-            bool shift = k.mods & MOD_SHIFT;
+            bool shift = k.mods & MOD_SHIFT, ctrl = k.mods & MOD_CTRL;
+            if (sel_ci >= 0) {                                /* dropdown keys */
+                struct fstate *fsx = fs_get(&doc, sel_ci);
+                if (k.key == KEY_DOWN && fsx->sel < doc.ct[sel_ci].no - 1) fsx->sel++;
+                else if (k.key == KEY_UP && fsx->sel > 0) fsx->sel--;
+                else if (k.key == KEY_ENTER || k.key == ' ') sel_ci = -1;
+                if (sel_ci >= 0) { if (fsx->sel < sel_scroll) sel_scroll = fsx->sel; if (fsx->sel >= sel_scroll + 12) sel_scroll = fsx->sel - 11; }
+                continue;
+            }
+            if (find_focus) {
+                int n = strlen(needle);
+                if (k.key == KEY_ENTER) find_go(shift ? -1 : 1, vh, false);
+                else if (k.key == KEY_BACKSPACE || k.ch == 8) { if (n) needle[n - 1] = 0; }
+                else if (k.ch == 21) needle[0] = 0;
+                else if (ctrl && (k.key | 32) == 'v') {
+                    char *cl = gui_clip_get(NULL);
+                    for (char *q = cl; q && *q && *q != '\n' && n < (int)sizeof needle - 1; q++) if ((unsigned char)*q >= 32) { needle[n++] = *q; needle[n] = 0; }
+                    free(cl);
+                }
+                else if (!ctrl && k.ch >= 32 && k.ch < 127 && n < (int)sizeof needle - 1) { needle[n] = k.ch; needle[n + 1] = 0; }
+                continue;
+            }
+            if (fo >= 0) {                                    /* typing into a form field */
+                int ci = ctl_by_ord(fo);
+                if (k.key == KEY_TAB) focus_next(shift ? -1 : 1, vh);
+                else if (ci >= 0 && ctl_key(&doc, ci, &k, &caret)) submit(-1, doc.ct[ci].form);
+                continue;
+            }
             switch (k.key) {
             case KEY_DOWN: target += 48; break;
             case KEY_UP: target -= 48; break;
@@ -515,15 +716,51 @@ int main(int argc, char **argv) {
             case ' ': target += shift ? 40 - vh : vh - 40; break;
             case KEY_HOME: target = 0; break;
             case KEY_END: target = max_scroll(); break;
+            case KEY_TAB: focus_next(shift ? -1 : 1, vh); break;
+            default:
+                if (ctrl && (k.key | 32) == 'c') copy_sel();
+                else if (ctrl && (k.key | 32) == 'a' && doc.nit) set_sel(0, 0, doc.nit - 1, 1 << 20);
             }
         }
+        if (find_open) {
+            if (strcmp(needle, last_needle)) {
+                strlcpy(last_needle, needle, sizeof last_needle);
+                find_count = doc_count(&doc, needle);
+                mk.find_it = -1;
+                find_go(1, vh, true);
+            }
+            mk.find = needle[0] ? needle : 0;
+        } else mk.find = 0;
         clamp_scroll();
         if (scroll != target) {                          /* ease toward the target */
             int d = target - scroll, step = d / 3;
             if (!step) step = d > 0 ? 1 : -1;
             scroll += step;
         }
-        doc_draw(&ui, &doc, 0, TB, vw, vh, scroll, hover);
+        doc_draw(&ui, &doc, 0, TB, vw, vh, scroll, hover, &mk, fo, caret);
+        if (sel_ci >= 0 && prows) {                      /* dropdown on top of the page */
+            const struct ctl *c = &doc.ct[sel_ci];
+            struct fstate *fsx = fs_get(&doc, sel_ci);
+            gfx_round_fill(ui.c, px, py, pw, prows * rh, 4, UI_SURFACE);
+            gfx_round_rect(ui.c, px, py, pw, prows * rh, 4, UI_ACCENT);
+            for (int r = 0; r < prows; r++) {
+                int oi = sel_scroll + r, ry = py + r * rh;
+                if (oi >= c->no) break;
+                bool hov = ui.mx >= px && ui.mx < px + pw && ui.my >= ry && ui.my < ry + rh;
+                if (oi == fsx->sel || hov) gfx_fill(ui.c, px + 2, ry + 1, pw - 4, rh - 2, oi == fsx->sel ? RGBA(0xB3, 0x88, 0xFF, 110) : UI_HOVER);
+                struct canvas c2 = *ui.c;
+                canvas_clip(&c2, px + 4, ry, pw - 8, rh);
+                gfx_text(&c2, &font_ui, px + 8, ry + (rh - font_ui.height) / 2, doc.txt + doc.op[c->o0 + oi].lab, UI_TEXT);
+            }
+        }
+        if (find_open) {                                 /* find bar, top right of the page */
+            gfx_fill(ui.c, fx - 8, TB, W - SB - fx + 8, 44, UI_PANEL);
+            gfx_fill(ui.c, fx - 8, TB + 43, W - SB - fx + 8, 1, UI_BORDER);
+            ui_textbox(&ui, fx, fy, 240, 32, needle, sizeof needle, "Find in page");
+            char fc[40];
+            snprintf(fc, sizeof fc, !needle[0] ? "Ctrl+F" : find_count ? "%d match%s" : "No matches", find_count, find_count == 1 ? "" : "es");
+            gfx_text(ui.c, &font_ui, fx + 250, fy + (32 - font_ui.height) / 2, fc, !needle[0] || find_count ? UI_TEXT_DIM : UI_BAD);
+        }
         gfx_fill(ui.c, vw, TB, SB, vh, UI_PANEL);
         int sp = scroll;
         ui_vscroll(&ui, vw + 1, TB, vh, doc.height, vh, &sp);
@@ -532,7 +769,7 @@ int main(int argc, char **argv) {
         /* status bar */
         gfx_fill(ui.c, 0, H - STH, W, STH, UI_PANEL);
         gfx_fill(ui.c, 0, H - STH, W, 1, UI_BORDER);
-        ui_text_fit(&ui, &font_ui, 10, H - STH + (STH - font_ui.height) / 2, W - 20, hover >= 0 ? hover_url : status,
+        ui_text_fit(&ui, &font_ui, 10, H - STH + (STH - font_ui.height) / 2, W - 20, hover >= 0 ? hover_url : img_busy() ? "Loading images..." : status,
                     hover >= 0 ? UI_ACCENT : status_bad ? UI_BAD : UI_TEXT_DIM);
 
         char t[96];

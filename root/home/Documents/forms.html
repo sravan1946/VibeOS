@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html><head><title>Forms test</title>
+<style>.row { margin: 6px 0 }</style></head>
+<body>
+<h1>Forms test</h1>
+<p>GET forms: the query string you submit is shown in the address bar.</p>
+<h2>Search</h2>
+<form action="forms.html" method="get">
+<div class="row"><input type="text" name="q" value="vibe os" size="30"> <input type="submit" value="Search"></div>
+</form>
+<h2>Everything</h2>
+<form action="forms.html" method="get">
+<input type="hidden" name="token" value="abc 123">
+<div class="row">Name: <input type="text" name="name" size="20"></div>
+<div class="row">Password: <input type="password" name="pw" size="12"></div>
+<div class="row"><input type="checkbox" name="news" value="yes" checked> Newsletter &nbsp; <input type="checkbox" name="beta"> Beta</div>
+<div class="row"><input type="radio" name="size" value="s"> S <input type="radio" name="size" value="m" checked> M <input type="radio" name="size" value="l"> L</div>
+<div class="row">Colour: <select name="colour"><option value="r">Red</option><option value="g" selected>Green</option><option value="b">Blue</option><option>Plain label</option></select></div>
+<div class="row">Comment:<br><textarea name="comment" rows="3" cols="40">Hello
+world</textarea></div>
+<div class="row"><button type="submit" name="go" value="1">Go &amp; submit</button> <input type="reset" value="Reset"> <input type="button" value="Does nothing"></div>
+</form>
+<p><a href="forms.html">clear</a></p>
+</body></html>
