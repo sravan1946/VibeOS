@@ -63,6 +63,14 @@ Newest notes at the bottom of each phase.
 - [x] Settings app: live wallpaper thumbnails, time zone picker, system info; desktop reloads prefs via `WIN_SET_PREFS`
 - [x] Double-buffered `ui.h` windows: draw privately, copy only changed rows (no half-drawn frames reaching the compositor)
 
+## Audio
+- [x] AC'97 (ICH, 8086:2415) driver: NAM/NABM, 32-entry buffer descriptor list, IRQ-driven refill, master volume; shared PCI IRQ lines (`irq_register` chains handlers)
+- [x] `/dev/dsp` (48 kHz stereo s16le; blocking `write`, `poll`, draining `close`, `AUDIO_GETQ/SETVOL/GETVOL` ioctls) and `/dev/mixer`; both absent without a card, PC speaker path untouched
+- [x] `play FILE.wav` (8/16-bit, mono/stereo, linear resample to 48k), `tone [hz] [ms]`, `/home/Music/arpeggio.wav` (`tools/mkwav.py`)
+- [x] Piano app: two-octave keyboard (mouse + computer keys), sine/square/saw/triangle, ADSR, 16-voice polyphony, scope; 10 ms chunks, ~30 ms queued
+- [x] vmtest: AC'97 + `wav` audiodev (`build/audio.wav`, configurable), `tools/wavcheck.py` to find tones/RMS in the capture
+- [ ] Sample-rate conversion in the kernel (VRA), recording, `/dev/dsp` mixing of several writers
+
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
 - Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.
@@ -71,3 +79,4 @@ Newest notes at the bottom of each phase.
 - Phase 2 apps: six libgui apps (files, notepad, calc, clock, sysmon, paint) on the immediate-mode toolkit; ui.c gained ui_text_fit, ui_tabs, ui_tool, ui_vscroll, ui_id, ui_prompt, ui_confirm; vmtest.py gained `dclick`.
 - Phase 3 (2026-10-22): userland fanned out to agents (shell, coreutils + TUIs, GUI apps, games, networking) and merged; boot splash, startup chime, window animations, snapping, smart placement, desktop menu and wallpaper themes; UTF-8 text with ~150 extra glyphs. Fixed: ATA spin-count timeouts failing large writes with EIO, shadows filling their whole interior (multi-second first frames), full-window flips every frame (ui now flips only what changed: Tetris+compositor 54% → 14% CPU), AA lines scanning their whole bounding box (clock 25% → 10%), localtime ignoring /etc/tz, stale rootfs after deleting files under root/.
 - Settings app; wallpaper renderer moved to `common/` so apps can draw thumbnails. Fixed: ui diff-flip could let the compositor capture a half-drawn frame that was never re-flipped (a thumbnail vanished after a click), now double-buffered.
+- Audio (2026-10-22): AC'97 driver + `/dev/dsp`, `play`, `tone`, Piano app. Verified in QEMU against the captured WAV (440/1000 Hz tones, arpeggio notes within 1 Hz, 8-bit/8 kHz stereo resampled to 1000 Hz). Fixed: `irq_register` replaced the previous handler, so the AC'97 card on IRQ 11 silently killed the e1000.

@@ -26,7 +26,7 @@ emulator, and a set of desktop apps and games.
 - **Networking**: PCI, Intel e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP, DHCP, DNS, and a TCP
   client, exposed as BSD-style socket fds.
 - PS/2 keyboard and mouse with wheel, plus the VMware/QEMU absolute pointer; CMOS clock;
-  PC speaker.
+  PC speaker; **AC'97 sound** (`/dev/dsp`, 48 kHz stereo).
 
 **Desktop**
 - In-kernel compositor with damage tracking, soft shadows, rounded anti-aliased windows,
@@ -50,9 +50,9 @@ emulator, and a set of desktop apps and games.
   uptime date free clear sleep env seq sort uniq tee find which stat dmesg uname cal fortune
   vibefetch` and more.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
-- Network tools: `ifconfig ping nslookup wget nc`.
+- Network tools: `ifconfig ping nslookup wget nc`. Audio: `play` (WAV files), `tone`.
 - GUI apps: Files, Notepad, Paint, Calculator, Clock (with stopwatch and timer), System
-  Monitor, Settings, About.
+  Monitor, Settings, About, Piano (a polyphonic synth keyboard).
 - Games: Snake, Tetris, Minesweeper.
 
 ## Building and running
@@ -62,7 +62,7 @@ and `qemu-system-i386`.
 
 ```sh
 make            # build build/vibeos.img
-make run        # boot it in QEMU (user-mode networking, PC speaker to your sound server)
+make run        # boot it in QEMU (user-mode networking, PC speaker and AC'97 to your sound server)
 make clean
 ```
 

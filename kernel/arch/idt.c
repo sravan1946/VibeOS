@@ -33,7 +33,18 @@ void irq_mask(int irq, bool masked) {
 }
 
 void isr_register(int vec, isr_t h) { handlers[vec] = h; }
-void irq_register(int irq, isr_t h) { handlers[32 + irq] = h; irq_mask(irq, false); }
+/* PCI devices can share a line (e1000 + AC'97 both land on IRQ 11): every registered handler runs, each checks its own device */
+static isr_t irq_chain[16][4];
+static void irq_demux(struct regs *r) {
+    for (int i = 0; i < 4; i++) if (irq_chain[r->int_no - 32][i]) irq_chain[r->int_no - 32][i](r);
+}
+void irq_register(int irq, isr_t h) {
+    int i = 0;
+    while (i < 3 && irq_chain[irq][i]) i++;
+    irq_chain[irq][i] = h;
+    handlers[32 + irq] = irq_demux;
+    irq_mask(irq, false);
+}
 
 void idt_init(void) {
     for (int i = 0; i < 256; i++) {

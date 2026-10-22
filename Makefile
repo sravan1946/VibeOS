@@ -132,9 +132,9 @@ QEMU := qemu-system-i386 -m 256 -drive file=build/vibeos.img,format=raw,if=ide \
         -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot \
         -nic user,model=e1000
 
-# PC speaker through the host's PulseAudio/PipeWire
+# PC speaker + AC'97 (/dev/dsp) through the host's PulseAudio/PipeWire
 run: build/vibeos.img
-	$(QEMU) -audiodev pa,id=snd0 -machine pcspk-audiodev=snd0
+	$(QEMU) -audiodev pa,id=snd0 -machine pcspk-audiodev=snd0 -device AC97,audiodev=snd0
 
 debug: build/vibeos.img
 	$(QEMU) -s -S & gdb build/kernel.elf -ex 'target remote :1234'
