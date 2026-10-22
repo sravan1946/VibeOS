@@ -164,7 +164,7 @@ build/vibeos.img: build/stage1.bin build/stage2.bin build/kernel.bin build/root.
 
 QEMU := qemu-system-i386 -accel kvm -accel tcg -m 256 -drive file=build/vibeos.img,format=raw,if=ide \
         -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot \
-        -nic user,model=e1000
+        -nic user,model=e1000,hostfwd=tcp:127.0.0.1:8080-:80   # httpd in the VM -> http://localhost:8080
 
 # PC speaker + AC'97 (/dev/dsp) through the host's PulseAudio/PipeWire
 run: build/vibeos.img

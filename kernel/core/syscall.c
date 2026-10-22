@@ -344,7 +344,7 @@ static void syscall_handler(struct regs *r) {
     case SYS_sigreturn:   proc_sigreturn(r); cli(); return;      /* eax is the interrupted code's */
     case SYS_sigprocmask: ret = proc_sigprocmask(a, b); break;
     case SYS_socket: case SYS_connect: case SYS_bind: case SYS_sendto: case SYS_recvfrom:
-    case SYS_resolve: case SYS_netinfo:
+    case SYS_resolve: case SYS_netinfo: case SYS_listen: case SYS_accept:
                        ret = net_syscall(r->eax, a, b, c, d, e); break;
     default:           ret = -ENOSYS;
     }

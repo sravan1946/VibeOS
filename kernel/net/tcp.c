@@ -1,5 +1,5 @@
-/* tcp.c - minimal TCP client: active open, in-order receive, go-back-N retransmit on timeout,
- * FIN/RST handling. No listen, no SACK/window scaling, no congestion control, fixed 500 ms base RTO. */
+/* tcp.c - minimal TCP: active and passive open, in-order receive, go-back-N retransmit on timeout,
+ * FIN/RST handling. No SACK/window scaling, no congestion control, fixed 500 ms base RTO. */
 #include "net.h"
 
 struct tcph { uint16_t sport, dport; uint32_t seq, ack; uint8_t off, flags; uint16_t win, csum, urg; } PACKED;
@@ -58,15 +58,45 @@ void tcp_output(struct sock *s) {
     }
 }
 
-int tcp_connect(struct sock *s) {
+/* buffers and initial sequence state, then send our SYN (or SYN-ACK) */
+static int tcb_start(struct sock *s, int state) {
     s->rxb = kmalloc(RXSZ); s->txb = kmalloc(TXSZ);
     if (!s->rxb || !s->txb) return -ENOMEM;
-    s->iss = (uint32_t)ticks_ms * 2654435761u + s->lport;
+    s->iss = (uint32_t)ticks_ms * 2654435761u + s->lport + s->rport;
     s->snd_una = s->iss; s->snd_nxt = s->iss + 1;
-    s->rto = 500; s->mss = 536;
-    s->state = TCP_SYN_SENT;
+    s->rto = 500; if (!s->mss) s->mss = 536;
+    s->state = state;
     s->rto_at = ticks_ms + s->rto;
     seg(s, s->iss, SYN, 0, 0);
+    return 0;
+}
+
+static void parse_mss(struct sock *s, const uint8_t *p, uint32_t hl) {
+    for (uint32_t i = 20; i + 3 < hl; ) {
+        if (p[i] == 0) break;
+        if (p[i] == 1) { i++; continue; }
+        if (p[i] == 2 && p[i + 1] == 4) s->mss = MIN((uint32_t)(p[i + 2] << 8 | p[i + 3]), (uint32_t)TCP_MSS);
+        if (p[i + 1] < 2) break;
+        i += p[i + 1];
+    }
+}
+
+/* a SYN for a listener: a child socket in SYN_RCVD that accept() picks up once established */
+static void passive_open(struct sock *l, uint32_t src, uint16_t sport, uint32_t seq, uint32_t wnd, const uint8_t *p, uint32_t hl) {
+    int n = 0;
+    for (struct sock *c = socks; c; c = c->next) n += c->parent == l;
+    if (n >= l->backlog) return;                        /* full: drop it, the peer resends the SYN */
+    struct sock *c = sock_new(SOCK_STREAM);
+    if (!c) return;
+    c->parent = l; c->lport = l->lport; c->rport = sport; c->rip = src;
+    c->rcv_nxt = seq + 1; c->snd_wnd = wnd;
+    parse_mss(c, p, hl);
+    if (tcb_start(c, TCP_SYN_RCVD) < 0) sock_free(c);
+}
+
+int tcp_connect(struct sock *s) {
+    int r = tcb_start(s, TCP_SYN_SENT);
+    if (r < 0) return r;
     while (s->state == TCP_SYN_SENT)
         if (nwait(s, 0) < 0) { s->state = TCP_CLOSED; return -EINTR; }
     return s->state == TCP_ESTAB ? 0 : -s->err;
@@ -104,10 +134,13 @@ int tcp_read(struct sock *s, uint8_t *buf, uint32_t n) {
 }
 
 void tcp_close(struct sock *s) {
+    if (s->state == TCP_LISTEN)                         /* close the children nobody accepted */
+        for (struct sock *c = socks; c; c = c->next)
+            if (c->parent == s) { c->parent = 0; tcp_close(c); }
     s->orphan = true;
     s->dead_at = ticks_ms + 30000;
     if (s->state == TCP_ESTAB || s->state == TCP_CLOSE_WAIT) { s->fin_wanted = true; tcp_output(s); }
-    else if (s->state == TCP_SYN_SENT) s->state = TCP_CLOSED;
+    else if (s->state == TCP_SYN_SENT || s->state == TCP_SYN_RCVD || s->state == TCP_LISTEN) s->state = TCP_CLOSED;
 }
 
 static void abort_conn(struct sock *s, int err) {
@@ -126,8 +159,11 @@ void tcp_rx(uint32_t src, uint32_t dst, const uint8_t *p, uint32_t n) {
     struct sock *s;
     for (s = socks; s; s = s->next)
         if (s->type == SOCK_STREAM && s->state != TCP_CLOSED && s->lport == t->dport && s->rport == t->sport && s->rip == src) break;
-    if (!s) {                                           /* nobody home: RST (RFC 793 p.65) */
-        if (fl & RST) return;
+    if (!s) {
+        for (s = socks; s; s = s->next)
+            if (s->type == SOCK_STREAM && s->state == TCP_LISTEN && s->lport == t->dport) break;
+        if (s && (fl & (SYN | ACK | RST)) == SYN) { passive_open(s, src, t->sport, seq, wnd, p, hl); return; }
+        if (fl & RST) return;                           /* nobody home: RST (RFC 793 p.65) */
         if (fl & ACK) seg_send(dst, src, t->dport, t->sport, ack, 0, RST, 0, 0, 0);
         else seg_send(dst, src, t->dport, t->sport, 0, seq + dl + !!(fl & (SYN | FIN)), RST | ACK, 0, 0, 0);
         return;
@@ -137,18 +173,20 @@ void tcp_rx(uint32_t src, uint32_t dst, const uint8_t *p, uint32_t n) {
         if (fl & RST) { if (fl & ACK) abort_conn(s, ECONNREFUSED); return; }
         if ((fl & (SYN | ACK)) != (SYN | ACK)) return;
         s->rcv_nxt = seq + 1; s->snd_una = ack; s->snd_wnd = wnd;
-        for (uint32_t i = sizeof *t; i + 3 < hl; ) {      /* MSS option */
-            if (p[i] == 0) break;
-            if (p[i] == 1) { i++; continue; }
-            if (p[i] == 2 && p[i + 1] == 4) s->mss = MIN((uint32_t)(p[i + 2] << 8 | p[i + 3]), (uint32_t)TCP_MSS);
-            if (p[i + 1] < 2) break;
-            i += p[i + 1];
-        }
+        parse_mss(s, p, hl);
         s->state = TCP_ESTAB; s->retries = 0; s->rto_at = 0;
         seg(s, s->snd_nxt, 0, 0, 0);
         wakeup(s);
         tcp_output(s);
         return;
+    }
+    if (s->state == TCP_SYN_RCVD) {
+        if (fl & RST) { sock_free(s); return; }
+        if (fl & SYN) { seg(s, s->iss, SYN, 0, 0); return; }     /* our SYN-ACK got lost */
+        if (!(fl & ACK) || ack != s->iss + 1) return;
+        s->snd_una = ack; s->snd_wnd = wnd;
+        s->state = TCP_ESTAB; s->retries = 0; s->rto_at = 0;
+        wakeup(s->parent);                              /* the ACK may carry data: fall through */
     }
     if (fl & RST) {
         if (SEQ_LE(s->rcv_nxt, seq) && SEQ_LT(seq, s->rcv_nxt + RXSZ)) abort_conn(s, s->state == TCP_CLOSE_WAIT ? EPIPE : ECONNRESET);
@@ -202,11 +240,15 @@ void tcp_timer(void) {
         if (s->type != SOCK_STREAM) continue;
         if (s->state == TCP_TIME_WAIT && now >= s->tw_at) { s->state = TCP_CLOSED; wakeup(s); }
         if (s->rto_at && now >= s->rto_at && s->state != TCP_CLOSED) {
-            if (++s->retries > (s->state == TCP_SYN_SENT ? 4 : 7)) abort_conn(s, ETIMEDOUT);
+            bool syn = s->state == TCP_SYN_SENT || s->state == TCP_SYN_RCVD;
+            if (++s->retries > (syn ? 4 : 7)) {
+                if (s->state == TCP_SYN_RCVD) { sock_free(s); continue; }
+                abort_conn(s, ETIMEDOUT);
+            }
             else {
                 s->rto = MIN(s->rto * 2, 8000);
                 s->rto_at = now + s->rto;
-                if (s->state == TCP_SYN_SENT) seg(s, s->iss, SYN, 0, 0);
+                if (syn) seg(s, s->iss, SYN, 0, 0);
                 else { s->fin_sent = false; s->snd_nxt = s->snd_una; tcp_output(s); }
             }
         }

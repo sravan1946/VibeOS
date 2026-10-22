@@ -1,4 +1,5 @@
-/* nc host port - connect over TCP; stdin -> socket, socket -> stdout */
+/* nc host port - connect over TCP; stdin -> socket, socket -> stdout
+ * nc -l port    - wait for one incoming connection instead */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,14 +9,28 @@
 #include <sys/socket.h>
 
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: nc host port\n"); return 2; }
-    uint32_t ip;
-    if (resolve(argv[1], &ip) < 0) { fprintf(stderr, "nc: %s: %s\n", argv[1], strerror(errno)); return 1; }
+    if (argc != 3) { fprintf(stderr, "usage: nc host port | nc -l port\n"); return 2; }
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in sa = { AF_INET, htons(atoi(argv[2])), ip, { 0 } };
-    if (fd < 0 || connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
-        fprintf(stderr, "nc: %s:%s: %s\n", argv[1], argv[2], strerror(errno));
-        return 1;
+    if (!strcmp(argv[1], "-l")) {
+        struct sockaddr_in sa = { AF_INET, htons(atoi(argv[2])), 0, { 0 } }, peer;
+        char ipb[16];
+        if (fd < 0 || bind(fd, (struct sockaddr *)&sa, sizeof sa) < 0 || listen(fd, 1) < 0) {
+            fprintf(stderr, "nc: port %s: %s\n", argv[2], strerror(errno));
+            return 1;
+        }
+        int c = accept(fd, (struct sockaddr *)&peer, 0);
+        if (c < 0) { fprintf(stderr, "nc: accept: %s\n", strerror(errno)); return 1; }
+        fprintf(stderr, "nc: connection from %s:%d\n", inet_ntoa_r(peer.sin_addr, ipb), ntohs(peer.sin_port));
+        close(fd);
+        fd = c;
+    } else {
+        uint32_t ip;
+        if (resolve(argv[1], &ip) < 0) { fprintf(stderr, "nc: %s: %s\n", argv[1], strerror(errno)); return 1; }
+        struct sockaddr_in sa = { AF_INET, htons(atoi(argv[2])), ip, { 0 } };
+        if (fd < 0 || connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
+            fprintf(stderr, "nc: %s:%s: %s\n", argv[1], argv[2], strerror(errno));
+            return 1;
+        }
     }
     char buf[1024];
     int in_open = 1, idle = 0;

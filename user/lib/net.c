@@ -17,6 +17,12 @@ ssize_t recvfrom(int fd, void *buf, size_t n, int flags, struct sockaddr *from, 
 }
 ssize_t send(int fd, const void *buf, size_t n, int flags) { return sendto(fd, buf, n, flags, 0, 0); }
 ssize_t recv(int fd, void *buf, size_t n, int flags) { return recvfrom(fd, buf, n, flags, 0, 0); }
+int listen(int fd, int backlog) { return __sysret(__syscall2(SYS_listen, fd, backlog)); }
+int accept(int fd, struct sockaddr *a, socklen_t *len) {
+    int r = __sysret(__syscall3(SYS_accept, fd, P(a), 0));
+    if (r >= 0 && a && len) *len = sizeof(struct sockaddr_in);
+    return r;
+}
 int netinfo(struct netinfo *ni) { return __sysret(__syscall1(SYS_netinfo, P(ni))); }
 int resolve(const char *name, uint32_t *ip) { return __sysret(__syscall2(SYS_resolve, P(name), P(ip))); }
 

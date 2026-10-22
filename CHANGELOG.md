@@ -54,7 +54,8 @@ Newest notes at the bottom of each phase.
 - [x] Ethernet, ARP cache, IPv4, ICMP echo (answer + send), UDP, DHCP at boot, DNS resolver, TCP client (retransmit, FIN/RST)
 - [x] Sockets as fds (`socket connect bind sendto recvfrom`, `resolve`, `netinfo`; syscalls 60-66), poll() support
 - [x] `ifconfig ping nslookup wget nc` (verified in QEMU user net: ping gw, DNS, HTTP GET incl. a 16 MB download)
-- [ ] TCP listen/accept, IP fragments, DHCP renewal, TLS
+- [x] TCP server side: `listen`/`accept` (syscalls 67-68, SYN_RCVD children, backlog, poll on listeners), `nc -l`, `/bin/httpd` (static files, listings, index.html), `make run` forwards host :8080 → guest :80
+- [ ] IP fragments, DHCP renewal, TLS
 
 ## Lua
 - [x] Lua 5.4.9 (`third_party/lua`, unmodified) as `/bin/lua`: REPL with line editing + history, `lua script.lua args`, `-e`, `-`; `vibe` module (sysinfo ps beep sleep uptime listdir ...) and `gui` module (windows, drawing, events); `projects/luatest.lua` (183 checks, all pass), fib/mandelbrot/sysinfo/gui samples. libc grew hex-float `strtod`, `%a`, `freopen tmpfile tmpnam signal setlocale strcoll frexp ldexp modf`, ISO-week `strftime`, exact libm (<= 2 ulp vs glibc), and a binned O(1) `malloc` (the old one was quadratic: 100k-deep Lua recursion took 6.5 s, now 0.1 s); glibc differential tests for printf/strtod/libm in `tools/libctest`
@@ -105,3 +106,4 @@ Newest notes at the bottom of each phase.
 - Images: PNG/BMP/PPM codecs in libgui (own inflate + PNG encoder, 222 host checks vs Pillow under sanitizers), `/bin/viewer`, PrtSc screenshots via `/dev/screen` + `/bin/screenshot`, PNG in Paint and Files. Fixed along the way: a float bilinear resampler took >1 s per 800x480 frame under QEMU (frames lagged input), now packed-integer lerp + row-copy at 1:1.
 - Merged the audio, Lua and image agents. A slow PrtSc led to the disk: writes ran at ~47 KB/s under KVM because `rep outsw` exits per word; reads were fine. DMA fixed it; e2fsck clean after a write-heavy session.
 - Toolchain (2026-10-22): TinyCC 0.9.27 ported as `/bin/tcc` with an in-OS SDK (`/usr/include`, `/usr/lib`); compiles and runs C, multi-file and libgui programs inside VibeOS. Needed `__udivmoddi4` exported from libtcc1 because the gcc-built libc.a calls it, and `-Ttext` at the user base since tcc defaults to 0x08048000.
+- TCP server sockets + `/bin/httpd`: the host browses VibeOS at http://localhost:8080 under `make run`; vmtest gained `--hostfwd`, `--pcap` and `host:CMD`. The capture showed two stack bugs: the first SYN-ACK waited 500 ms on ARP (the net thread can't sleep, so it fell to the retransmit timer; senders' MACs are now learned from incoming IP frames), and a burst of tiny segments overran the 32-slot e1000 RX ring and dropped the next SYN (ring is now 128, httpd batches its writes).

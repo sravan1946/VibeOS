@@ -38,7 +38,7 @@ int      ip_parse(const char *s, uint32_t *ip);
 
 /* net/tcp.c + net/sock.c */
 enum { TCP_CLOSED, TCP_SYN_SENT, TCP_ESTAB, TCP_FIN_WAIT1, TCP_FIN_WAIT2, TCP_CLOSING,
-       TCP_TIME_WAIT, TCP_CLOSE_WAIT, TCP_LAST_ACK };
+       TCP_TIME_WAIT, TCP_CLOSE_WAIT, TCP_LAST_ACK, TCP_LISTEN, TCP_SYN_RCVD };
 #define RXSZ 32768
 #define TXSZ 16384
 
@@ -49,6 +49,8 @@ struct sock {
     uint16_t lport, rport;
     uint32_t rip;
     bool connected, orphan;
+    struct sock *parent;                       /* listener, until accept() takes it */
+    int backlog;                               /* listener: max half-open + unaccepted children */
     struct dgram *qh, *qt;                     /* UDP / raw receive queue */
     int qn;
     /* TCP */
@@ -68,6 +70,7 @@ int  tcp_connect(struct sock *s);
 int  tcp_write(struct sock *s, const uint8_t *buf, uint32_t n);
 int  tcp_read(struct sock *s, uint8_t *buf, uint32_t n);
 void tcp_close(struct sock *s);
+struct sock *sock_new(int type);
 void sock_free(struct sock *s);
 void sock_udp_rx(uint32_t src, uint16_t sport, uint16_t dport, const uint8_t *p, uint32_t n);
 void sock_raw_rx(uint32_t src, const uint8_t *p, uint32_t n);

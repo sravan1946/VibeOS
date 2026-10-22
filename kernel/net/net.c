@@ -282,7 +282,15 @@ static void net_rx(const uint8_t *f, uint32_t n) {
     ni.rx_pkts++; ni.rx_bytes += n;
     const struct eth *e = (const void *)f;
     if (e->type == ETH_ARP) arp_rx(f + sizeof *e, n - sizeof *e);
-    else if (e->type == ETH_IP) ip_rx(f + sizeof *e, n - sizeof *e);
+    else if (e->type == ETH_IP) {
+        if (n >= sizeof *e + 20 && ni.ip) {             /* learn the sender's MAC so replies sent from */
+            uint32_t src;                               /* this (never-sleeping) thread don't wait on ARP */
+            memcpy(&src, f + sizeof *e + 12, 4);
+            uint32_t hop = ((src ^ ni.ip) & ni.mask) ? ni.gw : src;
+            if (hop && hop != 0xFFFFFFFF) arp_learn(hop, e->src);
+        }
+        ip_rx(f + sizeof *e, n - sizeof *e);
+    }
 }
 
 static int net_thread(void *arg) {

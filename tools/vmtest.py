@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive VibeOS in a headless QEMU.
 
-  vmtest.py [--timeout S] [--keep] STEP...
+  vmtest.py [--timeout S] [--keep] [--hostfwd tcp::18080-:80] [--pcap] STEP...
 
 steps:
   wait:TEXT        wait until TEXT shows up in the serial log
@@ -9,6 +9,7 @@ steps:
   key:NAME         QEMU sendkey name, e.g. ctrl-c, up, esc (prtsc = print)
   mclick           middle click (rclick right, dclick double)
   sleep:SECS
+  host:CMD         run CMD on the host (fails the run on non-zero exit), e.g. curl through --hostfwd
   shot:PATH.png    screenshot
   wheel:DZ         scroll wheel (negative = up)
   moveto:X,Y       move the pointer (absolute pixels)   click / rclick / dclick / down / up
@@ -18,7 +19,7 @@ The VM window opens on the desktop unless --headless (or VIBE_HEADLESS=1).
 Sound: an AC'97 card feeds -audiodev AUDIODEV, default wav,id=snd0,path=build/audio.wav (finalised when
 the VM quits; analyse it with tools/wavcheck.py). Override with --audiodev SPEC or VIBE_AUDIODEV, e.g.
 `pa,id=snd0` to hear it (the id must stay snd0).
-Serial output goes to build/serial.log; exits non-zero on timeout or panic.
+Serial output goes to build/serial.log (--pcap: packets to build/net.pcap); exits non-zero on timeout or panic.
 """
 import os, socket, subprocess, sys, time
 from PIL import Image
@@ -41,7 +42,7 @@ def keyname(ch):
     raise ValueError(f"can't type {ch!r}")
 
 class VM:
-    def __init__(self, headless=False, extra=(), audiodev=None):
+    def __init__(self, headless=False, extra=(), audiodev=None, hostfwd=None, pcap=False):
         os.makedirs(B, exist_ok=True)
         self.sock = os.path.join(B, "mon.sock")
         self.log = os.path.join(B, "serial.log")
@@ -50,7 +51,8 @@ class VM:
         self.p = subprocess.Popen([
             "qemu-system-i386", "-m", "256", "-drive", f"file={B}/vibeos.img,format=raw,if=ide",
             "-display", "none" if headless else "gtk,zoom-to-fit=off", "-name", "VibeOS (vmtest)",
-            "-serial", f"file:{self.log}", "-no-reboot", "-nic", "user,model=e1000",
+            "-serial", f"file:{self.log}", "-no-reboot", "-netdev", "user,id=n0" + (f",hostfwd={hostfwd}" if hostfwd else ""), "-device", "e1000,netdev=n0",
+            *(["-object", f"filter-dump,id=dump,netdev=n0,file={B}/net.pcap"] if pcap else []),
             "-device", "isa-debug-exit,iobase=0xf4,iosize=4", "-machine", "pc,vmport=off",  # relative PS/2 so monitor mouse_move works
             "-accel", "kvm", "-accel", "tcg",  # KVM when available
             "-monitor", f"unix:{self.sock},server,nowait",
@@ -130,15 +132,18 @@ def main(argv):
     timeout, keep, steps = 30, False, []
     headless = os.environ.get("VIBE_HEADLESS") == "1"
     audiodev = os.environ.get("VIBE_AUDIODEV")
+    hostfwd, pcap = None, False
     it = iter(argv)
     for a in it:
         if a == "--timeout": timeout = float(next(it))
         elif a == "--keep": keep = True
         elif a == "--headless": headless = True
         elif a == "--audiodev": audiodev = next(it)
+        elif a == "--hostfwd": hostfwd = next(it)
+        elif a == "--pcap": pcap = True
         elif a == "smoke": steps += ["wait:[desktop] ready", f"shot:{B}/smoke.png"]
         else: steps.append(a)
-    vm = VM(headless, audiodev=audiodev)
+    vm = VM(headless, audiodev=audiodev, hostfwd=hostfwd, pcap=pcap)
     ok = True
     try:
         for s in steps:
@@ -148,6 +153,10 @@ def main(argv):
                 if not vm.wait(arg, timeout):
                     print(f"FAIL: timed out waiting for {arg!r}"); ok = False; break
             elif kind == "type": vm.type(arg)
+            elif kind == "host":
+                r = subprocess.run(arg, shell=True, capture_output=True, text=True, timeout=timeout)
+                print(f"$ {arg}\n{r.stdout}{r.stderr}", end="")
+                if r.returncode: print(f"FAIL: exit {r.returncode}"); ok = False; break
             elif kind == "key": vm.hmp("sendkey " + {"prtsc": "print"}.get(arg, arg))
             elif kind == "sleep": time.sleep(float(arg))
             elif kind == "shot": vm.shot(arg); print("screenshot:", arg)

@@ -6,7 +6,7 @@ static uint16_t eph = 49151;
 
 static bool uok(const void *p, uint32_t n, bool w) { return n == 0 || vmm_user_ok(current->dir, (uint32_t)p, n, w); }
 
-static struct sock *sock_new(int type) {
+struct sock *sock_new(int type) {
     struct sock *s = kzalloc(sizeof *s);
     if (!s) return 0;
     s->type = type;
@@ -176,9 +176,17 @@ static int sock_recvfrom(struct sock *s, uint8_t *buf, uint32_t n, int flags, st
 static int vn_read(struct vnode *v, uint32_t off, void *buf, uint32_t n) { return sock_recvfrom(v->priv, buf, n, 0, 0); }
 static int vn_write(struct vnode *v, uint32_t off, const void *buf, uint32_t n) { return sock_sendto(v->priv, buf, n, 0); }
 
+/* the oldest established child of listener l (socks is newest-first) */
+static struct sock *pending(struct sock *l) {
+    struct sock *p = 0;
+    for (struct sock *c = socks; c; c = c->next) if (c->parent == l && c->state != TCP_SYN_RCVD) p = c;
+    return p;
+}
+
 static int vn_poll(struct vnode *v, int ev) {
     struct sock *s = v->priv;
     int r = 0;
+    if (s->state == TCP_LISTEN) return pending(s) ? POLLIN & ev : 0;
     if (s->type != SOCK_STREAM) return (s->qh ? POLLIN : 0) | POLLOUT;
     if (s->rx_h != s->rx_t || s->rcvd_fin || s->err) r |= POLLIN;
     if ((s->state == TCP_ESTAB || s->state == TCP_CLOSE_WAIT) && s->tx_len < TXSZ) r |= POLLOUT;
@@ -211,20 +219,25 @@ static struct sock *fd_sock(int fd) {
 }
 
 /* ---- syscalls ---- */
-static int sys_socket(int domain, int type, int proto) {
-    if (domain != AF_INET) return -EAFNOSUPPORT;
-    if (type != SOCK_STREAM && type != SOCK_DGRAM && type != SOCK_RAW) return -EPROTONOSUPPORT;
-    if (type == SOCK_RAW && proto != IPPROTO_ICMP) return -EPROTONOSUPPORT;
-    if (!ni.present) return -ENODEV;
-    struct sock *s = sock_new(type);
+/* wrap s in a file and an fd; on failure s is gone too */
+static int sock_fd(struct sock *s) {
     struct vnode *v = kzalloc(sizeof *v);
-    if (!s || !v) { kfree(v); if (s) sock_free(s); return -ENOMEM; }
+    if (!v) { sock_free(s); return -ENOMEM; }
     v->mode = S_IFSOCK | 0600; v->ops = &sock_ops; v->priv = s;
     struct file *f = vfs_open_vnode(v, O_RDWR);
     if (!f) { kfree(v); sock_free(s); return -ENOMEM; }
     int fd = fd_alloc(f);
     if (fd < 0) vfs_close(f);                    /* close op frees the sock, release the vnode */
     return fd;
+}
+
+static int sys_socket(int domain, int type, int proto) {
+    if (domain != AF_INET) return -EAFNOSUPPORT;
+    if (type != SOCK_STREAM && type != SOCK_DGRAM && type != SOCK_RAW) return -EPROTONOSUPPORT;
+    if (type == SOCK_RAW && proto != IPPROTO_ICMP) return -EPROTONOSUPPORT;
+    if (!ni.present) return -ENODEV;
+    struct sock *s = sock_new(type);
+    return s ? sock_fd(s) : -ENOMEM;
 }
 
 static int get_addr(const void *u, uint32_t len, struct sockaddr_in *a) {
@@ -242,7 +255,7 @@ static int sys_connect(int fd, const void *ua, uint32_t len) {
     if ((r = net_wait_cfg()) < 0) return r;
     s->rip = a.sin_addr; s->rport = a.sin_port;
     if (s->type == SOCK_STREAM) {
-        if (s->rxb) return -EINVAL;              /* one connect per socket */
+        if (s->rxb || s->state == TCP_LISTEN) return -EINVAL;   /* one connect per socket */
         autobind(s);
         return tcp_connect(s);
     }
@@ -258,10 +271,35 @@ static int sys_bind(int fd, const void *ua, uint32_t len) {
     int r = get_addr(ua, len, &a);
     if (r < 0) return r;
     if (s->lport) return -EINVAL;
-    if (a.sin_port && port_used(a.sin_port)) return -EADDRINUSE;
+    for (struct sock *o = socks; a.sin_port && o; o = o->next)    /* connections a listener left behind don't count */
+        if (o != s && o->type == s->type && o->lport == a.sin_port && !o->orphan && !(o->type == SOCK_STREAM && o->rport)) return -EADDRINUSE;
     s->lport = a.sin_port;
     autobind(s);
     return 0;
+}
+
+static int sys_listen(int fd, int backlog) {
+    struct sock *s = fd_sock(fd);
+    if (!s) return -EBADF;
+    if (s->type != SOCK_STREAM || s->rxb) return -EINVAL;
+    autobind(s);
+    s->state = TCP_LISTEN;
+    s->backlog = backlog < 1 ? 1 : MIN(backlog, 32);
+    return 0;
+}
+
+static int sys_accept(int fd, struct sockaddr_in *peer, int flags) {
+    struct sock *l = fd_sock(fd), *c;
+    if (!l) return -EBADF;
+    if (l->state != TCP_LISTEN) return -EINVAL;
+    if (peer && !uok(peer, sizeof *peer, true)) return -EFAULT;
+    while (!(c = pending(l))) {
+        if (flags & MSG_DONTWAIT) return -EAGAIN;
+        if (nwait(l, 0) < 0) return -EINTR;
+    }
+    c->parent = 0;
+    if (peer) *peer = (struct sockaddr_in){ AF_INET, c->rport, c->rip, { 0 } };
+    return sock_fd(c);
 }
 
 static int sys_resolve(const char *uname, uint32_t *uip) {
@@ -296,6 +334,8 @@ int net_syscall(int num, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_
         if (!uok((void *)b, c, true) || (e && !uok((void *)e, sizeof(struct sockaddr_in), true))) return -EFAULT;
         return sock_recvfrom(s, (uint8_t *)b, c, d, (struct sockaddr_in *)e);
     }
+    case SYS_listen:  return sys_listen(a, b);
+    case SYS_accept:  return sys_accept(a, (struct sockaddr_in *)b, c);
     case SYS_resolve: return sys_resolve((const char *)a, (uint32_t *)b);
     case SYS_netinfo:
         if (!uok((void *)a, sizeof ni, true)) return -EFAULT;

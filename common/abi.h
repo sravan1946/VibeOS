@@ -52,6 +52,8 @@ enum {
     SYS_recvfrom,     /* (int fd, void *buf, uint32 n, int flags, struct sockaddr_in *from or NULL); MSG_DONTWAIT */
     SYS_resolve,      /* (const char *name, uint32 *ip_be) -> 0 / -errno; also accepts dotted quads */
     SYS_netinfo,      /* (struct netinfo *ni) */
+    SYS_listen,       /* (int fd, int backlog): TCP passive open; autobinds if unbound */
+    SYS_accept,       /* (int fd, struct sockaddr_in *peer or NULL, int flags) -> new fd; MSG_DONTWAIT */
     SYS_sigaction = 70, /* (int sig, uintptr handler, uintptr restorer) -> old handler (SIG_DFL 0, SIG_IGN 1) */
     SYS_sigreturn,    /* () from the restorer: resume what the handler interrupted */
     SYS_sigprocmask,  /* (int how, uint32 set) -> old mask; SIG_BLOCK 0 / SIG_UNBLOCK 1 / SIG_SETMASK 2, bit n = signal n */

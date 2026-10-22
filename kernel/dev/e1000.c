@@ -2,7 +2,7 @@
 #include "net.h"
 
 #define R(o) (*(volatile uint32_t *)(mmio + (o)))
-#define NRX 32
+#define NRX 128
 #define NTX 16
 #define BUF 2048
 struct rxd { uint64_t addr; uint16_t len, csum; uint8_t status, err; uint16_t special; } PACKED;
