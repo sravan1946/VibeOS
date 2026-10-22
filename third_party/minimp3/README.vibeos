@@ -1,0 +1,14 @@
+minimp3 in VibeOS
+=================
+
+Origin  : https://github.com/lieff/minimp3
+Commit  : ea99364f61c14656440e8d77e9c233ccf3124633 (master as cloned 2026-10-22; upstream has no release tags)
+SHA-256 : 57e437c5c1f0e8b243885d3929c8973b5e6c778451e0100ab4251d19915cb3ad  minimp3.h
+          6a1ee543e5282cd9061881edf462e6fdab181f328da71fc2c9a6950a80e94d01  LICENSE
+Licence : CC0 1.0 (public domain dedication), see LICENSE
+
+minimp3.h and LICENSE are upstream's, byte-for-byte, fetched with `git clone --depth 1` into a fresh empty
+directory; nothing is modified. (minimp3_ex.h, the file-based convenience layer, is not needed and not vendored.)
+A single-header MPEG-1/2/2.5 Layer 1/2/3 decoder in plain C. user/music/mp3.c defines MINIMP3_IMPLEMENTATION in
+a translation unit of its own (it clashes with stb_vorbis's `get_bits` otherwise); user/music/adec.c wraps it
+for /bin/play and /bin/music. With -march=i686 (no SSE2) the portable scalar path is used.

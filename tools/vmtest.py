@@ -56,7 +56,7 @@ class VM:
             "-serial", f"file:{self.log}", "-no-reboot", "-netdev", "user,id=n0" + (f",hostfwd={hostfwd}" if hostfwd else ""), "-device", "e1000,netdev=n0",
             *(["-object", f"filter-dump,id=dump,netdev=n0,file={B}/net.pcap"] if pcap else []),
             "-device", "isa-debug-exit,iobase=0xf4,iosize=4", "-machine", "pc" if absolute else "pc,vmport=off",  # --abs: the vmmouse pointer `make run` gets; else relative PS/2
-            "-accel", "kvm", "-accel", "tcg",  # KVM when available
+            *(["-accel", "tcg"] if os.environ.get("VIBE_ACCEL") == "tcg" else ["-accel", "kvm", "-accel", "tcg"]),  # KVM when available (VIBE_ACCEL=tcg: software emulation, a slow-CPU worst case)
             "-monitor", f"unix:{self.sock},server,nowait", "-qmp", f"unix:{self.qsock},server,nowait",
             "-audiodev", audiodev or f"wav,id=snd0,path={B}/audio.wav,out.frequency=48000", "-device", "AC97,audiodev=snd0", *extra])
         for _ in range(100):

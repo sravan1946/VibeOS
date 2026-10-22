@@ -2,7 +2,7 @@
 #   make            -> build/vibeos.img (bootable raw disk: MBR + stage2 + kernel + ext2 root)
 #   make run        -> boot it in QEMU
 #   make test       -> headless smoke test (tools/vmtest.py)
-#   make test-host  -> host unit tests (libc, image codecs)
+#   make test-host  -> host unit tests (libc, image codecs, audio decoders)
 #   make doom-wad   -> fetch Freedoom (for /bin/doom) into build/wads/
 
 CC      := gcc
@@ -184,6 +184,16 @@ $(UEXTRA_python): build/user/obj/$(MPY)/%.o: $(MPY)/%.c $(MPY_GEN)/qstrdefs.gene
 	$(CC) $(UCFLAGS) $(MPY_FLAGS) -w -c $< -o $@
 build/user/obj/bin/python/%.o: UCFLAGS += $(MPY_FLAGS)
 $(patsubst user/%.c,build/user/obj/%.o,$(MPY_PORT_SRC)): $(MPY_GEN)/qstrdefs.generated.h
+# MP3 (third_party/minimp3, CC0) + Ogg Vorbis (third_party/stb_vorbis, public domain / MIT), both unmodified, behind user/music/adec.c; linked into play and music
+# (stb_vorbis wants alloca.h on Linux and a stdio it doesn't need here)
+ADEC_OBJ := build/user/obj/music/adec.o build/user/obj/music/mp3.o build/user/obj/music/vorbis.o
+build/user/obj/music/adec.o: UCFLAGS += -Ithird_party/minimp3 -Ithird_party/stb_vorbis
+build/user/obj/music/mp3.o: UCFLAGS += -w -Ithird_party/minimp3
+build/user/obj/music/vorbis.o: UCFLAGS += -w -Ithird_party/stb_vorbis -DSTB_VORBIS_NO_STDIO -DSTB_VORBIS_NO_PUSHDATA_API \
+  -DSTB_VORBIS_NO_FAST_SCALED_FLOAT -U__linux__ -U__linux -Ulinux -Dalloca=__builtin_alloca
+UEXTRA_play := $(ADEC_OBJ)
+UEXTRA_music := $(ADEC_OBJ)
+build/user/obj/bin/play/%.o build/user/obj/bin/music/%.o: UCFLAGS += -Iuser/music
 
 $(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
 
@@ -241,10 +251,11 @@ debug: build/vibeos.img
 doom-wad:    # download + verify Freedoom into build/wads/ (then `make` puts it in /usr/share/doom)
 	sh tools/getwad.sh
 
-test-host:   # host-side unit tests (libc, image codecs, terminal emulator)
+test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audio decoders)
 	sh tools/termtest/run.sh
 	sh tools/imagetest/run.sh
 	sh tools/libctest/run.sh
+	sh tools/adectest/run.sh
 	python3 tools/hashtest.py
 	sh tools/chesstest/run.sh
 

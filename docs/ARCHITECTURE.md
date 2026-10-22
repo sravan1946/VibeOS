@@ -114,18 +114,36 @@ header shared by the kernel and libc: `common/abi.h`.
 ## Audio
 
 `kernel/dev/ac97.c` drives an Intel ICH AC'97 controller (QEMU `-device AC97`, found by PCI id like the
-e1000). PCM-out DMA walks a 32-entry buffer descriptor list over a 128 KiB physically contiguous ring
-(the identity map makes the physical address usable as a pointer). Every `write()` chunk (up to 4 KiB)
-becomes one descriptor with its exact length, so nothing is padded; the IRQ (interrupt-on-completion per
-descriptor) retires finished ones and wakes blocked writers (`sleep_on`/`wakeup`, like pipes). The engine is
-started once and afterwards only the last-valid-index register moves; after an underrun the hardware resumes
-by itself when LVI changes. `/dev/dsp` takes **48 kHz stereo s16le** only (no VRA, no resampling in the
-kernel: `play` resamples in userland); `close` drains the ring. Ioctls (`common/abi.h`): `AUDIO_GETQ` (bytes
-queued, i.e. latency), `AUDIO_SETVOL`/`AUDIO_GETVOL` (master, 0-100). `/dev/dsp` and `/dev/mixer` only appear if a
-card was found; the PC speaker (`speaker_tone`) is independent. PCI devices may share an interrupt line, so
-`irq_register` keeps a small handler chain per IRQ and each handler checks its own device.
+e1000). PCM-out DMA walks a 32-entry buffer descriptor list (the hardware index wraps at 32) over a 32 KiB
+physically contiguous ring (the identity map makes the physical address usable as a pointer). `/dev/dsp` is
+**mixed in software**: devfs's `clone` hook makes every lookup of `/dev/dsp` a fresh vnode, i.e. a stream with a
+64 KiB queue of its own (allocated on its first write), a gain and a place in a list. `write()` only fills the
+stream's queue (blocking while it is full, `sleep_on`/`wakeup` like pipes). The IRQ (interrupt-on-completion per
+descriptor) retires finished descriptors and tops the ring up to 4 in flight: each new descriptor takes up to 256
+frames (5.3 ms), summing what every stream has queued (per-stream gain in 8.8 fixed point, clamped to 16 bits), so
+the DMA lead is 16-21 ms for everybody and a stream's latency is its own queue plus that. With nothing queued
+nothing is mixed, the engine halts at the last-valid index and restarts when it moves; opened-but-idle streams are
+skipped (a list walk). `/dev/dsp` takes **48 kHz stereo s16le** only (no VRA, no resampling in the kernel: userland
+resamples). `close` waits (max 5 s) until the stream's queue is empty and the descriptors carrying its tail have
+played, other streams keep going. Ioctls (`common/abi.h`): `AUDIO_GETQ` (bytes between `write` and the speaker:
+this stream's queue + the DMA ring), `AUDIO_SETVOL`/`AUDIO_GETVOL` (master codec volume, 0-100),
+`AUDIO_SETSVOL`/`AUDIO_GETSVOL` (this stream, default 100), `AUDIO_FLUSH` (drop this stream's queue: pause, seek).
+`/dev/mixer` has only the master ioctls. `/dev/dsp` and `/dev/mixer` only appear if a card was found; the PC speaker
+(`speaker_tone`) is independent. PCI devices may share an interrupt line, so `irq_register` keeps a small handler
+chain per IRQ and each handler checks its own device.
 
-Userland: `play`, `tone`, and the Piano app generate audio in 10 ms chunks and keep ~30 ms queued, polling
+`user/music/adec.c` (+ `adec.h`) is the userland decoder for WAV, MP3 ([minimp3](https://github.com/lieff/minimp3),
+`third_party/minimp3`) and Ogg Vorbis ([stb_vorbis](https://github.com/nothings/stb), `third_party/stb_vorbis`),
+both unmodified, each in a translation unit of its own (`mp3.c`, `vorbis.c`; the Makefile sets stb_vorbis up by
+-D). It yields 48 kHz stereo frames: native-rate frames go through a linear resampler whose phase is kept exactly in
+1/48000 units. MP3 and Ogg are read whole; the MP3 frame table is built at open (length, seeking with two frames of
+lead-in for the bit reservoir, the Xing/Info frame skipped), ID3v2.3/2.4 give title/artist/album and the APIC
+picture. `/bin/play` and `/bin/music` link it; `tools/adectest` checks it against ffmpeg on the host.
+
+`/bin/music` (`user/bin/music/`) keeps one stream open, decodes ~1024 frames at a time to hold ~150 ms queued, and
+derives the position from frames written minus `AUDIO_GETQ`; pause and seek `AUDIO_FLUSH` and seek the decoder.
+
+Userland: `tone` and the Piano app generate audio in 10 ms chunks and keep ~30 ms queued, polling
 `AUDIO_GETQ` instead of blocking in `write`. `tools/vmtest.py` records the card to `build/audio.wav` (QEMU `wav`
 audiodev); `tools/wavcheck.py` reports tones and RMS in it.
 

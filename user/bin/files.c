@@ -132,6 +132,9 @@ static void open_entry(int i) {
     } else if (image_is_ext(e->name)) {
         argv[0] = "viewer"; argv[1] = p; argv[2] = NULL;
         pid = spawnv("/bin/viewer", argv);
+    } else if (strlen(e->name) > 4 && (!strcasecmp(e->name + strlen(e->name) - 4, ".mp3") || !strcasecmp(e->name + strlen(e->name) - 4, ".ogg") || !strcasecmp(e->name + strlen(e->name) - 4, ".wav"))) {
+        argv[0] = "music"; argv[1] = p; argv[2] = NULL;
+        pid = spawnv("/bin/music", argv);
     } else {
         argv[0] = "notepad"; argv[1] = p; argv[2] = NULL;
         pid = spawnv("/bin/notepad", argv);

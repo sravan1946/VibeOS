@@ -181,11 +181,14 @@ struct pollfd { int fd; short events, revents; };
 #define TIOCGWINSZ 0x5413   /* struct winsize * */
 #define TIOCSPGRP  0x5410   /* int *pid : foreground process (gets SIGINT on ^C) */
 #define FIONREAD   0x541B   /* int * bytes readable */
-/* /dev/dsp: write() takes AUDIO_RATE stereo s16le frames and blocks while the DMA ring is full */
+/* /dev/dsp: every open is a stream; write() takes AUDIO_RATE stereo s16le frames and blocks while the stream queue is full */
 #define AUDIO_RATE   48000
-#define AUDIO_GETQ   0x4101   /* int * bytes queued in the ring (play latency) */
+#define AUDIO_GETQ   0x4101   /* int * bytes between write() and the speaker: this stream's queue + the DMA ring (play latency) */
 #define AUDIO_SETVOL 0x4102   /* int * master volume 0..100 */
 #define AUDIO_GETVOL 0x4103   /* int * */
+#define AUDIO_SETSVOL 0x4104  /* int * this stream's volume 0..100 (default 100); each open of /dev/dsp is mixed with the others */
+#define AUDIO_GETSVOL 0x4105  /* int * */
+#define AUDIO_FLUSH  0x4106   /* drop what this stream has queued (pause, seek); the ~20 ms already in the DMA ring still plays */
 struct termios { uint32_t c_lflag; };
 #define ECHO   0x0008
 #define ICANON 0x0002

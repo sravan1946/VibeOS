@@ -27,7 +27,7 @@ emulator, and a set of desktop apps and games.
 - **Networking**: PCI, Intel e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP, DHCP, DNS, TLS (BearSSL), and TCP
   (client and server), exposed as BSD-style socket fds.
 - PS/2 keyboard and mouse with wheel, plus the VMware/QEMU absolute pointer; CMOS clock;
-  PC speaker; **AC'97 sound** (`/dev/dsp`, 48 kHz stereo).
+  PC speaker; **AC'97 sound** (`/dev/dsp`, 48 kHz stereo, software-mixed: any number of programs can play at once).
 
 **Desktop**
 - In-kernel compositor with damage tracking, soft shadows, rounded anti-aliased windows,
@@ -67,7 +67,7 @@ emulator, and a set of desktop apps and games.
 - Network tools: `ifconfig ping nslookup wget nc` (`nc -l` listens; `wget` does https:// with certificate checks), and `httpd` — run it inside `make run` and open http://localhost:8080 on the host. Audio: `play` (WAV files), `midi` (Standard MIDI Files through an OPL3 FM synth; needs the Freedoom WAD for its instruments), `tone`.
 - GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + basic CSS, PNG/JPEG/GIF images, forms, find-in-page), Paint (saves/opens PNG), **Code** (a small IDE: project sidebar, tabs, C and Lua highlighting, find/replace, Build with tcc and Run with an output pane, click an error to jump to it), Image
   viewer (PNG/JPEG/GIF/BMP/PPM, animated GIFs, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
-  Monitor, Settings, About, Piano (a polyphonic synth keyboard). PrtSc saves a PNG screenshot
+  Monitor, Settings, About, Piano (a polyphonic synth keyboard), Music (library, playlist, shuffle/repeat, seek, album art; MP3/Ogg/WAV). PrtSc saves a PNG screenshot
   to `~/Pictures`.
 - Games: Snake, Tetris, Minesweeper, **Chess** against an alpha-beta AI, **2048** with animations, **Solitaire** (drag and drop), and **Doom** (doomgeneric + the BSD-licensed Freedoom, with sound effects and OPL3 FM music; `make doom-wad` fetches the game data).
 

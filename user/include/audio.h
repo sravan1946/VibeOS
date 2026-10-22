@@ -1,4 +1,5 @@
-/* audio.h - /dev/dsp: write AUDIO_RATE (48 kHz) stereo s16le frames; write() blocks while the ring is full */
+/* audio.h - /dev/dsp: write AUDIO_RATE (48 kHz) stereo s16le frames; write() blocks while this open's queue (64 KiB) is full.
+ * Every open is its own stream and the kernel mixes them, so several programs can play at once. */
 #pragma once
 #include <fcntl.h>
 #include <unistd.h>
@@ -13,5 +14,5 @@ static inline int audio_open(const char *prog) {
     if (fd < 0) fprintf(stderr, "%s: no audio device (/dev/dsp): %s\n", prog, strerror(errno));
     return fd;
 }
-/* bytes queued in the DMA ring */
+/* bytes between write() and the speaker (this stream's queue + the DMA ring) */
 static inline int audio_queued(int fd) { int q = 0; ioctl(fd, AUDIO_GETQ, &q); return q < 0 ? 0 : q; }
