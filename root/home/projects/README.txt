@@ -1,7 +1,7 @@
 Programs here
 =============
 *.lua            run with  lua NAME.lua
-*.py             run with  python NAME.py  (MicroPython 1.29; `python` alone is the REPL)
+*.py            run with  python NAME.py  (MicroPython 1.29; `python` alone is the REPL). paint.py is a gui app, in the launcher as Python Paint
 *.c, sieve/      compiled inside VibeOS by tcc (TinyCC 0.9.27) against the system libc in /usr
 
   tcc hello.c -o hello && ./hello world        compile, then run

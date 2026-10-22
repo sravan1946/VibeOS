@@ -259,9 +259,11 @@ test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audi
 	python3 tools/hashtest.py
 	sh tools/chesstest/run.sh
 	sh tools/maketest/run.sh
+	python3 tools/pathtest.py
 
 test-tls:    # HTTPS against local test servers (needs openssl)
 	sh tools/tlstest/run.sh
+	sh tools/pynettest/run.sh
 
 test: build/vibeos.img
 	python3 tools/vmtest.py smoke

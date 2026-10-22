@@ -275,7 +275,7 @@ rootfs doubles as its SDK: `/usr/include` (libc + gui headers), `/usr/lib/{crt1.
 `/usr/lib/tcc/{libtcc1.a,include}`. tcc output is a static ELF linked at the user base 0x40001000 (set by
 `user/bin/tcc/vibe.c`), which `load_elf` takes as is. See `third_party/tcc/README.vibeos`.
 `/bin/python` is the unmodified MicroPython 1.29 (`third_party/micropython`) plus `user/bin/python/` (config, HAL, main,
-the `vibe` module); the Makefile generates its qstr headers on the host with upstream's scripts, the filesystem is a VfsPosix
+the `vibe`, `gui`, `socket`, `select` and `_ssl` modules, each a C file over libgui/libc/libtls; `os.path` and `ssl` are Python in `root/lib/python`, `os` there is a package that re-exports the built-in one); the Makefile generates its qstr headers on the host with upstream's scripts, the filesystem is a VfsPosix
 mounted at `/`, and the GC heap grows from malloc on demand. See `third_party/micropython/README.vibeos`.
 
 `user/lib/regex.c` is the POSIX regex engine behind `grep`, `sed` and `awk` (`regcomp`/`regexec`, BRE and ERE plus the
