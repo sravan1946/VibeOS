@@ -219,6 +219,7 @@ test-host:   # host-side unit tests (libc, image codecs)
 	sh tools/imagetest/run.sh
 	sh tools/libctest/run.sh
 	python3 tools/hashtest.py
+	sh tools/chesstest/run.sh
 
 test-tls:    # HTTPS against local test servers (needs openssl)
 	sh tools/tlstest/run.sh

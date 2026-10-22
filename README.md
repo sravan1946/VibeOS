@@ -60,11 +60,11 @@ emulator, and a set of desktop apps and games.
 - `/bin/tcc`: TinyCC 0.9.27 compiles C inside VibeOS against its own libc (`tcc hello.c -o hello`, `tcc -run`, `-lgui` for windows); see `~/projects/README.txt`.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc` (`nc -l` listens; `wget` does https:// with certificate checks), and `httpd` — run it inside `make run` and open http://localhost:8080 on the host. Audio: `play` (WAV files), `midi` (Standard MIDI Files through an OPL3 FM synth; needs the Freedoom WAD for its instruments), `tone`.
-- GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + basic CSS, PNG/JPEG/GIF images, forms, find-in-page), Paint (saves/opens PNG), Image
+- GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + basic CSS, PNG/JPEG/GIF images, forms, find-in-page), Paint (saves/opens PNG), **Code** (a small IDE: project sidebar, tabs, C and Lua highlighting, find/replace, Build with tcc and Run with an output pane, click an error to jump to it), Image
   viewer (PNG/JPEG/GIF/BMP/PPM, animated GIFs, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
   Monitor, Settings, About, Piano (a polyphonic synth keyboard). PrtSc saves a PNG screenshot
   to `~/Pictures`.
-- Games: Snake, Tetris, Minesweeper, and **Doom** (doomgeneric + the BSD-licensed Freedoom, with sound effects and OPL3 FM music; `make doom-wad` fetches the game data).
+- Games: Snake, Tetris, Minesweeper, **Chess** against an alpha-beta AI, **2048** with animations, **Solitaire** (drag and drop), and **Doom** (doomgeneric + the BSD-licensed Freedoom, with sound effects and OPL3 FM music; `make doom-wad` fetches the game data).
 
 ## Building and running
 
@@ -91,7 +91,7 @@ python3 tools/vmtest.py smoke 'type:ls -l /bin\n' sleep:1 shot:build/ls.png
 
 `/etc/autostart` (in `root/etc/`, not committed) picks what the desktop opens at boot:
 `shell`, `term ARGV…` or `run ARGV…`. There are host-side tests for the ext2 driver
-(`tools/ext2test`, checked against `e2fsck`), the terminal emulator (`tools/termtest`), libc (`tools/libctest`) and the image codecs against Pillow (`tools/imagetest`, `make test-host`).
+(`tools/ext2test`, checked against `e2fsck`), the terminal emulator (`tools/termtest`), libc (`tools/libctest`) and the image codecs against Pillow (`tools/imagetest`) and the chess move generator (`tools/chesstest`, perft; both in `make test-host`).
 
 ## Layout
 
