@@ -62,8 +62,8 @@ static void hand(struct canvas *c, float cx, float cy, float ang, float len, flo
     gfx_line_aa(c, cx - s * tail, cy + co * tail, cx + s * len, cy - co * len, w, col);
 }
 
-static void draw_face(struct ui *ui, int cx, int cy, int r, double hh, double mm, double ss) {
-    struct canvas *c = ui->c;
+/* the dial (shadow, ticks, numerals) never changes: render it once per radius into a buffer */
+static void draw_dial(struct canvas *c, int cx, int cy, int r) {
     gfx_shadow(c, cx - r, cy - r, 2 * r, 2 * r, r, 14, 90);
     gfx_circle_fill(c, cx, cy, r, RGB(0x3A, 0x34, 0x58));
     gfx_circle_fill(c, cx, cy, r - 3, UI_PANEL);
@@ -81,6 +81,28 @@ static void draw_face(struct ui *ui, int cx, int cy, int r, double hh, double mm
         int px = cx + nx[i] * (r - 40) - tw / 2, py = cy + ny[i] * (r - 40) - font_ui_bold.height / 2;
         gfx_text(c, &font_ui_bold, px, py, num[i], UI_TEXT);
     }
+}
+
+static uint32_t *dial_buf;
+static int dial_r;
+#define DIAL_PAD 20
+
+static void draw_face(struct ui *ui, int cx, int cy, int r, double hh, double mm, double ss) {
+    struct canvas *c = ui->c;
+    int sz = 2 * (r + DIAL_PAD);
+    if (dial_r != r) {
+        free(dial_buf);
+        dial_buf = calloc(sz * sz, 4);
+        dial_r = r;
+        if (dial_buf) {
+            struct canvas dc;
+            canvas_init(&dc, dial_buf, sz, sz, sz);
+            gfx_fill(&dc, 0, 0, sz, sz, UI_BG);          /* tab background: lets us blit opaque */
+            draw_dial(&dc, r + DIAL_PAD, r + DIAL_PAD, r);
+        }
+    }
+    if (dial_buf) gfx_blit(c, cx - r - DIAL_PAD, cy - r - DIAL_PAD, dial_buf, sz, sz, sz);
+    else draw_dial(c, cx, cy, r);
     float cxf = cx, cyf = cy;
     hand(c, cxf + 2, cyf + 3, (float)(hh * M_PI / 6), r * 0.5f, 0, 6.0f, RGBA(0, 0, 0, 70));     /* soft shadows */
     hand(c, cxf + 2, cyf + 3, (float)(mm * M_PI / 30), r * 0.74f, 0, 4.5f, RGBA(0, 0, 0, 70));

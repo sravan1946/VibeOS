@@ -38,7 +38,7 @@ Newest notes at the bottom of each phase.
 - [x] Anti-aliased UI font baked at build time
 - [x] Terminal windows (multiple shells)
 - [ ] Window syscalls + userland GUI library
-- [ ] GUI apps: system monitor, paint, calculator, clock, file manager, text editor
+- [x] GUI apps: system monitor, paint, calculator, clock, file manager, text editor (`user/bin/{sysmon,paint,calc,clock,files,notepad}.c`)
 - [ ] Games
 
 ## Phase 3 — Polish
@@ -52,3 +52,4 @@ Newest notes at the bottom of each phase.
 - Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.
 - Phase 1 kernel: xv6-style scheduler (non-preemptive kernel, preemptive user mode, FPU state per task), per-process page directories with demand-grown stacks, `spawn`/`waitpid`/signals, 35 syscalls, VFS with mounts + `/dev` (null zero random tty kmsg) + `/proc` (meminfo uptime cpuinfo version processes), pipes, canonical/raw TTY with ^C/^D/^U, CMOS RTC. ATA PIO + read/write ext2 (agent, host-tested with e2fsck at 1k/2k/4k blocks). ANSI/xterm terminal emulator with 256/truecolor, scroll regions, alt screen, procedural box drawing (agent, host-tested).
 - Phase 2 desktop: in-kernel compositor with damage tracking, procedural aurora wallpaper, rounded windows with soft shadows and traffic-light buttons, drag/resize/maximise/minimise, taskbar with launcher, window list, CPU meter and clock (`/etc/tz`), vmmouse absolute pointer (no mouse grab in QEMU), terminal windows. First ring-3 program ran in a terminal window.
+- Phase 2 apps: six libgui apps (files, notepad, calc, clock, sysmon, paint) on the immediate-mode toolkit; ui.c gained ui_text_fit, ui_tabs, ui_tool, ui_vscroll, ui_id, ui_prompt, ui_confirm; vmtest.py gained `dclick`.
