@@ -232,6 +232,9 @@ allocator with segregated free lists. `/bin/lua` builds the unmodified Lua 5.4 f
 rootfs doubles as its SDK: `/usr/include` (libc + gui headers), `/usr/lib/{crt1.o,libc.a,libgui.a}`,
 `/usr/lib/tcc/{libtcc1.a,include}`. tcc output is a static ELF linked at the user base 0x40001000 (set by
 `user/bin/tcc/vibe.c`), which `load_elf` takes as is. See `third_party/tcc/README.vibeos`.
+`/bin/python` is the unmodified MicroPython 1.29 (`third_party/micropython`) plus `user/bin/python/` (config, HAL, main,
+the `vibe` module); the Makefile generates its qstr headers on the host with upstream's scripts, the filesystem is a VfsPosix
+mounted at `/`, and the GC heap grows from malloc on demand. See `third_party/micropython/README.vibeos`.
 
 `user/lib/regex.c` is the POSIX regex engine behind `grep`, `sed` and `awk` (`regcomp`/`regexec`, BRE and ERE plus the
 GNU `\| \+ \? \w \b \< \>` extensions, `REG_STARTEND` so callers can scan a buffer for successive matches without

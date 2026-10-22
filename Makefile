@@ -158,6 +158,32 @@ build/user/obj/music/music.o: UCFLAGS += -Ithird_party/nuked-opl3
 UEXTRA_doom += $(MUSIC_OBJ)
 UEXTRA_midi := $(MUSIC_OBJ)
 build/user/obj/bin/midi/%.o: UCFLAGS += -Iuser/music
+# MicroPython 1.29 (third_party/micropython, unmodified) + the port in user/bin/python/ (config, HAL, main). Its qstr,
+# module and root-pointer headers are generated on the host by upstream's scripts into build/python/genhdr.
+MPY := third_party/micropython
+MPY_SRC := $(wildcard $(MPY)/py/*.c) $(addprefix $(MPY)/,$(addprefix extmod/,modjson.c modre.c modrandom.c modtime.c \
+           modos.c modheapq.c modbinascii.c vfs.c vfs_posix.c vfs_posix_file.c vfs_reader.c) shared/readline/readline.c \
+           shared/runtime/pyexec.c shared/runtime/gchelper_generic.c shared/timeutils/timeutils.c)
+UEXTRA_python := $(patsubst %.c,build/user/obj/%.o,$(MPY_SRC))
+MPY_FLAGS := -I$(MPY) -Iuser/bin/python -Ibuild/python -I. -DNDEBUG -fexcess-precision=standard
+MPY_GEN := build/python/genhdr
+MPY_CPP := $(CC) -E $(filter-out -g -MMD -MP,$(UCFLAGS)) $(MPY_FLAGS)
+MPY_PORT_SRC := $(wildcard user/bin/python/*.c)
+$(MPY_GEN)/qstrdefs.generated.h: $(MPY_SRC) $(MPY_PORT_SRC) $(wildcard user/bin/python/*.h user/bin/python/*.inc $(MPY)/py/*.h)
+	@rm -rf $(MPY_GEN) && mkdir -p $(MPY_GEN)
+	MICROPY_GIT_TAG=v1.29.0 MICROPY_GIT_HASH=release python3 $(MPY)/py/makeversionhdr.py $(MPY_GEN)/mpversion.h
+	python3 $(MPY)/py/makeqstrdefs.py pp $(MPY_CPP) -DNO_QSTR output $(MPY_GEN)/qstr.i.last sources $(MPY_SRC) $(MPY_PORT_SRC)
+	@for m in qstr module root_pointer; do python3 $(MPY)/py/makeqstrdefs.py split $$m $(MPY_GEN)/qstr.i.last $(MPY_GEN)/$$m _ && \
+	  python3 $(MPY)/py/makeqstrdefs.py cat $$m _ $(MPY_GEN)/$$m $(MPY_GEN)/$$m.collected || exit 1; done
+	python3 $(MPY)/py/makemoduledefs.py $(MPY_GEN)/module.collected > $(MPY_GEN)/moduledefs.h
+	python3 $(MPY)/py/make_root_pointers.py $(MPY_GEN)/root_pointer.collected > $(MPY_GEN)/root_pointers.h
+	cat $(MPY)/py/qstrdefs.h $(MPY_GEN)/qstr.collected | sed 's/^Q(.*)/"&"/' | $(MPY_CPP) - | sed 's/^"\(Q(.*)\)"/\1/' > $(MPY_GEN)/qstrdefs.preprocessed.h
+	python3 $(MPY)/py/makeqstrdata.py $(MPY_GEN)/qstrdefs.preprocessed.h > $@.tmp && mv $@.tmp $@
+$(UEXTRA_python): build/user/obj/$(MPY)/%.o: $(MPY)/%.c $(MPY_GEN)/qstrdefs.generated.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) $(MPY_FLAGS) -w -c $< -o $@
+build/user/obj/bin/python/%.o: UCFLAGS += $(MPY_FLAGS)
+$(patsubst user/%.c,build/user/obj/%.o,$(MPY_PORT_SRC)): $(MPY_GEN)/qstrdefs.generated.h
 
 $(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
 

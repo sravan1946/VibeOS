@@ -49,3 +49,9 @@ gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -I
     -Dregcomp=vibe_regcomp -Dregexec=vibe_regexec -Dregfree=vibe_regfree -Dregerror=vibe_regerror -w -c user/lib/regex.c -o $T/regex64.o
 gcc -O2 -Wall tools/libctest/regex_diff.c $T/regex64.o -o $T/regex_diff
 $T/regex_diff
+echo "== compat2 libm differential test vs glibc (64-bit build of user/lib/compat2.c)"
+R=""
+for n in copysign nearbyint expm1 log1p asinh acosh atanh erf erfc tgamma lgamma nan fsync; do R="$R -D$n=vibe_$n"; done
+gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -Icommon $R -w -c user/lib/compat2.c -o $T/compat2_64.o
+gcc -O2 -Wall tools/libctest/compat2_diff.c $T/compat2_64.o -o $T/compat2_diff -lm
+$T/compat2_diff

@@ -30,3 +30,8 @@ double frexp(double x, int *e); double ldexp(double x, int e); double modf(doubl
 float sinf(float x); float cosf(float x); float sqrtf(float x); float fabsf(float x);
 float floorf(float x); float ceilf(float x); float powf(float x, float y);
 float atan2f(float y, float x); float fmodf(float x, float y); float roundf(float x);
+double copysign(double x, double y); double nearbyint(double x);
+double expm1(double x); double log1p(double x);
+double asinh(double x); double acosh(double x); double atanh(double x);
+double erf(double x); double erfc(double x); double tgamma(double x); double lgamma(double x);
+double nan(const char *tag);

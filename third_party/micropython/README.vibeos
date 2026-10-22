@@ -1,0 +1,38 @@
+MicroPython in VibeOS
+=====================
+
+Version : MicroPython 1.29.0
+Origin  : https://github.com/micropython/micropython/releases/download/v1.29.0/micropython-1.29.0.tar.xz
+SHA-256 : d925a7c664e79a2bdf3dfcb285ba5e2237041cc35a0bd4ee573b6c5711efeca0
+          (matches the digest GitHub lists for the release asset)
+Licence : MIT, see LICENSE here (README.md is upstream's)
+
+What is here, byte-for-byte from the tarball:
+- py/            the core: every .c, .h and the code generators (.py); not the .mk/.cmake build files
+- extmod/        only what /bin/python builds: modjson modre modrandom modtime modos modheapq modbinascii,
+                 vfs vfs_posix vfs_posix_file vfs_reader, and the headers they include
+- shared/        readline/, runtime/{pyexec,gchelper}*, timeutils/
+- lib/re1.5/     the regex engine modre.c #includes
+
+Nothing is modified. The VibeOS port lives in user/bin/python/:
+- mpconfigport.h  configuration (the "extra features" level minus threads, native emitters, hardware, sockets)
+- mphalport.h, mphal.c  stdio on fds 0/1 with a raw tty only while the REPL reads a line, ^C as SIGINT ->
+                  KeyboardInterrupt, ms clock, /dev/urandom
+- main.c          argument handling, the GC heap (1 MiB to start, grown on demand from malloc through
+                  MICROPY_GC_SPLIT_HEAP_AUTO), VfsPosix mounted at /, sys.path = ['', '/lib/python']
+- vibe_os.inc, vibe_time.inc  included by extmod/modos.c and modtime.c through their INCLUDEFILE hooks:
+                  getenv/putenv/system/errno, and time.time/gmtime/localtime/mktime/strftime through libc
+- modvibe.c       the `vibe` module (sysinfo ps beep uptime notify)
+
+How it is built (see the "MicroPython" block in the top-level Makefile)
+-----------------------------------------------------------------------
+- The generated headers (build/python/genhdr: mpversion.h, qstrdefs.generated.h, moduledefs.h, root_pointers.h)
+  are made on the host by upstream's own scripts in py/, with the same steps as py/mkrules.mk: preprocess every
+  source with -DNO_QSTR, split/cat the qstr, module and root-pointer markers, then makeqstrdata.py. ROM text
+  compression is off. The version comes from MICROPY_GIT_TAG=v1.29.0 (the vendored tree has no tags).
+- Upstream sources build with -w; the port files with the normal warnings.
+- libc grew copysign nearbyint expm1 log1p asinh acosh atanh erf erfc tgamma lgamma nan fsync for it
+  (user/lib/compat2.c, checked against glibc by tools/libctest).
+
+Upgrading: replace the directories above with the new release's files, update the version, URL and checksum
+here and MICROPY_GIT_TAG in the Makefile, run `make` and `python projects/pytest.py` in the VM.
