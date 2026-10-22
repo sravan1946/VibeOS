@@ -21,7 +21,7 @@ emulator, and a set of desktop apps and games.
 - Preemptive scheduling of user programs, ring 3, ELF loading, `spawn`/`waitpid`/signals,
   per-task FPU state, 45 syscalls (`common/abi.h`).
 - VFS with mounts: read/write **ext2** root filesystem on ATA, `/dev` (null zero random tty
-  kmsg clipboard dsp), `/proc` (meminfo uptime cpuinfo version processes), pipes, `poll()`.
+  kmsg clipboard notify dsp), `/proc` (meminfo uptime cpuinfo version processes), pipes, `poll()`.
 - TTY line discipline (canonical and raw modes, job control signals, window size).
 - **Networking**: PCI, Intel e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP, DHCP, DNS, and a TCP
   client, exposed as BSD-style socket fds.
@@ -31,8 +31,12 @@ emulator, and a set of desktop apps and games.
 **Desktop**
 - In-kernel compositor with damage tracking, soft shadows, rounded anti-aliased windows,
   window open animations, a procedural aurora wallpaper (5 themes).
-- Drag, resize, maximise, minimise, edge snapping and Super+arrow tiling, smart window
-  placement, Alt+Tab, a taskbar with launcher, CPU meter and clock, a desktop context menu.
+- Drag, resize, maximise (double-click the title bar), minimise, edge snapping and Super+arrow
+  tiling, smart window placement, a right-click window menu (always on top, move to workspace),
+  Super+drag to move from anywhere, a desktop context menu.
+- 4 virtual workspaces (Super+1..4, Super+Shift+1..4 to move a window), an Alt+Tab switcher with
+  live thumbnails, toast notifications and a notification center (Super+N; `notify TITLE BODY`,
+  `/dev/notify`), a taskbar with launcher, workspace dots, volume and network tray, CPU meter and clock.
 - An xterm-compatible terminal emulator (256 colours and truecolor, alternate screen, scroll
   regions, scrollback, UTF-8) with mouse selection; a system clipboard shared by every app.
 - Fonts (JetBrains Mono, Noto Sans) rasterised into the build with Latin-1, arrows, symbols

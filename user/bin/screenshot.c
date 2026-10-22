@@ -1,5 +1,5 @@
 /* screenshot [file] - save the composed screen (read from /dev/screen) as PNG; PrtSc runs this.
- * Default name: /home/Pictures/screenshot-N.png. Shows a short toast when run from the desktop. */
+ * Default name: /home/Pictures/screenshot-N.png. Posts a desktop notification when run from the desktop. */
 #include <gui.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,22 +8,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include "image.h"
-
-static void toast(const char *msg, bool bad) {
-    struct gui_window *w = gui_window_create("Screenshot", 360, 48, WIN_FLAG_FRAMELESS | WIN_FLAG_NORESIZE);
-    if (!w) return;
-    struct canvas *c = &w->cv;
-    gfx_fill(c, 0, 0, w->w, w->h, 0);
-    gfx_round_fill(c, 0, 0, w->w, w->h, 12, RGB(0x2A, 0x27, 0x3D));
-    gfx_round_rect(c, 0, 0, w->w, w->h, 12, RGBA(255, 255, 255, 50));
-    gfx_circle_fill(c, 24, 24, 6, bad ? RGB(0xFF, 0x5F, 0x7A) : RGB(0x4B, 0xE0, 0x8A));
-    struct canvas t = *c;
-    canvas_clip(&t, 40, 0, w->w - 52, w->h);
-    gfx_text(&t, &font_ui, 40, (w->h - font_ui.height) / 2, msg, RGB(0xED, 0xEB, 0xFF));
-    gui_flip(w);
-    usleep(1800000);
-    gui_window_destroy(w);
-}
 
 int main(int argc, char **argv) {
     int fd = open("/dev/screen", O_RDONLY);
@@ -54,7 +38,7 @@ int main(int argc, char **argv) {
     char msg[PATH_MAX + 32];
     snprintf(msg, sizeof msg, ok ? "Saved %s" : "Could not save %s", path);
     if (ok) puts(msg); else fprintf(stderr, "%s\n", msg);
-    if (!isatty(1)) toast(msg, !ok);
+    if (!isatty(1)) gui_notify(ok ? "Screenshot saved" : "Screenshot failed", path, ok ? "good" : "bad");
     free(px);
     return ok ? 0 : 1;
 }

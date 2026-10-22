@@ -59,6 +59,14 @@ Newest notes at the bottom of each phase.
 ## Lua
 - [x] Lua 5.4.9 (`third_party/lua`, unmodified) as `/bin/lua`: REPL with line editing + history, `lua script.lua args`, `-e`, `-`; `vibe` module (sysinfo ps beep sleep uptime listdir ...) and `gui` module (windows, drawing, events); `projects/luatest.lua` (183 checks, all pass), fib/mandelbrot/sysinfo/gui samples. libc grew hex-float `strtod`, `%a`, `freopen tmpfile tmpnam signal setlocale strcoll frexp ldexp modf`, ISO-week `strftime`, exact libm (<= 2 ulp vs glibc), and a binned O(1) `malloc` (the old one was quadratic: 100k-deep Lua recursion took 6.5 s, now 0.1 s); glibc differential tests for printf/strtod/libm in `tools/libctest`
 
+## Desktop
+- [x] 4 virtual workspaces: Super+1..4 switch, Super+Shift+1..4 move the focused window, Ctrl+Super+←/→ cycle; clickable numbers in the taskbar (a dot marks workspaces holding windows); the window list shows only the current workspace; 120 ms cross-fade between workspaces
+- [x] Alt+Tab switcher: overlay with live downscaled window thumbnails and titles, most recently used first; Tab / Shift+Tab (or arrows) cycle while Alt is held, release to focus, Esc cancels, click picks
+- [x] Notifications: kernel queue + toasts at the top right (accent bar, title, wrapped body, slide-in, 4 s auto-dismiss, click to dismiss); `/dev/notify` (`title\nbody[\nkind]`), `/bin/notify [-k good|warn|bad] TITLE [BODY]`, `gui_notify()` in libgui; notification center (click the clock or Super+N) with history, per-item dismiss, Clear all, scroll; unread dot by the clock; `/bin/screenshot` now posts a notification instead of its own toast window
+- [x] Window polish: double-click title bar maximises/restores, right-click title bar menu (minimise, maximise/restore, always on top, move to workspace N, close), Super+drag moves a window from anywhere
+- [x] Tray: volume icon (only with `/dev/mixer`; scroll to change) and network icon (lease state); click either for quick settings (volume slider + mute, IP)
+- [x] vmtest: `keydown:NAME` / `keyup:NAME` hold keys through QMP (Alt+Tab, Super+drag)
+
 ## Phase 3 — Polish
 - [x] Boot splash with progress (logo, gradient bar, live kprintf status, crossfade into desktop)
 - [x] RTC clock / date
@@ -96,3 +104,4 @@ Newest notes at the bottom of each phase.
 - Audio (2026-10-22): AC'97 driver + `/dev/dsp`, `play`, `tone`, Piano app. Verified in QEMU against the captured WAV (440/1000 Hz tones, arpeggio notes within 1 Hz, 8-bit/8 kHz stereo resampled to 1000 Hz). Fixed: `irq_register` replaced the previous handler, so the AC'97 card on IRQ 11 silently killed the e1000.
 - Images: PNG/BMP/PPM codecs in libgui (own inflate + PNG encoder, 222 host checks vs Pillow under sanitizers), `/bin/viewer`, PrtSc screenshots via `/dev/screen` + `/bin/screenshot`, PNG in Paint and Files. Fixed along the way: a float bilinear resampler took >1 s per 800x480 frame under QEMU (frames lagged input), now packed-integer lerp + row-copy at 1:1.
 - Merged the audio, Lua and image agents. A slow PrtSc led to the disk: writes ran at ~47 KB/s under KVM because `rep outsw` exits per word; reads were fine. DMA fixed it; e2fsck clean after a write-heavy session.
+- Desktop (2026-10-22): workspaces, Alt+Tab thumbnails, notifications (`/dev/notify`, toasts, center), window menu, Super+drag and a volume/network tray, all in `wm.c` and damage-tracked (idle stays at 1% CPU: indicators only damage their own rectangle, toast expiry and tray polling run on the 250 ms tick). Held modifiers needed QMP `input-send-event`, since HMP `sendkey` always releases.

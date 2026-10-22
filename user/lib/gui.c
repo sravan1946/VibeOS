@@ -2,6 +2,7 @@
 #include <syscall.h>
 #include <poll.h>
 #include <unistd.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -70,6 +71,15 @@ int gui_resize(struct gui_window *win, int w, int h) {
 int gui_clip_set(const char *s, int n) {
     int fd = open("/dev/clipboard", O_WRONLY | O_TRUNC), r = -1;
     if (fd >= 0) { r = write(fd, s, n) == n ? 0 : -1; close(fd); }
+    return r;
+}
+
+int gui_notify(const char *title, const char *body, const char *kind) {
+    char m[256];
+    int n = snprintf(m, sizeof m, "%s\n%s\n%s", title, body ? body : "", kind ? kind : ""), r = -1;
+    if (n >= (int)sizeof m) n = sizeof m - 1;
+    int fd = open("/dev/notify", O_WRONLY);
+    if (fd >= 0) { r = write(fd, m, n) == n ? 0 : -1; close(fd); }
     return r;
 }
 

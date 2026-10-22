@@ -25,3 +25,7 @@ int gui_resize(struct gui_window *win, int w, int h);
 /* system clipboard (/dev/clipboard, shared with terminal windows) */
 int   gui_clip_set(const char *s, int n);   /* 0 or -1 */
 char *gui_clip_get(int *n);                 /* malloc'd, NUL-terminated; NULL if empty */
+
+/* desktop notification (/dev/notify): a toast plus an entry in the notification center.
+ * kind: NULL (accent), "good", "warn" or "bad". 0 or -1. */
+int gui_notify(const char *title, const char *body, const char *kind);

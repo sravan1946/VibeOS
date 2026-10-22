@@ -54,6 +54,12 @@ static void set_vol(int v) {
     outw(nam + 0x18, 0x0808);                       /* PCM out 0 dB */
 }
 
+int ac97_volume(int set) {
+    if (!nam) return -1;
+    if (set >= 0) set_vol(set);
+    return vol;
+}
+
 static int queued(void) {
     uint32_t f = irq_save();
     reap();

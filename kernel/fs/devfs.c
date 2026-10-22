@@ -7,6 +7,7 @@ extern size_t klog_read(char *buf, size_t off, size_t n);
 extern size_t klog_size(void);
 extern const char *cpu_brand(void);
 extern int wm_screen_read(uint32_t off, void *buf, uint32_t n);
+extern void wm_notify(const char *msg, int n);
 
 /* ---- tiny static directory helper ---- */
 struct sdir { struct vnode vn; struct snode *nodes; int n; };
@@ -57,6 +58,7 @@ static int random_read(struct vnode *v, uint32_t off, void *b, uint32_t n) {
 }
 static int kmsg_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { return klog_read(b, off, n); }
 static int screen_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { return wm_screen_read(off, b, n); }
+static int notify_write(struct vnode *v, uint32_t off, const void *b, uint32_t n) { wm_notify(b, n); return n; }
 static int always_ready(struct vnode *v, int ev) { return ev & (POLLIN | POLLOUT); }
 
 static const struct vnode_ops null_ops = { .read = null_read, .write = sink_write, .poll = always_ready };
@@ -64,6 +66,7 @@ static const struct vnode_ops zero_ops = { .read = zero_read, .write = sink_writ
 static const struct vnode_ops random_ops = { .read = random_read, .write = sink_write, .poll = always_ready };
 static const struct vnode_ops kmsg_ops = { .read = kmsg_read, .poll = always_ready };
 static const struct vnode_ops screen_ops = { .read = screen_read, .poll = always_ready };
+static const struct vnode_ops notify_ops = { .write = notify_write, .poll = always_ready };
 static const struct vnode_ops tty_placeholder_ops = { 0 };
 
 /* /dev/clipboard: one shared buffer, a regular file so offsets advance; O_TRUNC + write replaces it */
@@ -102,6 +105,7 @@ static struct snode dev_nodes[] = {
     CHR("urandom", random_ops, 5), CHR("tty", tty_placeholder_ops, 6), CHR("kmsg", kmsg_ops, 7),
     { "screen", { .mode = S_IFREG | 0444, .ino = 11, .refs = 1, .ops = &screen_ops } },   /* REG so the offset advances */
     { "clipboard", { .mode = S_IFREG | 0666, .ino = 10, .refs = 1, .ops = &clip_ops } },
+    CHR("notify", notify_ops, 12),
     CHR("dsp", ac97_ops, 8), CHR("mixer", ac97_ops, 9),      /* listed only once ac97_init succeeds */
 };
 static struct sdir devdir = { { .mode = S_IFDIR | 0755, .ino = 1, .refs = 1, .ops = &sdir_ops }, dev_nodes, ARRAY_LEN(dev_nodes) - 2 };

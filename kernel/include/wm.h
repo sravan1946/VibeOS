@@ -6,6 +6,7 @@
 #define WM_TITLE_H   34
 #define WM_RADIUS    10
 #define WM_TASKBAR_H 44
+#define WM_WS        4
 
 struct window {
     int id;
@@ -21,7 +22,8 @@ struct window {
     struct vnode vn;                /* user windows: the fd's node */
     struct gui_event q[128];
     uint32_t qh, qt;
-    bool minimized, maximized, visible;
+    bool minimized, maximized, visible, topmost;
+    int ws;                         /* workspace 0..WM_WS-1, -1 = on all (toasts) */
     struct rect restore;
     /* kernel-side windows (terminals) */
     void (*on_event)(struct window *w, const struct gui_event *ev);
@@ -43,6 +45,7 @@ void wm_focus(struct window *w);
 struct window *wm_focused(void);
 void wm_post(struct window *w, const struct gui_event *ev);   /* queue for a user window */
 int  wm_spawn_app(const char *path, const char *arg);
+void wm_notify(const char *msg, int n);                       /* "title\nbody[\nkind]", from /dev/notify */
 
 /* gui/termwin.c */
 struct window *termwin_open(const char *cmd);              /* NULL = interactive shell */
