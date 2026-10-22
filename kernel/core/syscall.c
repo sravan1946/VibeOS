@@ -318,7 +318,7 @@ static void syscall_handler(struct regs *r) {
     case SYS_getpid:   ret = current->pid; break;
     case SYS_getppid:  ret = current->ppid; break;
     case SYS_sbrk:     ret = sys_sbrk(a); break;
-    case SYS_sleep:    sleep_ms(a); ret = current->pending_sig ? -EINTR : 0; break;
+    case SYS_sleep:    sleep_ms(a); ret = sig_deliverable(current) ? -EINTR : 0; break;
     case SYS_uptime:   ret = (uint32_t)ticks_ms; break;
     case SYS_time:     ret = rtc_now(); break;
     case SYS_kill:     ret = proc_kill(a, b); break;
@@ -340,6 +340,9 @@ static void syscall_handler(struct regs *r) {
     case SYS_beep:     ret = sys_beep(a, b); break;
     case SYS_shutdown: sys_shutdown(a);
     case SYS_klog:     ret = sys_klog((char *)a, b); break;
+    case SYS_sigaction:   ret = proc_sigaction(a, b, c); break;
+    case SYS_sigreturn:   proc_sigreturn(r); cli(); return;      /* eax is the interrupted code's */
+    case SYS_sigprocmask: ret = proc_sigprocmask(a, b); break;
     case SYS_socket: case SYS_connect: case SYS_bind: case SYS_sendto: case SYS_recvfrom:
     case SYS_resolve: case SYS_netinfo:
                        ret = net_syscall(r->eax, a, b, c, d, e); break;

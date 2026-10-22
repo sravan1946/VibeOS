@@ -52,6 +52,9 @@ enum {
     SYS_recvfrom,     /* (int fd, void *buf, uint32 n, int flags, struct sockaddr_in *from or NULL); MSG_DONTWAIT */
     SYS_resolve,      /* (const char *name, uint32 *ip_be) -> 0 / -errno; also accepts dotted quads */
     SYS_netinfo,      /* (struct netinfo *ni) */
+    SYS_sigaction = 70, /* (int sig, uintptr handler, uintptr restorer) -> old handler (SIG_DFL 0, SIG_IGN 1) */
+    SYS_sigreturn,    /* () from the restorer: resume what the handler interrupted */
+    SYS_sigprocmask,  /* (int how, uint32 set) -> old mask; SIG_BLOCK 0 / SIG_UNBLOCK 1 / SIG_SETMASK 2, bit n = signal n */
     SYS_MAX
 };
 
@@ -125,10 +128,24 @@ struct spawn_opts {
 };
 #define SPAWN_NEWTTY 1    /* reserved */
 
-/* signals (all fatal for now except SIGCHLD) */
-#define SIGINT  2
-#define SIGKILL 9
-#define SIGTERM 15
+/* signals: the default action terminates (exit code 128 + n) except for SIGCHLD and SIGWINCH;
+ * a handler runs on the user stack and returns through its restorer (SYS_sigreturn) */
+#define SIGHUP   1
+#define SIGINT   2
+#define SIGQUIT  3
+#define SIGILL   4
+#define SIGABRT  6
+#define SIGFPE   8
+#define SIGKILL  9
+#define SIGUSR1  10
+#define SIGSEGV  11
+#define SIGUSR2  12
+#define SIGPIPE  13
+#define SIGALRM  14
+#define SIGTERM  15
+#define SIGCHLD  17
+#define SIGWINCH 28
+#define NSIG     32
 
 /* poll */
 #define POLLIN  1

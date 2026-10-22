@@ -203,14 +203,6 @@ void exit(int code) {
     _exit(code);
 }
 
-sighandler_t signal(int sig, sighandler_t h) {          /* ponytail: no delivery; the kernel kills on SIGINT */
-    static sighandler_t cur[32];
-    if (sig < 1 || sig > 31 || sig == SIGKILL) { errno = EINVAL; return SIG_ERR; }
-    sighandler_t old = cur[sig];
-    cur[sig] = h;
-    return old;
-}
-
 void abort(void) {
     fflush(NULL);
     kill(getpid(), SIGKILL);

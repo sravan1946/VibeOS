@@ -19,7 +19,8 @@ emulator, and a set of desktop apps and games.
 - Paging with a separate address space per process, physical frame bitmap, kernel heap,
   demand-grown user stacks.
 - Preemptive scheduling of user programs, ring 3, ELF loading, `spawn`/`waitpid`/signals,
-  per-task FPU state, 45 syscalls (`common/abi.h`).
+  per-task FPU state, POSIX-style signal handlers (masks, `sigreturn`, SIGCHLD/SIGWINCH),
+  ~50 syscalls (`common/abi.h`).
 - VFS with mounts: read/write **ext2** root filesystem on ATA, `/dev` (null zero random tty
   kmsg clipboard dsp), `/proc` (meminfo uptime cpuinfo version processes), pipes, `poll()`.
 - TTY line discipline (canonical and raw modes, job control signals, window size).

@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <signal.h>
 #include "sh.h"
 
 /* ---- command lookup ---- */
@@ -424,6 +425,7 @@ static int bi_help(int argc, char **argv) {
         { "return  break  continue", "leave function / loop [n]" },
         { "wait [pid]  jobs", "wait for / list background jobs" },
         { "history [-c|N]", "show / clear the history" },
+        { "trap [cmd] SIG...", "run cmd on a signal (INT TERM HUP USR1 USR2 EXIT ...); '' ignores, - resets" },
         { "true false : exit clear", "" },
     };
     for (unsigned i = 0; i < sizeof h / sizeof h[0]; i++) printf("  %s%-24s%s %s\n", b, h[i][0], r, h[i][1]);
@@ -503,6 +505,69 @@ static int bi_break(int argc, char **argv) {
     return 0;
 }
 
+/* ---- trap: handlers only note the signal; run_traps() runs the commands between commands ---- */
+static char *traps[NSIG];                         /* [0] = EXIT; "" = ignore */
+volatile uint32_t g_trap_pending;
+static const char *const signames[NSIG] = {
+    [0] = "EXIT", [SIGHUP] = "HUP", [SIGINT] = "INT", [SIGQUIT] = "QUIT", [SIGUSR1] = "USR1", [SIGUSR2] = "USR2",
+    [SIGPIPE] = "PIPE", [SIGALRM] = "ALRM", [SIGTERM] = "TERM", [SIGCHLD] = "CHLD", [SIGWINCH] = "WINCH",
+};
+
+static int signum(const char *s) {
+    if (isdigit((unsigned char)*s)) { int n = atoi(s); return n < NSIG ? n : -1; }
+    if (!strncasecmp(s, "SIG", 3)) s += 3;
+    for (int i = 0; i < NSIG; i++) if (signames[i] && !strcasecmp(s, signames[i])) return i;
+    return -1;
+}
+
+static void on_trap(int sig) { g_trap_pending |= 1u << sig; }
+int trap_set(int sig) { return traps[sig] != NULL; }
+void trap_raise(int sig) { g_trap_pending |= 1u << sig; }
+
+void run_traps(void) {
+    static int busy;
+    if (busy) return;
+    busy = 1;
+    while (g_trap_pending) {
+        int sig = __builtin_ctz(g_trap_pending);
+        g_trap_pending &= ~(1u << sig);
+        if (traps[sig] && *traps[sig]) { int st = g_status; run_lines(traps[sig]); g_status = st; }
+    }
+    busy = 0;
+}
+
+static void exit_trap(void) {
+    char *t = traps[0];
+    traps[0] = NULL;
+    if (t && *t) run_lines(t);
+}
+
+static int bi_trap(int argc, char **argv) {
+    if (argc == 1) {
+        for (int i = 0; i < NSIG; i++) if (traps[i]) {
+            char num[8];
+            snprintf(num, sizeof num, "%d", i);
+            printf("trap -- '%s' %s\n", traps[i], signames[i] ? signames[i] : num);
+        }
+        return 0;
+    }
+    int i = 1 + !strcmp(argv[1], "--");
+    if (i >= argc) return 0;
+    const char *act = argv[i];
+    int reset = !strcmp(act, "-") || isdigit((unsigned char)*act);   /* "trap N..." resets too */
+    if (!isdigit((unsigned char)*act)) i++;
+    int rc = 0;
+    for (; i < argc; i++) {
+        int s = signum(argv[i]);
+        if (s < 0 || s == SIGKILL) { fprintf(stderr, "trap: %s: bad signal\n", argv[i]); rc = 1; continue; }
+        free(traps[s]);
+        traps[s] = reset ? NULL : strdup(act);
+        if (s == 0) { static int reg; if (!reg++) atexit(exit_trap); }
+        else signal(s, reset ? SIG_DFL : *act ? on_trap : SIG_IGN);
+    }
+    return rc;
+}
+
 static const struct { const char *name; int (*fn)(int, char **); } bt[] = {
     { "cd", bi_cd }, { "pwd", bi_pwd }, { "exit", bi_exit }, { "export", bi_export }, { "unset", bi_unset },
     { "env", bi_env }, { "history", bi_history }, { "help", bi_help }, { "source", bi_source }, { ".", bi_source },
@@ -511,6 +576,7 @@ static const struct { const char *name; int (*fn)(int, char **); } bt[] = {
     { "read", bi_read }, { "shift", bi_shift }, { "set", bi_set }, { "eval", bi_eval }, { "exec", bi_exec },
     { "type", bi_type }, { "alias", bi_alias }, { "unalias", bi_unalias }, { "wait", bi_wait },
     { "local", bi_local }, { "return", bi_return }, { "break", bi_break }, { "continue", bi_break },
+    { "trap", bi_trap },
 };
 #define NBT ((int)(sizeof bt / sizeof bt[0]))
 

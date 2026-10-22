@@ -60,8 +60,15 @@ and two font files that are baked into C arrays at build time.
 * There's no `fork`: processes are created with `spawn(path, argv, envp, opts)` where `opts`
   carries the child's stdin/stdout/stderr, cwd and flags. ELF32 executables are linked at
   `0x40001000` (`user/user.ld`), and argv/envp land on the stack in the Linux i386 layout.
-* Signals are minimal: a pending signal is delivered on the way back to user mode as an exit
-  with status `128 + sig`. The TTY sends `SIGINT` to its foreground process on `^C`.
+* Signals are checked on the way back to ring 3 (`sched_irq_exit`). Each task has a pending and
+  a blocked mask and a disposition per signal. A handler runs on the user stack: the kernel
+  pushes a frame (the libc restorer as return address, the signal number, the interrupted
+  registers, the blocked mask and the `fnsave`d x87 state), and `SYS_sigreturn` from the
+  restorer puts it all back. The signal is blocked while its handler runs; blocking syscalls
+  fail with `EINTR`. The default action is exit with `128 + sig`, except for SIGCHLD and SIGWINCH,
+  which are ignored. The TTY sends `SIGINT` to its foreground process on `^C` and SIGWINCH on
+  resize, and a child's exit sends SIGCHLD to its parent. Ignored signals stay ignored across
+  `spawn`, as they would across exec. `/bin/sigtest` checks it all.
 
 ## Syscalls
 

@@ -69,6 +69,10 @@ int run_reader(char *(*next)(void *ctx, int cont), void *ctx);   /* next() -> ma
 char *cmdsub(const char *text);                  /* $(...) : output with trailing newlines stripped */
 int spawn_sh(const char *text, int fds[3], int *pid);   /* child "sh -c text" carrying our state */
 int wait_pid(int pid);                           /* status, EINTR-safe */
+extern volatile uint32_t g_trap_pending;         /* signals whose trap hasn't run yet */
+void run_traps(void);
+int  trap_set(int sig);                          /* a trap (or ignore) is installed */
+void trap_raise(int sig);
 int call_function(const char *name, int argc, char **argv, int *found);
 int fn_define(const char *name, const char *src);
 int fn_exists(const char *name);

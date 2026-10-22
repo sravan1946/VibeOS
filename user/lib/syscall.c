@@ -61,6 +61,40 @@ time_t time(time_t *t) {
 }
 int kill(pid_t pid, int sig) { return __sysret(__syscall2(SYS_kill, pid, sig)); }
 int raise(int sig) { return kill(getpid(), sig); }
+
+/* handlers return here; the kernel saved the interrupted context just above */
+__attribute__((naked)) static void sig_restore(void) { __asm__ volatile("mov %0, %%eax; int $0x80" :: "i"(SYS_sigreturn)); }
+
+sighandler_t signal(int sig, sighandler_t h) {
+    int r = __syscall3(SYS_sigaction, sig, P(h), P(sig_restore));
+    if (r < 0 && r > -4096) { errno = -r; return SIG_ERR; }
+    return (sighandler_t)(uintptr_t)r;
+}
+
+int sigaction(int sig, const struct sigaction *sa, struct sigaction *old) {
+    sighandler_t prev;
+    if (sa) {
+        if ((prev = signal(sig, sa->sa_handler)) == SIG_ERR) return -1;
+    } else {                                              /* query: set and put back */
+        if ((prev = signal(sig, SIG_DFL)) == SIG_ERR) return -1;
+        signal(sig, prev);
+    }
+    if (old) { old->sa_handler = prev; old->sa_mask = 0; old->sa_flags = 0; }
+    return 0;
+}
+
+int sigprocmask(int how, const sigset_t *set, sigset_t *old) {
+    if (how < SIG_BLOCK || how > SIG_SETMASK) { errno = EINVAL; return -1; }
+    uint32_t r = __syscall2(SYS_sigprocmask, set ? how : SIG_BLOCK, set ? *set : 0);   /* the raw mask, never an error */
+    if (old) *old = r;
+    return 0;
+}
+
+int sigemptyset(sigset_t *s) { *s = 0; return 0; }
+int sigfillset(sigset_t *s) { *s = ~1u; return 0; }
+int sigaddset(sigset_t *s, int n) { if (n < 1 || n >= NSIG) { errno = EINVAL; return -1; } *s |= 1u << n; return 0; }
+int sigdelset(sigset_t *s, int n) { if (n < 1 || n >= NSIG) { errno = EINVAL; return -1; } *s &= ~(1u << n); return 0; }
+int sigismember(const sigset_t *s, int n) { return n > 0 && n < NSIG && (*s >> n & 1); }
 int pipe(int fds[2]) { return __sysret(__syscall1(SYS_pipe, P(fds))); }
 int dup(int fd) { return __sysret(__syscall1(SYS_dup, fd)); }
 int dup2(int old, int new_) { return __sysret(__syscall2(SYS_dup2, old, new_)); }

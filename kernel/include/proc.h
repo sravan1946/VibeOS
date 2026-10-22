@@ -23,7 +23,9 @@ struct task {
     void *chan;                   /* sleeping on */
     uint64_t wake_at;             /* timed sleep deadline (0 = none) */
     int exit_code;
-    int pending_sig;
+    uint32_t sig_pending, sig_blocked;   /* bit n = signal n */
+    uint32_t sig_handler[NSIG];   /* 0 default, 1 ignore, else a user address */
+    uint32_t sig_restorer;
     bool orphan;                  /* no parent will reap it */
     uint32_t cpu_ms;
     struct task *next;            /* all-tasks list */
@@ -53,6 +55,12 @@ int  proc_spawn_ex(const char *path, char *const argv[], char *const envp[], con
 NORETURN void proc_exit(int code);
 int  proc_wait(int pid, int *status, int flags);
 int  proc_kill(int pid, int sig);
+/* a signal that will interrupt this task (pending and not blocked; SIGKILL can't be blocked) */
+static inline uint32_t sig_deliverable(struct task *t) { return t->sig_pending & ~(t->sig_blocked & ~(1u << SIGKILL)); }
+void proc_deliver_signals(struct regs *r);   /* on the way back to ring 3 */
+void proc_sigreturn(struct regs *r);
+int  proc_sigaction(int sig, uint32_t handler, uint32_t restorer);
+int  proc_sigprocmask(int how, uint32_t set);
 int  fd_alloc(struct file *f);                     /* in current; -EMFILE */
 struct file *fd_get(int fd);
 void proc_reap_orphans(void);

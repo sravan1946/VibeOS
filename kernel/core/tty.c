@@ -167,7 +167,11 @@ struct tty *tty_create(void (*out)(void *ctx, const char *s, int n), void *ctx, 
 }
 
 void tty_set_winsize(struct tty *t, int cols, int rows, int pw, int ph) {
+    bool changed = t->ws.ws_row != rows || t->ws.ws_col != cols;
     t->ws = (struct winsize){ rows, cols, pw, ph };
+    if (changed)
+        for (struct task *p = task_list(); p; p = p->next)
+            if (p->tty == t && p->user && p->state != PS_ZOMBIE) proc_kill(p->pid, SIGWINCH);
 }
 
 void tty_hangup(struct tty *t) {

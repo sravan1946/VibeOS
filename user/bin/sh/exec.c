@@ -446,7 +446,10 @@ static int run_pipeline(struct node **sn, int ns, int bg) {
         }
         set_fg(getpid());
         last = killed ? 128 + SIGINT : st[ns - 1].st;
-        if (last == 128 + SIGINT && !g_interactive) { fflush(stdout); exit(last); }   /* ^C aborts scripts */
+        if (last == 128 + SIGINT && !g_interactive) {                   /* ^C aborts scripts, unless trapped */
+            if (trap_set(SIGINT)) trap_raise(SIGINT);
+            else { fflush(stdout); exit(last); }
+        }
     }
     for (int i = 0; i < ns; i++) free_stage(&st[i]);
     leaf_done(last);
@@ -561,6 +564,7 @@ int run_node(struct node *n) {
     case N_FUNC: g_status = fn_define(n->s, n->src); break;
     default: g_status = n->rd ? run_redirected(n) : run_body(n);
     }
+    if (g_trap_pending) run_traps();
     return g_status;
 }
 

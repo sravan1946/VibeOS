@@ -140,6 +140,8 @@ int proc_spawn_ex(const char *path, char *const argv[], char *const envp[], cons
     t->dir = dir;
     t->brk_start = t->brk = end;
     t->tty = tty;
+    for (int i = 1; i < NSIG; i++)                       /* like exec: ignored stays ignored */
+        if (current->sig_handler[i] == 1) t->sig_handler[i] = 1;
     char cw[PATH_MAX];
     if (cwd && vfs_canon(current->cwd, cwd, cw, sizeof cw) >= 0) strlcpy(t->cwd, cw, sizeof t->cwd);
     else strlcpy(t->cwd, current->cwd, sizeof t->cwd);
@@ -176,6 +178,7 @@ NORETURN void proc_exit(int code) {
     if (t->tty) tty_proc_exited(t->tty, t->pid);
     t->state = PS_ZOMBIE;
     if (parent) wakeup(parent);
+    if (parent && parent->user && parent->state != PS_ZOMBIE) proc_kill(parent->pid, SIGCHLD);
     schedule();
     panic("zombie %d scheduled", t->pid);
 }
@@ -212,14 +215,94 @@ int proc_wait(int pid, int *status, int flags) {
     }
 }
 
+/* ---- signals ---- */
+
+#define SIG_IGN_ 1
+static bool ignored(struct task *t, int sig) {
+    uint32_t h = t->sig_handler[sig];
+    return sig != SIGKILL && (h == SIG_IGN_ || (!h && (sig == SIGCHLD || sig == SIGWINCH)));
+}
+
 int proc_kill(int pid, int sig) {
     struct task *t = task_find(pid);
     if (!t || pid == 0 || t->state == PS_ZOMBIE) return -ESRCH;
     if (!t->user) return -EPERM;
-    if (sig == 0) return 0;
-    t->pending_sig = sig;
-    if (t->state == PS_BLOCKED) t->state = PS_READY;
+    if (sig < 0 || sig >= NSIG) return -EINVAL;
+    if (sig == 0 || ignored(t, sig)) return 0;
+    t->sig_pending |= 1u << sig;
+    if (t->state == PS_BLOCKED && sig_deliverable(t)) t->state = PS_READY;
     return 0;
+}
+
+int proc_sigaction(int sig, uint32_t handler, uint32_t restorer) {
+    if (sig < 1 || sig >= NSIG || sig == SIGKILL) return -EINVAL;
+    if (handler > SIG_IGN_ && !vmm_user_ok(current->dir, handler, 1, false)) return -EFAULT;
+    uint32_t old = current->sig_handler[sig];
+    current->sig_handler[sig] = handler;
+    if (restorer) current->sig_restorer = restorer;
+    if (ignored(current, sig)) current->sig_pending &= ~(1u << sig);
+    return old;
+}
+
+int proc_sigprocmask(int how, uint32_t set) {
+    uint32_t old = current->sig_blocked;
+    set &= ~(1u << SIGKILL | 1);
+    if (how == 0) current->sig_blocked |= set;
+    else if (how == 1) current->sig_blocked &= ~set;
+    else if (how == 2) current->sig_blocked = set;
+    else return -EINVAL;
+    return old;
+}
+
+/* what a handler sees below its return address and argument; sigreturn puts it all back */
+struct sigframe {
+    uint32_t ret, sig;
+    uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp, eip, eflags, mask;
+    uint8_t fpu[108];
+};
+
+/* map any missing stack pages under [va, va+len): the frame may land below the deepest page so far */
+static bool stack_ok(uint32_t va, uint32_t len) {
+    if (va < USER_STACK_TOP - STACK_MAX || va + len > USER_STACK_TOP) return false;
+    return vmm_alloc_range(current->dir, ALIGN_DOWN(va, PAGE_SIZE), va + len - ALIGN_DOWN(va, PAGE_SIZE), PTE_U | PTE_W) == 0;
+}
+
+void proc_deliver_signals(struct regs *r) {
+    struct task *t = current;
+    uint32_t m;
+    while ((m = sig_deliverable(t))) {
+        int sig = __builtin_ctz(m);
+        t->sig_pending &= ~(1u << sig);
+        uint32_t h = t->sig_handler[sig];
+        if (ignored(t, sig)) continue;
+        if (!h || sig == SIGKILL || !t->sig_restorer) proc_exit(128 + sig);
+        struct sigframe f = { t->sig_restorer, sig, r->eax, r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp,
+                              r->useresp, r->eip, r->eflags, t->sig_blocked };
+        uint8_t fpu[108] __attribute__((aligned(16)));
+        __asm__ volatile("fnsave %0" : "=m"(fpu));       /* also resets the FPU for the handler */
+        memcpy(f.fpu, fpu, sizeof fpu);
+        uint32_t sp = ((r->useresp - sizeof f) & ~15u) - 4;   /* &f.sig 16-aligned, like after a call */
+        if (!vmm_user_ok(t->dir, sp, sizeof f, true) && !stack_ok(sp, sizeof f)) proc_exit(128 + SIGSEGV);
+        memcpy((void *)sp, &f, sizeof f);
+        t->sig_blocked |= 1u << sig;                     /* no re-entry until it returns */
+        r->useresp = sp;
+        r->eip = h;
+        return;
+    }
+}
+
+void proc_sigreturn(struct regs *r) {
+    uint32_t sp = r->useresp - 4;                        /* the handler's ret popped f.ret */
+    if (!vmm_user_ok(current->dir, sp, sizeof(struct sigframe), false)) proc_exit(128 + SIGSEGV);
+    struct sigframe f;
+    memcpy(&f, (void *)sp, sizeof f);
+    r->eax = f.eax; r->ebx = f.ebx; r->ecx = f.ecx; r->edx = f.edx;
+    r->esi = f.esi; r->edi = f.edi; r->ebp = f.ebp; r->useresp = f.esp; r->eip = f.eip;
+    r->eflags = (f.eflags & 0xCD5) | 0x202;              /* arithmetic flags + DF only; IF on, IOPL 0 */
+    current->sig_blocked = f.mask & ~(1u << SIGKILL);
+    uint8_t fpu[108] __attribute__((aligned(16)));
+    memcpy(fpu, f.fpu, sizeof fpu);
+    __asm__ volatile("frstor %0" :: "m"(fpu));
 }
 
 int fd_alloc(struct file *f) {

@@ -70,6 +70,7 @@ Newest notes at the bottom of each phase.
 - [x] QEMU uses KVM when available (`make run` and vmtest; falls back to TCG): demo.sh 3.5 s → 0.3 s
 - [x] System clipboard `/dev/clipboard`: drag-select in terminals copies, Ctrl+Shift+C/V and middle-click; Notepad and text boxes share it; `cat`/`tee` work on it
 - [x] ATA bus-master DMA (PIIX IDE, 64 KiB bounce buffer; PIO fallback), halting on the IRQ while busy: under KVM every PIO-written word trapped to the host (~2 ms/sector); copying 541 KB 11.5 s → 0.6 s, PrtSc screenshots now save in ~1 s
+- [x] Signal handlers: `signal`/`sigaction`/`sigprocmask`, frames on the user stack with saved x87 state, `sigreturn`, EINTR, SIGCHLD/SIGWINCH; `trap` in sh (EXIT, INT in scripts); Ctrl-C now interrupts Lua scripts instead of killing lua (`sigtest` 13/13, shtest 169/169)
 
 - [x] Images: `user/lib/image.c` (libgui) — from-scratch zlib inflate, PNG decoder (all colour types, depths 1-16, all filters, Adam7, tRNS), BMP 24/32 and binary PPM/PGM, PNG encoder (LZ77 + fixed Huffman, valid CRC/Adler), area-average/bilinear resampler; host-tested against Pillow under ASan/UBSan (`tools/imagetest`, `make test-host`)
 - [x] Viewer app (`/bin/viewer`): fit-to-window, smooth zoom (wheel, +/-), drag to pan, 1:1, arrow keys browse the folder, checkerboard behind transparency; Files opens .png/.bmp/.ppm in it; launcher entry "Photos" opens ~/Pictures

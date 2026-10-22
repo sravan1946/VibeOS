@@ -321,6 +321,17 @@ sum=0; i=1
 while [ $i -le 200 ]; do sum=$((sum + i)); i=$((i + 1)); done
 t loop-200 20100 $sum
 
+# ---- trap (kernel signal handlers)
+t trap-exit "body
+bye" "$(sh -c 'trap "echo bye" EXIT; echo body')"
+t trap-usr1 "got usr1
+0" "$(sh -c 'trap "echo got usr1" USR1; kill -USR1 $$; echo $?' 2>&1)"
+t trap-keeps-status 0 "$(sh -c 'trap "false" USR1; kill -USR1 $$; echo $?')"
+t trap-ignore alive "$(sh -c 'trap "" TERM; kill -TERM $$; echo alive')"
+t trap-reset 143 "$(sh -c 'trap "echo no" TERM; trap - TERM; kill -TERM $$; echo still'; echo $?)"
+t trap-list "trap -- 'echo x' INT" "$(sh -c 'trap "echo x" INT; trap')"
+t trap-default-kill 138 "$(sh -c 'kill -USR1 $$; echo survived'; echo $?)"
+
 rm -rf $TMP
 echo
 echo "== $pass passed, $fail failed =="

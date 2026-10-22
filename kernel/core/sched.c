@@ -143,14 +143,14 @@ void schedule(void) {
 void yield(void) { schedule(); }
 
 int sleep_on(void *chan, uint32_t timeout_ms) {
-    if (current->pending_sig) return -EINTR;
+    if (sig_deliverable(current)) return -EINTR;
     current->chan = chan;
     current->wake_at = timeout_ms ? ticks_ms + timeout_ms : 0;
     current->state = PS_BLOCKED;
     schedule();
     current->chan = 0;
     current->wake_at = 0;
-    return current->pending_sig ? -EINTR : 0;
+    return sig_deliverable(current) ? -EINTR : 0;
 }
 
 extern char poll_chan;
@@ -181,9 +181,8 @@ void sched_tick(void) {
 /* last thing before returning from any interrupt/syscall */
 void sched_irq_exit(struct regs *r) {
     if ((r->cs & 3) != 3) return;
-    if (current->pending_sig) proc_exit(128 + current->pending_sig);
     if (need_resched) schedule();
-    if (current->pending_sig) proc_exit(128 + current->pending_sig);
+    if (sig_deliverable(current)) proc_deliver_signals(r);
 }
 
 /* the boot thread becomes the idle task */
