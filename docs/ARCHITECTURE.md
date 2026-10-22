@@ -231,6 +231,29 @@ scaled copy composited over the page colour is kept per image. `form.c` holds co
 relayout), draws inline controls, edits text, and builds the GET query / POST body. `main.c` is the window: toolbar, history,
 selection, find bar, select dropdowns. inflate in `image.c` is table-driven (9-bit lookup, slow path for long codes).
 
+**Scripts** (`js.c`, `dom_js.c`): a page that has `<script>` or `on*=` attributes is parsed into a node tree in `js.c` (a
+tolerant tree builder: implied `</p> </li> </td>`, head/body inference, raw text for script/style/textarea/title). Layout then
+runs on that tree serialised back to HTML with `data-vjs="ID"` on every element; html.c keeps the innermost id on each
+display item, control and form, so a click maps to a node with `doc_node_at` and a control to its element. Scripts see the
+tree through natives on integer ids (`__d.parent`, `insert`, `setAttr`, `qsa`...); the prelude in `dom_js.c` wraps them in
+`Node`/`Element`/`Document` classes with one cached wrapper per node, and implements events (bubbling to `window`, inline
+handlers compiled once), timers, `fetch`, `console`, `location`, `classList`, `style` (a Proxy over the `style`
+attribute). `querySelector` uses css.c's selector matcher. A mutation of the connected tree sets a dirty flag; main.c calls
+`js_pump()` once per frame (timers, fetch helpers, pending scripts) and, if dirty, copies the live form state into the tree
+(`js_sync`), re-serialises and relays out, keeping the scroll and the focused field. Form state stays in form.c: `.value` and
+`.checked` read and write it directly, so typing never needs a relayout. Scripts run in document order after the first
+paint; `src=` scripts and `fetch()` use the same helper processes as page loads (`file:` is read directly). Each entry into
+JS gets 5 s: QuickJS's interrupt handler aborts a runaway script, after which the page's scripts are off.
+
+## QuickJS
+
+`/bin/qjs` is the unmodified QuickJS 2026-06-04 (`third_party/quickjs`): `qjs.c`, `quickjs-libc.c` (std/os) and `repl.js`,
+compiled to bytecode by a host-built `qjsc`. Everything QuickJS needs that our libc lacks comes from
+`user/bin/qjs/compat/vibe_qjs.h`, force-included into every QuickJS file, which renames each missing function to a
+`qjs_` one behind a macro (inline there, or in `user/bin/qjs/sys.c`): POSIX stat/termios converted from the kernel's
+structs, `popen` over `sh -c`, x87 versions of the C99 math functions, single-threaded pthread stubs; fork/exec, links and
+dlopen fail. See `third_party/quickjs/README.vibeos`.
+
 ## Testing
 
 * `tools/vmtest.py` boots the image in QEMU and drives it through the monitor: type text, send

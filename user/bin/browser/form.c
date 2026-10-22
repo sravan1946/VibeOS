@@ -42,6 +42,8 @@ static void set_val(struct fstate *s, const char *v) {
     s->val[n] = 0;
 }
 
+void fs_set(struct fstate *s, const char *v) { set_val(s, v); }
+
 struct fstate *fs_get(const struct doc *d, int ci) {
     static struct fstate dummy;
     const struct ctl *c = &d->ct[ci];

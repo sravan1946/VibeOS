@@ -159,6 +159,30 @@ UEXTRA_doom += $(MUSIC_OBJ)
 UEXTRA_midi := $(MUSIC_OBJ)
 build/user/obj/bin/midi/%.o: UCFLAGS += -Iuser/music
 
+# QuickJS 2026-06-04 (third_party/quickjs, MIT, unmodified): the engine goes into /bin/qjs (with quickjs-libc's std/os
+# modules and qjs.c's REPL) and /bin/browser. compat/vibe_qjs.h is force-included to fill libc gaps under qjs_* names.
+# repl.js becomes bytecode through a host build of qjsc (QuickJS bytecode doesn't depend on the word size).
+QJS_DIR := third_party/quickjs
+QJS_DEF := -D_GNU_SOURCE -DCONFIG_VERSION='"2026-06-04"'
+QJS_FLAGS := -Iuser/bin/qjs/compat -I$(QJS_DIR) -include user/bin/qjs/compat/vibe_qjs.h $(QJS_DEF) -fexcess-precision=standard
+QJS_CORE := $(patsubst %,build/user/obj/$(QJS_DIR)/%.o,quickjs dtoa libregexp libunicode cutils)
+QJS_OBJ := $(QJS_CORE) $(patsubst %,build/user/obj/$(QJS_DIR)/%.o,quickjs-libc qjs)
+$(QJS_OBJ): build/user/obj/$(QJS_DIR)/%.o: $(QJS_DIR)/%.c user/bin/qjs/compat/vibe_qjs.h
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) $(QJS_FLAGS) -w -c $< -o $@
+build/host/qjsc: $(addprefix $(QJS_DIR)/,qjsc.c quickjs.c dtoa.c libregexp.c libunicode.c cutils.c quickjs-libc.c)
+	@mkdir -p $(dir $@)
+	gcc -O1 -w $(QJS_DEF) $^ -o $@ -lm -lpthread -ldl
+build/user/qjs/repl.c: $(QJS_DIR)/repl.js build/host/qjsc
+	@mkdir -p $(dir $@)
+	build/host/qjsc -s -c -o $@ -m $<
+build/user/obj/qjs/repl.o: build/user/qjs/repl.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -w -c $< -o $@
+UEXTRA_qjs := $(QJS_OBJ) build/user/obj/qjs/repl.o
+UEXTRA_browser := $(QJS_CORE)
+build/user/obj/bin/browser/%.o: UCFLAGS += -I$(QJS_DIR)
+
 $(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
 
 user: $(UBINS)
@@ -185,6 +209,7 @@ build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(ULIBS) $(UCRT0) build
 	cp third_party/tcc/include/*.h build/rootfs/usr/lib/tcc/include/ && cp build/user/libtcc1.a build/rootfs/usr/lib/tcc/
 	cp $(UCRT0) build/rootfs/usr/lib/crt1.o && $(CC) -m32 -x c -c /dev/null -o build/rootfs/usr/lib/crti.o && cp build/rootfs/usr/lib/crti.o build/rootfs/usr/lib/crtn.o
 	@for f in $(ULIBS); do strip -g -o build/rootfs/usr/lib/$$(basename $$f) $$f; done
+	@mkdir -p build/rootfs/usr/share/quickjs && cp -a $(QJS_DIR)/tests $(QJS_DIR)/examples build/rootfs/usr/share/quickjs/
 	@mkdir -p build/rootfs/etc/ssl
 	@if [ -f $(CA_BUNDLE) ]; then cp $(CA_BUNDLE) build/rootfs/etc/ssl/cert.pem; fi
 	@if [ -f build/wads/freedoom1.wad ]; then mkdir -p build/rootfs/usr/share/doom; \
@@ -201,7 +226,7 @@ build/vibeos.img: build/stage1.bin build/stage2.bin build/kernel.bin build/root.
 	dd if=build/kernel.bin of=$@ bs=512 seek=$(KERNEL_LBA) conv=notrunc status=none
 	dd if=build/root.ext2 of=$@ bs=512 seek=$(FS_LBA) conv=notrunc status=none
 
-QEMU := qemu-system-i386 -accel kvm -accel tcg -m 256 -drive file=build/vibeos.img,format=raw,if=ide \
+QEMU := qemu-system-i386 -accel kvm -accel tcg -m 256 -display gtk,zoom-to-fit=on -drive file=build/vibeos.img,format=raw,if=ide \
         -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=4 -no-reboot \
         -nic user,model=e1000,hostfwd=tcp:127.0.0.1:8080-:80   # httpd in the VM -> http://localhost:8080
 

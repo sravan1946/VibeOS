@@ -356,6 +356,19 @@ static int match_from(const struct rule *r, int i, const struct el *st, int j) {
     return 0;
 }
 
+/* querySelector: does the comma list `sel` match st[n-1] (its ancestors before it)? -1 when no part parses */
+int css_match(const char *sel, const struct el *st, int n) {
+    struct rule r;
+    int ok = 0, len = strlen(sel);
+    for (int a = 0; a <= len; ) {
+        int b = a;
+        while (b < len && sel[b] != ',') b++;
+        if (parse_sel(sel + a, b - a, &r)) { ok = 1; if (match_from(&r, r.n - 1, st, n - 1)) return 1; }
+        a = b + 1;
+    }
+    return ok ? 0 : -1;
+}
+
 /* ---------- stylesheet ---------- */
 void css_add(const char *src, size_t n) {
     char *s = malloc(n + 1);

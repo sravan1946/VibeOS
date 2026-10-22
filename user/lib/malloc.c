@@ -135,6 +135,8 @@ void free(void *p) {
     release(b, SZ(b));
 }
 
+size_t malloc_usable_size(void *p) { return p ? SZ((struct blk *)((char *)p - HDR)) - HDR : 0; }
+
 void *calloc(size_t n, size_t sz) {
     if (sz && n > 0x7fffffff / sz) { errno = ENOMEM; return NULL; }
     void *p = malloc(n * sz);
