@@ -334,18 +334,26 @@ static void draw_taskbar(struct canvas *c) {
 }
 
 /* ---- launcher menu ---- */
-#define MENU_W 300
+#define MENU_COL 300
 static int menu_items(void) { return napps + 2; }    /* apps + restart + shut down */
-/* rows shrink from 42 px when there are too many apps to fit above the taskbar */
-static int item_h(void) { int h = (TB_Y - 16 - 74) / menu_items(); return h > 42 ? 42 : h < 30 ? 30 : h; }
+/* a second column (and more) once one column would need rows under 34 px; restart/shut down share the last row then */
+static int menu_cols(void) { int fit = (TB_Y - 16 - 74) / 34 - 2, c = fit < 1 ? napps : (napps + fit - 1) / fit; return c < 1 ? 1 : c; }
+static int app_rows(void) { int c = menu_cols(); return (napps + c - 1) / c; }
+static int menu_rows(void) { return app_rows() + (menu_cols() > 1 ? 1 : 2); }
+static int item_h(void) { int h = (TB_Y - 16 - 74) / menu_rows(); return h > 42 ? 42 : h < 30 ? 30 : h; }
 #define ITEM_H item_h()
 static struct rect menu_rect(void) {
-    int h = 56 + menu_items() * ITEM_H + 18;
-    return (struct rect){ 8, TB_Y - h - 8, MENU_W, h };
+    int h = 56 + menu_rows() * ITEM_H + 18;
+    return (struct rect){ 8, TB_Y - h - 8, MENU_COL * menu_cols(), h };
 }
-static int menu_item_y(int i) {
+static void menu_item_pos(int i, int *x, int *y) {
     struct rect m = menu_rect();
-    return m.y + 52 + i * ITEM_H + (i >= napps ? 10 : 0);
+    int r = app_rows(), col, row;
+    if (i < napps) col = i / r, row = i % r;
+    else if (menu_cols() > 1) col = i - napps, row = r;
+    else col = 0, row = r + i - napps;
+    *x = m.x + col * MENU_COL;
+    *y = m.y + 52 + row * ITEM_H + (i >= napps ? 10 : 0);
 }
 
 static void draw_menu(struct canvas *c) {
@@ -356,15 +364,16 @@ static void draw_menu(struct canvas *c) {
     gfx_text(c, &font_title, m.x + 18, m.y + 12, "VibeOS", C_TEXT);
     gfx_text(c, &font_ui, m.x + 18 + gfx_text_width(&font_title, "VibeOS") + 10, m.y + 18, "apps", C_TEXT_DIM);
     for (int i = 0; i < menu_items(); i++) {
-        int y = menu_item_y(i);
+        int x, y;
+        menu_item_pos(i, &x, &y);
         if (i == napps) gfx_fill(c, m.x + 14, y - 6, m.w - 28, 1, RGBA(255, 255, 255, 24));
-        if (i == menu_hover) gfx_round_fill(c, m.x + 8, y, m.w - 16, ITEM_H - 4, 9, RGBA(255, 255, 255, 22));
+        if (i == menu_hover) gfx_round_fill(c, x + 8, y, MENU_COL - 16, ITEM_H - 4, 9, RGBA(255, 255, 255, 22));
         const char *name; color_t col; char g;
         if (i < napps) { name = apps[i].name; col = apps[i].color; g = apps[i].glyph; }
         else if (i == napps) { name = "Restart"; col = RGB(0x5A, 0x64, 0x8C); g = 'R'; }
         else { name = "Shut down"; col = RGB(0xC2, 0x3B, 0x5A); g = 'X'; }
-        app_icon(c, m.x + 18, y + (ITEM_H - 4 - 26) / 2, 26, col, g);
-        gfx_text(c, &font_ui, m.x + 56, y + (ITEM_H - 4 - font_ui.height) / 2, name, C_TEXT);
+        app_icon(c, x + 18, y + (ITEM_H - 4 - 26) / 2, 26, col, g);
+        gfx_text(c, &font_ui, x + 56, y + (ITEM_H - 4 - font_ui.height) / 2, name, C_TEXT);
     }
 }
 
@@ -1314,8 +1323,9 @@ static int menu_at(int x, int y) {
     struct rect m = menu_rect();
     if (x < m.x || x >= m.x + m.w) return -1;
     for (int i = 0; i < menu_items(); i++) {
-        int iy = menu_item_y(i);
-        if (y >= iy && y < iy + ITEM_H - 4) return i;
+        int ix, iy;
+        menu_item_pos(i, &ix, &iy);
+        if (x >= ix && x < ix + MENU_COL && y >= iy && y < iy + ITEM_H - 4) return i;
     }
     return -1;
 }
