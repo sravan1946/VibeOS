@@ -90,3 +90,7 @@ int  vfs_mkdir(const char *cwd, const char *path);
 int  vfs_unlink(const char *cwd, const char *path, bool is_dir);
 int  vfs_rename(const char *cwd, const char *oldp, const char *newp);
 int  vfs_read_all(const char *path, void **data, uint32_t *size);   /* kmalloc'd buffer */
+
+/* dev/ac97.c: /dev/dsp (write 48 kHz s16le stereo) */
+int ac97_init(void);                                         /* 0 or -ENODEV; devfs then exposes dsp */
+extern const struct vnode_ops ac97_ops;

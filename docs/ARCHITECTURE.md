@@ -76,9 +76,27 @@ header shared by the kernel and libc: `common/abi.h`.
   offset and flags and are shared between fds via refcounts.
 * **ext2** (`kernel/fs/ext2.c`): read/write, 1/2/4 KiB blocks, indirect blocks, create/unlink/
   rename/mkdir/truncate; tested on the host against `e2fsck` (`tools/ext2test`).
-* **devfs** at `/dev`: `null zero random urandom tty kmsg`. **procfs** at `/proc`:
+* **devfs** at `/dev`: `null zero random urandom tty kmsg` (+ `dsp mixer` with an AC'97 card). **procfs** at `/proc`:
   `meminfo uptime cpuinfo version processes`.
 * **Pipes**: 8 KiB ring buffers with blocking read/write and EOF/EPIPE.
+
+## Audio
+
+`kernel/dev/ac97.c` drives an Intel ICH AC'97 controller (QEMU `-device AC97`, found by PCI id like the
+e1000). PCM-out DMA walks a 32-entry buffer descriptor list over a 128 KiB physically contiguous ring
+(the identity map makes the physical address usable as a pointer). Every `write()` chunk (up to 4 KiB)
+becomes one descriptor with its exact length, so nothing is padded; the IRQ (interrupt-on-completion per
+descriptor) retires finished ones and wakes blocked writers (`sleep_on`/`wakeup`, like pipes). The engine is
+started once and afterwards only the last-valid-index register moves; after an underrun the hardware resumes
+by itself when LVI changes. `/dev/dsp` takes **48 kHz stereo s16le** only (no VRA, no resampling in the
+kernel: `play` resamples in userland); `close` drains the ring. Ioctls (`common/abi.h`): `AUDIO_GETQ` (bytes
+queued, i.e. latency), `AUDIO_SETVOL`/`AUDIO_GETVOL` (master, 0-100). `/dev/dsp` and `/dev/mixer` only appear if a
+card was found; the PC speaker (`speaker_tone`) is independent. PCI devices may share an interrupt line, so
+`irq_register` keeps a small handler chain per IRQ and each handler checks its own device.
+
+Userland: `play`, `tone`, and the Piano app generate audio in 10 ms chunks and keep ~30 ms queued, polling
+`AUDIO_GETQ` instead of blocking in `write`. `tools/vmtest.py` records the card to `build/audio.wav` (QEMU `wav`
+audiodev); `tools/wavcheck.py` reports tones and RMS in it.
 
 ## TTY and terminal
 
@@ -130,6 +148,7 @@ The kernel runs `#!interp [arg]` scripts itself (`proc_spawn_ex`, one level, 128
 
 * `tools/vmtest.py` boots the image in QEMU and drives it through the monitor: type text, send
   keys, move/click/drag the mouse, wait for serial output, take screenshots.
+* Sound is captured to `build/audio.wav` (`--audiodev` / `VIBE_AUDIODEV` to override) and checked with `tools/wavcheck.py`.
 * `/etc/autostart` lists what the desktop opens at boot (`shell`, `term ARGV`, `run ARGV`).
 * Host-side unit tests: `tools/ext2test` (filesystem vs `e2fsck`), `tools/termtest`
   (terminal emulator), `tools/libctest` (libc).

@@ -97,9 +97,10 @@ void clipboard_set(const char *s, int n) { clip_vn->size = 0; clip_write(clip_vn
 static struct snode dev_nodes[] = {
     CHR("null", null_ops, 2), CHR("zero", zero_ops, 3), CHR("random", random_ops, 4),
     CHR("urandom", random_ops, 5), CHR("tty", tty_placeholder_ops, 6), CHR("kmsg", kmsg_ops, 7),
-    { "clipboard", { .mode = S_IFREG | 0666, .ino = 8, .refs = 1, .ops = &clip_ops } },
+    { "clipboard", { .mode = S_IFREG | 0666, .ino = 10, .refs = 1, .ops = &clip_ops } },
+    CHR("dsp", ac97_ops, 8), CHR("mixer", ac97_ops, 9),      /* listed only once ac97_init succeeds */
 };
-static struct sdir devdir = { { .mode = S_IFDIR | 0755, .ino = 1, .refs = 1, .ops = &sdir_ops }, dev_nodes, ARRAY_LEN(dev_nodes) };
+static struct sdir devdir = { { .mode = S_IFDIR | 0755, .ino = 1, .refs = 1, .ops = &sdir_ops }, dev_nodes, ARRAY_LEN(dev_nodes) - 2 };
 
 /* ---- /proc: files generated on every read ---- */
 static int gen_meminfo(char *b, int n) {
@@ -143,6 +144,8 @@ static struct snode proc_nodes[] = {
     GEN("version", gen_version, 105), GEN("processes", gen_procs, 106),
 };
 static struct sdir procdir = { { .mode = S_IFDIR | 0555, .ino = 101, .refs = 1, .ops = &sdir_ops }, proc_nodes, ARRAY_LEN(proc_nodes) };
+
+void devfs_audio(void) { devdir.n = ARRAY_LEN(dev_nodes); }
 
 void devfs_init(void) {
     devdir.vn.priv = &devdir;
