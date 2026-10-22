@@ -31,6 +31,7 @@ static int sdir_lookup(struct vnode *d, const char *name, struct vnode **out) {
                 if (!current->tty) return -ENXIO;
                 v = &current->tty->vn;
             }
+            if (v->ops->clone) return v->ops->clone(v, out);
             vnode_get(v);
             *out = v;
             return 0;
@@ -106,7 +107,7 @@ static struct snode dev_nodes[] = {
     { "screen", { .mode = S_IFREG | 0444, .ino = 11, .refs = 1, .ops = &screen_ops } },   /* REG so the offset advances */
     { "clipboard", { .mode = S_IFREG | 0666, .ino = 10, .refs = 1, .ops = &clip_ops } },
     CHR("notify", notify_ops, 12),
-    CHR("dsp", ac97_ops, 8), CHR("mixer", ac97_ops, 9),      /* listed only once ac97_init succeeds */
+    CHR("dsp", ac97_dsp_ops, 8), CHR("mixer", ac97_ops, 9),      /* listed only once ac97_init succeeds */
 };
 static struct sdir devdir = { { .mode = S_IFDIR | 0755, .ino = 1, .refs = 1, .ops = &sdir_ops }, dev_nodes, ARRAY_LEN(dev_nodes) - 2 };
 

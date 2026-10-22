@@ -28,6 +28,7 @@ struct vnode_ops {
     void (*close)(struct vnode *v, int flags);                                  /* an open file on v closed */
     void (*release)(struct vnode *v);                                           /* refs hit 0 */
     int  (*sync)(struct vnode *v);
+    int  (*clone)(struct vnode *v, struct vnode **out);                         /* devfs lookup of v hands out a private vnode (refs 1) instead: one per open */
 };
 
 struct vnode {
@@ -93,5 +94,6 @@ int  vfs_read_all(const char *path, void **data, uint32_t *size);   /* kmalloc'd
 
 /* dev/ac97.c: /dev/dsp (write 48 kHz s16le stereo) */
 int ac97_init(void);                                         /* 0 or -ENODEV; devfs then exposes dsp */
-extern const struct vnode_ops ac97_ops;
+extern const struct vnode_ops ac97_ops;                   /* /dev/mixer */
+extern const struct vnode_ops ac97_dsp_ops;               /* /dev/dsp: every lookup is a new stream, mixed with the others */
 int ac97_volume(int set);                                   /* master volume (set < 0 just reads); -1 without a card */

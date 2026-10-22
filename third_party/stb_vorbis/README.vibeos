@@ -1,0 +1,15 @@
+stb_vorbis in VibeOS
+====================
+
+Origin  : https://github.com/nothings/stb  (stb_vorbis.c, "v1.22 - public domain", http://nothings.org/stb_vorbis/)
+Commit  : a7d4c2175630e1ea5b6f8dd00ab96fed0b97b96d (master as cloned 2026-10-22)
+SHA-256 : 4c7cb2ff1f7011e9d67950446b7eb9ca044f2e464d76bfbb0b84dd2e23e65636  stb_vorbis.c
+          bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63  LICENSE
+Licence : public domain or MIT (your choice), see LICENSE and the end of stb_vorbis.c
+
+stb_vorbis.c and LICENSE are upstream's, byte-for-byte, fetched with `git clone --depth 1` into a fresh empty
+directory; nothing is modified. An Ogg Vorbis decoder in one C file (floor 0, the pre-2004 variant, is not
+supported). user/music/vorbis.c includes it as a translation unit of its own; the Makefile configures it by -D:
+STB_VORBIS_NO_STDIO (it decodes from memory), STB_VORBIS_NO_PUSHDATA_API, STB_VORBIS_NO_FAST_SCALED_FLOAT, and
+`-U__linux__ -Dalloca=__builtin_alloca` so it doesn't look for a host alloca.h. user/music/adec.c wraps it for
+/bin/play and /bin/music.
