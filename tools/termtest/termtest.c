@@ -299,11 +299,156 @@ static void test_resize_scrollview(void) {
     term_destroy(t);
 }
 
+static void test_sgr_ext(void) {
+    struct term *t = term_create(40, 2);
+    W(t, "\x1b[38:2::1:2:3ma\x1b[48:2:9:8:7mb\x1b[38:5:196mc\x1b[0m");     /* colon forms, with and without a colourspace */
+    CHECK(term_cell_fg(t, 0, 0) == RGB(1, 2, 3));
+    CHECK(term_cell_bg(t, 1, 0) == RGB(9, 8, 7));
+    CHECK(term_cell_fg(t, 2, 0) == RGB(255, 0, 0));
+    W(t, "\x1b[H\x1b[38:2::10:20:30;1mx\x1b[0m");                           /* later params after a colon colour still apply */
+    CHECK(term_cell_fg(t, 0, 0) == RGB(10, 20, 30) && (term_cell_attr(t, 0, 0) & TERM_A_BOLD));
+    W(t, "\x1b[H\x1b[4:3mu\x1b[4:0mv\x1b[21mw\x1b[24mx\x1b[0m");          /* curly underline counts as underline; 4:0 and 24 clear it */
+    CHECK(term_cell_attr(t, 0, 0) == TERM_A_UNDER && term_cell_attr(t, 1, 0) == 0);
+    CHECK(term_cell_attr(t, 2, 0) == TERM_A_UNDER && term_cell_attr(t, 3, 0) == 0);
+    W(t, "\x1b[H\x1b[58:2::255:0:0;4my\x1b[58;5;9;1mz\x1b[0m");            /* underline colour is swallowed, not mistaken for fg */
+    CHECK(term_cell_fg(t, 0, 0) == TERM_DEFAULT_FG && (term_cell_attr(t, 0, 0) & TERM_A_UNDER));
+    CHECK(term_cell_fg(t, 1, 0) == TERM_DEFAULT_FG && (term_cell_attr(t, 1, 0) & TERM_A_BOLD));
+    W(t, "\x1b[H\x1b[1;3;4;7;9mA\x1b[0m\x1b[2mB\x1b[22;23;27;29mC\x1b[0m");
+    CHECK(term_cell_attr(t, 0, 0) == (TERM_A_BOLD | TERM_A_ITALIC | TERM_A_UNDER | TERM_A_INVERSE | TERM_A_STRIKE));
+    CHECK(term_cell_attr(t, 1, 0) == TERM_A_DIM && term_cell_attr(t, 2, 0) == 0);
+    W(t, "\x1b[H\x1b[38;2;1;2mq\x1b[0m");                                    /* truncated truecolor: swallowed, no crash */
+    term_destroy(t);
+}
+
+static void test_italic_render(void) {
+    struct term *t = term_create(2, 1);
+    static uint32_t a[40 * 30], b[40 * 30];
+    struct canvas ca, cb; struct rect d;
+    int cw = term_cell_w(t), ch = term_cell_h(t);
+    canvas_init(&ca, a, 40, 30, 40); canvas_init(&cb, b, 40, 30, 40);
+    W(t, "\x1b[?25lH\x1b[H");
+    term_render(t, &ca, 3, 3, 1, &d);
+    W(t, "\x1b[3m\x1b[HH\x1b[0m");
+    term_render(t, &cb, 3, 3, 1, &d);
+    int diff = 0, outside = 0;
+    for (int i = 0; i < 40 * 30; i++) {
+        int x = i % 40, y = i / 40;
+        diff += a[i] != b[i];
+        if ((x < 3 || x >= 3 + cw || y < 3 || y >= 3 + ch) && a[i] != b[i]) outside++;
+    }
+    CHECK(diff > 4);                                     /* the slant moved pixels */
+    CHECK(outside == 0);                                 /* and stayed inside the cell */
+    term_destroy(t);
+}
+
+static void test_search(void) {
+    struct term *t = term_create(20, 4);
+    W(t, "alpha beta\r\nBETA gamma\r\nbeta beta\r\nlast line\r\nmore text\r\nBeTa end");
+    int cur, tot;
+    term_search_set(t, "beta");
+    term_search_info(t, &cur, &tot); CHECK(tot == 5 && cur == 0);
+    CHECK(term_search_step(t, 0) == 1);                  /* newest match first, scrolled into view */
+    term_search_info(t, &cur, &tot); CHECK(cur == 5);
+    CHECK(term_view_offset(t) == 0);                     /* it was already on screen */
+    CHECK(term_search_step(t, 1) == 1);                  /* wraps to the first */
+    term_search_info(t, &cur, &tot); CHECK(cur == 1);
+    CHECK(term_view_offset(t) > 0);                      /* which lives in the scrollback */
+    CHECK(term_search_step(t, 1) == 1);
+    term_search_info(t, &cur, &tot); CHECK(cur == 2);
+    CHECK(term_search_step(t, -1) == 1 && term_search_step(t, -1) == 1);   /* back past the start wraps to the last */
+    term_search_info(t, &cur, &tot); CHECK(cur == 5);
+    term_search_set(t, "gamma");                         /* a new query forgets the old position */
+    term_search_info(t, &cur, &tot); CHECK(tot == 1 && cur == 0);
+    CHECK(term_search_step(t, -1) == 1);
+    term_search_info(t, &cur, &tot); CHECK(cur == 1);
+    term_search_set(t, "no such");
+    CHECK(term_search_step(t, 0) == 0);
+    term_search_set(t, "a b");                           /* spaces match blank cells too */
+    term_search_info(t, &cur, &tot); CHECK(tot == 2);        /* "alpha beta" and "beta beta" */
+    term_search_set(t, "");
+    CHECK(term_search_step(t, 0) == 0);
+    /* highlights: a matching cell is drawn with the highlight background, others are not */
+    static uint32_t px[200 * 100];
+    struct canvas c; struct rect d; canvas_init(&c, px, 200, 100, 200);
+    int cw = term_cell_w(t), ch = term_cell_h(t);
+    term_search_set(t, "text");
+    term_search_step(t, 0);
+    term_render(t, &c, 0, 0, 1, &d);
+    int row = -1;
+    for (int r = 0; r < 4; r++) if (term_cell_char(t, 0, r) == 'm' && term_cell_char(t, 5, r) == 't') row = r;
+    CHECK(row >= 0);
+    CHECK(px[(row * ch + 1) * 200 + 5 * cw + 1] == RGB(0xE0, 0xAF, 0x68));             /* current match */
+    CHECK(px[(row * ch + 1) * 200 + 1] == TERM_DEFAULT_BG);
+    term_destroy(t);
+    /* search scrolls with the ring: dropping the oldest line must not leave a stale current match */
+    t = term_create(10, 2);
+    W(t, "needle\r\n");
+    term_search_set(t, "needle"); term_search_step(t, 0);
+    for (int i = 0; i < 1100; i++) W(t, "x\r\n");
+    term_search_info(t, &cur, &tot); CHECK(tot == 0 && cur == 0);
+    term_destroy(t);
+    /* alternate screen: only the visible rows are searched */
+    t = term_create(20, 3);
+    W(t, "abc\x1b[?1049h\x1b[Habc abc");
+    term_search_set(t, "abc");
+    term_search_info(t, &cur, &tot); CHECK(tot == 2);
+    term_destroy(t);
+}
+
+static void test_links(void) {
+    struct term *t = term_create(60, 4);
+    char u[128]; int c0, c1;
+    W(t, "see https://example.com/a?b=1&c=2. next (http://x.org/p_(q)) end,\r\nno link here http:/broken");
+    CHECK(term_link_at(t, 6, 0, u, sizeof u, &c0, &c1) > 0);
+    CHECK(!strcmp(u, "https://example.com/a?b=1&c=2") && c0 == 4 && c1 == 32);   /* trailing '.' dropped */
+    CHECK(term_link_at(t, 32, 0, u, sizeof u, 0, 0) > 0);
+    CHECK(term_link_at(t, 33, 0, u, sizeof u, 0, 0) == 0);                       /* the '.' itself is not the link */
+    CHECK(term_link_at(t, 3, 0, u, sizeof u, 0, 0) == 0);                        /* nor the space before it */
+    CHECK(term_link_at(t, 45, 0, u, sizeof u, 0, 0) > 0 && !strcmp(u, "http://x.org/p_(q)"));   /* balanced ')' kept, last dropped */
+    CHECK(term_link_at(t, 20, 1, u, sizeof u, 0, 0) == 0);
+    CHECK(term_link_at(t, 25, 1, u, sizeof u, 0, 0) == 0);                       /* "http:/" has no // */
+    CHECK(term_link_at(t, -1, 0, u, sizeof u, 0, 0) == 0 && term_link_at(t, 0, 9, u, sizeof u, 0, 0) == 0);
+    /* hover underlines exactly the span, and output clears it */
+    static uint32_t px[600 * 100];
+    struct canvas c; struct rect d; canvas_init(&c, px, 600, 100, 600);
+    term_render(t, &c, 0, 0, 1, &d);
+    term_set_hover(t, 0, 4, 32);
+    term_render(t, &c, 0, 0, 0, &d);
+    int cw = term_cell_w(t), ch = term_cell_h(t);
+    CHECK(px[(ch - 3) * 600 + 4 * cw + 1] == RGB(0x7D, 0xCF, 0xFF));
+    CHECK(px[(ch - 3) * 600 + 3 * cw + 1] == TERM_DEFAULT_BG);
+    W(t, "z");
+    term_render(t, &c, 0, 0, 0, &d);
+    CHECK(px[(ch - 3) * 600 + 4 * cw + 1] == TERM_DEFAULT_BG);
+    term_destroy(t);
+}
+
+static void test_zoom(void) {
+    struct term *t = term_create(10, 3);
+    int w1 = term_cell_w(t), h1 = term_cell_h(t), pc, pr;
+    CHECK(term_zoom(t) == TERM_ZOOM_DEF);
+    CHECK(term_set_zoom(t, 99) == TERM_ZOOMS - 1);
+    CHECK(term_cell_w(t) > w1 && term_cell_h(t) > h1);
+    term_size_for_pixels(t, 200, 100, &pc, &pr);
+    CHECK(pc == 200 / term_cell_w(t) && pr == 100 / term_cell_h(t));
+    CHECK(term_set_zoom(t, -5) == 0);
+    CHECK(term_cell_w(t) < w1 && term_cell_h(t) < h1);
+    W(t, "\x1b[1;31mAB\x1b[3mC\x1b[0m \xe2\x95\xad\xe2\x95\xae");
+    static uint32_t px[400 * 200];
+    struct canvas c; struct rect d; canvas_init(&c, px, 400, 200, 400);
+    for (int z = 0; z < TERM_ZOOMS; z++) {               /* every size renders (rounded corners fall back when small) */
+        term_set_zoom(t, z);
+        term_render(t, &c, 0, 0, 1, &d);
+        CHECK(d.w == 10 * term_cell_w(t) && d.h == 3 * term_cell_h(t));
+    }
+    term_destroy(t);
+}
+
 static void test_render(void) {
     struct term *t = term_create(10, 3);
     enum { CW = 9, CH = 20 };
-    CHECK(term_cell_w() == CW && term_cell_h() == CH);
-    int pc, pr; term_size_for_pixels(100, 65, &pc, &pr); CHECK(pc == 11 && pr == 3);
+    CHECK(term_cell_w(t) == CW && term_cell_h(t) == CH);
+    int pc, pr; term_size_for_pixels(t, 100, 65, &pc, &pr); CHECK(pc == 11 && pr == 3);
     static uint32_t px[200 * 100];
     struct canvas c; canvas_init(&c, px, 200, 100, 200);
     struct rect d;
@@ -366,7 +511,7 @@ static void save_ppm(const char *path, struct canvas *c) {
 }
 
 static void render_to(struct term *t, const char *ppm, int scale_pad) {
-    int w = term_cols(t) * term_cell_w() + 2 * scale_pad, h = term_rows(t) * term_cell_h() + 2 * scale_pad;
+    int w = term_cols(t) * term_cell_w(t) + 2 * scale_pad, h = term_rows(t) * term_cell_h(t) + 2 * scale_pad;
     uint32_t *px = malloc((size_t)w * h * 4);
     struct canvas c; canvas_init(&c, px, w, h, w);
     for (int i = 0; i < w * h; i++) px[i] = TERM_DEFAULT_BG;
@@ -480,6 +625,11 @@ int main(int argc, char **argv) {
     test_replies();
     test_misc();
     test_resize_scrollview();
+    test_sgr_ext();
+    test_italic_render();
+    test_search();
+    test_links();
+    test_zoom();
     test_render();
     showcase(dir);
     printf("%d checks, %d failed\n", checks, fails);

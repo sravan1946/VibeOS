@@ -26,7 +26,7 @@ FS_SECTORS := $(shell echo $$(( $(FS_MB) * 2048 )))
 KSRC  := $(wildcard kernel/*/*.c)
 KASM  := $(wildcard kernel/arch/*.asm)
 KOBJ  := $(patsubst %.c,build/%.o,$(KSRC)) $(patsubst %.asm,build/%.o,$(KASM)) \
-         build/common/gfx.k.o build/common/fonts.k.o build/common/term.k.o build/common/wallpaper.k.o
+         build/common/gfx.k.o build/common/fonts.k.o build/common/termfonts.k.o build/common/term.k.o build/common/wallpaper.k.o
 
 all: build/vibeos.img
 
@@ -215,7 +215,8 @@ debug: build/vibeos.img
 doom-wad:    # download + verify Freedoom into build/wads/ (then `make` puts it in /usr/share/doom)
 	sh tools/getwad.sh
 
-test-host:   # host-side unit tests (libc, image codecs)
+test-host:   # host-side unit tests (libc, image codecs, terminal emulator)
+	sh tools/termtest/run.sh
 	sh tools/imagetest/run.sh
 	sh tools/libctest/run.sh
 	python3 tools/hashtest.py

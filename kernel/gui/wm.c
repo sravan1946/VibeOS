@@ -1384,9 +1384,9 @@ static void mouse_event(int x, int y, int b, int dz) {
     int btn = w && in_frame ? title_button_at(w, x, y) : -1;
     set_hover(w, btn, task == T_NONE ? -1 : task, mitem);
 
-    if (w && !in_frame && !w->on_event) {                   /* motion inside a user client */
+    if (w && !in_frame) {                                      /* motion inside a client (terminals take it too, for link hover) */
         static struct window *last_in;
-        if (last_in && last_in != w) { struct gui_event e = { .type = EV_MOUSE_LEAVE }; wm_post(last_in, &e); }
+        if (last_in && last_in != w) { struct gui_event e = { .type = EV_MOUSE_LEAVE }; send(last_in, &e); }
         last_in = w;
         if (ox != x || oy != y) { struct gui_event e = { .type = EV_MOUSE_MOVE, .x = x - w->x, .y = y - w->y, .button = b }; send(w, &e); }
     }

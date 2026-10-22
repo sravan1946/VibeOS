@@ -5,6 +5,7 @@
 #include "gfx.h"
 #include "font.h"
 #include "term.h"
+#include "termfonts.h"
 
 void *kmalloc(size_t n);
 void kfree(void *p);
@@ -17,6 +18,7 @@ static void xfree(void *p) { if (p) kfree(p); }
 #define SCROLLBACK 1000
 #define MAXPAR 16
 #define OSCMAX 96
+#define SQMAX 64                  /* search query length in code points */
 
 /* colour encoding in cells: 0 = default, 0x01000000|i = palette i, 0xFF000000|rgb = truecolor.
  * Zero-filled memory is therefore a blank default cell. */
@@ -52,6 +54,14 @@ struct term {
     char title[64];
     int bell;
     int sel, sal, sac, sbl, sbc;      /* selection, inclusive; lines are lnp() indices (alt screen: hist + row) */
+    uint32_t pcolon;                  /* bit i: par[i] was joined to par[i-1] by ':' (SGR sub-parameters) */
+    /* zoom: the font pair and cell size in use */
+    int zoom, cw, ch;
+    const struct font *fr, *fb;
+    /* search: folded query, current match (line, col), per-row hit map built at render time */
+    uint32_t sq[SQMAX]; int sqn, smv, sml, smc;
+    uint8_t *hit;
+    int hrow, hc0, hc1;               /* hovered link: visible row (-1 none) and column span */
 };
 
 /* ---- palette ---- */
@@ -96,16 +106,36 @@ static uint32_t dec_gfx(uint32_t c) {
 
 /* ---- metrics ---- */
 
-int term_cell_w(void) { return font_mono.g['M' - 32].adv; }
-int term_cell_h(void) { return font_mono.height; }
+/* terminal font sizes, smallest first; 15px (zoom 1) is the default and lives in fonts.c */
+static const struct font *const zoom_fonts[TERM_ZOOMS][2] = {
+    { &font_mono_12, &font_mono_bold_12 }, { &font_mono, &font_mono_bold },
+    { &font_mono_18, &font_mono_bold_18 }, { &font_mono_22, &font_mono_bold_22 },
+};
 
-void term_size_for_pixels(int pw, int ph, int *cols, int *rows) {
-    int c = pw / term_cell_w(), r = ph / term_cell_h();
+int term_cell_w(struct term *t) { return t->cw; }
+int term_cell_h(struct term *t) { return t->ch; }
+
+void term_size_for_pixels(struct term *t, int pw, int ph, int *cols, int *rows) {
+    int c = pw / t->cw, r = ph / t->ch;
     *cols = c < 1 ? 1 : c;
     *rows = r < 1 ? 1 : r;
 }
 
 /* ---- storage helpers ---- */
+
+static void mark_all(struct term *t);
+
+int term_zoom(struct term *t) { return t->zoom; }
+
+int term_set_zoom(struct term *t, int z) {
+    z = z < 0 ? 0 : z >= TERM_ZOOMS ? TERM_ZOOMS - 1 : z;
+    t->zoom = z;
+    t->fr = zoom_fonts[z][0]; t->fb = zoom_fonts[z][1];
+    t->cw = t->fr->g['M' - 32].adv; t->ch = t->fr->height;
+    t->lstyle = 0;
+    mark_all(t);
+    return z;
+}
 
 static inline int imin(int a, int b) { return a < b ? a : b; }
 static inline int imax(int a, int b) { return a > b ? a : b; }
@@ -139,6 +169,7 @@ static void scroll_up(struct term *t, int top, int bot, int n) {
                 t->head = (t->head + 1) % t->cap;
                 if (t->sel && --t->sbl < 0) t->sel = 0;
                 if (--t->sal < 0) t->sal = t->sac = 0;
+                if (t->smv && --t->sml < 0) t->smv = 0;
             }
             blank_row(t, t->rows - 1);
         }
@@ -242,7 +273,7 @@ static void leave_alt(struct term *t, int restore) {
 
 static void reset(struct term *t) {
     leave_alt(t, 0);
-    t->hist = 0; t->head = 0; t->view = 0;
+    t->hist = 0; t->head = 0; t->view = 0; t->smv = 0;
     t->pfg = t->pbg = 0; t->pattr = 0;
     t->top = 0; t->bot = t->rows - 1;
     t->autowrap = 1; t->curvis = 1; t->ins = 0; t->g0gfx = 0;
@@ -265,15 +296,21 @@ static void set_mode(struct term *t, int priv, int p, int on) {
     }
 }
 
+#define COLON(t, i) ((t)->pcolon >> (i) & 1)
+
 static void sgr(struct term *t) {
     int n = t->pany ? t->pi + 1 : 1;
     for (int i = 0; i < n; i++) {
         int p = t->par[i];
+        if (p == 4 && i + 1 < n && COLON(t, i + 1)) {           /* 4:0 none, 4:1..5 single/double/curly/dotted/dashed */
+            if (t->par[++i]) t->pattr |= TERM_A_UNDER; else t->pattr &= ~TERM_A_UNDER;
+            continue;
+        }
         if (p == 0) { t->pfg = t->pbg = 0; t->pattr = 0; }
         else if (p == 1) t->pattr |= TERM_A_BOLD;
         else if (p == 2) t->pattr |= TERM_A_DIM;
         else if (p == 3) t->pattr |= TERM_A_ITALIC;
-        else if (p == 4) t->pattr |= TERM_A_UNDER;
+        else if (p == 4 || p == 21) t->pattr |= TERM_A_UNDER;
         else if (p == 7) t->pattr |= TERM_A_INVERSE;
         else if (p == 9) t->pattr |= TERM_A_STRIKE;
         else if (p == 22) t->pattr &= ~(TERM_A_BOLD | TERM_A_DIM);
@@ -287,13 +324,17 @@ static void sgr(struct term *t) {
         else if (p >= 100 && p <= 107) t->pbg = COL_PAL(p - 100 + 8);
         else if (p == 39) t->pfg = 0;
         else if (p == 49) t->pbg = 0;
-        else if (p == 38 || p == 48) {
+        else if (p == 38 || p == 48 || p == 58) {            /* 58 (underline colour) is parsed and dropped */
             uint32_t col = 0; int ok = 0;
             if (i + 2 < n && t->par[i + 1] == 5) { col = COL_PAL(t->par[i + 2] & 0xFF); ok = 1; i += 2; }
             else if (i + 4 < n && t->par[i + 1] == 2) {
-                col = COL_RGB(t->par[i + 2] & 0xFF, t->par[i + 3] & 0xFF, t->par[i + 4] & 0xFF); ok = 1; i += 4;
+                int k = i + 2;                                 /* 38:2:[colourspace:]r:g:b has an optional empty slot */
+                if (COLON(t, i + 2)) { int j = k; while (j < n && COLON(t, j)) j++; if (j - k >= 4) k++; }
+                if (k + 2 < n) { col = COL_RGB(t->par[k] & 0xFF, t->par[k + 1] & 0xFF, t->par[k + 2] & 0xFF); ok = 1; i = k + 2; }
+                else i = n;
             } else i = n;   /* malformed: swallow the rest */
-            if (ok) { if (p == 38) t->pfg = col; else t->pbg = col; }
+            if (ok && p == 38) t->pfg = col;
+            else if (ok && p == 48) t->pbg = col;
         }
     }
 }
@@ -335,7 +376,7 @@ static void csi(struct term *t, int f) {
         if (m == 0) { erase_cells(t, t->cy, t->cx, t->cols - 1); for (int r = t->cy + 1; r < t->rows; r++) erase_cells(t, r, 0, t->cols - 1); }
         else if (m == 1) { for (int r = 0; r < t->cy; r++) erase_cells(t, r, 0, t->cols - 1); erase_cells(t, t->cy, 0, t->cx); }
         else if (m == 2) { for (int r = 0; r < t->rows; r++) erase_cells(t, r, 0, t->cols - 1); }
-        else if (m == 3 && !t->alt_on) { t->head = (t->head + t->hist) % t->cap; t->hist = 0; t->view = 0; t->sel = 0; mark_all(t); }
+        else if (m == 3 && !t->alt_on) { t->head = (t->head + t->hist) % t->cap; t->hist = 0; t->view = 0; t->sel = 0; t->smv = 0; mark_all(t); }
         break;
     }
     case 'K': {
@@ -450,7 +491,7 @@ static void feed(struct term *t, uint8_t b) {
         t->st = ST_GROUND;
         switch (b) {
         case '[':
-            t->st = ST_CSI; t->pi = 0; t->pany = 0; t->priv = 0;
+            t->st = ST_CSI; t->pi = 0; t->pany = 0; t->priv = 0; t->pcolon = 0;
             memset(t->par, 0, sizeof t->par);
             break;
         case ']': t->st = ST_OSC; t->olen = 0; break;
@@ -479,7 +520,7 @@ static void feed(struct term *t, uint8_t b) {
             if (t->par[t->pi] < 65535) t->par[t->pi] = t->par[t->pi] * 10 + (b - '0');
         } else if (b == ';' || b == ':') {
             t->pany = 1;
-            if (t->pi < MAXPAR - 1) t->pi++;
+            if (t->pi < MAXPAR - 1) { t->pi++; if (b == ':') t->pcolon |= 1u << t->pi; }
         } else if (b >= 0x3C && b <= 0x3F) t->priv = b;
         else if (b <= 0x2F) { /* intermediate bytes (e.g. ' q'): ignored */ }
         else if (b >= 0x40 && b <= 0x7E) { t->st = ST_GROUND; csi(t, b); }
@@ -500,6 +541,7 @@ static void feed(struct term *t, uint8_t b) {
 
 void term_write(struct term *t, const char *s, int n) {
     if (n > 0 && t->view) { t->view = 0; mark_all(t); }
+    if (n > 0 && t->hrow >= 0) { mark(t, t->hrow, 0, t->cols - 1); t->hrow = -1; }
     for (int i = 0; i < n; i++) feed(t, (uint8_t)s[i]);
 }
 
@@ -524,17 +566,20 @@ struct term *term_create(int cols, int rows) {
     t->cap = SCROLLBACK + rows;
     t->pri = kmalloc((size_t)t->cap * cols * sizeof(struct cell));
     t->alt = kmalloc((size_t)rows * cols * sizeof(struct cell));
-    if (!t->pri || !t->alt || !alloc_dirty(t)) { term_destroy(t); return NULL; }
+    t->hit = kmalloc((size_t)cols);
+    if (!t->pri || !t->alt || !t->hit || !alloc_dirty(t)) { term_destroy(t); return NULL; }
     memset(t->pri, 0, (size_t)t->cap * cols * sizeof(struct cell));
     memset(t->alt, 0, (size_t)rows * cols * sizeof(struct cell));
     t->bot = rows - 1;
     t->autowrap = 1; t->curvis = 1; t->focused = 1; t->phase = 1;
+    t->hrow = -1;
+    term_set_zoom(t, TERM_ZOOM_DEF);
     return t;
 }
 
 void term_destroy(struct term *t) {
     if (!t) return;
-    xfree(t->pri); xfree(t->alt); xfree(t->dmin); xfree(t->dmax);
+    xfree(t->pri); xfree(t->alt); xfree(t->dmin); xfree(t->dmax); xfree(t->hit);
     kfree(t);
 }
 
@@ -547,7 +592,8 @@ void term_resize(struct term *t, int cols, int rows) {
     struct cell *np = kmalloc((size_t)cap * cols * sizeof *np);
     struct cell *na = kmalloc((size_t)rows * cols * sizeof *na);
     int16_t *dn = kmalloc(sizeof(int16_t) * rows), *dx = kmalloc(sizeof(int16_t) * rows);
-    if (!np || !na || !dn || !dx) { xfree(np); xfree(na); xfree(dn); xfree(dx); return; }
+    uint8_t *nhit = kmalloc((size_t)cols);
+    if (!np || !na || !dn || !dx || !nhit) { xfree(np); xfree(na); xfree(dn); xfree(dx); xfree(nhit); return; }
     memset(np, 0, (size_t)cap * cols * sizeof *np);
     memset(na, 0, (size_t)rows * cols * sizeof *na);
 
@@ -562,10 +608,10 @@ void term_resize(struct term *t, int cols, int rows) {
     for (int r = 0; r < imin(rows, orows); r++)
         memcpy(na + (size_t)r * cols, t->alt + (size_t)r * oc, (size_t)cc * sizeof *na);
 
-    kfree(t->pri); kfree(t->alt); kfree(t->dmin); kfree(t->dmax);
-    t->pri = np; t->alt = na; t->dmin = dn; t->dmax = dx;
+    kfree(t->pri); kfree(t->alt); kfree(t->dmin); kfree(t->dmax); xfree(t->hit);
+    t->pri = np; t->alt = na; t->dmin = dn; t->dmax = dx; t->hit = nhit;
     t->cols = cols; t->rows = rows; t->cap = cap;
-    t->head = 0; t->hist = nh; t->view = 0; t->sel = 0;
+    t->head = 0; t->hist = nh; t->view = 0; t->sel = 0; t->smv = 0; t->hrow = -1;
     if (t->alt_on) { t->sv49.cy = ny; t->cy = imin(t->cy, rows - 1); } else t->cy = ny;
     t->cx = imin(t->cx, cols - 1);
     t->sv.cx = imin(t->sv.cx, cols - 1); t->sv.cy = imin(t->sv.cy, rows - 1);
@@ -593,7 +639,7 @@ int term_on_alt_screen(struct term *t) { return t->alt_on; }
 void term_scroll_view(struct term *t, int lines) {
     int v = lines == 0 || t->alt_on ? 0 : t->view + lines;
     v = imax(0, imin(v, t->hist));
-    if (v != t->view) { t->view = v; mark_all(t); }
+    if (v != t->view) { t->view = v; t->hrow = -1; mark_all(t); }
 }
 
 static const struct cell *cell_at(struct term *t, int col, int row) {
@@ -688,6 +734,7 @@ static void draw_box(struct canvas *c, int x, int y, int cw, int ch, uint32_t cp
         }
         return;
     }
+    if (cp >= 0x256D && cp <= 0x2570 && (cw < 9 || ch < 20)) cp = 0x250C + (cp == 0x256E) * 4 + (cp == 0x256F) * 12 + (cp == 0x2570) * 8;   /* small zoom: square corners */
     if (cp >= 0x256D && cp <= 0x2570) {                    /* rounded corners; arc_tab assumes cw>=9, ch>=20 */
         int fx = cp == 0x256E || cp == 0x256F, fy = cp == 0x256F || cp == 0x2570;
         for (int j = 0; j < 5; j++)
@@ -709,8 +756,28 @@ static void draw_box(struct canvas *c, int x, int y, int cw, int ch, uint32_t cp
     box_axis(c, x, y, 1, ch, cy, cx, v, h, fg);
 }
 
+/* gfx_char with a synthetic italic: rows shear about the glyph's mid-height (~11 degrees), clipped to the cell */
+static void draw_slant(struct canvas *c, const struct font *f, int x, int y, int cw, uint32_t cp, color_t col) {
+    const struct glyph *g = font_glyph(f, cp);
+    const uint8_t *a = f->alpha + g->off;
+    int ca = col >> 24;
+    for (int j = 0; j < g->h; j++) {
+        int rel = g->yoff + j, yy = y + rel;
+        if (yy < c->cy0 || yy >= c->cy1) continue;
+        int gx = x + g->xoff + (((f->ascent >> 1) - rel) * 51 >> 8);
+        uint32_t *row = &c->px[yy * c->stride];
+        for (int i = 0; i < g->w; i++) {
+            int xx = gx + i;
+            if (xx < x || xx >= x + cw || xx < c->cx0 || xx >= c->cx1) continue;
+            uint32_t v = a[j * g->w + i] * ca / 255;
+            if (v) row[xx] = blend(row[xx], (v << 24) | (col & 0xFFFFFF));
+        }
+    }
+}
+
 /* cur: 0 none, 1 block, 2 hollow */
-static void draw_cell(struct canvas *c, int x, int y, int cw, int ch, const struct cell *e, int cur) {
+static void draw_cell(struct term *t, struct canvas *c, int x, int y, const struct cell *e, int cur) {
+    int cw = t->cw, ch = t->ch;
     int bold = e->attr & TERM_A_BOLD;
     color_t fg = resolve(e->fg, 1, bold), bg = resolve(e->bg, 0, 0);
     if (e->attr & TERM_A_INVERSE) { color_t tmp = fg; fg = bg; bg = tmp; }
@@ -721,8 +788,10 @@ static void draw_cell(struct canvas *c, int x, int y, int cw, int ch, const stru
     uint32_t cp = e->ch;
     if (cp >= 0x2500 && cp <= 0x259F) draw_box(c, x, y, cw, ch, cp, fg, bg);
     else if (cp > ' ') {
-        /* ponytail: italic is not synthesised; everything outside ASCII becomes '?' */
-        gfx_char(c, bold ? &font_mono_bold : &font_mono, x, y, cp, fg);
+        /* ponytail: no real italic face (a shear of the upright one); everything outside the baked set becomes '?' */
+        const struct font *f = bold ? t->fb : t->fr;
+        if (e->attr & TERM_A_ITALIC) draw_slant(c, f, x, y, cw, cp, fg);
+        else gfx_char(c, f, x, y, cp, fg);
     }
     if (e->attr & TERM_A_UNDER) gfx_fill(c, x, y + ch - 3, cw, 1, fg);
     if (e->attr & TERM_A_STRIKE) gfx_fill(c, x, y + ch / 2, cw, 1, fg);
@@ -766,8 +835,126 @@ int term_selection_text(struct term *t, char *buf, int n) {
     return o;
 }
 
+/* ---- search ---- */
+
+static uint32_t fold(uint32_t c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+/* lines are lnp() indices; on the alternate screen only the visible rows exist (as hist + row, like the selection) */
+static const struct cell *sline(struct term *t, int l) { return t->alt_on ? rowp(t, l - t->hist) : lnp(t, l); }
+
+static int match_at(struct term *t, const struct cell *row, int c) {
+    if (c + t->sqn > t->cols) return 0;
+    for (int i = 0; i < t->sqn; i++) {
+        uint32_t ch = row[c + i].ch;
+        if (fold(ch ? ch : ' ') != t->sq[i]) return 0;
+    }
+    return 1;
+}
+
+void term_search_set(struct term *t, const char *s) {
+    uint32_t cp;
+    t->sqn = 0; t->smv = 0;
+    while (*s && t->sqn < SQMAX) {
+        uint8_t b = *s++;
+        int k = b < 0x80 ? 0 : b >= 0xF0 ? 3 : b >= 0xE0 ? 2 : b >= 0xC0 ? 1 : 0;
+        cp = k ? b & (0x3F >> k) : b;
+        while (k-- > 0 && (*s & 0xC0) == 0x80) cp = cp << 6 | (*s++ & 0x3F);
+        t->sq[t->sqn++] = fold(cp);
+    }
+    mark_all(t);
+}
+
+/* dir 0: the match nearest the bottom; +1 / -1: the next one down / up from the current one, wrapping */
+int term_search_step(struct term *t, int dir) {
+    if (!t->sqn) return 0;
+    int lo = t->alt_on ? t->hist : 0, hi = t->hist + t->rows;
+    int fl = -1, fc = 0, ll = -1, lc = 0, pl = -1, pc = 0, nl = -1, nc = 0;   /* first, last, previous, next */
+    for (int l = lo; l < hi; l++) {
+        const struct cell *row = sline(t, l);
+        for (int c = 0; c < t->cols; c++) {
+            if (!match_at(t, row, c)) continue;
+            if (fl < 0) { fl = l; fc = c; }
+            ll = l; lc = c;
+            if (t->smv && (l < t->sml || (l == t->sml && c < t->smc))) { pl = l; pc = c; }
+            if (t->smv && nl < 0 && (l > t->sml || (l == t->sml && c > t->smc))) { nl = l; nc = c; }
+        }
+    }
+    int l, c;
+    if (fl < 0) { t->smv = 0; mark_all(t); return 0; }
+    if (dir == 0 || !t->smv) { l = ll; c = lc; }
+    else if (dir > 0) { l = nl >= 0 ? nl : fl; c = nl >= 0 ? nc : fc; }
+    else { l = pl >= 0 ? pl : ll; c = pl >= 0 ? pc : lc; }
+    t->smv = 1; t->sml = l; t->smc = c;
+    if (!t->alt_on) {                                       /* scroll only if the match is off screen, then centre it */
+        int base = t->hist - t->view;
+        if (l < base || l >= base + t->rows) t->view = imax(0, imin(t->hist, t->hist - (l - t->rows / 2)));
+    }
+    mark_all(t);
+    return 1;
+}
+
+void term_search_info(struct term *t, int *cur, int *total) {
+    int lo = t->alt_on ? t->hist : 0, hi = t->hist + t->rows, n = 0;
+    *cur = 0;
+    for (int l = lo; t->sqn && l < hi; l++) {
+        const struct cell *row = sline(t, l);
+        for (int c = 0; c < t->cols; c++)
+            if (match_at(t, row, c)) { n++; if (t->smv && l == t->sml && c == t->smc) *cur = n; }
+    }
+    *total = n;
+}
+
+/* ---- links ---- */
+
+static int url_char(uint32_t c) {
+    if (c <= ' ' || c >= 0x7F) return 0;
+    for (const char *b = "<>\"{}|\\^`"; *b; b++) if ((uint32_t)*b == c) return 0;
+    return 1;
+}
+
+int term_link_at(struct term *t, int col, int row, char *buf, int n, int *c0, int *c1) {
+    if (row < 0 || row >= t->rows || col < 0 || col >= t->cols || n < 16) return 0;
+    const struct cell *r = t->alt_on ? rowp(t, row) : lnp(t, t->hist - t->view + row);
+    if (!url_char(r[col].ch)) return 0;
+    int s = col, e = col;
+    while (s > 0 && url_char(r[s - 1].ch)) s--;
+    while (e < t->cols - 1 && url_char(r[e + 1].ch)) e++;
+    int p = -1;                                              /* the last scheme start at or before the pointer */
+    for (int i = s; i <= col; i++) {
+        static const char h[] = "http";
+        int k = 0;
+        while (k < 4 && i + k <= e && r[i + k].ch == (uint32_t)h[k]) k++;
+        if (k < 4) continue;
+        k = i + 4;
+        if (k <= e && r[k].ch == 's') k++;
+        if (k + 3 <= e && r[k].ch == ':' && r[k + 1].ch == '/' && r[k + 2].ch == '/') p = i;
+    }
+    if (p < 0) return 0;
+    int opens = 0, closes = 0;
+    for (int i = p; i <= e; i++) { opens += r[i].ch == '('; closes += r[i].ch == ')'; }
+    for (; e > p; e--) {                                     /* trailing sentence punctuation is not part of the URL */
+        uint32_t c = r[e].ch;
+        if (c == '.' || c == ',' || c == ';' || c == ':' || c == '!' || c == '?' || c == '\'') continue;
+        if (c == ')' && closes > opens) { closes--; continue; }
+        break;
+    }
+    if (col > e || e - p + 1 >= n) return 0;
+    for (int i = p; i <= e; i++) buf[i - p] = (char)r[i].ch;
+    buf[e - p + 1] = 0;
+    if (c0) *c0 = p;
+    if (c1) *c1 = e;
+    return e - p + 1;
+}
+
+void term_set_hover(struct term *t, int row, int c0, int c1) {
+    if (row == t->hrow && c0 == t->hc0 && c1 == t->hc1) return;
+    if (t->hrow >= 0) mark(t, t->hrow, 0, t->cols - 1);
+    t->hrow = row; t->hc0 = c0; t->hc1 = c1;
+    if (row >= 0) mark(t, row, 0, t->cols - 1);
+}
+
 void term_render(struct term *t, struct canvas *c, int x, int y, int full, struct rect *damage) {
-    int cw = term_cell_w(), ch = term_cell_h();
+    int cw = t->cw, ch = t->ch;
     int style = t->view == 0 && t->curvis ? (t->focused ? (t->phase ? 1 : 0) : 2) : 0;
     if (style != t->lstyle || t->cx != t->lcx || t->cy != t->lcy) {
         if (t->lstyle) mark(t, t->lcy, t->lcx, t->lcx);
@@ -780,13 +967,31 @@ void term_render(struct term *t, struct canvas *c, int x, int y, int full, struc
         t->dmin[r] = t->cols; t->dmax[r] = -1;
         if (a > b) continue;
         const struct cell *row = t->alt_on ? rowp(t, r) : lnp(t, t->hist - t->view + r);
+        int line = t->hist - t->view + r, hits = 0;
+        if (t->sqn && t->hit) {                                /* search: 1 = match, 2 = the current match */
+            memset(t->hit, 0, (size_t)t->cols);
+            for (int i = 0; i < t->cols; i++)
+                if (match_at(t, row, i)) {
+                    int v = t->smv && line == t->sml && i == t->smc ? 2 : 1;
+                    hits = 1;
+                    for (int k = 0; k < t->sqn; k++) if (t->hit[i + k] != 2) t->hit[i + k] = v;
+                }
+        }
         for (int col = a; col <= b; col++) {
             const struct cell *e = &row[col];
             struct cell hl;
-            if (selected(t, t->hist - t->view + r, col)) {
+            if (selected(t, line, col)) {
                 hl = *e; hl.bg = COL_RGB(0x4A, 0x3F, 0x7A); hl.attr &= ~TERM_A_INVERSE; e = &hl;
             }
-            draw_cell(c, x + col * cw, y + r * ch, cw, ch, e, style && col == t->cx && r == t->cy ? style : 0);
+            if (hits && t->hit[col]) {
+                hl = *e; hl.attr &= ~TERM_A_INVERSE; e = &hl;
+                if (t->hit[col] == 2) { hl.bg = COL_RGB(0xE0, 0xAF, 0x68); hl.fg = TERM_DEFAULT_BG; }
+                else hl.bg = COL_RGB(0x6A, 0x56, 0x22);
+            }
+            if (r == t->hrow && col >= t->hc0 && col <= t->hc1) {   /* hovered link */
+                hl = *e; hl.attr |= TERM_A_UNDER; hl.fg = COL_RGB(0x7D, 0xCF, 0xFF); e = &hl;
+            }
+            draw_cell(t, c, x + col * cw, y + r * ch, e, style && col == t->cx && r == t->cy ? style : 0);
         }
         minc = imin(minc, a); maxc = imax(maxc, b); minr = imin(minr, r); maxr = imax(maxr, r);
     }
