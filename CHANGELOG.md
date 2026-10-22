@@ -31,6 +31,7 @@ Newest notes at the bottom of each phase.
 - [x] `sh`: raw-mode line editor, persisted history, Tab completion, pipes, redirections, `; && || &`, globbing, quoting, $vars, scripts, `/etc/profile` — agent
 - [x] Networking: PCI, e1000, ARP/IPv4/ICMP/UDP/DHCP/DNS, TCP client, sockets + poll; ifconfig ping nslookup wget nc — agent
 - [x] Coreutils: ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill uptime date free clear, plus sleep env true false yes seq sort uniq tee find which basename dirname stat dmesg uname whoami cal fortune beep shutdown reboot vibefetch; TUIs: less top edit — agent
+- [x] `sh` scripting shell: recursive-descent parser + AST evaluator; `if/elif/else`, `while/until`, `for`, `case` (globs), `{ }`, `( )`, `!`, `break/continue [n]`, functions with `return`/`local`; `$(..)`/backticks, `$((..))`, `${v:-x} ${v:=x} ${v:+x} ${#v} ${v#p} ${v%p}`, `"$@"`; here-docs (`<<EOF`, `<<'EOF'`, `<<-`); builtins `test/[ read shift set(-e -x) printf echo eval exec type alias unalias wait local return`; plain `A=1` is shell-local until `export`; `!!` `!prefix` `!N`, Ctrl-R search, multi-line compound commands at the prompt; kernel `#!` support in `proc_spawn`; `/home/demo.sh` tour and `/home/shtest.sh` regression test (162 checks, run `sh /home/shtest.sh`) — agent
 
 ## Phase 2 — Desktop
 - [x] PS/2 mouse driver

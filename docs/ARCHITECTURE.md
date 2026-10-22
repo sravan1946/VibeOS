@@ -116,6 +116,14 @@ coordinates, so the pointer isn't grabbed in a VM.
 `stdlib`, `math`, `time`, `setjmp`, termios, dirents and the spawn API. Every
 `user/bin/NAME.c` or `user/bin/NAME/*.c` becomes `/bin/NAME`.
 
+`/bin/sh` (`user/bin/sh/`) is a POSIX-style scripting shell: `parse.c` (lexer + recursive-descent parser
+into an arena-allocated AST; "incomplete" results drive the `> ` continuation prompt), `expand.c`
+(variables, `$(..)`, `$((..))`, `${..}` forms, globbing), `exec.c` (evaluator, pipelines, functions),
+`builtin.c`, `edit.c` (line editor, history, Ctrl-R). Without `fork`, anything that needs another process
+(`( )`, compound commands or functions inside a pipeline, `cmd &`, `$(..)`) runs as a child `sh -c TEXT`
+that is sent the exported environment, plain variables, function definitions, positionals and `-e/-x`.
+The kernel runs `#!interp [arg]` scripts itself (`proc_spawn_ex`, one level, 128-byte line).
+
 ## Testing
 
 * `tools/vmtest.py` boots the image in QEMU and drives it through the monitor: type text, send
