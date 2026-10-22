@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive VibeOS in a headless QEMU.
 
-  vmtest.py [--timeout S] [--keep] [--hostfwd tcp::18080-:80] [--pcap] STEP...
+  vmtest.py [--timeout S] [--keep] [--hostfwd tcp::18080-:80] [--pcap] [--abs] STEP...
 
 steps:
   wait:TEXT        wait until TEXT shows up in the serial log
@@ -43,7 +43,7 @@ def keyname(ch):
     raise ValueError(f"can't type {ch!r}")
 
 class VM:
-    def __init__(self, headless=False, extra=(), audiodev=None, hostfwd=None, pcap=False):
+    def __init__(self, headless=False, extra=(), audiodev=None, hostfwd=None, pcap=False, absolute=False):
         os.makedirs(B, exist_ok=True)
         self.sock = os.path.join(B, "mon.sock")
         self.log = os.path.join(B, "serial.log")
@@ -55,7 +55,7 @@ class VM:
             "-display", "none" if headless else "gtk,zoom-to-fit=off", "-name", "VibeOS (vmtest)",
             "-serial", f"file:{self.log}", "-no-reboot", "-netdev", "user,id=n0" + (f",hostfwd={hostfwd}" if hostfwd else ""), "-device", "e1000,netdev=n0",
             *(["-object", f"filter-dump,id=dump,netdev=n0,file={B}/net.pcap"] if pcap else []),
-            "-device", "isa-debug-exit,iobase=0xf4,iosize=4", "-machine", "pc,vmport=off",  # relative PS/2 so monitor mouse_move works
+            "-device", "isa-debug-exit,iobase=0xf4,iosize=4", "-machine", "pc" if absolute else "pc,vmport=off",  # --abs: the vmmouse pointer `make run` gets; else relative PS/2
             "-accel", "kvm", "-accel", "tcg",  # KVM when available
             "-monitor", f"unix:{self.sock},server,nowait", "-qmp", f"unix:{self.qsock},server,nowait",
             "-audiodev", audiodev or f"wav,id=snd0,path={B}/audio.wav,out.frequency=48000", "-device", "AC97,audiodev=snd0", *extra])
@@ -66,6 +66,7 @@ class VM:
         self.m.connect(self.sock)
         self.m.settimeout(0.2)
         self.drain()
+        self.absolute = absolute
 
     def drain(self):
         try:
@@ -85,6 +86,11 @@ class VM:
             dx -= sx; dy -= sy
 
     def moveto(self, x, y, home=True):
+        if self.absolute:                         # QMP absolute axes span 0..32767 over the 1280x800 screen
+            self.qmp_events([{"type": "abs", "data": {"axis": "x", "value": x * 32767 // 1279}},
+                             {"type": "abs", "data": {"axis": "y", "value": y * 32767 // 799}}])
+            time.sleep(0.04)
+            return
         if home:                                  # slam into the top-left corner first
             self.rel(-1400, -900)
             self.pos = (0, 0)
@@ -95,18 +101,20 @@ class VM:
             time.sleep(0.03)
             self.hmp("mouse_move 0 0")
 
-    def keyev(self, name, down):
-        """press/release one key and leave it that way (QMP input-send-event; HMP sendkey can't hold)"""
+    def qmp_events(self, evs):
         if not self.q:
             for _ in range(100):
                 if os.path.exists(self.qsock): break
                 time.sleep(0.05)
             self.q = socket.socket(socket.AF_UNIX); self.q.connect(self.qsock); self.q.settimeout(0.3)
             self.q.recv(65536); self.q.sendall(b'{"execute":"qmp_capabilities"}\n'); self.q.recv(65536)
-        ev = {"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": name}}}
-        self.q.sendall((json.dumps({"execute": "input-send-event", "arguments": {"events": [ev]}}) + "\n").encode())
+        self.q.sendall((json.dumps({"execute": "input-send-event", "arguments": {"events": evs}}) + "\n").encode())
         try: self.q.recv(65536)
         except socket.timeout: pass
+
+    def keyev(self, name, down):
+        """press/release one key and leave it that way (QMP input-send-event; HMP sendkey can't hold)"""
+        self.qmp_events([{"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": name}}}])
         time.sleep(0.08)
 
     def serial(self):
@@ -148,7 +156,7 @@ def main(argv):
     timeout, keep, steps = 30, False, []
     headless = os.environ.get("VIBE_HEADLESS") == "1"
     audiodev = os.environ.get("VIBE_AUDIODEV")
-    hostfwd, pcap = None, False
+    hostfwd, pcap, absolute = None, False, False
     it = iter(argv)
     for a in it:
         if a == "--timeout": timeout = float(next(it))
@@ -157,9 +165,10 @@ def main(argv):
         elif a == "--audiodev": audiodev = next(it)
         elif a == "--hostfwd": hostfwd = next(it)
         elif a == "--pcap": pcap = True
+        elif a == "--abs": absolute = True
         elif a == "smoke": steps += ["wait:[desktop] ready", f"shot:{B}/smoke.png"]
         else: steps.append(a)
-    vm = VM(headless, audiodev=audiodev, hostfwd=hostfwd, pcap=pcap)
+    vm = VM(headless, audiodev=audiodev, hostfwd=hostfwd, pcap=pcap, absolute=absolute)
     ok = True
     try:
         for s in steps:
@@ -193,6 +202,11 @@ def main(argv):
                     vm.m.sendall(b"mouse_button 1\n"); time.sleep(0.04)
                     vm.m.sendall(b"mouse_button 0\n"); time.sleep(0.04)
                 vm.drain()
+            elif kind == "wheel" and vm.absolute:   # HMP mouse_move would also warp the absolute pointer to 0,0
+                for _ in range(abs(int(arg))):
+                    for down in (True, False):
+                        vm.qmp_events([{"type": "btn", "data": {"down": down, "button": "wheel-up" if int(arg) < 0 else "wheel-down"}}])
+                    time.sleep(0.03)
             elif kind == "wheel":
                 vm.hmp(f"mouse_move 0 0 {int(arg)}")
                 for _ in range(4): time.sleep(0.03); vm.hmp("mouse_move 0 0")   # flush the parked packet

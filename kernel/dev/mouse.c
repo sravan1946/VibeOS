@@ -66,14 +66,11 @@ static void mouse_irq(struct regs *r) {
     int dx = pkt[1] - ((pkt[0] << 4) & 0x100);
     int dy = pkt[2] - ((pkt[0] << 3) & 0x100);
     int dz = wheel ? (int8_t)(pkt[3] << 4) >> 4 : 0;
-    /* with vmmouse the host pointer arrives as absolute data and the PS/2 packet
-     * is just a zero-motion doorbell; real relative motion (e.g. QEMU's monitor)
-     * still works on top of it */
-    if (absolute) vmmouse_poll();
-    static int last_b;
+    /* with vmmouse the PS/2 packet is only a doorbell: QEMU fakes it with dx=1 and the
+     * PS/2 button state, which stays 0 because buttons go to the vmmouse queue. Feeding it
+     * on sent a release after every move, so drags (and touchpad tap-drags) never held. */
+    if (absolute) { vmmouse_poll(); return; }
     int b = pkt[0] & 7;
-    if (!dx && !dy && !dz && b == last_b && absolute) return;
-    last_b = b;
     mx = MAX(0, MIN(scr_w - 1, mx + dx));
     my = MAX(0, MIN(scr_h - 1, my - dy));
     if (mouse_sink) mouse_sink(mx, my, b, -dz);
