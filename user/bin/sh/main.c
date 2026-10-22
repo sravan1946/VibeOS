@@ -32,7 +32,16 @@ static char *tty_next(void *ctx, int cont) {
     if (cont) return readline_(C("2") "> " C("0"));
     reap_jobs();
     build_prompt(prompt, sizeof prompt);
-    return readline_(prompt);
+    char *l = readline_(prompt);
+    if (l && !g_intr) {                                  /* !! !prefix !N */
+        int changed;
+        char *e = hist_expand(l, &changed);
+        free(l);
+        if (!e) { g_status = 1; return strdup(""); }
+        if (changed) printf("%s\n", e), fflush(stdout);
+        l = e;
+    }
+    return l;
 }
 
 struct lrd { char *buf; size_t cap; };
@@ -51,21 +60,30 @@ static void source_if_exists(const char *path) {
 
 int main(int argc, char **argv) {
     char cwd[PATH_MAX];
+    int i = 1, cmd = 0;
     if (!getenv("PATH")) setenv("PATH", "/bin", 1);
     if (!getenv("HOME")) setenv("HOME", "/", 1);
     setenv("SHELL", "/bin/sh", 1);
     if (getcwd(cwd, sizeof cwd)) setenv("PWD", cwd, 1);
-    static char *none[] = { "sh", NULL };
-    g_sargc = 1; g_sargv = none;
-
-    if (argc >= 3 && !strcmp(argv[1], "-c")) {
-        if (argc > 3) { g_sargc = argc - 3; g_sargv = argv + 3; }
-        return run_lines(argv[2]) & 255;
+    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {      /* -e -x -c (combinable) */
+        if (!strcmp(argv[i], "--")) { i++; break; }
+        for (const char *p = argv[i] + 1; *p; p++) {
+            if (*p == 'c') cmd = 1;
+            else { char f[3] = { '-', *p, 0 }; set_options(f); }
+        }
     }
-    if (argc >= 2) {
-        run_source(argv[1], argc - 1, argv + 1);
+    static char *none[] = { "sh", NULL };
+    if (cmd && i < argc) {                                         /* sh -c text [name args...] */
+        const char *text = argv[i++];
+        if (i < argc) set_pos(argc - i, argv + i); else set_pos(1, none);
+        return run_lines(text) & 255;
+    }
+    if (i < argc) {
+        set_pos(argc - i, argv + i);
+        run_source(argv[i], 0, NULL);
         return g_status & 255;
     }
+    set_pos(1, none);
     if (!isatty(0)) {
         struct lrd r = { 0 };
         run_reader(stdin_next, &r);

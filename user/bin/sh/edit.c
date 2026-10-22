@@ -60,6 +60,42 @@ void hist_add(const char *line) {
     close(fd);
 }
 
+/* !! !prefix !N !-N expansion; NULL (after a message) if the event doesn't exist */
+char *hist_expand(const char *line, int *changed) {
+    *changed = 0;
+    if (!strchr(line, '!')) return strdup(line);
+    struct sb o = { 0 };
+    int sq = 0;
+    for (const char *p = line; *p; p++) {
+        if (*p == '\\' && p[1]) { sb_add(&o, *p); sb_add(&o, *++p); continue; }
+        if (*p == '\'') sq = !sq;
+        if (*p != '!' || sq || !p[1] || strchr(" \t=)", p[1])) { sb_add(&o, *p); continue; }
+        const char *q = p + 1, *ev = NULL;
+        size_t len = 0;
+        if (*q == '!') { ev = hn ? hist[hn - 1] : NULL; q++; }
+        else if (isdigit((unsigned char)*q) || (*q == '-' && isdigit((unsigned char)q[1]))) {
+            int neg = *q == '-', v = atoi(q + neg);
+            while (*q == '-' || isdigit((unsigned char)*q)) q++;
+            int idx = neg ? hn - v : v - 1;
+            ev = idx >= 0 && idx < hn ? hist[idx] : NULL;
+        } else {
+            len = strcspn(q, " \t;&|<>()\"'");
+            if (!len) { sb_add(&o, *p); continue; }
+            for (int i = hn - 1; i >= 0 && !ev; i--) if (!strncmp(hist[i], q, len)) ev = hist[i];
+            q += len;
+        }
+        if (!ev) {
+            fprintf(stderr, "sh: %.*s: event not found\n", (int)(q - p), p);
+            free(o.p);
+            return NULL;
+        }
+        sb_adds(&o, ev);
+        *changed = 1;
+        p = q - 1;
+    }
+    return sb_take(&o);
+}
+
 /* ---- terminal helpers ---- */
 int term_cols(void) {
     struct winsize ws;
@@ -306,6 +342,36 @@ static int getkey(void) {
     return K_NONE;
 }
 
+/* Ctrl-R: incremental reverse history search. 0 = cancelled, 1 = accept for editing, 2 = accept and run */
+static int rsearch(struct ed *e) {
+    char q[128], sp[200];
+    int ql = 0, from = hn, hit = -1, res = 0;
+    char *orig = strndup(e->buf, e->len);
+    const char *oprompt = e->prompt;
+    int oplen = e->plen;
+    q[0] = 0;
+    for (;;) {
+        hit = -1;
+        if (ql) for (int i = from - 1; i >= 0; i--) if (strstr(hist[i], q)) { hit = i; break; }
+        snprintf(sp, sizeof sp, "(%sreverse-i-search)`%s': ", ql && hit < 0 ? "failing " : "", q);
+        if (hit >= 0 || !ql) set_line(e, hit >= 0 ? hist[hit] : orig);
+        e->prompt = sp; e->plen = vwidth(sp);
+        if (hit >= 0) e->pos = strstr(hist[hit], q) - hist[hit] + ql;
+        refresh(e);
+        int k = getkey();
+        if (k == 18) { if (hit >= 0) from = hit; }
+        else if (k == 127 || k == 8) { if (ql) q[--ql] = 0; from = hn; }
+        else if (k >= 32 && k < 127) { if (ql < 120) { q[ql++] = k; q[ql] = 0; } from = hit >= 0 ? hit + 1 : hn; }
+        else if (k == 3 || k == 7 || k == 27 || k < 0) { res = 0; break; }
+        else if (k == '\n' || k == '\r') { res = 2; break; }
+        else { res = 1; break; }
+    }
+    e->prompt = oprompt; e->plen = oplen;
+    if (res == 0 || (hit < 0 && ql)) set_line(e, orig);
+    free(orig);
+    return res;
+}
+
 char *readline_(const char *prompt) {
     static struct ed e;
     struct termios orig, raw;
@@ -327,6 +393,13 @@ char *readline_(const char *prompt) {
         if (k == '\n' || k == '\r') { e.pos = e.len; refresh(&e); outs("\n"); res = strndup(e.buf, e.len); break; }
         if (k == 3) { e.pos = e.len; refresh(&e); outs("^C\n"); res = strdup(""); g_intr = 1; break; }
         if (k == 4 && !e.len) { outs("exit\n"); break; }
+        if (k == 18) {
+            int r = rsearch(&e);
+            e.cols = term_cols();
+            if (r == 2) { e.pos = e.len; refresh(&e); outs("\n"); res = strndup(e.buf, e.len); break; }
+            refresh(&e);
+            continue;
+        }
         switch (k) {
         case 1: case K_HOME: e.pos = 0; break;
         case 5: case K_END: e.pos = e.len; break;

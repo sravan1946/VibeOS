@@ -87,12 +87,44 @@ int proc_spawn_ex(const char *path, char *const argv[], char *const envp[], cons
     if (r < 0) return r;
     void *img; uint32_t size;
     if ((r = vfs_read_all(cpath, &img, &size)) < 0) return r;
+    /* "#!interp [arg]": run the interpreter with argv = interp [arg] script args...  One level only. */
+    char **nargv = 0, ipath[128], iarg[128];
+    const char *ln = img;
+    if (size > 2 && ln[0] == '#' && ln[1] == '!') {
+        uint32_t n = 2, e = 2, k = 0;
+        while (e < size && e < 128 && ln[e] != '\n') e++;
+        if (e == 128 && e < size && ln[e] != '\n') { kfree(img); return -ENOEXEC; }   /* line too long */
+        while (n < e && (ln[n] == ' ' || ln[n] == '\t')) n++;
+        while (n < e && ln[n] != ' ' && ln[n] != '\t' && ln[n] != '\r') ipath[k++] = ln[n++];
+        ipath[k] = 0;
+        while (n < e && (ln[n] == ' ' || ln[n] == '\t')) n++;
+        for (k = 0; n < e && ln[n] != '\r'; ) iarg[k++] = ln[n++];
+        while (k && (iarg[k - 1] == ' ' || iarg[k - 1] == '\t')) k--;
+        iarg[k] = 0;
+        kfree(img);
+        if (!ipath[0]) return -ENOEXEC;
+        int ac = 0;
+        while (argv && argv[ac]) ac++;
+        nargv = kmalloc((ac + 4) * sizeof *nargv);
+        if (!nargv) return -ENOMEM;
+        k = 0;
+        nargv[k++] = ipath;
+        if (iarg[0]) nargv[k++] = iarg;
+        nargv[k++] = cpath;
+        for (int i = 1; i < ac; i++) nargv[k++] = argv[i];
+        nargv[k] = 0;
+        argv = nargv;
+        char ip2[PATH_MAX];
+        if ((r = vfs_canon(current->cwd, ipath, ip2, sizeof ip2)) < 0 ||
+            (r = vfs_read_all(ip2, &img, &size)) < 0) { kfree(nargv); return r; }
+    }
     uint32_t dir = vmm_new_dir(), entry = 0, end = 0, esp = 0;
-    if (!dir) { kfree(img); return -ENOMEM; }
+    if (!dir) { kfree(img); kfree(nargv); return -ENOMEM; }
     r = load_elf(dir, img, size, &entry, &end);
     kfree(img);
     if (r == 0 && vmm_alloc_range(dir, USER_STACK_TOP - STACK_INIT, STACK_INIT, PTE_U | PTE_W) < 0) r = -ENOMEM;
     if (r == 0) r = build_stack(dir, argv, envp, &esp);
+    kfree(nargv);
     if (r < 0) { vmm_free_dir(dir); return r; }
 
     struct regs fr;
