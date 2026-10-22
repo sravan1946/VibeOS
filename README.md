@@ -51,7 +51,7 @@ emulator, and a set of desktop apps and games.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc`.
 - GUI apps: Files, Notepad, Paint, Calculator, Clock (with stopwatch and timer), System
-  Monitor, About.
+  Monitor, Settings, About.
 - Games: Snake, Tetris, Minesweeper.
 
 ## Building and running
@@ -66,7 +66,7 @@ make clean
 ```
 
 Try `vibefetch`, `top`, `edit welcome.txt`, `ping 10.0.2.2` or `wget http://example.com/` in the
-terminal; press Super for the launcher; right-click the desktop to change the wallpaper.
+terminal; press Super for the launcher; right-click the desktop to change the wallpaper, or open Settings.
 
 ### Testing
 

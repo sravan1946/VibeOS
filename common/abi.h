@@ -195,7 +195,8 @@ struct win_info {
     int stride;               /* out: pixels per row */
 };
 
-enum { WIN_SET_TITLE = 1, WIN_SET_SIZE, WIN_SET_POS, WIN_SET_VISIBLE };
+enum { WIN_SET_TITLE = 1, WIN_SET_SIZE, WIN_SET_POS, WIN_SET_VISIBLE,
+       WIN_SET_PREFS };   /* PREFS: desktop re-reads /etc/wallpaper and /etc/tz */
 
 /* reading a window fd yields struct gui_event records */
 enum {

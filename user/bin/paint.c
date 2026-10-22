@@ -399,7 +399,7 @@ redraw:
             int r = ui_prompt(&ui, "Save as BMP", "Save", savepath, sizeof savepath);
             if (r == 1) {
                 gfx_text_center(ui.c, &font_ui_bold, 0, H / 2 + 60, W, "Saving...", UI_TEXT);   /* the ext2 write takes a few seconds */
-                gui_flip(w);
+                ui_end(&ui);                                          /* show it before the slow write */
                 if (save_bmp(savepath)) { say(false, "Saved %s", savepath); dirty = false; }
                 else say(true, "Could not write %s", savepath);
             }

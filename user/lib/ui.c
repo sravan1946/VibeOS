@@ -8,12 +8,26 @@ static uint32_t rid(int x, int y, int w, int h) { return ((uint32_t)x * 73856093
 uint32_t ui_id(int x, int y, int w, int h) { return rid(x, y, w, h); }
 static bool inside(struct ui *ui, int x, int y, int w, int h) { return ui->mx >= x && ui->my >= y && ui->mx < x + w && ui->my < y + h; }
 
+/* widgets draw into a private back buffer; ui_end copies what changed into the shared window
+ * buffer, so the compositor never sees (or keeps) a half-drawn frame */
+static void ensure_back(struct ui *ui) {
+    struct gui_window *w = ui->win;
+    if (ui->back && ui->back_w == w->w && ui->back_h == w->h) return;
+    free(ui->back);
+    ui->back = malloc((size_t)w->w * w->h * 4);
+    ui->back_w = w->w; ui->back_h = w->h;
+    if (!ui->back) { ui->c = &w->cv; return; }             /* no memory: draw straight to the window */
+    for (int y = 0; y < w->h; y++) memcpy(ui->back + y * w->w, w->pixels + y * w->stride, w->w * 4);
+    canvas_init(&ui->bcv, ui->back, w->w, w->h, w->w);
+    ui->c = &ui->bcv;
+}
+
 void ui_init(struct ui *ui, struct gui_window *win) {
     memset(ui, 0, sizeof *ui);
     ui->win = win;
-    ui->c = &win->cv;
     ui->mx = ui->my = -1;
     ui->focused = true;
+    ensure_back(ui);
 }
 
 bool ui_poll(struct ui *ui, int timeout_ms) {
@@ -51,23 +65,18 @@ bool ui_poll(struct ui *ui, int timeout_ms) {
         if (ui->pressed || ui->released) break;   /* one click per frame keeps widgets simple */
     }
     if (ui->pressed) ui->focus = 0;               /* widgets re-claim focus on click */
+    if (ui->resized) ensure_back(ui);
     return true;
 }
 
 void ui_end(struct ui *ui) {
     if (ui->released) ui->active = 0;
     struct gui_window *w = ui->win;
-    if (!ui->prev || ui->prev_w != w->w || ui->prev_h != w->h) {
-        free(ui->prev);
-        ui->prev = malloc((size_t)w->w * w->h * 4);
-        ui->prev_w = w->w; ui->prev_h = w->h;
-        if (ui->prev) for (int y = 0; y < w->h; y++) memcpy(ui->prev + y * w->w, w->pixels + y * w->stride, w->w * 4);
-        gui_flip(w);
-        return;
-    }
+    if (ui->back_w != w->w || ui->back_h != w->h) { ensure_back(ui); return; }   /* resized mid-frame */
+    if (ui->c != &ui->bcv) { gui_flip(w); return; }
     int x0 = w->w, y0 = -1, x1 = -1, y1 = -1;              /* bounding box of changed pixels */
     for (int y = 0; y < w->h; y++) {
-        uint32_t *a = w->pixels + y * w->stride, *b = ui->prev + y * w->w;
+        uint32_t *a = ui->back + y * w->w, *b = w->pixels + y * w->stride;
         if (!memcmp(a, b, w->w * 4)) continue;
         int l = 0, r = w->w - 1;
         while (a[l] == b[l]) l++;

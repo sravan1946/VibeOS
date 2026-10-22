@@ -1,6 +1,9 @@
-/* wallpaper.c - procedural "aurora" backdrop, rendered once at boot (integer math only) */
-#include "kernel.h"
-#include "gfx.h"
+/* wallpaper.c - procedural "aurora" backdrops (integer math only); shared by the compositor
+ * and Settings, which renders thumbnails */
+#include "wallpaper.h"
+
+#define WP_LEN(a) (int)(sizeof(a) / sizeof((a)[0]))
+static int clamp255(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 
 struct blob { int x, y, r; int cr, cg, cb; int k; };   /* k: intensity /256 */
 
@@ -16,11 +19,11 @@ static const struct theme {
     { "Forest",   0x06110D, 0x0C1E16, { 0x16A085, 0xA3E635, 0x2ECC71, 0x0EA5E9, 0x22C55E }, { 140, 90, 110, 70, 40 } },
     { "Midnight", 0x07070E, 0x0E0E1C, { 0x4C3A8A, 0x6B4FA0, 0x2B2B5F, 0x1F3B70, 0x3D2E6B }, { 120, 100, 90, 70, 40 } },
 };
-int wallpaper_count(void) { return ARRAY_LEN(themes); }
-const char *wallpaper_name(int i) { return themes[i % ARRAY_LEN(themes)].name; }
+int wallpaper_count(void) { return WP_LEN(themes); }
+const char *wallpaper_name(int i) { return themes[i % WP_LEN(themes)].name; }
 
 void wallpaper_render(struct canvas *c, int theme) {
-    const struct theme *th = &themes[theme % ARRAY_LEN(themes)];
+    const struct theme *th = &themes[theme % WP_LEN(themes)];
     int W = c->w, H = c->h;
     static const int pos[5][3] = { { 18, 22, 55 }, { 88, 12, 42 }, { 72, 100, 55 }, { 5, 95, 38 }, { 50, 55, 30 } };
     struct blob b[5];
@@ -35,7 +38,7 @@ void wallpaper_render(struct canvas *c, int theme) {
         uint32_t *row = &c->px[y * c->stride];
         for (int x = 0; x < W; x++) {
             int r = br << 8, g = bg << 8, bl = bb << 8;            /* 8.8 fixed point */
-            for (unsigned i = 0; i < ARRAY_LEN(b); i++) {
+            for (int i = 0; i < WP_LEN(b); i++) {
                 int dx = x - b[i].x, dy = (y - b[i].y) * 5 / 4;     /* slightly squashed ellipses */
                 int64_t d2 = (int64_t)dx * dx + (int64_t)dy * dy, r2 = (int64_t)b[i].r * b[i].r;
                 if (d2 >= r2) continue;
@@ -46,9 +49,13 @@ void wallpaper_render(struct canvas *c, int theme) {
             seed = seed * 1664525 + 1013904223;                     /* film grain kills banding */
             int n = (int)(seed >> 24) - 128;
             r = (r + n) >> 8; g = (g + n) >> 8; bl = (bl + n) >> 8;
-            row[x] = RGB(MIN(255, MAX(0, r)), MIN(255, MAX(0, g)), MIN(255, MAX(0, bl)));
+            row[x] = RGB(clamp255(r), clamp255(g), clamp255(bl));
         }
     }
+}
+
+void wallpaper_watermark(struct canvas *c) {
+    int W = c->w, H = c->h;
     /* soft watermark */
     const char *mark = "VibeOS";
     int tw = gfx_text_width(&font_big, mark);

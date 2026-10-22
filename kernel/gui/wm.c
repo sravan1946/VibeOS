@@ -11,9 +11,7 @@
 #include "tty.h"
 
 uint32_t rtc_now(void);
-void wallpaper_render(struct canvas *c, int theme);
-int wallpaper_count(void);
-const char *wallpaper_name(int i);
+#include "wallpaper.h"
 
 static struct canvas bb, wall;          /* back buffer, wallpaper */
 static int SW, SH;
@@ -35,6 +33,7 @@ static struct window *drag_win, *resize_win, *capture_win, *hover_win;
 static int drag_dx, drag_dy, drag_sx, drag_sy;
 static int snap_zone;                                /* 1 left half, 2 right half, 3 maximise */
 static void draw_snap(struct canvas *c);
+static void load_prefs(bool init);
 static bool menu_open;
 static int menu_hover = -1, hover_btn = -1, hover_task = -1;
 static uint64_t last_click_ms; static struct window *last_click_win;
@@ -293,7 +292,7 @@ static void draw_menu(struct canvas *c) {
 /* ---- desktop context menu (right-click on the wallpaper) ---- */
 static const struct { const char *label, *path; } ctx_items[] = {
     { "New Terminal", 0 }, { "Files", "/bin/files" }, { "System Monitor", "/bin/sysmon" },
-    { "Change Wallpaper", "" }, { "About VibeOS", "/bin/about" },
+    { "Change Wallpaper", "" }, { "Settings", "/bin/settings" }, { "About VibeOS", "/bin/about" },
 };
 #define CTX_W 230
 #define CTX_ITEM 34
@@ -327,6 +326,7 @@ static void draw_ctx(struct canvas *c) {
 static void set_wallpaper(int theme) {
     wall_theme = theme % wallpaper_count();
     wallpaper_render(&wall, wall_theme);
+    wallpaper_watermark(&wall);
     struct file *f;
     if (vfs_open("/", "/etc/wallpaper", O_WRONLY | O_CREAT | O_TRUNC, &f) == 0) {
         vfs_write(f, wallpaper_name(wall_theme), strlen(wallpaper_name(wall_theme)));
@@ -1006,6 +1006,9 @@ int win_syscall(int num, uint32_t a, uint32_t b, uint32_t c) {
         else set_geometry(w, w->x, w->y, imax(80, imin(r->w, SW - 4)), imax(40, imin(r->h, TB_Y - WM_TITLE_H - 4)));
         return 0;
     }
+    case WIN_SET_PREFS:
+        load_prefs(false);
+        return 0;
     case WIN_SET_VISIBLE:
         w->visible = c != 0;
         damage_window(w);
@@ -1096,31 +1099,42 @@ static int chime(void *arg) {
     return 0;
 }
 
+/* /etc/wallpaper (theme name) and /etc/tz (minutes east of UTC); Settings asks for a reload */
+static void load_prefs(bool init) {
+    int theme = wall_theme;
+    void *d; uint32_t n;
+    if (vfs_read_all("/etc/wallpaper", &d, &n) == 0) {
+        for (int i = 0; i < wallpaper_count(); i++) if (!strncmp(d, wallpaper_name(i), strlen(wallpaper_name(i)))) theme = i;
+        kfree(d);
+    }
+    if (init || theme != wall_theme) {
+        wall_theme = theme;
+        wallpaper_render(&wall, wall_theme);
+        wallpaper_watermark(&wall);
+    }
+    if (vfs_read_all("/etc/tz", &d, &n) == 0) {
+        char *p = d; int sign = 1, v = 0;
+        if (*p == '-') { sign = -1; p++; } else if (*p == '+') p++;
+        while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+        tz_minutes = sign * v;
+        kfree(d);
+    }
+    last_minute = -1;                                      /* repaint the clock */
+    if (!init) wm_damage(0, 0, SW, SH);
+}
+
 void wm_init(void) {
     SW = fb.w; SH = fb.h;
     uint32_t *b = kmalloc((size_t)SW * SH * 4), *wp = kmalloc((size_t)SW * SH * 4);
     if (!b || !wp) { kprintf("wm: no memory for buffers\n"); return; }
     canvas_init(&bb, b, SW, SH, SW);
     canvas_init(&wall, wp, SW, SH, SW);
-    void *wt; uint32_t wts;
-    if (vfs_read_all("/etc/wallpaper", &wt, &wts) == 0) {
-        for (int i = 0; i < wallpaper_count(); i++) if (!strncmp(wt, wallpaper_name(i), strlen(wallpaper_name(i)))) wall_theme = i;
-        kfree(wt);
-    }
-    wallpaper_render(&wall, wall_theme);
+    load_prefs(true);
     splash_progress(95);
     for (int d = 0; d <= SHADOW; d++) { int t = SHADOW - d; shadow_lut[d] = t * t * 110 / (SHADOW * SHADOW); }
     for (int i = 0; i < WM_RADIUS; i++) {
         int dy2 = (2 * (WM_RADIUS - i) - 1) * (2 * (WM_RADIUS - i) - 1);
         corner_inset[i] = WM_RADIUS - (isqrt(imax(0, 4 * WM_RADIUS * WM_RADIUS - dy2)) + 1) / 2;
-    }
-    void *tz; uint32_t tzs;
-    if (vfs_read_all("/etc/tz", &tz, &tzs) == 0) {
-        char *p = tz; int sign = 1, v = 0;
-        if (*p == '-') { sign = -1; p++; } else if (*p == '+') p++;
-        while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
-        tz_minutes = sign * v;
-        kfree(tz);
     }
     mouse_pos(&cur_x, &cur_y);
     load_apps();

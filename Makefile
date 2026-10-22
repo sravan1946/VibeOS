@@ -24,7 +24,7 @@ FS_SECTORS := $(shell echo $$(( $(FS_MB) * 2048 )))
 KSRC  := $(wildcard kernel/*/*.c)
 KASM  := $(wildcard kernel/arch/*.asm)
 KOBJ  := $(patsubst %.c,build/%.o,$(KSRC)) $(patsubst %.asm,build/%.o,$(KASM)) \
-         build/common/gfx.k.o build/common/fonts.k.o build/common/term.k.o
+         build/common/gfx.k.o build/common/fonts.k.o build/common/term.k.o build/common/wallpaper.k.o
 
 all: build/vibeos.img
 
@@ -62,7 +62,7 @@ UCFLAGS := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protecto
 ULIBC_SRC := $(wildcard user/lib/*.c)
 ULIBC_ASM := $(filter-out user/lib/crt0.asm,$(wildcard user/lib/*.asm))
 # gui.o + the shared gfx/fonts live in libgui.a so only GUI programs pay for the font data
-ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o
+ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o build/user/obj/common/wallpaper.o
 ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o build/user/obj/lib/ui.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
              $(patsubst user/%.asm,build/user/obj/%.o,$(ULIBC_ASM))
 ULIBS := build/user/libgui.a build/user/libc.a

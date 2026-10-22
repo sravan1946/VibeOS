@@ -42,8 +42,9 @@ struct ui {
     bool closed, resized, focused, timeout;
     uint32_t last_click_ms;
     int last_click_x, last_click_y;
-    uint32_t *prev;                 /* last flipped frame: ui_end only flips what changed */
-    int prev_w, prev_h;
+    uint32_t *back;                 /* private frame; ui_end copies + flips only what changed */
+    int back_w, back_h;
+    struct canvas bcv;
 };
 
 void ui_init(struct ui *ui, struct gui_window *win);
