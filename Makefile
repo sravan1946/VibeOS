@@ -115,7 +115,7 @@ build/root.ext2: $(shell find root 2>/dev/null) $(UBINS)
 	rm -rf build/rootfs
 	@mkdir -p build/rootfs/bin build/rootfs/dev build/rootfs/proc build/rootfs/tmp build/rootfs/home
 	@cp -a root/. build/rootfs/ 2>/dev/null || true
-	@for f in $(UBINS); do cp $$f build/rootfs/bin/; done
+	@for f in $(UBINS); do strip -o build/rootfs/bin/$$(basename $$f) $$f; done
 	rm -f $@
 	mke2fs -q -t ext2 -b 1024 -I 256 -L vibeos -d build/rootfs $@ $(FS_MB)M
 

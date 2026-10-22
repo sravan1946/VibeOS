@@ -8,7 +8,7 @@
 #define EXT2_MAGIC   0xEF53
 #define ROOT_INO     2
 #define NDIR         12
-#define CACHE_N      32
+#define CACHE_N      1024    /* ponytail: linear LRU scan; hash it if this grows much more */
 #define INDEX_FL     0x1000
 #define INCOMPAT_FILETYPE 0x2
 #define RO_OK        (0x1 | 0x2 | 0x4 | 0x20 | 0x40)  /* sparse_super large_file btree_dir dir_nlink extra_isize */
