@@ -1,6 +1,8 @@
 /* viewer [file] - image viewer: PNG/JPEG/GIF/BMP/PPM, fit-to-window, zoom (wheel, +/-), drag to pan, 1:1,
  * arrow keys browse the folder, checkerboard behind transparency, animated GIFs play (p pauses). No argument opens ~/Pictures. */
 #include <ui.h>
+#include <design.h>
+#include <icons.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -11,7 +13,7 @@
 #include "image.h"
 
 #define MAX_FILES 1024
-#define BAR_H 40
+#define CANVAS RGB(0x14, 0x15, 0x17)    /* neutral dark canvas in every theme (content, like a slide table) */
 #define ZMIN 0.02f
 #define ZMAX 32.0f
 
@@ -95,7 +97,7 @@ static void zoom_at(float nz, int px, int py, int vw, int vh) {
     fit = false;
 }
 
-static void draw_image(struct canvas *c, int vw, int vh, bool smooth) {
+static void draw_image(struct canvas *c, int oy, int vw, int vh, bool smooth) {
     float ix0 = vw / 2 - cx * zoom, iy0 = vh / 2 - cy * zoom;
     int x0 = (int)ix0 < 0 ? 0 : (int)ix0, y0 = (int)iy0 < 0 ? 0 : (int)iy0;
     int x1 = (int)(ix0 + im.w * zoom + 0.999f), y1 = (int)(iy0 + im.h * zoom + 0.999f);
@@ -115,17 +117,16 @@ static void draw_image(struct canvas *c, int vw, int vh, bool smooth) {
             for (int x = 0; x < rw; x++) {
                 uint32_t p = view[y * rw + x];
                 if (p >> 24 == 255) continue;
-                uint32_t bg = ((x0 + x) >> 3 ^ (y0 + y) >> 3) & 1 ? RGB(0x5A, 0x58, 0x6A) : RGB(0x44, 0x42, 0x54);
+                uint32_t bg = ((x0 + x) >> 3 ^ (y0 + y) >> 3) & 1 ? RGB(0x3A, 0x3B, 0x3E) : RGB(0x2C, 0x2D, 0x30);
                 view[y * rw + x] = blend(bg, p);
             }
         vkey.x = x0; vkey.y = y0; vkey.w = rw; vkey.h = rh; vkey.zoom = zoom; vkey.cx = cx; vkey.cy = cy; vkey.smooth = smooth; vkey.ok = true;
     }
-    gfx_blit(c, x0, y0, view, rw, rh, rw);
-    gfx_rect(c, x0 - 1, y0 - 1, rw + 2, rh + 2, RGBA(255, 255, 255, 40));
+    gfx_blit(c, x0, oy + y0, view, rw, rh, rw);
 }
 
 int main(int argc, char **argv) {
-    struct gui_window *w = gui_window_create("Viewer", 880, 640, 0);
+    struct gui_window *w = gui_window_create("Photos", 880, 640, 0);
     if (!w) { perror("viewer"); return 1; }
     struct ui ui;
     ui_init(&ui, w);
@@ -154,13 +155,13 @@ int main(int argc, char **argv) {
             next_ms += frame_ms();
             if ((int)((uint32_t)uptime_ms() - next_ms) > 0) next_ms = (uint32_t)uptime_ms() + frame_ms();   /* fell behind: don't burst */
         }
-        int W = w->w, H = w->h, vw = W, vh = H - BAR_H;
+        int W = w->w, H = w->h, vw = W, vy = H_TOOLBAR, vh = H - H_TOOLBAR - H_STATUS, my = ui.my - vy;
         if (vh < 1) vh = 1;
-        bool in_view = ui.my < vh && ui.my >= 0;
+        bool in_view = my < vh && my >= 0;
         if (have) {
             if (fit) { zoom = fit_zoom(vw, vh); cx = im.w / 2.0f; cy = im.h / 2.0f; }
-            if (ui.scroll && in_view) zoom_at(zoom * (ui.scroll < 0 ? 1.25f : 0.8f), ui.mx, ui.my, vw, vh);
-            if (ui.pressed && in_view) { dragging = true; lx = ui.mx; ly = ui.my; if (ui.dbl) { if (fit) zoom_at(1, ui.mx, ui.my, vw, vh); else fit = true; dragging = false; } }
+            if (ui.scroll && in_view) zoom_at(zoom * (ui.scroll < 0 ? 1.25f : 0.8f), ui.mx, my, vw, vh);
+            if (ui.pressed && in_view) { dragging = true; lx = ui.mx; ly = ui.my; if (ui.dbl) { if (fit) zoom_at(1, ui.mx, my, vw, vh); else fit = true; dragging = false; } }
             else if (dragging && (ui.buttons & 1)) { cx -= (ui.mx - lx) / zoom; cy -= (ui.my - ly) / zoom; lx = ui.mx; ly = ui.my; fit = false; }
             else dragging = false;
         }
@@ -181,32 +182,39 @@ int main(int argc, char **argv) {
 
         ui_clear(&ui);
         struct canvas *c = ui.c;
-        gfx_fill(c, 0, 0, vw, vh, RGB(0x10, 0x0F, 0x1A));
-        if (have) draw_image(c, vw, vh, !dragging);
-        else gfx_text_center(c, &font_ui, 0, vh / 2 - 8, vw,
-                             failed ? "Cannot open this image (PNG, JPEG, GIF, BMP and PPM are supported)" : "No images here. Open a picture from Files.", UI_TEXT_DIM);
+        if (have) { gfx_fill(c, 0, vy, vw, vh, CANVAS); draw_image(c, vy, vw, vh, !dragging); }
+        else if (failed) ui_empty(&ui, 0, vy, vw, vh, ICON_IMAGE, "Can't open this image", "PNG, JPEG, GIF, BMP and PPM images are supported.", NULL);
+        else ui_empty(&ui, 0, vy, vw, vh, ICON_IMAGE, "No images here", "Open a picture from Files to browse its folder.", NULL);
 
-        /* bottom bar */
-        gfx_fill(c, 0, vh, W, BAR_H, UI_PANEL);
-        gfx_fill(c, 0, vh, W, 1, UI_BORDER);
-        int by = vh + 6;
-        if (ui_tool(&ui, 8, by, 32, 28, "<", false)) step(-1);
-        if (ui_tool(&ui, 44, by, 32, 28, ">", false)) step(1);
-        if (ui_tool(&ui, 92, by, 32, 28, "-", false) && have) zoom_at(zoom * 0.8f, vw / 2, vh / 2, vw, vh);
-        if (ui_tool(&ui, 128, by, 32, 28, "+", false) && have) zoom_at(zoom * 1.25f, vw / 2, vh / 2, vw, vh);
-        if (ui_tool(&ui, 164, by, 44, 28, "Fit", fit) && have) fit = true;
-        if (ui_tool(&ui, 212, by, 44, 28, "1:1", !fit && zoom == 1) && have) { if (zoom == 1 && !fit) fit = true; else zoom_at(1, vw / 2, vh / 2, vw, vh); }
+        /* toolbar: browse, then zoom */
+        ui_toolbar(&ui, 0, 0, W);
+        int ty = (H_TOOLBAR - H_CTL) / 2, nav = nnames > 1 ? 0 : UI_DISABLED, zd = have ? 0 : UI_DISABLED, x = SP_3;
+        if (ui_icon_button(&ui, x, ty, ICON_CHEVRON_LEFT, nav, "Previous · Left")) step(-1);
+        x += H_CTL + SP_2;
+        if (ui_icon_button(&ui, x, ty, ICON_CHEVRON_RIGHT, nav, "Next · Right")) step(1);
+        x += H_CTL + SP_4;
+        if (ui_icon_button(&ui, x, ty, ICON_ZOOM_OUT, zd, "Zoom out · −") && have) zoom_at(zoom * 0.8f, vw / 2, vh / 2, vw, vh);
+        x += H_CTL + SP_2;
+        if (ui_icon_button(&ui, x, ty, ICON_ZOOM_IN, zd, "Zoom in · +") && have) zoom_at(zoom * 1.25f, vw / 2, vh / 2, vw, vh);
+        x += H_CTL + SP_2;
+        if (ui_icon_button(&ui, x, ty, ICON_FIT, zd | (fit && have ? UI_ON : 0), "Fit to window · F") && have) fit = true;
+        x += H_CTL + SP_2;
+        int bw = ui_button_w(UI_NOICON, "100%");
+        if (ui_button_ex(&ui, x, ty, bw, H_CTL, UI_NOICON, "100%", UI_GHOST | zd | (have && !fit && zoom == 1 ? UI_ON : 0)) && have) {
+            if (zoom == 1 && !fit) fit = true; else zoom_at(1, vw / 2, vh / 2, vw, vh);
+        }
+        ui_tooltip(&ui, x, ty, bw, H_CTL, "Actual size · 1");
+
+        /* status bar: file name left, size, zoom and position right */
         char info[128], z[16];
         snprintf(z, sizeof z, "%d%%", (int)(zoom * 100 + 0.5f));
-        if (have && an.n > 1) snprintf(info, sizeof info, "%d x %d   %s   frame %d/%d   %d/%d", im.w, im.h, z, frame + 1, an.n, cur + 1, nnames);
-        else if (have) snprintf(info, sizeof info, "%d x %d   %s   %d/%d", im.w, im.h, z, cur + 1, nnames);
+        if (have && an.n > 1) snprintf(info, sizeof info, "%d × %d  ·  %s  ·  frame %d of %d  ·  %d of %d", im.w, im.h, z, frame + 1, an.n, cur + 1, nnames);
+        else if (have) snprintf(info, sizeof info, "%d × %d  ·  %s  ·  %d of %d", im.w, im.h, z, cur + 1, nnames);
         else snprintf(info, sizeof info, "%d image%s", nnames, nnames == 1 ? "" : "s");
-        int iw = gfx_text_width(&font_ui, info);
-        gfx_text(c, &font_ui, W - 14 - iw, vh + (BAR_H - font_ui.height) / 2, info, UI_TEXT_DIM);
-        if (nnames) ui_text_fit(&ui, &font_ui, 272, vh + (BAR_H - font_ui.height) / 2, W - 272 - iw - 30, names[cur], UI_TEXT);
+        ui_status(&ui, 0, H - H_STATUS, W, nnames ? names[cur] : NULL, info);
 
-        if (have) snprintf(title, sizeof title, "%s - %dx%d - %s", names[cur], im.w, im.h, z);
-        else snprintf(title, sizeof title, "Viewer");
+        if (have) snprintf(title, sizeof title, "%s — Photos", names[cur]);
+        else snprintf(title, sizeof title, "Photos");
         if (strcmp(title, lasttitle)) { gui_set_title(w, title); strcpy(lasttitle, title); }
         ui_end(&ui);
         timeout = -1;
