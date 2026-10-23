@@ -29,7 +29,7 @@ KSRC  := $(wildcard kernel/*/*.c)
 KASM  := $(wildcard kernel/arch/*.asm)
 KOBJ  := $(patsubst %.c,build/%.o,$(KSRC)) $(patsubst %.asm,build/%.o,$(KASM)) \
          build/common/gfx.k.o build/common/fonts.k.o build/common/termfonts.k.o build/common/term.k.o build/common/wallpaper.k.o build/common/theme.k.o \
-         build/gen/icons.k.o build/gen/appicons.k.o
+         build/gen/icons.k.o build/gen/appicons.k.o build/gen/kiconuse.k.o
 
 all: build/vibeos.img
 
@@ -54,6 +54,13 @@ build/host/svgrast: tools/svgrast.c third_party/nanosvg/nanosvg.h third_party/na
 	gcc -O2 -w -Ithird_party/nanosvg $< -lm -o $@
 build/gen/icons.c build/gen/appicons.c build/gen/fileicons.c &: build/gen/icons.bundle build/host/svgrast
 	build/host/svgrast $< build/gen/icons.c build/gen/appicons.c build/gen/fileicons.c
+# icon_use: the Lucide icons a binary's sources name (kernel: here; user: per binary below, the rest pruned by --gc-sections)
+build/gen/kiconuse.c: tools/mkicons.py common/icons.h $(KSRC) $(wildcard kernel/*/*.h)
+	@mkdir -p $(dir $@)
+	python3 -I tools/mkicons.py --use $@ $(KSRC) $(wildcard kernel/*/*.h)
+build/gen/iconall.c: tools/mkicons.py common/icons.h
+	@mkdir -p $(dir $@)
+	python3 -I tools/mkicons.py --all $@
 build/gen/%.k.o: build/gen/%.c common/icons.h
 	$(CC) $(KGFXFLAGS) -c $< -o $@
 
@@ -84,9 +91,9 @@ build/ca.stamp: FORCE      # rebuild the rootfs when CA_BUNDLE points somewhere 
 FORCE:
 ULIBC_ASM := $(filter-out user/lib/crt0.asm,$(wildcard user/lib/*.asm))
 # gui.o + the shared gfx/fonts live in libgui.a so only GUI programs pay for the font data
-ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/lib/fileicon.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o build/user/obj/common/wallpaper.o build/user/obj/common/theme.o \
-               build/user/obj/gen/icons.o build/user/obj/gen/appicons.o build/user/obj/gen/fileicons.o
-ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/lib/fileicon.o build/user/obj/lib/tls.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
+ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o build/user/obj/common/wallpaper.o build/user/obj/common/theme.o \
+               build/user/obj/gen/icons.o build/user/obj/gen/appicons.o build/user/obj/gen/fileicons.o build/user/obj/gen/iconall.o
+ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/lib/tls.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
              $(patsubst user/%.asm,build/user/obj/%.o,$(ULIBC_ASM))
 ULIBS := build/user/libgui.a build/user/libtls.a build/user/libc.a
 UBIN_SINGLE := $(basename $(notdir $(wildcard user/bin/*.c)))
@@ -105,6 +112,16 @@ build/user/obj/common/%.o: common/%.c
 build/user/obj/gen/%.o: build/gen/%.c common/icons.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
+
+# per-binary icon_use (linked before libgui.a, so its iconall.o default stays out)
+build/user/gen/iconuse/%.c: tools/mkicons.py common/icons.h user/lib/ui.c
+	@mkdir -p $(dir $@)
+	python3 -I tools/mkicons.py --use $@ $(filter-out common/icons.h,$(filter %.c %.h,$^))
+build/user/obj/iconuse/%.o: build/user/gen/iconuse/%.c common/icons.h
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -MMD -MP,$(UCFLAGS)) $(GCSECT) -c $< -o $@   # no .d: -include would try to remake it from these rules
+$(foreach p,$(UBIN_SINGLE),$(eval build/user/gen/iconuse/$(p).c: user/bin/$(p).c))
+$(foreach p,$(UBIN_MULTI),$(eval build/user/gen/iconuse/$(p).c: $(wildcard user/bin/$(p)/*.c user/bin/$(p)/*.h)))
 
 build/user/obj/%.o: user/%.asm
 	@mkdir -p $(dir $@)
@@ -134,13 +151,13 @@ build/user/libtls.a: build/user/obj/lib/tls.o $(BEARSSL_OBJ)
 ULDFLAGS := -T user/user.ld --gc-sections -z max-page-size=4096 -z noexecstack --no-warn-rwx-segments
 
 # single-file programs
-$(addprefix build/user/bin/,$(UBIN_SINGLE)): build/user/bin/%: build/user/obj/bin/%.o $(UCRT0) $(ULIBS) user/user.ld
+$(addprefix build/user/bin/,$(UBIN_SINGLE)): build/user/bin/%: build/user/obj/bin/%.o build/user/obj/iconuse/%.o $(UCRT0) $(ULIBS) user/user.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(ULDFLAGS) -o $@ $(UCRT0) $< $(ULIBS) $(LIBGCC)
+	$(LD) $(ULDFLAGS) -o $@ $(UCRT0) $< build/user/obj/iconuse/$*.o $(ULIBS) $(LIBGCC)
 
 # multi-file programs: user/bin/NAME/*.c (+ $(UEXTRA_NAME): third-party objects linked in as well)
 define UMULTI
-build/user/bin/$(1): $$(patsubst user/%.c,build/user/obj/%.o,$$(wildcard user/bin/$(1)/*.c)) $$(UEXTRA_$(1)) $$(UCRT0) $$(ULIBS) user/user.ld
+build/user/bin/$(1): $$(patsubst user/%.c,build/user/obj/%.o,$$(wildcard user/bin/$(1)/*.c)) build/user/obj/iconuse/$(1).o $$(UEXTRA_$(1)) $$(UCRT0) $$(ULIBS) user/user.ld
 	@mkdir -p $$(dir $$@)
 	$$(LD) $$(ULDFLAGS) -o $$@ $$(UCRT0) $$(filter-out $$(UCRT0),$$(filter %.o,$$^)) $$(ULIBS) $$(LIBGCC)
 endef

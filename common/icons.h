@@ -1,6 +1,10 @@
 /* icons.h - build-time rasterised icons (tools/mkicons.py + tools/svgrast.c -> build/gen/{icons,appicons,fileicons}.c).
  * Symbolic: Lucide (third_party/lucide, ISC + Feather MIT) as A8 coverage masks at 16 px (1.5 px stroke) and 20 px
- * (1.75 px); tint them at draw time (C_TEXT_2 idle, C_TEXT hover, accent when on).
+ * (1.75 px), plus 48 px (Lucide's own 2/24 stroke) for ICON48_LIST, the empty-state icons; tint them at draw time
+ * (C_TEXT_2 idle, C_TEXT hover, accent when on).
+ * Every icon/size is its own symbol, so a binary links only what it uses: icon_get reads icon_use, a table each binary
+ * gets from `mkicons.py --use` (the ICON_* names in its sources; libgui.a's default member holds them all), and
+ * appicon_get/fileicon_get are inline switches that reference just the ids and sizes a call site asks for.
  * App and file-type icons: tools/appicons.py artwork as premultiplied ARGB (0xAARRGGBB, colour already scaled by
  * alpha: draw with d = s + d * (255 - a) / 255, not blend()) at 24, 32 and 48 px.
  * The lists below are the single source: X(ID, file) for Lucide, X(ID, key, "/etc/apps name") for apps. */
@@ -35,9 +39,12 @@
     X(ELLIPSE, "circle") X(TEXT, "type") X(SELECT, "square-dashed") X(MOVE, "move") X(SPRAY, "spray-can") \
     X(UNDO, "undo-2") X(REDO, "redo-2") X(ZOOM_IN, "zoom-in") X(ZOOM_OUT, "zoom-out") X(FIT, "scan") X(EXPAND, "expand") \
     X(REPLACE, "replace") X(MATCH_CASE, "case-sensitive") X(WHOLE_WORD, "whole-word") X(REGEX, "regex") \
-    X(ENTER, "corner-down-left") X(BACKSPACE, "delete") X(FLAG, "flag") X(BOMB, "bomb") X(GAMEPAD, "gamepad-2") \
+    X(ENTER, "corner-down-left") X(BACKSPACE, "delete") X(FLAG, "flag") X(BOMB, "bomb") X(MINE, "virus") X(GAMEPAD, "gamepad-2") \
     X(CALCULATOR, "calculator") \
     X(DIVIDE, "divide") X(PLUS_MINUS, "diff")
+
+/* also baked at 48 px (ui_empty, big placeholders); ui_empty with another icon scales the 20 px mask */
+#define ICON48_LIST(X) X(CODE) X(SEARCH) X(TRASH) X(FOLDER_OPEN) X(IMAGE) X(MUSIC) X(PLAYLIST)
 
 /* the launcher's 48 px object icons; key = the /etc/apps icon column, name = the app's display name */
 #define APPICON_LIST(X) \
@@ -75,8 +82,28 @@ enum { FILEICON_LIST(FILEICON_X_) FILEICON_COUNT };
 struct icon  { uint16_t w, h; const uint8_t *a8; };      /* coverage 0..255, row-major, stride = w */
 struct aicon { uint16_t w, h; const uint32_t *argb; };   /* premultiplied */
 
-/* nearest baked size at or below `size` (the smallest if none); NULL for an unknown id */
-const struct icon  *icon_get(int id, int size);          /* 16, 20 */
-const struct aicon *appicon_get(int id, int size);       /* 24, 32, 48 */
-const struct aicon *fileicon_get(int id, int size);      /* 24, 32, 48 */
+/* nearest baked size at or below `size` (the smallest if none); NULL for an unknown id or one this binary's sources
+ * never name (see icon_use) */
+const struct icon  *icon_get(int id, int size);          /* 16, 20 (48 for ICON48_LIST) */
+extern const struct icon icon_use[ICON_COUNT][3];        /* per binary: [id][16, 20, 48], w = 0 where not linked */
 int appicon_find(const char *key_or_name);               /* APPICON_* (case-insensitive key or name) or -1 */
+
+/* 24, 32, 48; same size rule */
+#define ICON_AI_(id, ...) extern const struct aicon appicon24_##id, appicon32_##id, appicon48_##id;
+APPICON_LIST(ICON_AI_)
+#undef ICON_AI_
+#define ICON_FI_(id, ...) extern const struct aicon fileicon24_##id, fileicon32_##id, fileicon48_##id;
+FILEICON_LIST(ICON_FI_)
+#undef ICON_FI_
+static inline const struct aicon *appicon_get(int id, int size) {
+#define ICON_AC_(id, ...) case APPICON_##id: return size >= 48 ? &appicon48_##id : size >= 32 ? &appicon32_##id : &appicon24_##id;
+    switch (id) { APPICON_LIST(ICON_AC_) }
+#undef ICON_AC_
+    return 0;
+}
+static inline const struct aicon *fileicon_get(int id, int size) {
+#define ICON_FC_(id, ...) case FILEICON_##id: return size >= 48 ? &fileicon48_##id : size >= 32 ? &fileicon32_##id : &fileicon24_##id;
+    switch (id) { FILEICON_LIST(ICON_FC_) }
+#undef ICON_FC_
+    return 0;
+}

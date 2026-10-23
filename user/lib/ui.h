@@ -20,8 +20,6 @@ struct aicon;                       /* icons.h: include it for ICON_* ids and ap
 #define UI_BG        (ui_th.window)
 #define UI_PANEL     (ui_th.base)
 #define UI_SURFACE   (ui_th.raised)
-#define UI_HOVER     (ui_th.hover)          /* legacy opaque hover */
-#define UI_PRESSED   (ui_th.pressed)
 #define UI_BORDER    (ui_th.line)
 #define UI_LINE      (ui_th.line)
 #define UI_TEXT      (ui_th.text)
@@ -111,7 +109,7 @@ void ui_label(struct ui *ui, int x, int y, const char *s, color_t col);        /
 void ui_text_fit(struct ui *ui, const struct font *f, int x, int y, int maxw, const char *s, color_t col);
 /* word-wrapped to w; returns the height used. col alpha 0 = measure only */
 int  ui_text_wrap(struct ui *ui, const struct font *f, int x, int y, int w, const char *s, color_t col);
-/* a Lucide icon (ICON_*) tinted col; sizes other than 16/20 are scaled from the 20px mask */
+/* a Lucide icon (ICON_*) tinted col; sizes other than 16/20 (and 48 for ICON48_LIST) are scaled from the 20px mask */
 void ui_icon(struct ui *ui, int x, int y, int icon, int size, color_t col);
 /* a premultiplied colour icon from appicon_get / fileicon_get */
 void ui_aicon(struct ui *ui, int x, int y, const struct aicon *a);

@@ -93,11 +93,6 @@ The presets are amber (the default), blue, teal, green, orange, red, pink, viole
 - Colour is never the only signal. Add an icon or a word too.
 - No pure #000 or #FFF for large dark surfaces or for text, except in the high-contrast theme.
 - Hover is `hover_ov` over the control's own fill, and pressed is `press_ov`. Disabled draws at 38% opacity with no hover.
-- Code that is not ported yet reads the **legacy names**. `theme.c` derives them from the tokens: `bg`=window,
-  `panel`=base, `surface`=raised, `input`=raised, `border`=line, `dim`=text2, `faint`=text3,
-  `bad/warn/good`=danger/warning/success, `accent_hi/lo`=accent_hover/press, `accent2`=accent, `frame`=window,
-  `frame_off`=base, `bar`=base, `launcher/popup/toast/switcher`=overlay, `cdim/body`=text2, `tab_acc`=accent_line.
-  New code must not use these names.
 
 ### 2.4 Terminal
 
@@ -431,8 +426,7 @@ anti-aliased.
 
 Corner coverage is 16×16-supersampled once per radius (≤32, cached; larger radii fall back to 4×4) and shared by
 fills and rings, so a ring plus the fill inset by its width equals the outer fill exactly (tools/gfxtest checks this).
-Draw the shadow first, then the caster: shadows skip the caster's own rows. The old `gfx_shadow` stays for unported
-code, and new code must not use it.
+Draw the shadow first, then the caster: shadows skip the caster's own rows.
 
 ## 11. Deviations from the mockups and the brief (deliberate)
 

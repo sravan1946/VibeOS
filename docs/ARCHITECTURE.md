@@ -246,7 +246,7 @@ detection (`term_link_at`) so the window code stays free of cell-level logic.
 * `user/lib/gui.c` wraps that; `user/lib/ui.c` is an immediate-mode widget toolkit (buttons,
   checkboxes, sliders, text boxes, lists, panels) in the desktop's theme.
 * **Themes**: `common/theme.h` is one struct of named colours: the Graphite tokens of `docs/DESIGN.md` (surfaces, lines, text,
-  accent, semantic colours, shadow alphas) plus legacy names derived from them for unported code, the terminal palette and tab bar.
+  accent, semantic colours, shadow alphas) and the terminal palette.
   `theme.c` holds the three built-in tables (`graphite` is the default, then `graphite-light` and `contrast`; `dark`/`light` still
   resolve), the accent presets (amber first), `theme_set_accent` (derives hover/press/on-accent/accent-text/signal-line/selection and
   nudges each to its contrast floor) and `theme_contrast`. Sizes, radii, elevation, focus, motion and type roles are in
@@ -269,8 +269,11 @@ detection (`term_link_at`) so the window code stays free of cell-level logic.
   `fs_assoc_text` resolves a path against `/etc/open.conf` (lines `ext,ext program[|fallback]`; first existing program wins;
   no extension entry and an executable file means "run itself"; `*` is the fallback), `fs_open` starts the result detached,
   `fs_trash_*` implement `/home/.trash/{files,info}/NAME` (info = original path + deletion time; restore recreates a missing
-  parent and never overwrites), plus `fs_copy`, `fs_rmrf`, `fs_unique` ("a (2).txt") and a bounded `fs_du`. `user/lib/fileicon.c`
-  (libgui) draws the scalable type icons.
+  parent and never overwrites), plus `fs_copy`, `fs_rmrf`, `fs_unique` ("a (2).txt") and a bounded `fs_du`. The type icons are the
+  baked `FILEICON_*` set of `common/icons.h` (`fileicon_get`). Icons are one symbol per id and size, so each binary links
+  only what it uses: colour icons through the inline `appicon_get`/`fileicon_get` switches, Lucide masks through a per-binary
+  `icon_use` table that `tools/mkicons.py --use` builds from the `ICON_*` names in its sources (libgui.a holds an all-icons
+  default for programs built inside VibeOS).
 * `/bin/files` is one immediate-mode loop over `ui.h`: entries are sorted in place and filtered into an `ord[]` index list;
   grid and list share one layout (`struct lay`, row-granular scrolling); selection lives on the entries; modifier state comes
   from the key events (clicks carry none). Thumbnails are decoded one per frame (files under 3 MiB) into an LRU cache.

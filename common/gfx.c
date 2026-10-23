@@ -153,29 +153,6 @@ void gfx_vgradient(struct canvas *c, int x, int y, int w, int h, color_t top, co
         gfx_fill(c, x, y + i, w, 1, mix(top, bot, h > 1 ? i * 256 / (h - 1) : 0));
 }
 
-/* legacy soft shadow (stacked translucent rounded rects); new code uses gfx_elev */
-/* soft drop shadow for a (rounded) rect the caller then draws on top: only the four bands
- * around the edge are filled, since the inside is hidden by the content anyway */
-void gfx_shadow(struct canvas *c, int x, int y, int w, int h, int r, int spread, int strength) {
-    int in = r > 0 ? r : 0;
-    struct { int x, y, w, h; } band[4] = {
-        { x - 2 * spread, y - 2 * spread, w + 4 * spread, 2 * spread + in },            /* top */
-        { x - 2 * spread, y + h - in, w + 4 * spread, 3 * spread + in },                 /* bottom */
-        { x - 2 * spread, y + in, 2 * spread + in, h - 2 * in },                         /* left */
-        { x + w - in, y + in, 2 * spread + in, h - 2 * in },                             /* right */
-    };
-    for (int b = 0; b < 4; b++) {
-        if (band[b].w <= 0 || band[b].h <= 0) continue;
-        struct canvas cc = *c;
-        canvas_clip(&cc, band[b].x, band[b].y, band[b].w, band[b].h);
-        for (int i = spread; i > 0; i--) {
-            int a = strength * (spread - i + 1) / (spread * spread / 2 + 1);
-            if (a <= 0) continue;
-            gfx_round_fill(&cc, x - i, y - i + spread / 3, w + 2 * i, h + 2 * i, r + i, RGBA(0, 0, 0, a));
-        }
-    }
-}
-
 /* ---- baked 9-slice shadows ----
  * One corner tile (c x c) and one edge profile (c) per (radius, blur): the blurred coverage of a rounded rect corner,
  * three box passes of radius blur/2 (close to a Gaussian with sigma = blur/2), reaching e = 3 * (blur/2) px out.

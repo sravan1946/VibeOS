@@ -131,7 +131,7 @@ static void draw_board(struct ui *ui) {
             } else if (showmine) {
                 bool boom = x == boom_x && y == boom_y;
                 if (boom) gfx_round_fill(c, px + 1, py + 1, CS - 2, CS - 2, R_2, ui_th.danger);
-                ui_icon(ui, ix, iy, ICON_BOMB, ICON_SM, boom ? ui_th.on_danger : UI_TEXT);
+                ui_icon(ui, ix, iy, ICON_MINE, ICON_SM, boom ? ui_th.on_danger : UI_TEXT);
             } else {
                 gfx_round_fill(c, px + 1, py + 1, CS - 2, CS - 2, R_2, tile);
                 if (hot) gfx_round_fill(c, px + 1, py + 1, CS - 2, CS - 2, R_2, (ui->buttons & 1) ? ui_th.press_ov : ui_th.hover_ov);

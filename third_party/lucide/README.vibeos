@@ -3,8 +3,8 @@ Lucide icons in VibeOS
 
 Origin  : https://github.com/lucide-icons/lucide, the lucide-static 1.61.0 npm package (icons/*.svg)
 Licence : ISC, with the icons derived from Feather under MIT (Cole Bemis); both notices are in LICENSE
-Files   : only the 132 icons listed in common/icons.h (ICON_LIST), byte-for-byte; LICENSE is the package's.
+Files   : only the icons listed in common/icons.h (ICON_LIST), byte-for-byte; LICENSE is the package's.
 
-tools/mkicons.py re-strokes them (1.5 px at 16 px, 1.75 px at 20 px, round caps/joins) and tools/svgrast.c
+tools/mkicons.py re-strokes them (1.5 px at 16 px, 1.75 px at 20 px, 4 px at 48 px for ICON48_LIST, round caps/joins) and tools/svgrast.c
 rasterises them with nanosvg at build time into build/gen/icons.c. To add an icon: copy its SVG here from the same
 package version and add an X(ID, "name") line to ICON_LIST.

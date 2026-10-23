@@ -37,7 +37,6 @@ void gfx_round_rect(struct canvas *c, int x, int y, int w, int h, int r, color_t
 void gfx_ring_out(struct canvas *c, int x, int y, int w, int h, int r, color_t col);      /* 1px ring just outside, radius r+1 */
 void gfx_focus_ring(struct canvas *c, int x, int y, int w, int h, int r, color_t col);    /* FOCUS_W px, FOCUS_GAP outside, concentric */
 void gfx_vgradient(struct canvas *c, int x, int y, int w, int h, color_t top, color_t bot);
-void gfx_shadow(struct canvas *c, int x, int y, int w, int h, int r, int spread, int strength);   /* legacy */
 /* baked 9-slice drop shadow under a w x h rect of radius r: black, offset dy, blur (sigma blur/2), peak alpha 0..255.
  * Cached per (r, blur); a frame costs one blend per shadow pixel outside the caster */
 void gfx_shadow9(struct canvas *c, int x, int y, int w, int h, int r, int dy, int blur, int alpha);

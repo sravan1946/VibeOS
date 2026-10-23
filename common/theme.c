@@ -1,5 +1,5 @@
 /* theme.c - the built-in themes (graphite is the default), accent presets, contrast maths.
- * Each table entry sets the Graphite tokens and the terminal palette; the legacy names are derived from them.
+ * Each table entry sets the Graphite tokens and the terminal palette.
  * Freestanding; shared by the kernel, libgui and the host contrast test (tools/themetest). */
 #include "theme.h"
 
@@ -17,7 +17,7 @@ static struct theme themes[] = {
         .selection = H(0x403424), .hover_ov = HA(0xE6E7E9, 15), .press_ov = HA(0xE6E7E9, 31), .scrim = HA(0x000000, 102),
         .danger = H(0xF2706A), .on_danger = H(0x1A0605), .warning = H(0xD8B23E), .success = H(0x5BBF7A), .info = H(0x6AA3F0),
         .thumb = H(0xE6E7E9), .hilite = HA(0xFFFFFF, 15), .ring = HA(0x000000, 128),
-        .elev = { 0, 77, 92, 102, 128 }, .edge = 100, .shadow = 100,
+        .elev = { 0, 77, 92, 102, 128 },
         .term = { { H(0x2C2E33), H(0xE5736C), H(0x8FBF9A), H(0xD9B45E), H(0x8FB0D9), H(0xC29BC9), H(0x7FBFBF), H(0xC5C8CD),
                     H(0x7C8088), H(0xF08C86), H(0xA8D4B1), H(0xE8C878), H(0xA9C4E6), H(0xD4B3DA), H(0x9AD2D1), H(0xEDEEF0) },
                   H(0xD7D9DC), H(0x111214), H(0xF0F1F2), H(0x403424), H(0x4A3B1E), H(0xE8A33D), H(0x1A1300), H(0x8FB0D9) },
@@ -32,7 +32,7 @@ static struct theme themes[] = {
         .selection = H(0xF1E3CD), .hover_ov = HA(0x1B1C1F, 15), .press_ov = HA(0x1B1C1F, 31), .scrim = HA(0x000000, 82),
         .danger = H(0xB42C26), .on_danger = H(0xFFFFFF), .warning = H(0x7F6200), .success = H(0x1B6E3B), .info = H(0x2560C2),
         .thumb = H(0xFFFFFF), .hilite = 0, .ring = HA(0x000000, 31),
-        .elev = { 0, 36, 41, 46, 61 }, .edge = 100, .shadow = 45,
+        .elev = { 0, 36, 41, 46, 61 },
         .term = { { H(0x1B1C1F), H(0xB42C26), H(0x1B6E3B), H(0x7F6200), H(0x2560C2), H(0x8B3A8F), H(0x0E6E70), H(0x55585E),
                     H(0x66696F), H(0xC2362F), H(0x237A45), H(0x8A6A00), H(0x2F6BD0), H(0x9A479E), H(0x13797B), H(0x2B2D31) },
                   H(0x1B1C1F), H(0xFBFBFC), H(0x0E0F11), H(0xF1E3CD), H(0xF6E2AE), H(0xE8A33D), H(0x1A1300), H(0x2560C2) },
@@ -47,7 +47,7 @@ static struct theme themes[] = {
         .selection = H(0x553C00), .hover_ov = HA(0xFFFFFF, 31), .press_ov = HA(0xFFFFFF, 56), .scrim = HA(0x000000, 166),
         .danger = H(0xFF8A80), .on_danger = H(0x000000), .warning = H(0xFFD54F), .success = H(0x7BE495), .info = H(0x8AB8FF),
         .thumb = H(0x000000), .hilite = 0, .ring = H(0x8C8C90),
-        .elev = { 0, 128, 140, 150, 170 }, .edge = 300, .shadow = 100,
+        .elev = { 0, 128, 140, 150, 170 },
         .term = { { H(0x000000), H(0xFF8A80), H(0x7BE495), H(0xFFD54F), H(0x8AB8FF), H(0xF0A6FF), H(0x6FE3F0), H(0xE4E4E6),
                     H(0x9A9A9E), H(0xFFB0A8), H(0xA6F0B8), H(0xFFE38A), H(0xB5D2FF), H(0xF7C8FF), H(0xA8F0F7), H(0xFFFFFF) },
                   H(0xFFFFFF), H(0x000000), H(0xFFFFFF), H(0x553C00), H(0x6B5200), H(0xFFC24D), H(0x000000), H(0x8AB8FF) },
@@ -119,37 +119,8 @@ static color_t reach(color_t c, const color_t *bg, int n, int min, int towards_w
     return c;
 }
 
-/* the accent-dependent legacy names */
-static void accent_legacy(struct theme *t) {
-    t->accent_hi = t->accent_hover; t->accent_lo = t->accent_press; t->accent2 = t->accent;
-    t->on_pill = t->on_accent; t->tab_acc = t->accent_line;
-    t->key = mixc(t->raised, t->accent, 40);
-    t->key_hi = mixc(t->key, t->accent, 24);
-    t->key_lo = mixc(t->key, H(0x000000), 20);
-    color_t kb[3] = { t->key, t->key_hi, t->key_lo };
-    t->key_fg = reach(mixc(t->accent, H(t->dark ? 0xFFFFFF : 0x000000), t->dark ? 128 : 150), kb, 3, 450, t->dark);
-}
-
-/* legacy names from the tokens: old code keeps working and simply looks graphite */
-static void derive(struct theme *t) {
-    t->bg = t->window; t->panel = t->base; t->surface = t->raised; t->input = t->raised;
-    t->hover = mixc(t->raised, t->text, 15); t->pressed = mixc(t->raised, t->text, 31);
-    t->border = t->line; t->dim = t->text2; t->faint = t->text3;
-    t->bad = t->danger; t->warn = t->warning; t->good = t->success;
-    t->knob = t->dark ? t->text : t->text2; t->knob_on = t->dark ? H(0xFFFFFF) : t->text;
-    t->ov = t->dark ? H(0xFFFFFF) : H(0x000000);
-    t->gutter = t->window;
-    t->frame = t->window; t->frame_off = t->base; t->btn_off = t->line_strong; t->cdim = t->text2; t->body = t->text2;
-    t->bar = t->base; t->launcher = t->popup = t->toast = t->switcher = t->overlay;
-    t->tbar = t->window; t->tab = t->window; t->tab_off = t->base; t->tfind = t->raised;
-    t->tab_fg = t->text; t->tab_dim = t->text2; t->tab_faint = t->text3;
-    accent_legacy(t);
-}
-
 int theme_count(void) { return NTHEMES; }
 const struct theme *theme_get(int i) {
-    static int ready;                                   /* ponytail: lazy, not locked; every caller derives the same values */
-    if (!ready) { for (int k = 0; k < NTHEMES; k++) derive(&themes[k]); ready = 1; }
     return &themes[(i % NTHEMES + NTHEMES) % NTHEMES];
 }
 
@@ -190,5 +161,4 @@ void theme_set_accent(struct theme *t, color_t rgb) {
     while ((theme_contrast(t->text2, t->selection) < 450 || theme_contrast(t->text, t->selection) < 450) && (k -= 6) > 10);
     color_t marks[4] = { t->base, t->window, t->raised, t->selection };
     t->accent_line = reach(rgb, marks, 4, 300, t->dark);
-    accent_legacy(t);
 }

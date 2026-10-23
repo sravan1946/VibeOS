@@ -26,21 +26,8 @@ struct theme {
     color_t danger, on_danger, warning, success, info;
     color_t thumb, hilite, ring;                    /* switch thumb; dark-window inner top highlight; E2/E3 window ring */
     int elev[5];                                    /* shadow alpha 0..255 for E0..E4 (geometry in design.h) */
-    /* ---- legacy names, derived from the tokens above (theme.c); unported code still reads these ---- */
-    color_t bg, panel, surface, hover, pressed, border, input;
-    color_t dim, faint;
-    color_t accent_hi, accent_lo, accent2;
-    color_t bad, warn, good;
-    color_t knob, knob_on, ov;      /* ov: the colour hover/divider overlays are drawn in (white on dark, black on light) */
-    color_t key, key_hi, key_lo, key_fg, gutter;   /* accent-tinted key (Calculator operators), editor gutter */
-    int edge;                       /* outline strength, percent (high contrast: strong) */
-    int shadow;                     /* legacy gfx_shadow strength, percent */
-    /* compositor */
-    color_t frame, frame_off, btn_off, cdim, body, on_pill;
-    color_t bar, launcher, popup, toast, switcher;
     /* terminal */
     struct term_colors term;
-    color_t tbar, tab, tab_off, tab_fg, tab_dim, tab_faint, tfind, tab_acc;
 };
 
 /* what /dev/theme returns on read; writes are text: "NAME accent=RRGGBB|default anim=0|1 zoom=0..3" in any combination.
