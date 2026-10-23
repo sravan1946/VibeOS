@@ -1,5 +1,5 @@
 /* 2048 - slide and merge tiles; animated slides, merge pops and spawns. Arrows / WASD, swipe with the mouse, U undoes. */
-#include <ui.h>
+#include "game.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +14,7 @@
 static int grid[N][N];                    /* exponent: 0 empty, 1 = 2, 2 = 4 ... */
 static bool merged[N][N];                 /* created by a merge in the last move */
 static bool spawned[N][N];                /* tiles added by the last move or deal */
-static int score, best, last_gain;
+static int score, best;
 static int undo_grid[N][N], undo_score;
 static bool can_undo, won, keep_going, over;
 
@@ -23,13 +23,6 @@ static struct mover movers[N * N];
 static int nmovers;
 static uint32_t anim_t0;                  /* start of the current move's animation, 0 = idle */
 static int pending_dir = -1;              /* a key pressed while animating */
-
-static const color_t TILE[12] = {
-    RGB(0x24, 0x21, 0x36),
-    RGB(0x3B, 0x35, 0x62), RGB(0x4E, 0x42, 0x88), RGB(0x7A, 0x55, 0xE0), RGB(0x9B, 0x6B, 0xFF), RGB(0xC2, 0x6B, 0xF5),
-    RGB(0xFF, 0x6B, 0xC8), RGB(0xFF, 0x7A, 0x8E), RGB(0xFF, 0xA2, 0x4B), RGB(0xFF, 0xC2, 0x4B), RGB(0xB6, 0xE3, 0x5A),
-    RGB(0x4B, 0xE0, 0x8A),
-};
 
 static void load_best(void) {
     FILE *f = fopen(BEST_PATH, "r");
@@ -61,7 +54,7 @@ static bool any_move(void) {
 
 static void new_game(void) {
     memset(grid, 0, sizeof grid); memset(merged, 0, sizeof merged);
-    score = last_gain = 0; can_undo = won = keep_going = over = false;
+    score = 0; can_undo = won = keep_going = over = false;
     nmovers = 0; anim_t0 = 0; pending_dir = -1; memset(spawned, 0, sizeof spawned);
     add_tile(); add_tile();
     anim_t0 = uptime_ms();                /* the two starting tiles pop in */
@@ -102,7 +95,7 @@ static bool slide(int dir) {
     if (!memcmp(old, ng, sizeof old)) { nmovers = 0; memset(merged, 0, sizeof merged); return false; }
     memcpy(undo_grid, old, sizeof old); undo_score = score; can_undo = true;
     memcpy(grid, ng, sizeof grid);
-    score += gain; last_gain = gain;
+    score += gain;
     if (score > best) { best = score; save_best(); }
     memset(spawned, 0, sizeof spawned);
     add_tile();
@@ -115,21 +108,26 @@ static bool slide(int dir) {
 static void undo(void) {
     if (!can_undo) return;
     memcpy(grid, undo_grid, sizeof grid);
-    score = undo_score; can_undo = over = false; last_gain = 0;
+    score = undo_score; can_undo = over = false;
     nmovers = 0; anim_t0 = 0; memset(spawned, 0, sizeof spawned); memset(merged, 0, sizeof merged);
+}
+
+/* one warm ramp from a quiet neutral to amber at 2048 (content colour, not the accent) */
+static color_t tile_col(int val) {
+    int t = (val < 11 ? val - 1 : 10) * 256 / 10;
+    return mix(ui_th.dark ? RGB(0x3D, 0x3A, 0x35) : RGB(0xE8, 0xDB, 0xC6), RGB(0xE8, 0xA3, 0x3D), t);
 }
 
 static void draw_tile(struct ui *ui, int x, int y, int s, int val) {
     if (s < 4) return;
-    color_t col = TILE[val < 11 ? val : 11];
-    gfx_round_fill(ui->c, x, y, s, s, 10, col);
-    if (val >= 2) gfx_vgradient(ui->c, x + 8, y + 2, s - 16, 2, RGBA(255, 255, 255, 70), RGBA(255, 255, 255, 0));
+    color_t col = tile_col(val);
+    gfx_round_fill(ui->c, x, y, s, s, R_3, col);
     char t[12];
     snprintf(t, sizeof t, "%d", 1 << val);
-    const struct font *f = &font_big;
-    if (gfx_text_width(f, t) > s - 14) f = &font_title;
-    if (gfx_text_width(f, t) > s - 14) f = &font_ui_bold;
-    color_t fc = val >= 8 ? RGB(0x1A, 0x10, 0x2E) : UI_TEXT;
+    const struct font *f = T_DISPLAY;
+    if (gfx_text_width(f, t) > s - 16) f = T_TITLE;
+    if (gfx_text_width(f, t) > s - 16) f = T_BODY_B;
+    color_t ink = RGB(0x1A, 0x13, 0x00), fc = theme_contrast(col, ink) >= theme_contrast(col, UI_TEXT) ? ink : UI_TEXT;
     struct canvas cc = *ui->c;
     canvas_clip(&cc, x, y, s, s);
     gfx_text_center(&cc, f, x, y + (s - f->height) / 2, s, t, fc);
@@ -138,7 +136,7 @@ static void draw_tile(struct ui *ui, int x, int y, int s, int val) {
 static float ease(float t) { return 1 - (1 - t) * (1 - t); }
 
 int main(void) {
-    struct gui_window *w = gui_window_create("2048", 460, 590, 0);
+    struct gui_window *w = gui_window_create("2048", 460, 500, 0);
     if (!w) return 1;
     srand(uptime_ms());
     load_best();
@@ -167,9 +165,9 @@ int main(void) {
             else if (ch == 'n') new_game();
         }
         int W = w->w, H = w->h;
-        int bs = W - 48;
-        if (H - 176 - 24 < bs) bs = H - 176 - 24;
-        int bx = (W - bs) / 2, by = 152;
+        int bs = W - 2 * SP_5;
+        if (H - HEAD - 2 * SP_5 < bs) bs = H - HEAD - 2 * SP_5;
+        int bx = (W - bs) / 2, by = HEAD + SP_5;
         if (ui.pressed && !modal && ui_hover(&ui, bx, by, bs, bs)) { swiping = true; sx = ui.mx; sy = ui.my; }
         if (ui.released && swiping) {
             int dx = ui.mx - sx, dy = ui.my - sy;
@@ -188,35 +186,17 @@ int main(void) {
         /* ---- draw ---- */
         ui_clear(&ui);
         struct canvas *c = ui.c;
-        gfx_text(c, &font_big, 24, 18, "2048", UI_ACCENT);
-        gfx_text(c, &font_ui, 26, 74, "Join the tiles, reach 2048", UI_TEXT_DIM);
-        int sw = 88;
-        for (int i = 0; i < 2; i++) {
-            int x = W - 24 - (2 - i) * sw - (1 - i) * 8 + (i ? 0 : 0);
-            gfx_round_fill(c, x, 18, sw, 52, 10, UI_PANEL);
-            gfx_round_rect(c, x, 18, sw, 52, 10, UI_BORDER);
-            gfx_text_center(c, &font_ui, x, 24, sw, i ? "BEST" : "SCORE", UI_TEXT_DIM);
-            char t[16];
-            snprintf(t, sizeof t, "%d", i ? best : score);
-            gfx_text_center(c, &font_ui_bold, x, 44, sw, t, UI_TEXT);
-        }
-        if (last_gain && anim && el < 600) {                    /* +N floating above the score */
-            char t[16];
-            snprintf(t, sizeof t, "+%d", last_gain);
-            int a = 255 - (int)el * 255 / 600;
-            gfx_text_center(c, &font_ui_bold, W - 24 - 2 * sw - 8, 4 - (int)el / 40, sw, t, RGBA(0x4B, 0xE0, 0x8A, a));
-        }
-        int bw = (bs - 12) / 2 < 120 ? (bs - 12) / 2 : 120;
-        if (ui_button(&ui, 24, 100, bw, 36, "New Game", UI_ACCENT_BTN)) new_game();
-        if (ui_button(&ui, 24 + bw + 10, 100, 90, 36, "Undo", can_undo ? UI_NORMAL_BTN : UI_GHOST_BTN)) undo();
-        gfx_text(c, &font_ui, 24 + bw + 110, 108, "arrows / WASD / swipe", UI_TEXT_DIM);
+        game_head(&ui, W);
+        game_stati(&ui, game_stati(&ui, SP_5, "Score", score), "Best", best);
+        int rx = W - SP_5;
+        if (game_btn(&ui, &rx, UI_NOICON, "New game", UI_SECONDARY)) new_game();
+        if (game_btn(&ui, &rx, ICON_UNDO, NULL, UI_GHOST | (can_undo ? 0 : UI_DISABLED))) undo();
+        ui_tooltip(&ui, rx + SP_3, CTL_Y, H_CTL, H_CTL, "Undo · U");
 
-        gfx_shadow(c, bx, by, bs, bs, 14, 14, 110);
-        gfx_round_fill(c, bx, by, bs, bs, 14, UI_PANEL);
-        gfx_round_rect(c, bx, by, bs, bs, 14, UI_BORDER);
+        game_well(&ui, bx, by, bs, bs);
         int ts = (bs - GAP * (N + 1)) / N;
         for (int r = 0; r < N; r++)
-            for (int cc = 0; cc < N; cc++) gfx_round_fill(c, bx + GAP + cc * (ts + GAP), by + GAP + r * (ts + GAP), ts, ts, 10, TILE[0]);
+            for (int cc = 0; cc < N; cc++) gfx_round_fill(c, bx + GAP + cc * (ts + GAP), by + GAP + r * (ts + GAP), ts, ts, R_3, ui_th.dark ? TH_A(UI_TEXT, 8) : ui_th.raised);   /* empty slots */
         if (el < SLIDE_MS && nmovers) {                         /* phase 1: tiles slide */
             float t = ease((float)el / SLIDE_MS);
             for (int i = 0; i < nmovers; i++) {
@@ -241,20 +221,13 @@ int main(void) {
                 }
         }
         if (modal) {
-            gfx_round_fill(c, bx, by, bs, bs, 14, RGBA(0x16, 0x15, 0x22, 215));
-            const char *t = won ? "You made 2048!" : "No moves left";
-            gfx_text_center(c, &font_title, bx, by + bs / 2 - 70, bs, t, won ? UI_GOOD : UI_BAD);
-            char s[32];
-            snprintf(s, sizeof s, "Score %d", score);
-            gfx_text_center(c, &font_ui, bx, by + bs / 2 - 30, bs, s, UI_TEXT_DIM);
-            int bw2 = 130;
-            if (won) {
-                if (ui_button(&ui, bx + bs / 2 - bw2 - 6, by + bs / 2 + 4, bw2, 38, "Keep going", UI_ACCENT_BTN)) { won = false; keep_going = true; }
-                if (ui_button(&ui, bx + bs / 2 + 6, by + bs / 2 + 4, bw2, 38, "New Game", UI_NORMAL_BTN)) new_game();
-            } else {
-                if (ui_button(&ui, bx + bs / 2 - bw2 - 6, by + bs / 2 + 4, bw2, 38, "Try again", UI_ACCENT_BTN)) new_game();
-                if (ui_button(&ui, bx + bs / 2 + 6, by + bs / 2 + 4, bw2, 38, "Undo", can_undo ? UI_NORMAL_BTN : UI_GHOST_BTN)) undo();
-            }
+            char t[32];
+            snprintf(t, sizeof t, "Score %d.", score);
+            int r = game_card(&ui, bx, by, bs, bs, won ? "You reached 2048" : "No moves left", t, won ? "New game" : can_undo ? "Undo" : NULL,
+                              won ? "Keep going" : "Try again");
+            if (won && r == 1) { won = false; keep_going = true; }
+            else if (r == 1 || (won && r == 2)) new_game();
+            else if (r == 2) undo();
         }
         ui_end(&ui);
     }

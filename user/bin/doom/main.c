@@ -1,6 +1,7 @@
 /* doom - doomgeneric on VibeOS. Finds the IWAD (Freedoom, see tools/getwad.sh), keeps config and
  * savegames in /home/.doom, then runs the game loop. The platform layer is doomgeneric_vibeos.c. */
-#include <ui.h>
+#include <gui.h>
+#include <design.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,16 +18,22 @@ static bool exists(const char *p) { FILE *f = fopen(p, "r"); if (f) fclose(f); r
 static void complain(const char *msg) {
     fprintf(stderr, "doom: %s\n", msg);
     if (isatty(2)) return;
-    struct gui_window *w = gui_window_create("DOOM", 520, 150, WIN_FLAG_NORESIZE);
+    struct gui_window *w = gui_window_create("Doom", 520, 116, WIN_FLAG_NORESIZE);
     if (!w) return;
-    struct canvas *c = &w->cv;
-    gfx_fill(c, 0, 0, w->w, w->h, RGB(0x16, 0x15, 0x22));
-    gfx_text(c, &font_title, 24, 20, "No game data", UI_TEXT);
-    gfx_text(c, &font_ui, 24, 62, msg, UI_TEXT_DIM);
-    gfx_text(c, &font_ui, 24, 92, "On the build machine: make doom-wad && make", UI_TEXT_DIM);
-    gui_flip(w);
+    char line[300];                                  /* plain gfx: the ui toolkit would pull its icon masks into doom */
+    snprintf(line, sizeof line, "%s.", msg);
+    if (line[0] >= 'a' && line[0] <= 'z') line[0] -= 32;
     struct gui_event ev;
-    while (gui_next_event(w, &ev, -1) == 1 && ev.type != EV_CLOSE) ;
+    do {
+        struct canvas *c = &w->cv;
+        int y = SP_6;
+        gfx_fill(c, 0, 0, w->w, w->h, ui_th.window);
+        gfx_text(c, T_HEADING, SP_6, y, "No game data", ui_th.text);
+        y += T_HEADING->height + SP_3;
+        gfx_text(c, T_BODY, SP_6, y, line, ui_th.text2);
+        gfx_text(c, T_BODY, SP_6, y + T_BODY->height, "On the build machine, run make doom-wad, then make.", ui_th.text2);
+        gui_flip(w);
+    } while (gui_next_event(w, &ev, -1) == 1 && ev.type != EV_CLOSE);
 }
 
 int main(int argc, char **argv) {
