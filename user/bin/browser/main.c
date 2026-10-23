@@ -12,11 +12,14 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <syscall.h>
+#include <design.h>
+#include <icons.h>
 
-#define TB 48              /* toolbar height */
+#define TB H_TOOLBAR       /* toolbar height */
 #define SB 12              /* scrollbar column */
-#define STH 24             /* status bar height */
-#define AX 214             /* address box x */
+#define STH H_STATUS       /* status bar height */
+#define FB H_TOOLBAR       /* find bar height (when open) */
+#define AX (SP_3 + 4 * (H_CTL + SP_2) - SP_2 + SP_4)   /* address box x: after back, forward, reload, home */
 #define HMAX 100
 #define TIMEOUT_MS 20000
 #define MAX_REDIRECTS 10
@@ -49,6 +52,7 @@ static bool img_dirty, keep_imgs;
 static uint32_t last_relayout;
 static char *alert_msg;                      /* alert() text being shown */
 static bool console_open;                    /* F12: the console panel */
+static bool internal;                        /* the page is ours (start, error, folder pages): themed, recoloured on EV_THEME */
 
 static void say(bool bad, const char *fmt, ...) {
     va_list ap;
@@ -91,9 +95,14 @@ static void sb_esc(struct sb *b, const char *s) {
     }
 }
 
+/* internal pages take the window colours; the tag has a fixed length so a theme change can rewrite it in place */
+static void body_tag(char *t, int cap) {
+    snprintf(t, cap, "<body bgcolor=\"#%06X\" text=\"#%06X\" link=\"#%06X\">", (unsigned)(ui_th.window & 0xFFFFFF),
+             (unsigned)(ui_th.text & 0xFFFFFF), (unsigned)(ui_th.accent_text & 0xFFFFFF));
+}
+static void sb_body(struct sb *b) { char t[80]; body_tag(t, sizeof t); sb_add(b, t); }
+
 static const char HOME_HTML[] =
-    "<html><head><title>Vibe Browser</title></head>"
-    "<body bgcolor=\"#16152A\" text=\"#EDEBFF\" link=\"#B388FF\">"
     "<center><h1>Vibe Browser</h1>"
     "<p>A small web browser for VibeOS &mdash; HTTP and HTTPS, HTML, a little CSS and JavaScript.</p></center>"
     "<hr>"
@@ -118,12 +127,13 @@ static const char HOME_HTML[] =
     "<b>Ctrl+L</b> address bar &middot; <b>Ctrl+R</b> or <b>F5</b> reload &middot; <b>Alt+&larr;</b> / <b>Alt+&rarr;</b> history<br>"
     "<b>Space</b>, <b>PgDn</b>, <b>PgUp</b>, <b>Home</b>, <b>End</b>, arrows and the wheel scroll &middot; <b>Ctrl+F</b> find &middot; <b>Esc</b> stops loading &middot; <b>F12</b> console"
     "</blockquote>"
-    "<hr><center><em>made on VibeOS</em></center>"
     "</body></html>";
 
 /* ---------- page lifecycle ---------- */
 static int view_w(void) { return win->w - SB; }
-static int view_h(void) { return win->h - TB - STH; }
+static int view_h(void) { return win->h - TB - STH - (find_open ? FB : 0); }
+static int find_x(void) { return SP_3; }
+static int find_y(void) { return win->h - STH - FB + (FB - H_SEARCH) / 2; }
 static int max_scroll(void) { int m = doc.height - view_h(); return m > 0 ? m : 0; }
 static void clamp_scroll(void) {
     int m = max_scroll();
@@ -151,6 +161,7 @@ static void commit(const char *url, char *raw, size_t n, int html) {
         hcur = nhist++;
     }
     strlcpy(cur_url, url, sizeof cur_url);
+    internal = false;
     if (!keep_imgs) img_reset();
     keep_imgs = false;
     fs_reset();
@@ -182,11 +193,12 @@ static void commit(const char *url, char *raw, size_t n, int html) {
 
 static void show_msg(const char *url, const char *title, const char *heading, const char *text, const char *hint) {
     struct sb b = { 0 };
-    sb_add(&b, "<html><head><title>"); sb_esc(&b, title); sb_add(&b, "</title></head><body><h1>");
+    sb_add(&b, "<html><head><title>"); sb_esc(&b, title); sb_add(&b, "</title></head>"); sb_body(&b); sb_add(&b, "<h1>");
     sb_esc(&b, heading); sb_add(&b, "</h1><p>"); sb_esc(&b, text); sb_add(&b, "</p>");
     sb_add(&b, hint);
     sb_add(&b, "</body></html>");
     commit(url, b.p, b.n, 1);
+    internal = true;
 }
 
 static const char *HOME_LINK = "<p><a href=\"about:home\">Go to the start page</a></p>";
@@ -262,7 +274,7 @@ static void load_dir(const char *url, const char *path) {
     if (names) qsort(names, n, sizeof *names, cmp_name);
     struct sb b = { 0 };
     sb_add(&b, "<html><head><title>Index of "); sb_esc(&b, path);
-    sb_add(&b, "</title></head><body><h1>Index of "); sb_esc(&b, path); sb_add(&b, "</h1><ul>");
+    sb_add(&b, "</title></head>"); sb_body(&b); sb_add(&b, "<h1>Index of "); sb_esc(&b, path); sb_add(&b, "</h1><ul>");
     if (strcmp(path, "/")) sb_add(&b, "<li><a href=\"../\">../</a>");
     for (int i = 0; i < n; i++) {
         char enc[PATH_MAX];
@@ -278,6 +290,7 @@ static void load_dir(const char *url, const char *path) {
     free(names);
     sb_add(&b, "</ul></body></html>");
     commit(url, b.p, b.n, 1);
+    internal = true;
     say(false, "%d items", n);
 }
 
@@ -428,7 +441,12 @@ static void cancel_load(void) {
 static void load_url(const char *url) {
     if (url_is_web(url)) start_fetch(url);
     else if (!strncasecmp(url, "file:", 5)) load_file(url);
-    else if (!strcmp(url, "about:home")) { commit(url, strdup(HOME_HTML), sizeof HOME_HTML - 1, 1); strlcpy(doc.title, "Vibe Browser", sizeof doc.title); say(false, "Start page"); }
+    else if (!strcmp(url, "about:home")) {
+        struct sb b = { 0 };
+        sb_add(&b, "<html><head><title>Vibe Browser</title></head>"); sb_body(&b); sb_add(&b, HOME_HTML);
+        commit(url, b.p, b.n, 1); internal = true;
+        strlcpy(doc.title, "Vibe Browser", sizeof doc.title); say(false, "Start page");
+    }
     else if (!strcmp(url, "about:blank")) { commit(url, strdup(""), 0, 1); strlcpy(doc.title, "New tab", sizeof doc.title); say(false, "Blank page"); }
     else {
         char t[URL_MAX + 60];
@@ -472,6 +490,15 @@ static void follow(int link) {
     url_resolve(cur_url, doc.link[link], u, sizeof u);
     if (!strncasecmp(u, "mailto:", 7) || !strncasecmp(u, "tel:", 4)) { say(true, "Can't open %s links", "mailto/tel"); return; }
     navigate(u, 1, -1);
+}
+
+static void relayout(void);
+static void retheme(void) {                  /* EV_THEME: recolour our own pages */
+    char *p = internal && pg.raw ? strstr(pg.raw, "<body bgcolor=\"#") : 0, t[80];
+    if (!p) return;
+    body_tag(t, sizeof t);
+    memcpy(p, t, strlen(t));
+    relayout();
 }
 
 static void relayout(void) {
@@ -520,44 +547,22 @@ static void js_relayout(void) {
     clamp_scroll();
 }
 
-/* alert(): a box over the page with the text word-wrapped; returns true when dismissed */
+/* alert(): a one-button dialog over the window; returns true when dismissed */
 static bool alert_box(struct ui *ui, const char *text) {
-    int W = win->w, H = win->h, pw = W - 40 < 460 ? W - 40 : 460, lines = 0, starts[12], lens[12];
-    for (const char *p = text; *p && lines < 12; ) {             /* wrap at spaces (and newlines) to the box width */
-        int n = 0, best = 0;
-        while (p[n] && p[n] != '\n') {
-            n++;
-            if (gfx_text_width_n(&font_ui, p, n) > pw - 40) break;
-            if (p[n] == ' ' || !p[n] || p[n] == '\n') best = n;
-        }
-        if (!best || !p[n] || p[n] == '\n') best = n;
-        starts[lines] = p - text; lens[lines++] = best;
-        p += best;
-        while (*p == ' ') p++;
-        if (*p == '\n') p++;
-    }
-    int ph = 100 + lines * 20, px = (W - pw) / 2, py = (H - ph) / 3;
-    gfx_fill(ui->c, 0, TB, W, H - TB, RGBA(0, 0, 0, 90));
-    gfx_round_fill(ui->c, px, py, pw, ph, 10, UI_SURFACE);
-    gfx_round_rect(ui->c, px, py, pw, ph, 10, UI_BORDER);
-    gfx_text(ui->c, &font_ui_bold, px + 20, py + 16, "This page says", UI_TEXT);
-    for (int i = 0; i < lines; i++) gfx_text_n(ui->c, &font_ui, px + 20, py + 44 + i * 20, text + starts[i], lens[i], UI_TEXT_DIM);
-    bool done = ui_button(ui, px + pw - 110, py + ph - 48, 90, 32, "OK", UI_ACCENT_BTN);
-    struct gui_event k;
-    while (ui_key(ui, &k)) if (k.key == KEY_ESC || k.key == KEY_ENTER || k.key == ' ') done = true;
-    return done;
+    return ui_dialog_ex(ui, "This page says", text, NULL, NULL, "Close", UI_PRIMARY) != 0;
 }
 
 /* F12: the last console lines over the bottom of the page */
 static void console_panel(struct ui *ui, int vw, int vh) {
-    int ph = vh / 3 < 120 ? 120 : vh / 3, y0 = TB + vh - ph, rows = (ph - 30) / 18, n = js_log_count();
-    gfx_fill(ui->c, 0, y0, vw, ph, UI_PANEL);
-    gfx_fill(ui->c, 0, y0, vw, 1, UI_BORDER);
-    gfx_text(ui->c, &font_ui_bold, 10, y0 + 6, js_active() ? "Console" : "Console (no scripts on this page)", UI_TEXT);
+    int ph = vh / 3 < 120 ? 120 : vh / 3, y0 = TB + vh - ph, hh = H_TAB, rh = T_MONO->height + SP_1, rows = (ph - hh - SP_2) / rh, n = js_log_count();
+    gfx_fill(ui->c, 0, y0, vw, ph, ui_th.base);
+    gfx_hline(ui->c, 0, y0, vw, UI_LINE);
+    gfx_hline(ui->c, 0, y0 + hh - 1, vw, UI_LINE);
+    gfx_text(ui->c, T_CAPTION_B, SP_4, y0 + (hh - T_CAPTION_B->height) / 2, js_active() ? "Console" : "Console (no scripts on this page)", UI_TEXT2);
     for (int i = n > rows ? n - rows : 0, r = 0; i < n; i++, r++) {
         int kind;
         const char *t = js_log_line(i, &kind);
-        ui_text_fit(ui, &font_mono, 10, y0 + 28 + r * 18, vw - 20, t, kind == 2 ? UI_BAD : kind == 1 ? UI_WARN : UI_TEXT_DIM);
+        ui_text_fit(ui, T_MONO, SP_4, y0 + hh + SP_2 + r * rh, vw - 2 * SP_4, t, kind == 2 ? UI_BAD : kind == 1 ? UI_WARN : UI_TEXT2);
     }
 }
 
@@ -636,18 +641,19 @@ int main(int argc, char **argv) {
 
         int W = win->w, H = win->h, vw = view_w(), vh = view_h();
         if (pg.have && vw != layout_w) relayout();
-        int aw = W - AX - 10;
-        uint32_t aid = ui_id(AX, 8, aw, 32);
+        if (ui.themed) retheme();
+        int aw = W - AX - SP_3, ay = (TB - H_CTL) / 2;
+        uint32_t aid = ui_id(AX, ay, aw, H_CTL);
 
         /* global shortcuts first: the address box would otherwise swallow them */
-        for (int i = 0; i < ui.nkeys; ) {
+        for (int i = 0; !alert_msg && i < ui.nkeys; ) {           /* (an alert takes the keys itself) */
             struct gui_event k = ui.keys[i];
             int c = k.key | 32, ctrl = k.mods & MOD_CTRL, handled = 1;
             if (ctrl && (c == 'l' || k.ch == 12)) { ui.focus = aid; addr[0] = 0; }
             else if ((ctrl && (c == 'r' || k.ch == 18)) || k.key == KEY_F5) navigate(hist[hcur].url, 0, scroll);
             else if ((k.mods & MOD_ALT) && k.key == KEY_LEFT) go_hist(-1);
             else if ((k.mods & MOD_ALT) && k.key == KEY_RIGHT) go_hist(1);
-            else if (ctrl && (c == 'f' || k.ch == 6)) { find_open = true; ui.focus = ui_id(W - SB - 340, TB + 6, 240, 32); fo = -1; }
+            else if (ctrl && (c == 'f' || k.ch == 6)) { find_open = true; ui.focus = ui_id(find_x(), find_y(), 240, H_SEARCH); fo = -1; }
             else if (k.key == KEY_F3 || (ctrl && (c == 'g' || k.ch == 7))) { if (find_open) find_go((k.mods & MOD_SHIFT) ? -1 : 1, vh, false); else handled = 0; }
             else if (k.key == KEY_F12) console_open = !console_open;
             else if (k.key == KEY_ESC) {
@@ -662,35 +668,38 @@ int main(int argc, char **argv) {
             if (handled) drop_key(&ui, i); else i++;
         }
 
-        /* toolbar */
-        gfx_fill(ui.c, 0, 0, W, TB, UI_PANEL);
-        gfx_fill(ui.c, 0, TB - 1, W, 1, UI_BORDER);
+        /* toolbar: back, forward, reload/stop, home, then the address */
+        ui_toolbar(&ui, 0, 0, W);
         bool can_back = hcur > 0, can_fwd = hcur + 1 < nhist;
-        if (can_back ? ui_tool(&ui, 8, 8, 32, 32, "\xE2\x86\x90", false) : (gfx_text_center(ui.c, &font_ui, 8, 8 + (32 - font_ui.height) / 2, 32, "\xE2\x86\x90", UI_TEXT_DIM), false)) go_hist(-1);
-        if (can_fwd ? ui_tool(&ui, 44, 8, 32, 32, "\xE2\x86\x92", false) : (gfx_text_center(ui.c, &font_ui, 44, 8 + (32 - font_ui.height) / 2, 32, "\xE2\x86\x92", UI_TEXT_DIM), false)) go_hist(1);
-        if (ui_tool(&ui, 80, 8, 64, 32, loading ? "Stop" : "Reload", false)) {
+        int tx = SP_3;
+        if (ui_icon_button(&ui, tx, ay, ICON_ARROW_LEFT, can_back ? 0 : UI_DISABLED, "Back \u00b7 Alt+Left")) go_hist(-1);
+        tx += H_CTL + SP_2;
+        if (ui_icon_button(&ui, tx, ay, ICON_ARROW_RIGHT, can_fwd ? 0 : UI_DISABLED, "Forward \u00b7 Alt+Right")) go_hist(1);
+        tx += H_CTL + SP_2;
+        if (ui_icon_button(&ui, tx, ay, loading ? ICON_CLOSE : ICON_REFRESH, 0, loading ? "Stop \u00b7 Esc" : "Reload \u00b7 Ctrl+R")) {
             if (loading) { cancel_load(); say(false, "Stopped"); }
             else if (hcur >= 0) navigate(hist[hcur].url, 0, scroll);
         }
-        if (ui_tool(&ui, 148, 8, 56, 32, "Home", false)) navigate("about:home", 1, -1);
+        tx += H_CTL + SP_2;
+        if (ui_icon_button(&ui, tx, ay, ICON_HOME, 0, "Start page")) navigate("about:home", 1, -1);
         if (ui.focus != aid) strlcpy(addr, loading ? pend_url : cur_url, sizeof addr);
-        if (ui_textbox(&ui, AX, 8, aw, 32, addr, sizeof addr, "Search or enter address")) {
+        int aicon = !strncmp(cur_url, "https:", 6) && !loading ? ICON_LOCK : !strncmp(cur_url, "file:", 5) ? ICON_FILE : ICON_GLOBE;
+        if (ui_input(&ui, AX, ay, aw, H_CTL, addr, sizeof addr, "Search or enter address", aicon, 0)) {
             char u[URL_MAX];
             url_from_input(addr, u, sizeof u);
             ui.focus = 0;
             navigate(u, 1, -1);
         }
-        if (loading) {                                   /* indeterminate progress stripe */
-            int span = W / 4, px = (int)((uptime_ms() - load_t0) / 4 % (uint32_t)(W + span)) - span;
-            gfx_fill(ui.c, px < 0 ? 0 : px, TB - 3, px < 0 ? span + px : span, 2, UI_ACCENT);
+        if (loading) {                                   /* indeterminate progress on the toolbar's bottom edge */
+            int span = W * 3 / 10, px = (int)((uptime_ms() - load_t0) * (uint32_t)(W + span) / 1200 % (uint32_t)(W + span)) - span;
+            gfx_round_fill(ui.c, px < 0 ? 0 : px, TB - SP_1, px < 0 ? span + px : span, SP_1, R_1, ui_th.accent_line);
         }
 
         /* content */
         int hover = -1;
-        int fx = W - SB - 340, fy = TB + 6; uint32_t fid = ui_id(fx, fy, 240, 32);
+        int fx = find_x(), fy = find_y(); uint32_t fid = ui_id(fx, fy, 240, H_SEARCH);
         bool modal = alert_msg != 0;
         bool in_view = !modal && ui.mx >= 0 && ui.mx < vw && ui.my >= TB && ui.my < TB + vh;
-        bool over_find = find_open && ui.mx >= fx - 8 && ui.mx < W - SB && ui.my >= TB && ui.my < TB + 44;
         if (ui.focus == aid) fo = -1;
         bool consumed = false;
         int px = 0, py = 0, pw = 0, prows = 0;
@@ -715,8 +724,8 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (in_view && !over_find && sel_ci < 0) hover = doc_hit(&doc, ui.mx, ui.my - TB + scroll);
-        if (ui.pressed && !consumed && in_view && !over_find) {
+        if (in_view && sel_ci < 0) hover = doc_hit(&doc, ui.mx, ui.my - TB + scroll);
+        if (ui.pressed && !consumed && in_view) {
             int dx = ui.mx, dy = ui.my - TB + scroll, ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
             fo = -1;
             mk.from_it = mk.to_it = -1;
@@ -833,41 +842,46 @@ int main(int argc, char **argv) {
         if (sel_ci >= 0 && prows) {                      /* dropdown on top of the page */
             const struct ctl *c = &doc.ct[sel_ci];
             struct fstate *fsx = fs_get(&doc, sel_ci);
-            gfx_round_fill(ui.c, px, py, pw, prows * rh, 4, UI_SURFACE);
-            gfx_round_rect(ui.c, px, py, pw, prows * rh, 4, UI_ACCENT);
+            gfx_elev(ui.c, px, py, pw, prows * rh, R_2, E2, ui_th.elev[E2]);
+            gfx_round_fill(ui.c, px, py, pw, prows * rh, R_2, ui_th.overlay);
+            gfx_round_rect(ui.c, px, py, pw, prows * rh, R_2, UI_LINE);
             for (int r = 0; r < prows; r++) {
                 int oi = sel_scroll + r, ry = py + r * rh;
                 if (oi >= c->no) break;
                 bool hov = ui.mx >= px && ui.mx < px + pw && ui.my >= ry && ui.my < ry + rh;
-                if (oi == fsx->sel || hov) gfx_fill(ui.c, px + 2, ry + 1, pw - 4, rh - 2, oi == fsx->sel ? RGBA(0xB3, 0x88, 0xFF, 110) : UI_HOVER);
+                if (oi == fsx->sel) gfx_round_fill(ui.c, px + SP_1, ry + 1, pw - 2 * SP_1, rh - 2, R_1, UI_SELECTION);
+                if (hov) gfx_round_fill(ui.c, px + SP_1, ry + 1, pw - 2 * SP_1, rh - 2, R_1, ui_th.hover_ov);
                 struct canvas c2 = *ui.c;
-                canvas_clip(&c2, px + 4, ry, pw - 8, rh);
-                gfx_text(&c2, &font_ui, px + 8, ry + (rh - font_ui.height) / 2, doc.txt + doc.op[c->o0 + oi].lab, UI_TEXT);
+                canvas_clip(&c2, px + SP_2, ry, pw - 2 * SP_2, rh);
+                gfx_text(&c2, T_BODY, px + SP_3, ry + (rh - T_BODY->height) / 2, doc.txt + doc.op[c->o0 + oi].lab, UI_TEXT);
             }
         }
-        if (find_open) {                                 /* find bar, top right of the page */
-            gfx_fill(ui.c, fx - 8, TB, W - SB - fx + 8, 44, UI_PANEL);
-            gfx_fill(ui.c, fx - 8, TB + 43, W - SB - fx + 8, 1, UI_BORDER);
-            ui_textbox(&ui, fx, fy, 240, 32, needle, sizeof needle, "Find in page");
+        if (find_open) {                                 /* find bar between the page and the status bar */
+            int by = TB + vh, iy = by + (FB - H_CTL) / 2, bx = fx + 240 + SP_3;
+            gfx_fill(ui.c, 0, by, W, FB, ui_th.window);
+            gfx_hline(ui.c, 0, by, W, UI_LINE);
+            ui_search(&ui, fx, fy, 240, needle, sizeof needle, "Find in page");
+            if (ui_icon_button(&ui, bx, iy, ICON_CHEVRON_UP, find_count ? 0 : UI_DISABLED, "Previous \u00b7 Shift+F3")) find_go(-1, vh, false);
+            if (ui_icon_button(&ui, bx + H_CTL + SP_2, iy, ICON_CHEVRON_DOWN, find_count ? 0 : UI_DISABLED, "Next \u00b7 F3")) find_go(1, vh, false);
             char fc[40];
-            snprintf(fc, sizeof fc, !needle[0] ? "Ctrl+F" : find_count ? "%d match%s" : "No matches", find_count, find_count == 1 ? "" : "es");
-            gfx_text(ui.c, &font_ui, fx + 250, fy + (32 - font_ui.height) / 2, fc, !needle[0] || find_count ? UI_TEXT_DIM : UI_BAD);
+            snprintf(fc, sizeof fc, !needle[0] ? "" : find_count ? "%d match%s" : "No matches", find_count, find_count == 1 ? "" : "es");
+            gfx_text(ui.c, T_BODY, bx + 2 * H_CTL + SP_2 + SP_4, by + (FB - T_BODY->height) / 2, fc, !needle[0] || find_count ? UI_TEXT2 : UI_BAD);
+            if (ui_icon_button(&ui, W - SP_3 - H_CTL, iy, ICON_CLOSE, 0, "Close \u00b7 Esc")) { find_open = false; mk.find = 0; ui.focus = 0; }
         }
         if (console_open) console_panel(&ui, vw, vh);
-        gfx_fill(ui.c, vw, TB, SB, vh, UI_PANEL);
+        gfx_fill(ui.c, vw, TB, SB, vh, ui_th.window);
         int sp = scroll;
         ui_vscroll(&ui, vw + 1, TB, vh, doc.height, vh, &sp);
         if (sp != scroll) scroll = target = sp;
 
         /* status bar */
-        gfx_fill(ui.c, 0, H - STH, W, STH, UI_PANEL);
-        gfx_fill(ui.c, 0, H - STH, W, 1, UI_BORDER);
-        ui_text_fit(&ui, &font_ui, 10, H - STH + (STH - font_ui.height) / 2, W - 20, hover >= 0 ? hover_url : img_busy() ? "Loading images..." : status,
-                    hover >= 0 ? UI_ACCENT : status_bad ? UI_BAD : UI_TEXT_DIM);
+        ui_status(&ui, 0, H - STH, W, NULL, NULL);
+        ui_text_fit(&ui, T_CAPTION, SP_4, H - STH + (STH - T_CAPTION->height) / 2, W - 2 * SP_4, hover >= 0 ? hover_url : img_busy() ? "Loading images\u2026" : status,
+                    status_bad && hover < 0 ? UI_BAD : UI_TEXT2);
 
         if (alert_msg && alert_box(&ui, alert_msg)) { free(alert_msg); alert_msg = 0; }
         char t[96];
-        snprintf(t, sizeof t, strcmp(doc.title, "Vibe Browser") ? "%s - Vibe Browser" : "%s", doc.title);
+        snprintf(t, sizeof t, strcmp(doc.title, "Vibe Browser") ? "%s \u2014 Vibe Browser" : "%s", doc.title);
         if (strcmp(t, last_title)) { gui_set_title(win, t); strlcpy(last_title, t, sizeof last_title); }
         ui_end(&ui);
     }

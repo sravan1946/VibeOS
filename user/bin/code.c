@@ -2,6 +2,8 @@
  * auto-indent, and Build (tcc, Ctrl+B) / Run (F5) with an output pane that captures stdout and stderr.
  * Clicking a compiler error jumps to file:line. */
 #include <ui.h>
+#include <design.h>
+#include <icons.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -19,22 +21,23 @@
 #define MAX_TABS 16
 #define TAB 4
 #define OUT_MAX (96 * 1024)
-#define SIDE_W 224
-#define TB_H 42
-#define TABS_H 34
-#define SB_H 26
+#define SIDE_W W_SIDEBAR_WIDE
+#define TB_H H_TOOLBAR
+#define TABS_H H_TAB
+#define SB_H H_STATUS
 #define MAX_MARKS 64
 
 enum { L_TEXT, L_C, L_LUA };
 enum { H_DEF, H_KW, H_TYPE, H_NUM, H_STR, H_COM, H_PRE, H_FUN, H_N };
 
-#define C_EDIT   RGB(0x12, 0x11, 0x1C)
-#define C_GUTTER RGB(0x16, 0x15, 0x22)
-#define C_LINENO RGB(0x5E, 0x5A, 0x7C)
-static const color_t HCOL[H_N] = {
-    RGB(0xED, 0xEB, 0xFF), RGB(0xC7, 0x92, 0xFF), RGB(0x5B, 0xD8, 0xF5), RGB(0xFF, 0xA2, 0x4B),
-    RGB(0x7A, 0xE0, 0x9A), RGB(0x6F, 0x6C, 0x93), RGB(0xFF, 0x7A, 0xC6), RGB(0x8C, 0xB4, 0xFF),
-};
+/* syntax colours come from the theme's calm terminal palette (>= 4.5:1 in every theme): keyword magenta, type cyan,
+ * number yellow, string green, comment text3, preprocessor and calls blue */
+static void hl_colors(color_t *hc) {
+    const color_t *p = ui_th.term.pal;
+    hc[H_DEF] = ui_th.text; hc[H_KW] = p[5]; hc[H_TYPE] = p[6]; hc[H_NUM] = p[3];
+    hc[H_STR] = p[2]; hc[H_COM] = ui_th.text3; hc[H_PRE] = p[4]; hc[H_FUN] = p[4];
+}
+static struct ui ui;
 
 /* ---------------------------------------------------------------- syntax highlighting */
 static const char *const C_KW[] = { "auto", "break", "case", "const", "continue", "default", "do", "else", "enum", "extern", "for",
@@ -321,13 +324,10 @@ static void move_to(int off, bool extend, bool keep_col) {
 }
 
 /* ---------------------------------------------------------------- status line / dialogs state */
-static char msg[120];
-static uint32_t msg_until;
-static bool msg_bad;
 static void say(bool bad, const char *fmt, const char *arg) {
-    snprintf(msg, sizeof msg, fmt, arg);
-    msg_bad = bad;
-    msg_until = uptime_ms() + 4500;
+    char m[120];
+    snprintf(m, sizeof m, fmt, arg);
+    ui_toast(&ui, m, NULL);
 }
 
 enum { M_NONE, M_OPEN, M_SAVEAS, M_NEWFILE, M_NEWDIR, M_OPENDIR, M_GOTO, M_CLOSETAB, M_QUIT };
@@ -340,16 +340,16 @@ static char root[PATH_MAX] = "/home/projects";
 /* ---------------------------------------------------------------- file I/O */
 static bool doc_load(struct doc *x, const char *p) {
     int fd = open(p, O_RDONLY);
-    if (fd < 0) { say(true, "Cannot open %s", p); return false; }
+    if (fd < 0) { say(true, "Couldn't open \u201c%s\u201d", base(p)); return false; }
     struct stat st;
-    if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) { close(fd); say(true, "%s is a folder", p); return false; }
+    if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) { close(fd); say(true, "\u201c%s\u201d is a folder", base(p)); return false; }
     x->len = 0;
     for (;;) {
         if (x->len + 4096 + 1 > x->cap) { x->cap = x->cap * 2 + 4096; x->buf = realloc(x->buf, x->cap); }
         int n = read(fd, x->buf + x->len, 4096);
         if (n <= 0) break;
         x->len += n;
-        if (x->len >= MAX_FILE) { say(true, "%s", "File truncated at 1 MiB"); break; }
+        if (x->len >= MAX_FILE) { say(true, "%s", "Opened the first 1 MiB only"); break; }
     }
     close(fd);
     for (int i = 0; i < x->len; i++) if (x->buf[i] == '\r') { memmove(x->buf + i, x->buf + i + 1, x->len - i - 1); x->len--; i--; }
@@ -362,11 +362,11 @@ static bool doc_load(struct doc *x, const char *p) {
 
 static bool doc_save(struct doc *x, const char *p) {
     int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC);
-    if (fd < 0) { say(true, "Cannot write %s", p); return false; }
+    if (fd < 0) { say(true, "Couldn't save \u201c%s\u201d", base(p)); return false; }
     int off = 0;
     while (off < x->len) {
         int n = write(fd, x->buf + off, x->len - off);
-        if (n <= 0) { close(fd); say(true, "Write failed: %s", p); return false; }
+        if (n <= 0) { close(fd); say(true, "Couldn't save \u201c%s\u201d", base(p)); return false; }
         off += n;
     }
     close(fd);
@@ -387,7 +387,7 @@ static void select_doc(int i) { curdoc = i; d = i >= 0 && i < ndocs ? docs[i] : 
 static struct doc *open_file(const char *p) {
     int i = find_doc(p);
     if (i >= 0) { select_doc(i); return d; }
-    if (ndocs == MAX_TABS) { say(true, "%s", "Too many tabs open"); return NULL; }
+    if (ndocs == MAX_TABS) { say(true, "%s", "Close a tab first (16 at most)"); return NULL; }
     struct doc *x = doc_new(p);
     if (!doc_load(x, p)) { doc_free(x); return NULL; }
     docs[ndocs++] = x;
@@ -477,7 +477,7 @@ static void tree_refresh(void) {
 
 static void set_root(const char *p) {
     struct stat st;
-    if (stat(p, &st) || !S_ISDIR(st.st_mode)) { say(true, "%s is not a folder", p); return; }
+    if (stat(p, &st) || !S_ISDIR(st.st_mode)) { say(true, "\u201c%s\u201d is not a folder", p); return; }
     snprintf(root, sizeof root, "%s", p);
     size_t n = strlen(root);
     while (n > 1 && root[n - 1] == '/') root[--n] = 0;
@@ -498,7 +498,8 @@ static bool run_after_build;
 static char proc_dir[PATH_MAX], last_exe[PATH_MAX], last_dir[PATH_MAX], run_target[PATH_MAX];
 static int run_lang;
 static char status_txt[64];
-static color_t status_col;
+static int status_col;                    /* ST_* */
+enum { ST_INFO, ST_BUSY, ST_BAD, ST_WARN, ST_GOOD };
 static uint32_t proc_t0;
 static char stdin_line[160];
 
@@ -573,11 +574,11 @@ static void collect_marks(void) {                     /* error lines in the outp
     }
 }
 
-static void set_status(const char *t, color_t c) { snprintf(status_txt, sizeof status_txt, "%s", t); status_col = c; }
+static void set_status(const char *t, int c) { snprintf(status_txt, sizeof status_txt, "%s", t); status_col = c; }
 
 static bool start_proc(int kind, const char *exe, char *const argv[], const char *cwd) {
     int ofd[2], ifd[2] = { -1, -1 };
-    if (pipe(ofd) < 0) { say(true, "%s", "pipe failed"); return false; }
+    if (pipe(ofd) < 0) { say(true, "%s", "Couldn't start: no pipe"); return false; }
     int in = -1;
     if (kind == 2 && pipe(ifd) == 0) in = ifd[0];
     else in = open("/dev/null", O_RDONLY);
@@ -589,12 +590,12 @@ static bool start_proc(int kind, const char *exe, char *const argv[], const char
         close(ofd[0]);
         if (ifd[1] >= 0) close(ifd[1]);
         out_puts("cannot start "); out_puts(exe); out_puts("\n");
-        set_status("could not start", UI_BAD);
+        set_status("Couldn't start", ST_BAD);
         return false;
     }
     proc_pid = pid; proc_fd = ofd[0]; proc_in = ifd[1]; proc_kind = kind; proc_t0 = uptime_ms();
     snprintf(proc_dir, sizeof proc_dir, "%s", cwd);
-    set_status(kind == 1 ? "building..." : "running...", UI_ACCENT);
+    set_status(kind == 1 ? "Building\u2026" : "Running\u2026", ST_BUSY);
     return true;
 }
 
@@ -618,7 +619,7 @@ static void finish_proc(int status) {
     int kind = proc_kind;
     proc_pid = -1; proc_kind = 0;
     if (proc_in >= 0) { close(proc_in); proc_in = -1; }
-    if (status == 128 + SIGKILL) { set_status("stopped", UI_WARN); return; }
+    if (status == 128 + SIGKILL) { set_status("Stopped", ST_WARN); return; }
     uint32_t ms = uptime_ms() - proc_t0;
     snprintf(t, sizeof t, "[%s exited with code %d, %u.%02us]\n", kind == 1 ? "build" : "program", status, ms / 1000, (ms % 1000) / 10);
     if (outlen && out[outlen - 1] != '\n') out_puts("\n");
@@ -626,16 +627,16 @@ static void finish_proc(int status) {
     if (kind == 1) {
         collect_marks();
         if (status == 0) {
-            set_status("build ok", UI_GOOD);
+            set_status("Build succeeded", ST_GOOD);
             if (run_after_build) run_target_now();
         } else {
-            snprintf(t, sizeof t, "build failed (%d error%s)", nmarks, nmarks == 1 ? "" : "s");
-            set_status(t, UI_BAD);
+            snprintf(t, sizeof t, "Build failed (%d error%s)", nmarks, nmarks == 1 ? "" : "s");
+            set_status(t, ST_BAD);
         }
     } else {
         collect_marks();
-        snprintf(t, sizeof t, status ? "exit code %d" : "finished (exit %d)", status);
-        set_status(t, status ? UI_WARN : UI_GOOD);
+        snprintf(t, sizeof t, status ? "Exited with code %d" : "Finished (exit %d)", status);
+        set_status(t, status ? ST_WARN : ST_GOOD);
     }
     run_after_build = false;
     tree_refresh();
@@ -688,11 +689,11 @@ static bool has_makefile(const char *dir) {
 /* Ctrl+B / F5. With a Makefile next to the file, /bin/make builds the project (F5 then runs ./<folder name>). Otherwise a .c file directly in the project folder is its own program; inside a subfolder, every .c file there
  * is built together (sieve/main.c + sieve.c). The result goes to /tmp. */
 static void build(bool and_run) {
-    if (proc_pid > 0) { say(true, "%s", "Already running - press Stop first"); return; }
+    if (proc_pid > 0) { say(true, "%s", "Already running: stop it first (Shift+F5)"); return; }
     if (!d) { say(true, "%s", "Open a .c or .lua file first"); return; }
     if (d->lang == L_LUA) {
         if (!d->path[0]) { mode = M_SAVEAS; snprintf(prompt, sizeof prompt, "%s/untitled.lua", root); return; }
-        if (!and_run) { say(false, "%s", "Lua needs no build - press F5 to run"); return; }
+        if (!and_run) { say(false, "%s", "Lua needs no build: press F5 to run"); return; }
         save_all();
         dir_of(d->path, last_dir);
         snprintf(run_target, sizeof run_target, "%s", d->path);
@@ -789,7 +790,7 @@ static void find_next(bool backward) {
         int pos = backward ? ((start - k) % (d->len + 1) + d->len + 1) % (d->len + 1) : (start + k) % (d->len + 1);
         if (pos + n <= d->len && match_at(pos, n)) { d->anchor = pos; d->cur = pos + n; d->want_col = -1; d->lastop = 0; return; }
     }
-    say(true, "No matches for \"%s\"", fq);
+    say(true, "No matches for \u201c%s\u201d", fq);
 }
 
 static void find_stats(void) {            /* cached "3 of 12" */
@@ -827,9 +828,9 @@ static void replace_all(void) {
     begin_op(0);
     for (int i = cnt - 1; i >= 0; i--) rec(pos[i], n, rq, strlen(rq));       /* back to front keeps offsets valid */
     free(pos);
-    char t[24];
-    snprintf(t, sizeof t, "%d", cnt);
-    say(false, "Replaced %s occurrence(s)", t);
+    char t[40];
+    snprintf(t, sizeof t, "%d occurrence%s", cnt, cnt == 1 ? "" : "s");
+    say(false, "Replaced %s", t);
 }
 
 /* ---------------------------------------------------------------- editing commands */
@@ -1070,33 +1071,10 @@ static void jump_to(const char *path, int line, int vis) {
     flash_line = line - 1; flash_until = uptime_ms() + 1600; flash_doc = x;
 }
 
-/* ---------------------------------------------------------------- 3-way dialog */
-static int dlg3(struct ui *ui, const char *title, const char *text, const char *b1, const char *b2) {
-    int W = ui->win->w, H = ui->win->h, pw = 440, ph = 138, px = (W - pw) / 2, py = (H - ph) / 2, r = 0;
-    struct canvas *c = ui->c;
-    gfx_fill(c, 0, 0, W, H, RGBA(0, 0, 0, 150));
-    gfx_shadow(c, px, py, pw, ph, 12, 14, 120);
-    gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
-    gfx_round_rect(c, px, py, pw, ph, 12, RGBA(255, 255, 255, 40));
-    gfx_text(c, &font_ui_bold, px + 20, py + 16, title, UI_TEXT);
-    ui_text_fit(ui, &font_ui, px + 20, py + 44, pw - 40, text, UI_TEXT_DIM);
-    if (ui_button(ui, px + pw - 20 - 100, py + ph - 50, 100, 34, b1, UI_ACCENT_BTN)) r = 1;
-    if (ui_button(ui, px + pw - 20 - 224, py + ph - 50, 114, 34, b2, UI_NORMAL_BTN)) r = 2;
-    if (ui_button(ui, px + 20, py + ph - 50, 90, 34, "Cancel", UI_GHOST_BTN)) r = -1;
-    struct gui_event k;
-    while (ui_key(ui, &k)) if (k.key == KEY_ESC) r = -1;
-    return r;
-}
-
 /* ---------------------------------------------------------------- main */
 static bool dragging;
 static int out_drag;
 static char last_title[128];
-
-static int tab_width(int avail) {
-    int tw = ndocs ? avail / ndocs : 180;
-    return tw > 190 ? 190 : tw < 70 ? 70 : tw;
-}
 
 static void new_untitled(void) {
     if (ndocs == MAX_TABS) return;
@@ -1111,10 +1089,10 @@ static void request_close_tab(int i) {
 
 int main(int argc, char **argv) {
     struct gui_window *w = gui_window_create("Code", 1080, 690, 0);
+    const struct font *mf = T_MONO;
     if (!w) return 1;
-    CW = font_mono.g['M' - 32].adv;
-    LH = font_mono.height + 5;
-    struct ui ui;
+    CW = T_MONO->g['M' - 32].adv;
+    LH = T_MONO->height + SP_1;
     ui_init(&ui, w);
     bool sidebar = true;
     if (argc > 1) {
@@ -1129,7 +1107,11 @@ int main(int argc, char **argv) {
     tree_refresh();
     uint32_t last_act = uptime_ms();
     for (;;) {
-        if (!ui_poll(&ui, proc_pid > 0 ? 30 : 250)) {
+        uint32_t idle = uptime_ms() - last_act;              /* caret blink until D_CARET_IDLE */
+        int tmo = idle < D_CARET_IDLE ? (int)(D_CARET - idle % D_CARET) : -1;
+        if (proc_pid > 0 || (flash_doc && uptime_ms() < flash_until)) tmo = 30;
+        else if (tmo < 0 || tmo > 3000) tmo = 3000;                  /* the tree refreshes every 3 s */
+        if (!ui_poll(&ui, tmo)) {
             if (!any_modified() || mode == M_QUIT) break;
             ui.closed = false;
             mode = M_QUIT;
@@ -1142,16 +1124,16 @@ int main(int argc, char **argv) {
         int sbw = sidebar ? SIDE_W : 0;
         int mx0 = sbw, mw = W - sbw;
         int oh = out_open ? out_h : 0;                                     /* output pane incl. header */
-        int ey = TB_H + TABS_H, eh = H - SB_H - ey - (out_open ? oh + 5 : 0);
+        int ey = TB_H + TABS_H, eh = H - SB_H - ey - (out_open ? oh + 1 : 0);
         if (eh < 80) { eh = 80; }
         int ex = mx0, ew = mw;
         int gutter = 0;
-        if (d) { reindex(d); for (int n = d->nlines; n; n /= 10) gutter += CW; gutter += 28; }
-        int tx0 = ex + gutter + 6, vis = eh / LH;
-        int oy = ey + eh + 5;                                              /* output pane top */
-        int fbx = ex + ew - 440 - 18, fby = ey + 6, fbw = 440, fbh = replace_open ? 76 : 40;
-        int fq_x = fbx + 8, fq_y = fby + 5, fq_w = 190, fq_h = 30;
-        int rq_y = fby + 40;
+        if (d) { reindex(d); for (int n = d->nlines; n; n /= 10) gutter += CW; gutter += SP_5 + SP_4; }
+        int tx0 = ex + gutter + SP_2, vis = (eh - SP_2) / LH;
+        int oy = ey + eh + 1;                                              /* output pane top */
+        int fbw = 400, fbx = ex + ew - fbw - SP_5, fby = ey + SP_3, fbh = (replace_open ? 2 * H_CTL + SP_3 : H_CTL) + 2 * SP_3;
+        int fq_x = fbx + SP_3, fq_y = fby + SP_3, fq_w = 180, fq_h = H_CTL;
+        int rq_y = fq_y + H_CTL + SP_3;
 
         /* ---- keep modal dialogs from leaking input to what is behind them ---- */
         int smx = ui.mx, smy = ui.my;
@@ -1171,7 +1153,7 @@ int main(int argc, char **argv) {
                 int key = k.key < 128 ? tolower(k.key) : k.key;
                 if (k.key == KEY_F5) { if (shift) stop_proc(); else build(true); }
                 else if (k.key == KEY_F3) { if (d) find_next(shift); }
-                else if (ctrl && key == 's') { if (d) { if (d->path[0]) { if (doc_save(d, d->path)) say(false, "Saved %s", base(d->path)); tree_refresh(); } else { mode = M_SAVEAS; snprintf(prompt, sizeof prompt, "%s/untitled.c", root); } } }
+                else if (ctrl && key == 's') { if (d) { if (d->path[0]) { if (doc_save(d, d->path)) say(false, "Saved \u201c%s\u201d", base(d->path)); tree_refresh(); } else { mode = M_SAVEAS; snprintf(prompt, sizeof prompt, "%s/untitled.c", root); } } }
                 else if (ctrl && key == 'b') build(false);
                 else if (ctrl && key == 'n') new_untitled();
                 else if (ctrl && key == 'o') { mode = M_OPEN; snprintf(prompt, sizeof prompt, "%s/", root); }
@@ -1208,7 +1190,7 @@ int main(int argc, char **argv) {
                 int l = line_of(d, d->cur);
                 if (l < d->top) d->top = l;
                 if (l >= d->top + vis) d->top = l - vis + 1;
-                int cx = vcol(d, l, d->cur) * CW, viewW = ew - gutter - 24;
+                int cx = vcol(d, l, d->cur) * CW, viewW = ew - gutter - SP_7;
                 if (cx - d->hx > viewW - CW) d->hx = cx - viewW + CW * 4;
                 if (cx < d->hx) d->hx = cx > CW * 4 ? cx - CW * 4 : 0;
             }
@@ -1221,7 +1203,7 @@ int main(int argc, char **argv) {
             bool in_ed = ui_hover(&ui, tx0, ey, ew - (tx0 - ex), eh) && !over_find;
             if (in_ed && ui.scroll) d->top += ui.scroll * 3;
             if (ui.pressed && in_ed) {
-                int l = d->top + (ui.my - ey - 4) / LH;
+                int l = d->top + (ui.my - ey - SP_2) / LH;
                 if (l < 0) l = 0;
                 if (l >= d->nlines) l = d->nlines - 1;
                 int vc = (ui.mx - tx0 + d->hx + CW / 2) / CW;
@@ -1234,7 +1216,7 @@ int main(int argc, char **argv) {
                 } else d->cur = d->anchor = off;
                 dragging = true; d->want_col = -1; d->lastop = 0; last_act = now;
             } else if (dragging && (ui.buttons & 1)) {
-                int l = d->top + (ui.my - ey - 4) / LH;
+                int l = d->top + (ui.my - ey - SP_2) / LH;
                 if (l < d->top) l = d->top - 1 < 0 ? 0 : d->top - 1;
                 if (l >= d->nlines) l = d->nlines - 1;
                 int vc = (ui.mx - tx0 + d->hx + CW / 2) / CW;
@@ -1252,68 +1234,74 @@ int main(int argc, char **argv) {
         ui_clear(&ui);
         struct canvas *c = ui.c;
 
-        /* toolbar */
-        gfx_fill(c, 0, 0, W, TB_H, UI_PANEL);
-        gfx_fill(c, 0, TB_H - 1, W, 1, UI_BORDER);
+        /* toolbar: view and file tools, then build / run / stop */
+        ui_toolbar(&ui, 0, 0, W);
         {
-            int bx = 8, by = 5, bh = 32;
-            if (ui_tool(&ui, bx, by, 64, bh, "Files", sidebar)) sidebar = !sidebar;
-            bx += 68;
-            if (ui_tool(&ui, bx, by, 58, bh, "Save", false) && d) {
-                if (d->path[0]) { if (doc_save(d, d->path)) say(false, "Saved %s", base(d->path)); tree_refresh(); }
+            int bx = SP_3, by = (TB_H - H_CTL) / 2;
+            if (ui_icon_button(&ui, bx, by, ICON_SIDEBAR, sidebar ? UI_ON : 0, "Files · Ctrl+\\")) sidebar = !sidebar;
+            bx += H_CTL + SP_2;
+            if (ui_icon_button(&ui, bx, by, ICON_SAVE, d ? 0 : UI_DISABLED, "Save · Ctrl+S") && d) {
+                if (d->path[0]) { if (doc_save(d, d->path)) say(false, "Saved “%s”", base(d->path)); tree_refresh(); }
                 else { mode = M_SAVEAS; snprintf(prompt, sizeof prompt, "%s/untitled.c", root); }
             }
-            bx += 70;
-            gfx_fill(c, bx - 6, 10, 1, 22, UI_BORDER);
-            if (ui_button(&ui, bx, by, 76, bh, "Build", UI_NORMAL_BTN)) build(false);
-            bx += 84;
-            if (ui_button(&ui, bx, by, 72, bh, "Run", UI_ACCENT_BTN)) build(true);
-            bx += 80;
-            if (ui_button(&ui, bx, by, 70, bh, "Stop", proc_pid > 0 ? UI_NORMAL_BTN : UI_GHOST_BTN) && proc_pid > 0) stop_proc();
-            bx += 84;
-            char hint[160];
-            snprintf(hint, sizeof hint, "Ctrl+B build   F5 run   Ctrl+F find   Ctrl+G go to line");
-            int hw = gfx_text_width(&font_ui, hint);
-            if (W - bx - 20 > hw) gfx_text(c, &font_ui, W - 16 - hw, (TB_H - font_ui.height) / 2, hint, UI_TEXT_DIM);
+            bx += H_CTL + SP_4;
+            int bw = ui_button_w(ICON_PLAY, "Run");
+            if (ui_button_ex(&ui, bx, by, bw, H_CTL, ICON_PLAY, "Run", UI_PRIMARY | (proc_pid > 0 ? UI_DISABLED : 0))) build(true);
+            ui_tooltip(&ui, bx, by, bw, H_CTL, "Build and run · F5");
+            bx += bw + SP_3;
+            bw = ui_button_w(UI_NOICON, "Build");
+            if (ui_button_ex(&ui, bx, by, bw, H_CTL, UI_NOICON, "Build", UI_SECONDARY | (proc_pid > 0 ? UI_DISABLED : 0))) build(false);
+            ui_tooltip(&ui, bx, by, bw, H_CTL, "Build · Ctrl+B");
+            bx += bw + SP_3;
+            bw = ui_button_w(ICON_STOP, "Stop");
+            if (ui_button_ex(&ui, bx, by, bw, H_CTL, ICON_STOP, "Stop", UI_SECONDARY | (proc_pid > 0 ? 0 : UI_DISABLED))) stop_proc();
+            ui_tooltip(&ui, bx, by, bw, H_CTL, "Stop · Shift+F5");
+            if (status_txt[0]) {                                           /* the last build/run result, right-aligned */
+                static const int sic[] = { ICON_INFO, -1, ICON_ERROR, ICON_WARNING, ICON_SUCCESS };
+                color_t scol = status_col == ST_BAD ? UI_BAD : status_col == ST_WARN ? UI_WARN : status_col == ST_GOOD ? UI_GOOD : UI_TEXT2;
+                int tw = gfx_text_width(T_BODY, status_txt), sx = W - SP_4 - tw, iy = (TB_H - ICON_SM) / 2;
+                if (sx - ICON_SM - SP_3 > bx + bw + SP_4) {
+                    gfx_text(c, T_BODY, sx, (TB_H - T_BODY->height) / 2, status_txt, scol);
+                    if (status_col == ST_BUSY) ui_spinner(&ui, sx - SP_3 - ICON_SM, iy);
+                    else ui_icon(&ui, sx - SP_3 - ICON_SM, iy, sic[status_col], ICON_SM, scol);
+                }
+            }
         }
 
-        /* sidebar */
+        /* sidebar: project name and file tools, then the tree */
         if (sidebar) {
-            gfx_fill(c, 0, TB_H, sbw, H - TB_H - SB_H, C_GUTTER);
-            gfx_fill(c, sbw - 1, TB_H, 1, H - TB_H - SB_H, UI_BORDER);
-            const char *rb = base(root);
-            char head[80];
-            snprintf(head, sizeof head, "%s", root[1] ? rb : "/");
-            for (char *p = head; *p; p++) *p = toupper((unsigned char)*p);
-            ui_text_fit(&ui, &font_ui_bold, 14, TB_H + 10, sbw - 28, head, UI_TEXT_DIM);
-            int ty = TB_H + 34;
-            if (ui_tool(&ui, 8, ty, 66, 26, "+ File", false)) { mode = M_NEWFILE; snprintf(prompt, sizeof prompt, "%s/", root); }
-            if (ui_tool(&ui, 76, ty, 66, 26, "+ Dir", false)) { mode = M_NEWDIR; snprintf(prompt, sizeof prompt, "%s/", root); }
-            if (ui_tool(&ui, 144, ty, 72, 26, "Folder", false)) { mode = M_OPENDIR; snprintf(prompt, sizeof prompt, "%s", root); }
-            int ly = ty + 34, lh = H - SB_H - ly, RH = 26, tvis = lh / RH;
-            struct canvas sc = *c;
-            canvas_clip(&sc, 0, ly, sbw - 1, lh);
+            ui_sidebar(&ui, 0, TB_H, sbw, H - TB_H - SB_H);
+            const char *rb = root[1] ? base(root) : "/";
+            int hy = TB_H + SP_3, ix = sbw - SP_3 - 3 * H_CTL - 2 * SP_2;
+            ui_text_fit(&ui, T_CAPTION_B, SP_5, hy + (H_CTL - T_CAPTION_B->height) / 2, ix - SP_5 - SP_2, rb, UI_TEXT2);
+            if (ui_icon_button(&ui, ix, hy, ICON_FILE_NEW, 0, "New file…")) { mode = M_NEWFILE; snprintf(prompt, sizeof prompt, "%s/", root); }
+            if (ui_icon_button(&ui, ix + H_CTL + SP_2, hy, ICON_FOLDER_NEW, 0, "New folder…")) { mode = M_NEWDIR; snprintf(prompt, sizeof prompt, "%s/", root); }
+            if (ui_icon_button(&ui, ix + 2 * (H_CTL + SP_2), hy, ICON_FOLDER_OPEN, 0, "Open folder…")) { mode = M_OPENDIR; snprintf(prompt, sizeof prompt, "%s", root); }
+            int ly = hy + H_CTL + SP_2, lh = H - SB_H - ly, RH = H_ROW, tvis = lh / RH;
+            struct canvas sc = *c, *oc = ui.c;
+            canvas_clip(&sc, 0, ly, sbw, lh);
             if (ui_hover(&ui, 0, ly, sbw, lh) && ui.scroll) tree_scroll += ui.scroll * 2;
             if (tree_scroll > nrows - tvis) tree_scroll = nrows - tvis;
             if (tree_scroll < 0) tree_scroll = 0;
+            ui.c = &sc;
             for (int i = tree_scroll; i < nrows && i < tree_scroll + tvis + 1; i++) {
                 struct trow *r = &rows[i];
-                int ry = ly + (i - tree_scroll) * RH, rx = 8 + r->depth * 14;
+                int ry = ly + (i - tree_scroll) * RH, bx = SP_3, bw = sbw - 2 * SP_3, rx = bx + SP_3 + r->depth * SP_5;
                 bool active = !r->dir && d && !strcmp(d->path, r->path);
-                bool hov = ui_hover(&ui, 0, ry, sbw - 1, RH) && ry + RH <= ly + lh;
-                if (active) gfx_fill(&sc, 4, ry + 1, sbw - 9, RH - 2, RGBA(0xB3, 0x88, 0xFF, 70));
-                else if (hov) gfx_fill(&sc, 4, ry + 1, sbw - 9, RH - 2, RGBA(255, 255, 255, 14));
-                if (r->dir) {                                              /* chevron */
+                bool hov = ui_hover(&ui, bx, ry, bw, RH) && ry + RH <= ly + lh;
+                if (active) {
+                    gfx_round_fill(&sc, bx, ry, bw, RH, R_2, UI_SELECTION);
+                    gfx_round_fill(&sc, bx, ry + (RH - MARKER_H) / 2, MARKER_W, MARKER_H, R_1, ui_th.accent_line);
+                } else if (hov) gfx_round_fill(&sc, bx, ry, bw, RH, R_2, (ui.buttons & 1) ? ui_th.press_ov : ui_th.hover_ov);
+                int iy = ry + (RH - ICON_SM) / 2, ic;
+                if (r->dir) {
                     bool op = dir_is_open(r->path);
-                    float cx = rx + 6, cy = ry + RH / 2;
-                    if (op) { gfx_line_aa(&sc, cx - 3, cy - 2, cx, cy + 2, 1.6f, UI_TEXT_DIM); gfx_line_aa(&sc, cx, cy + 2, cx + 3, cy - 2, 1.6f, UI_TEXT_DIM); }
-                    else { gfx_line_aa(&sc, cx - 2, cy - 3, cx + 2, cy, 1.6f, UI_TEXT_DIM); gfx_line_aa(&sc, cx + 2, cy, cx - 2, cy + 3, 1.6f, UI_TEXT_DIM); }
-                } else {
-                    int lg = lang_of(r->name);
-                    color_t ic = lg == L_C ? RGB(0x5B, 0xD8, 0xF5) : lg == L_LUA ? RGB(0x8C, 0x9C, 0xFF) : UI_TEXT_DIM;
-                    gfx_round_fill(&sc, rx + 2, ry + RH / 2 - 4, 8, 8, 3, ic);
-                }
-                ui_text_fit(&ui, &font_ui, rx + 18, ry + (RH - font_ui.height) / 2, sbw - rx - 26, r->name, r->dir ? UI_TEXT : active ? UI_TEXT : RGB(0xCF, 0xCB, 0xE8));
+                    ui_icon(&ui, rx, iy, op ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, ICON_SM, UI_TEXT3);
+                    ic = op ? ICON_FOLDER_OPEN : ICON_FOLDER;
+                } else ic = lang_of(r->name) != L_TEXT ? ICON_FILE_CODE : ICON_FILE_TEXT;
+                ui_icon(&ui, rx + ICON_SM + SP_2, iy, ic, ICON_SM, active ? UI_ACCENT_TEXT : UI_TEXT2);
+                int tx = rx + 2 * ICON_SM + SP_2 + SP_3;
+                ui_text_fit(&ui, active ? T_BODY_B : T_BODY, tx, ry + (RH - T_BODY->height) / 2, bx + bw - SP_3 - tx, r->name, UI_TEXT);
                 if (hov && ui.pressed) {
                     if (r->dir) { dir_toggle(r->path); tree_refresh(); }
                     else {
@@ -1325,83 +1313,92 @@ int main(int argc, char **argv) {
                     break;                                                 /* rows may have been rebuilt */
                 }
             }
+            ui.c = oc;
             ui_vscroll(&ui, sbw - 12, ly, lh, nrows, tvis, &tree_scroll);
         }
 
-        /* tab strip */
-        gfx_fill(c, mx0, TB_H, mw, TABS_H, UI_PANEL);
-        gfx_fill(c, mx0, TB_H + TABS_H - 1, mw, 1, UI_BORDER);
+        /* tab strip (ui_tabbar), with a close box or a modified dot at the end of each tab */
         {
-            int tw = tab_width(mw - 8), x = mx0 + 4, closing = -1, switch_to = -1;
-            for (int i = 0; i < ndocs; i++, x += tw) {
-                struct doc *t = docs[i];
-                bool act = i == curdoc, hov = ui_hover(&ui, x, TB_H, tw, TABS_H);
-                if (act) { gfx_fill(c, x, TB_H + 4, tw - 2, TABS_H - 4, C_EDIT); gfx_fill(c, x, TB_H + 4, tw - 2, 2, UI_ACCENT); }
-                else if (hov) gfx_fill(c, x, TB_H + 4, tw - 2, TABS_H - 5, RGBA(255, 255, 255, 12));
-                const char *nm = t->path[0] ? base(t->path) : "untitled";
-                ui_text_fit(&ui, &font_ui, x + 12, TB_H + 4 + (TABS_H - 4 - font_ui.height) / 2, tw - 44, nm, act ? UI_TEXT : UI_TEXT_DIM);
-                int cx = x + tw - 20, cy = TB_H + 4 + (TABS_H - 4) / 2;
-                bool hx_ = ui_hover(&ui, cx - 8, cy - 9, 18, 18);
-                if (t->modified && !hx_) gfx_circle_fill(c, cx + 1, cy, 4, UI_ACCENT2);
-                else if (act || hov) {
-                    if (hx_) gfx_round_fill(c, cx - 8, cy - 9, 18, 18, 5, RGBA(255, 255, 255, 30));
-                    gfx_line_aa(c, cx - 3, cy - 3, cx + 4, cy + 4, 1.6f, UI_TEXT_DIM);
-                    gfx_line_aa(c, cx + 4, cy - 3, cx - 3, cy + 4, 1.6f, UI_TEXT_DIM);
-                }
-                if (ui.pressed && hov) { if (hx_) closing = i; else switch_to = i; }
+            static char nbuf[MAX_TABS][72];
+            const char *names[MAX_TABS];
+            int pad = SP_3 + 20, spw = gfx_text_width(T_BODY_B, " "), ns = (pad + spw - 1) / (spw ? spw : 1);
+            int tx[MAX_TABS], tw[MAX_TABS], x = mx0 + SP_2, closing = -1, sel = curdoc;
+            for (int i = 0; i < ndocs; i++) {
+                const char *nm = docs[i]->path[0] ? base(docs[i]->path) : "Untitled";
+                int n = snprintf(nbuf[i], 40, "%.39s", nm);
+                for (int k = 0; k < ns && n < 70; k++) nbuf[i][n++] = ' ';
+                nbuf[i][n] = 0;
+                names[i] = nbuf[i];
+                tx[i] = x; tw[i] = gfx_text_width(T_BODY_B, nbuf[i]) + 2 * SP_4;
+                x += tw[i];
             }
-            if (ui_tool(&ui, x + 2, TB_H + 5, 28, TABS_H - 7, "+", false)) new_untitled();
+            int ty = TB_H + (TABS_H - 20) / 2;
+            for (int i = 0; i < ndocs; i++) {                              /* the close box takes its press first */
+                int cx = tx[i] + tw[i] - SP_4 - 20 + SP_1;
+                if (ui.pressed && ui_hover(&ui, cx, ty, 20, 20)) { closing = i; ui.pressed = false; }
+            }
+            struct canvas tc = *c, *oc = ui.c;
+            canvas_clip(&tc, mx0, TB_H, mw, TABS_H);
+            ui.c = &tc;
+            if (ndocs) { if (ui_tabbar(&ui, mx0, TB_H, mw, names, ndocs, &sel, 0)) select_doc(sel); }
+            else { gfx_fill(&tc, mx0, TB_H, mw, TABS_H, ui.focused ? ui_th.window : ui_th.base); gfx_hline(&tc, mx0, TB_H + TABS_H - 1, mw, UI_LINE); }
+            for (int i = 0; i < ndocs; i++) {
+                int cx = tx[i] + tw[i] - SP_4 - 20 + SP_1;
+                bool tabhov = ui_hover(&ui, tx[i], TB_H, tw[i], TABS_H), xh = ui_hover(&ui, cx, ty, 20, 20);
+                if (docs[i]->modified && !xh) gfx_circle_fill(&tc, cx + 10, ty + 10, 4, i == curdoc ? UI_TEXT : UI_TEXT2);
+                else if (i == curdoc || tabhov) {
+                    if (xh) gfx_round_fill(&tc, cx, ty, 20, 20, R_2, (ui.buttons & 1) ? ui_th.press_ov : ui_th.hover_ov);
+                    ui_icon(&ui, cx + 2, ty + 2, ICON_CLOSE, ICON_SM, xh ? UI_TEXT : UI_TEXT3);
+                }
+            }
+            ui.c = oc;
+            if (x + SP_2 + H_CTL <= W && ui_icon_button(&ui, x + SP_2, TB_H + (TABS_H - H_CTL) / 2 - 1, ICON_PLUS, 0, "New file · Ctrl+N")) new_untitled();
             if (closing >= 0) request_close_tab(closing);
-            else if (switch_to >= 0) select_doc(switch_to);
         }
 
         /* editor */
-        gfx_fill(c, ex, ey, ew, eh, C_EDIT);
         if (!d) {
-            int cy = ey + eh / 2 - 90;
-            gfx_text_center(c, &font_big, ex, cy, ew, "Code", UI_ACCENT);
-            gfx_text_center(c, &font_ui, ex, cy + 72, ew, "Open a file from the sidebar, or start something new.", UI_TEXT_DIM);
-            static const char *const tips[] = { "Ctrl+N   new file", "Ctrl+O   open file", "Ctrl+B   build", "F5       build and run", "Ctrl+F   find and replace" };
-            for (int i = 0; i < 5; i++) gfx_text(c, &font_mono, ex + ew / 2 - 110, cy + 112 + i * 22, tips[i], UI_TEXT_DIM);
+            if (ui_empty(&ui, ex, ey, ew, eh, ICON_CODE, "No file open", "Pick a file in the sidebar, or press Ctrl+O to open one. F5 builds and runs.", "New file"))
+                new_untitled();
         } else {
-            gfx_fill(c, ex, ey, gutter, eh, C_GUTTER);
-            gfx_fill(c, ex + gutter, ey, 1, eh, UI_BORDER);
+            color_t hc[H_N];
+            hl_colors(hc);
             struct canvas cc = *c, gc = *c;
-            canvas_clip(&cc, tx0, ey, ew - (tx0 - ex) - 10, eh);
+            canvas_clip(&cc, tx0 - SP_2, ey, ew - (tx0 - ex) + SP_2, eh);
             canvas_clip(&gc, ex, ey, gutter, eh);
             int lo, hi;
             sel_range(&lo, &hi);
             int curl = line_of(d, d->cur), fqn = find_open ? strlen(fq) : 0;
             for (int i = 0; i < vis + 1 && d->top + i < d->nlines; i++) {
-                int l = d->top + i, y = ey + 4 + i * LH;
+                int l = d->top + i, y = ey + SP_2 + i * LH, ty = y + (LH - mf->height) / 2;
                 if (y > ey + eh) break;
                 int s = d->lines[l], e = line_end(d, l);
                 bool errl = false;
                 for (int m = 0; m < nmarks; m++) if (marks[m].line == l + 1 && !strcmp(marks[m].path, d->path)) errl = true;
-                if (errl) gfx_fill(&cc, tx0 - 4, y - 1, ew, LH, RGBA(0xFF, 0x5F, 0x7A, 34));
-                if (flash_doc == d && l == flash_line && now < flash_until) gfx_fill(&cc, tx0 - 4, y - 1, ew, LH, RGBA(0xFF, 0xC2, 0x4B, 60));
-                if (l == curl && lo == hi) gfx_fill(&cc, tx0 - 4, y - 1, ew, LH, RGBA(0xB3, 0x88, 0xFF, 14));
+                if (errl) gfx_fill(&cc, tx0 - SP_2, y, ew, LH, TH_A(ui_th.danger, 36));
+                else if (flash_doc == d && l == flash_line && now < flash_until) gfx_fill(&cc, tx0 - SP_2, y, ew, LH, UI_SELECTION);
+                else if (l == curl && lo == hi) gfx_fill(&cc, tx0 - SP_2, y, ew, LH, ui_th.hover_ov);
                 char num[16];
                 snprintf(num, sizeof num, "%d", l + 1);
-                gfx_text(&gc, &font_mono, ex + gutter - 12 - gfx_text_width(&font_mono, num), y + 1, num, errl ? UI_BAD : l == curl ? UI_ACCENT : C_LINENO);
-                if (errl) gfx_circle_fill(&gc, ex + 9, y + LH / 2 - 1, 3, UI_BAD);
+                gfx_text(&gc, mf, ex + gutter - SP_4 - gfx_text_width(mf, num), ty, num, errl ? UI_BAD : l == curl ? UI_TEXT : UI_TEXT3);
+                if (errl) gfx_circle_fill(&gc, ex + SP_3, y + LH / 2, 3, UI_BAD);
                 /* find matches, selection */
                 if (fqn) for (int p = s; p + fqn <= e; p++) if (match_at(p, fqn)) {
                     int x0 = tx0 + vcol(d, l, p) * CW - d->hx;
-                    gfx_fill(&cc, x0, y - 1, fqn * CW, LH, RGBA(0xFF, 0xC2, 0x4B, 70));
+                    gfx_fill(&cc, x0, y, fqn * CW, LH, ui_th.term.hit);
                     p += fqn - 1;
                 }
                 if (hi > lo && hi > s && lo <= e) {
                     int a = lo > s ? lo : s, b = hi < e ? hi : e;
                     int x0 = tx0 + vcol(d, l, a) * CW - d->hx, x1 = tx0 + vcol(d, l, b) * CW - d->hx;
                     if (hi > e) x1 += CW / 2;
-                    gfx_fill(&cc, x0, y - 1, x1 - x0, LH, RGBA(0xB3, 0x88, 0xFF, 100));
+                    gfx_fill(&cc, x0, y, x1 - x0, LH, UI_SELECTION);
                 }
                 /* indent guides, then the text */
                 {
                     int ws = 0;
                     while (s + ws < e && d->buf[s + ws] == ' ') ws++;
-                    for (int g = TAB; g < ws; g += TAB) gfx_fill(&cc, tx0 + g * CW - d->hx, y - 1, 1, LH, RGBA(255, 255, 255, 14));
+                    for (int g = TAB; g < ws; g += TAB) gfx_vline(&cc, tx0 + g * CW - d->hx, y, LH, UI_LINE);
                 }
                 unsigned char col[4096];
                 int n = e - s > 4096 ? 4096 : e - s;
@@ -1411,65 +1408,63 @@ int main(int argc, char **argv) {
                     if (d->buf[j] == '\t') { vc = (vc / TAB + 1) * TAB; continue; }
                     int px = tx0 + vc * CW - d->hx;
                     if (px > ex + ew) break;
-                    if (px > tx0 - CW && d->buf[j] != ' ') gfx_char(&cc, &font_mono, px, y + 1, (unsigned char)d->buf[j], HCOL[j - s < n ? col[j - s] : H_DEF]);
+                    if (px > tx0 - CW && d->buf[j] != ' ') gfx_char(&cc, mf, px, ty, (unsigned char)d->buf[j], hc[j - s < n ? col[j - s] : H_DEF]);
                     vc++;
                 }
             }
-            if (!modal && ui.focused && ((now - last_act) / 500) % 2 == 0 && curl >= d->top && curl < d->top + vis + 1 && (!ui.focus || dragging)) {
-                int cx = tx0 + vcol(d, curl, d->cur) * CW - d->hx, cy = ey + 4 + (curl - d->top) * LH;
-                gfx_fill(&cc, cx, cy, 2, LH - 2, UI_ACCENT);
+            uint32_t ci = now - last_act;
+            if (!modal && ui.focused && (ci >= D_CARET_IDLE || (ci / D_CARET) % 2 == 0) && curl >= d->top && curl < d->top + vis + 1 && (!ui.focus || dragging)) {
+                int cx = tx0 + vcol(d, curl, d->cur) * CW - d->hx, cy = ey + SP_2 + (curl - d->top) * LH;
+                gfx_fill(&cc, cx - 1, cy + SP_1, SP_1, LH - 2 * SP_1, UI_TEXT);
             }
-            ui_vscroll(&ui, ex + ew - 12, ey + 2, eh - 4, d->nlines, vis, &d->top);
+            ui_vscroll(&ui, ex + ew - 12, ey + SP_1, eh - 2 * SP_1, d->nlines, vis, &d->top);
         }
 
-        /* find / replace bar */
+        /* find / replace: a popover at the top right of the editor */
         if (find_open && d) {
-            gfx_shadow(c, fbx, fby, fbw, fbh, 10, 10, 120);
-            gfx_round_fill(c, fbx, fby, fbw, fbh, 10, UI_PANEL);
-            gfx_round_rect(c, fbx, fby, fbw, fbh, 10, RGBA(255, 255, 255, 40));
-            if (ui_textbox(&ui, fq_x, fq_y, fq_w, fq_h, fq, sizeof fq, "Find")) find_next(false);
+            gfx_elev(c, fbx, fby, fbw, fbh, R_3, E2, ui_th.elev[E2]);
+            gfx_round_fill(c, fbx, fby, fbw, fbh, R_3, ui_th.overlay);
+            gfx_round_rect(c, fbx, fby, fbw, fbh, R_3, UI_LINE);
+            if (ui_input(&ui, fq_x, fq_y, fq_w, fq_h, fq, sizeof fq, "Find", ICON_SEARCH, fq[0] && !fc_total ? UI_ERROR : 0)) find_next(false);
             find_stats();
             char cnt[32];
-            if (fq[0]) snprintf(cnt, sizeof cnt, fc_total ? "%d of %d" : "no results", fc_index, fc_total);
+            if (fq[0]) snprintf(cnt, sizeof cnt, fc_total ? "%d of %d" : "No results", fc_index, fc_total);
             else cnt[0] = 0;
             if (fq[0] && fc_total && !fc_index) snprintf(cnt, sizeof cnt, "%d found", fc_total);
-            gfx_text(c, &font_ui, fq_x + fq_w + 8, fq_y + 6, cnt, fq[0] && !fc_total ? UI_BAD : UI_TEXT_DIM);
-            int bx = fbx + fbw - 8;
-            bx -= 24; if (ui_tool(&ui, bx, fq_y, 24, fq_h, "x", false)) { find_open = false; ui.focus = 0; }
-            bx -= 28; if (ui_tool(&ui, bx, fq_y, 26, fq_h, ">", false)) find_next(false);
-            bx -= 28; if (ui_tool(&ui, bx, fq_y, 26, fq_h, "<", false)) find_next(true);
-            bx -= 30; if (ui_tool(&ui, bx, fq_y, 28, fq_h, "Aa", find_case)) find_case = !find_case;
+            int bx = fbx + fbw - SP_3 - H_CTL;
+            if (ui_icon_button(&ui, bx, fq_y, ICON_CLOSE, 0, "Close · Esc")) { find_open = false; ui.focus = 0; }
+            bx -= H_CTL + SP_2; if (ui_icon_button(&ui, bx, fq_y, ICON_CHEVRON_DOWN, fq[0] ? 0 : UI_DISABLED, "Next match · F3")) find_next(false);
+            bx -= H_CTL + SP_2; if (ui_icon_button(&ui, bx, fq_y, ICON_CHEVRON_UP, fq[0] ? 0 : UI_DISABLED, "Previous match · Shift+F3")) find_next(true);
+            bx -= H_CTL + SP_2; if (ui_icon_button(&ui, bx, fq_y, ICON_MATCH_CASE, find_case ? UI_ON : 0, "Match case")) find_case = !find_case;
+            ui_text_fit(&ui, T_CAPTION, fq_x + fq_w + SP_3, fq_y + (fq_h - T_CAPTION->height) / 2, bx - SP_2 - (fq_x + fq_w + SP_3), cnt, fq[0] && !fc_total ? UI_BAD : UI_TEXT2);
             if (replace_open) {
-                if (ui_textbox(&ui, fq_x, rq_y, fq_w, fq_h, rq, sizeof rq, "Replace")) replace_one();
-                if (ui_button(&ui, fq_x + fq_w + 8, rq_y, 74, fq_h, "Replace", UI_NORMAL_BTN)) replace_one();
-                if (ui_button(&ui, fq_x + fq_w + 88, rq_y, 56, fq_h, "All", UI_NORMAL_BTN)) replace_all();
+                if (ui_input(&ui, fq_x, rq_y, fq_w, fq_h, rq, sizeof rq, "Replace", ICON_REPLACE, 0)) replace_one();
+                int b1 = ui_button_w(UI_NOICON, "Replace"), b2 = ui_button_w(UI_NOICON, "Replace all");
+                if (ui_button(&ui, fq_x + fq_w + SP_3, rq_y, b1, fq_h, "Replace", UI_SECONDARY)) replace_one();
+                if (ui_button(&ui, fq_x + fq_w + SP_3 + b1 + SP_3, rq_y, b2, fq_h, "Replace all", UI_SECONDARY)) replace_all();
             }
         }
 
         /* output pane */
         if (out_open) {
-            int px = ex, pw2 = ew;
-            gfx_fill(c, px, ey + eh, pw2, 5, C_GUTTER);                    /* splitter */
-            gfx_fill(c, px, ey + eh + 2, pw2, 1, UI_BORDER);
-            if (ui_hover(&ui, px, ey + eh - 2, pw2, 9) && ui.pressed) out_drag = 1;
+            int px = ex, pw2 = ew, hh = H_TAB;
+            gfx_hline(c, px, ey + eh, pw2, UI_LINE);                      /* splitter: a 1px rule, 9px to grab */
+            bool sh = ui_hover(&ui, px, ey + eh - 4, pw2, 9);
+            if (sh && ui.pressed) out_drag = 1;
             if (out_drag && (ui.buttons & 1)) {
-                out_h = H - SB_H - ui.my - 3;
+                out_h = H - SB_H - ui.my - 1;
                 if (out_h < 80) out_h = 80;
                 if (out_h > H - 220) out_h = H - 220;
             } else out_drag = 0;
-            gfx_fill(c, px, oy, pw2, oh, RGB(0x10, 0x0F, 0x19));
-            gfx_fill(c, px, oy, pw2, 30, UI_PANEL);
-            gfx_fill(c, px, oy + 29, pw2, 1, UI_BORDER);
-            gfx_text(c, &font_ui_bold, px + 14, oy + 6, "OUTPUT", UI_TEXT_DIM);
-            if (status_txt[0]) {
-                int sw = gfx_text_width(&font_ui_bold, "OUTPUT");
-                gfx_circle_fill(c, px + 14 + sw + 18, oy + 15, 4, status_col);
-                gfx_text(c, &font_ui, px + 14 + sw + 30, oy + 6, status_txt, status_col);
-            }
-            if (ui_tool(&ui, px + pw2 - 64, oy + 3, 56, 24, "Clear", false)) { outlen = 0; nmarks = 0; status_txt[0] = 0; out_top = 0; }
-            if (ui_tool(&ui, px + pw2 - 92, oy + 3, 24, 24, "x", false)) out_open = false;
-            int in_h = proc_kind == 2 && proc_in >= 0 ? 36 : 0;
-            int ty = oy + 34, th = oh - 34 - in_h, ORH = font_mono.height + 3, ovis = th / ORH;
+            if (sh || out_drag) gfx_fill(c, px, ey + eh - 1, pw2, 3, ui_th.accent_line);
+            gfx_fill(c, px, oy, pw2, oh, ui_th.base);
+            gfx_hline(c, px, oy + hh - 1, pw2, UI_LINE);
+            gfx_text(c, T_CAPTION_B, px + SP_4, oy + (hh - T_CAPTION_B->height) / 2, "Output", UI_TEXT2);
+            int cw = ui_button_w(UI_NOICON, "Clear"), by = oy + (hh - H_CTL_SM) / 2;
+            if (ui_icon_button(&ui, px + pw2 - SP_2 - H_CTL, oy + (hh - H_CTL) / 2, ICON_CLOSE, 0, "Hide output · Ctrl+J")) out_open = false;
+            if (ui_button(&ui, px + pw2 - SP_2 - H_CTL - SP_2 - cw, by, cw, H_CTL_SM, "Clear", UI_GHOST | (outlen ? 0 : UI_DISABLED))) { outlen = 0; nmarks = 0; status_txt[0] = 0; out_top = 0; }
+            int in_h = proc_kind == 2 && proc_in >= 0 ? H_CTL + 2 * SP_3 : 0;
+            int ORH = mf->height + SP_1, ty = oy + hh + SP_2, th = oh - hh - SP_2 - in_h, ovis = th / ORH;
             out_index();
             if (ui_hover(&ui, px, ty, pw2, th) && ui.scroll) { out_top += ui.scroll * 3; out_stick = false; }
             if (out_stick) out_top = nolines - ovis;
@@ -1479,7 +1474,7 @@ int main(int argc, char **argv) {
             struct canvas oc = *c;
             canvas_clip(&oc, px, ty, pw2 - 14, th);
             for (int i = out_top; i < nolines && i < out_top + ovis + 1; i++) {
-                int s = olines[i], e = i + 1 < nolines ? olines[i + 1] - 1 : outlen, yy = ty + 2 + (i - out_top) * ORH;
+                int s = olines[i], e = i + 1 < nolines ? olines[i + 1] - 1 : outlen, yy = ty + (i - out_top) * ORH;
                 if (e > s && out[e - 1] == '\n') e--;
                 char lp[PATH_MAX];
                 int ln;
@@ -1489,21 +1484,23 @@ int main(int argc, char **argv) {
                 if (has(out + s, e - s, "error") || has(out + s, e - s, "Error")) col = UI_BAD;
                 else if (has(out + s, e - s, "warning")) col = UI_WARN;
                 else if (loc) col = UI_BAD;
-                else if (out[s] == '$') col = UI_ACCENT;
-                else if (out[s] == '[') col = UI_TEXT_DIM;
-                if (hov) gfx_fill(&oc, px, yy - 1, pw2, ORH, RGBA(255, 255, 255, 14));
-                gfx_text_n(&oc, &font_mono, px + 14, yy, out + s, e - s > 300 ? 300 : e - s, col);
+                else if (out[s] == '$') col = UI_ACCENT_TEXT;
+                else if (out[s] == '[') col = UI_TEXT2;
+                if (hov) gfx_fill(&oc, px, yy, pw2, ORH, ui_th.hover_ov);
+                int tn = e - s > 300 ? 300 : e - s, yt = yy + (ORH - mf->height) / 2;
+                gfx_text_n(&oc, mf, px + SP_4, yt, out + s, tn, col);
                 if (hov) {
-                    gfx_fill(&oc, px + 14, yy + font_mono.height, gfx_text_width_n(&font_mono, out + s, e - s > 300 ? 300 : e - s), 1, col);
+                    gfx_hline(&oc, px + SP_4, yt + mf->ascent + 2, gfx_text_width_n(mf, out + s, tn), col);
                     if (ui.pressed) { jump_to(lp, ln, vis); ui.pressed = false; }
                 }
             }
-            if (!outlen) gfx_text(c, &font_ui, px + 14, ty + 8, "Build and run output appears here. Click an error to jump to it.", UI_TEXT_DIM);
+            if (!outlen) gfx_text(c, T_BODY, px + SP_4, ty + SP_2, "Build and run output appears here. Click an error to jump to it.", UI_TEXT2);
             ui_vscroll(&ui, px + pw2 - 12, ty, th, nolines, ovis, &out_top);
             if (in_h) {
-                gfx_fill(c, px, oy + oh - in_h, pw2, 1, UI_BORDER);
-                gfx_text(c, &font_ui, px + 14, oy + oh - in_h + 10, "stdin >", UI_TEXT_DIM);
-                if (ui_textbox(&ui, px + 80, oy + oh - in_h + 3, pw2 - 94, 30, stdin_line, sizeof stdin_line, "type input for the program, Enter sends")) {
+                int iy = oy + oh - in_h + SP_3, lw = gfx_text_width(T_BODY, "Input");
+                gfx_hline(c, px, oy + oh - in_h, pw2, UI_LINE);
+                gfx_text(c, T_BODY, px + SP_4, iy + (H_CTL - T_BODY->height) / 2, "Input", UI_TEXT2);
+                if (ui_input(&ui, px + SP_4 + lw + SP_3, iy, pw2 - 2 * SP_4 - lw - SP_3, H_CTL, stdin_line, sizeof stdin_line, "Type a line for the program, Enter sends", ICON_TERMINAL, 0)) {
                     int n = strlen(stdin_line);
                     stdin_line[n++] = '\n';
                     write(proc_in, stdin_line, n);
@@ -1514,22 +1511,17 @@ int main(int argc, char **argv) {
         }
 
         /* status bar */
-        gfx_fill(c, 0, H - SB_H, W, SB_H, UI_PANEL);
-        gfx_fill(c, 0, H - SB_H, W, 1, UI_BORDER);
         {
-            int y = H - SB_H + (SB_H - font_ui.height) / 2;
-            char st[96];
+            char st[96] = "", rt[64] = "";
             if (d) {
                 int lo, hi, curl = line_of(d, d->cur);
                 sel_range(&lo, &hi);
-                snprintf(st, sizeof st, "Ln %d, Col %d", curl + 1, vcol(d, curl, d->cur) + 1);
-                gfx_text(c, &font_ui, 14, y, st, UI_TEXT_DIM);
-                if (hi > lo) { snprintf(st, sizeof st, "%d selected", hi - lo); gfx_text(c, &font_ui, 140, y, st, UI_ACCENT); }
-                static const char *const lname[] = { "Plain Text", "C", "Lua" };
-                snprintf(st, sizeof st, "Spaces: 4    %s", lname[d->lang]);
-                gfx_text(c, &font_ui, W - 14 - gfx_text_width(&font_ui, st), y, st, UI_TEXT_DIM);
+                int n = snprintf(st, sizeof st, "Ln %d, Col %d", curl + 1, vcol(d, curl, d->cur) + 1);
+                if (hi > lo) snprintf(st + n, sizeof st - n, "  ·  %d selected", hi - lo);
+                static const char *const lname[] = { "Plain text", "C", "Lua" };
+                snprintf(rt, sizeof rt, "Spaces: 4  ·  %s", lname[d->lang]);
             }
-            if (msg[0] && now < msg_until) gfx_text_center(c, &font_ui, 0, y, W, msg, msg_bad ? UI_BAD : UI_GOOD);
+            ui_status(&ui, 0, H - SB_H, W, st, rt);
         }
 
         /* ---- dialogs ---- */
@@ -1545,20 +1537,22 @@ int main(int argc, char **argv) {
                     bool done = true;
                     if (mode == M_OPEN) done = open_file(prompt) != NULL;
                     else if (mode == M_SAVEAS) {
-                        if (d && doc_save(d, prompt)) { say(false, "Saved %s", base(d->path)); tree_refresh(); } else done = false;
+                        if (d && doc_save(d, prompt)) { say(false, "Saved \u201c%s\u201d", base(d->path)); tree_refresh(); } else done = false;
                     } else if (mode == M_NEWFILE) {
                         int fd = open(prompt, O_WRONLY | O_CREAT | O_TRUNC);
-                        if (fd < 0) { say(true, "Cannot create %s", prompt); done = false; }
+                        if (fd < 0) { say(true, "Couldn't create \u201c%s\u201d", prompt); done = false; }
                         else { close(fd); tree_refresh(); done = open_file(prompt) != NULL; }
                     } else if (mode == M_NEWDIR) {
-                        if (mkdir(prompt, 0755) < 0) { say(true, "Cannot create %s", prompt); done = false; }
+                        if (mkdir(prompt, 0755) < 0) { say(true, "Couldn't create \u201c%s\u201d", prompt); done = false; }
                         else tree_refresh();
                     } else if (mode == M_OPENDIR) set_root(prompt);
                     else if (mode == M_GOTO && d) goto_line(d, atoi(prompt), vis);
                     if (done) mode = M_NONE;
                 } else if (r == -1) mode = M_NONE;
             } else if (mode == M_CLOSETAB) {
-                int r = dlg3(&ui, "Unsaved changes", docs[pending_close]->path[0] ? base(docs[pending_close]->path) : "untitled", "Save", "Don't save");
+                char q[PATH_MAX + 40];
+                snprintf(q, sizeof q, "Save changes to \u201c%s\u201d?", docs[pending_close]->path[0] ? base(docs[pending_close]->path) : "Untitled");
+                int r = ui_dialog_ex(&ui, q, "Your changes will be lost if you don't save them.", "Don't save", "Cancel", "Save", UI_PRIMARY);
                 if (r == 1) {
                     struct doc *x = docs[pending_close];
                     if (x->path[0] && doc_save(x, x->path)) { close_doc(pending_close); mode = M_NONE; }
@@ -1566,7 +1560,7 @@ int main(int argc, char **argv) {
                 } else if (r == 2) { close_doc(pending_close); mode = M_NONE; }
                 else if (r == -1) mode = M_NONE;
             } else if (mode == M_QUIT) {
-                int r = dlg3(&ui, "Unsaved changes", "Some files have unsaved edits.", "Save all", "Discard");
+                int r = ui_dialog_ex(&ui, "Save changes before closing?", "Some files have unsaved changes. They will be lost if you don't save them.", "Don't save", "Cancel", "Save all", UI_PRIMARY);
                 if (r == 1) { save_all(); if (!any_modified()) break; mode = M_NONE; }
                 else if (r == 2) break;
                 else if (r == -1) mode = M_NONE;
@@ -1576,7 +1570,7 @@ int main(int argc, char **argv) {
         /* window title */
         {
             char t[128];
-            snprintf(t, sizeof t, "%s%s - Code", d && d->modified ? "* " : "", d ? (d->path[0] ? base(d->path) : "untitled") : base(root));
+            snprintf(t, sizeof t, "%s%s \u2014 Code", d && d->modified ? "* " : "", d ? (d->path[0] ? base(d->path) : "Untitled") : base(root));
             if (strcmp(t, last_title)) { strcpy(last_title, t); gui_set_title(w, t); }
         }
         ui_end(&ui);

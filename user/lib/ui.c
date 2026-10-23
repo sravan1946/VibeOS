@@ -1043,3 +1043,26 @@ int ui_prompt(struct ui *ui, const char *title, const char *okl, char *buf, int 
 int ui_confirm(struct ui *ui, const char *title, const char *text, const char *okl) {
     return ui_dialog(ui, title, text, "Cancel", okl, UI_PRIMARY);
 }
+
+/* --- ui-apps-editors --- */
+int ui_dialog_ex(struct ui *ui, const char *title, const char *body, const char *alt, const char *cancel, const char *ok, int style) {
+    if (cancel && !alt) return ui_dialog(ui, title, body, cancel, ok, style);
+    int W = ui->win->w, pw = imin(W - 2 * SP_5, W_ALERT), tw = pw - 2 * SP_6, px, py;
+    int bh = body ? ui_text_wrap(ui, T_BODY, 0, 0, tw, body, 0) : 0;
+    int ph = SP_6 + T_HEADING->height + (body ? SP_3 + bh : 0) + SP_6 + H_CTL + SP_6;
+    bool first = dialog_frame(ui, pw, ph, &px, &py);
+    gfx_text(ui->c, T_HEADING, px + SP_6, py + SP_6, title, TH.text);
+    if (body) ui_text_wrap(ui, T_BODY, px + SP_6, py + SP_6 + T_HEADING->height + SP_3, tw, body, TH.text2);
+    int ow = imax(ui_button_w(UI_NOICON, ok), W_CTL_MIN), by = py + ph - SP_6 - H_CTL, ox = px + pw - SP_6 - ow, r = 0;
+    if (first) ui->focus = rid(ox, by, ow, H_CTL);
+    if (alt) {
+        int cw = imax(ui_button_w(UI_NOICON, cancel), W_CTL_MIN), aw = imax(ui_button_w(UI_NOICON, alt), W_CTL_MIN);
+        if (ui_button(ui, px + SP_6, by, aw, H_CTL, alt, (style & 0xFF) == UI_DANGER_BTN ? UI_DANGER_BTN : UI_SECONDARY)) r = 2;
+        if (ui_button(ui, ox - SP_3 - cw, by, cw, H_CTL, cancel, UI_SECONDARY)) r = -1;
+    }
+    if (ui_button(ui, ox, by, ow, H_CTL, ok, UI_ACCENT_BTN)) r = 1;
+    if (take_key(ui, KEY_ESC)) r = cancel ? -1 : 1;
+    if (take_key(ui, KEY_ENTER)) r = 1;
+    ui->in_ov = false;
+    return r;
+}

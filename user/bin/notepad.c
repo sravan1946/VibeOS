@@ -1,5 +1,7 @@
 /* notepad - plain text editor: caret, selection, clipboard, line numbers, open/save */
 #include <ui.h>
+#include <design.h>
+#include <icons.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -27,9 +29,7 @@ static bool lines_dirty = true;
 /* view */
 static int top, hx;                /* first visible line, horizontal pixel offset */
 static uint32_t last_act;          /* uptime of the last caret movement, for blink */
-static char msg[96];
-static uint32_t msg_until;
-static bool msg_bad;
+static struct ui ui;
 
 enum { M_EDIT, M_OPEN, M_SAVEAS, M_CLOSE };
 static int mode = M_EDIT;
@@ -39,10 +39,12 @@ static char prompt[PATH_MAX];
 static int CW, LH;
 
 static void say(bool bad, const char *fmt, const char *arg) {
-    snprintf(msg, sizeof msg, fmt, arg);
-    msg_bad = bad;
-    msg_until = uptime_ms() + 4000;
+    char m[96];
+    snprintf(m, sizeof m, fmt, arg);
+    ui_toast(&ui, m, NULL);
 }
+
+static const char *base(const char *p) { const char *s = strrchr(p, '/'); return s ? s + 1 : p; }
 
 static void reindex(void) {
     if (!lines_dirty) return;
@@ -101,7 +103,7 @@ static void del_range(int lo, int hi) {
 static void insert(const char *s, int n) {
     int lo, hi;
     sel_range(&lo, &hi);
-    if (len - (hi - lo) + n > MAX_FILE) { say(true, "%s", "File too large"); return; }
+    if (len - (hi - lo) + n > MAX_FILE) { say(true, "%s", "The file is too large (1 MiB at most)"); return; }
     del_range(lo, hi);
     ensure(n);
     memmove(buf + cur + n, buf + cur, len - cur);
@@ -129,16 +131,16 @@ static void new_doc(void) {
 
 static bool load(const char *p) {
     int fd = open(p, O_RDONLY);
-    if (fd < 0) { say(true, "Cannot open %s", p); return false; }
+    if (fd < 0) { say(true, "Couldn't open \u201c%s\u201d", base(p)); return false; }
     struct stat st;
-    if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) { close(fd); say(true, "%s is a folder", p); return false; }
+    if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) { close(fd); say(true, "\u201c%s\u201d is a folder", base(p)); return false; }
     len = 0;
     for (;;) {
         ensure(4096);
         int n = read(fd, buf + len, 4096);
         if (n <= 0) break;
         len += n;
-        if (len >= MAX_FILE) { say(true, "%s", "File truncated at 1 MiB"); break; }
+        if (len >= MAX_FILE) { say(true, "%s", "Opened the first 1 MiB only"); break; }
     }
     close(fd);
     for (int i = 0; i < len; i++) if (buf[i] == '\r') { memmove(buf + i, buf + i + 1, len - i - 1); len--; i--; }
@@ -153,21 +155,19 @@ static bool load(const char *p) {
 
 static bool save(const char *p) {
     int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC);
-    if (fd < 0) { say(true, "Cannot write %s", p); return false; }
+    if (fd < 0) { say(true, "Couldn't save \u201c%s\u201d", base(p)); return false; }
     int off = 0;
     while (off < len) {
         int n = write(fd, buf + off, len - off);
-        if (n <= 0) { close(fd); say(true, "Write failed: %s", p); return false; }
+        if (n <= 0) { close(fd); say(true, "Couldn't save \u201c%s\u201d", base(p)); return false; }
         off += n;
     }
     close(fd);
     snprintf(path, sizeof path, "%s", p);
     modified = false;
-    say(false, "Saved %s", p);
+    say(false, "Saved \u201c%s\u201d", base(p));
     return true;
 }
-
-static const char *base(const char *p) { const char *s = strrchr(p, '/'); return s ? s + 1 : p; }
 
 static void open_prompt(int m) {
     mode = m;
@@ -197,7 +197,7 @@ static void handle_key(const struct gui_event *k, int vis_lines) {
         switch (key) {
         case 's': do_save(); break;
         case 'o': open_prompt(M_OPEN); break;
-        case 'n': if (!modified) new_doc(); else say(true, "%s", "Unsaved changes - save first (Ctrl+S)"); break;
+        case 'n': if (!modified) new_doc(); else say(true, "%s", "Save your changes first (Ctrl+S)"); break;
         case 'a': anchor = 0; cur = len; break;
         case 'c': copy_sel(); break;
         case 'x': copy_sel(); { int lo, hi; sel_range(&lo, &hi); del_range(lo, hi); } break;
@@ -267,7 +267,7 @@ static void handle_key(const struct gui_event *k, int vis_lines) {
 static void update_title(struct gui_window *w) {
     static char last[96];
     char t[96];
-    snprintf(t, sizeof t, "%s%s - Notepad", modified ? "* " : "", path[0] ? base(path) : "Untitled");
+    snprintf(t, sizeof t, "%s%s \u2014 Text Editor", modified ? "* " : "", path[0] ? base(path) : "Untitled");
     if (strcmp(t, last)) { strcpy(last, t); gui_set_title(w, t); }
 }
 
@@ -275,17 +275,18 @@ int main(int argc, char **argv) {
     cap = 4096;
     buf = malloc(cap);
     buf[0] = 0;
-    struct gui_window *w = gui_window_create("Untitled - Notepad", 760, 520, 0);
+    struct gui_window *w = gui_window_create("Untitled \u2014 Text Editor", 760, 520, 0);
     if (!w) { perror("notepad"); return 1; }
-    CW = font_mono.g['M' - 32].adv;
-    LH = font_mono.height + 5;
-    struct ui ui;
+    const struct font *mf = T_MONO;
+    CW = mf->g['M' - 32].adv;
+    LH = mf->height + SP_1;
     ui_init(&ui, w);
     if (argc > 1) load(argv[1]);
     last_act = uptime_ms();
     bool dragging = false;
     for (;;) {
-        if (!ui_poll(&ui, 250)) {
+        uint32_t idle = uptime_ms() - last_act;              /* blink until D_CARET_IDLE, then stay on and sleep */
+        if (!ui_poll(&ui, idle < D_CARET_IDLE ? (int)(D_CARET - idle % D_CARET) : -1)) {
             if (!modified || mode == M_CLOSE) break;
             ui.closed = false;                          /* ask before throwing edits away */
             mode = M_CLOSE;
@@ -293,26 +294,18 @@ int main(int argc, char **argv) {
         uint32_t now = uptime_ms();
         int W = w->w, H = w->h;
         bool modal = mode != M_EDIT;
-        int tbH = 44, sbH = 28;
+        int tbH = H_TOOLBAR, sbH = H_STATUS;
         int gutter = 0;
         reindex();
         for (int n = nlines; n; n /= 10) gutter += CW;
-        gutter += 28;
+        gutter += 2 * SP_4;
         int ex = 0, ey = tbH, ew = W, eh = H - tbH - sbH;      /* editor area */
-        int tx0 = ex + gutter + 6;                             /* text origin */
+        int tx0 = ex + gutter + SP_2;                          /* text origin */
         int vis = eh / LH;
 
-        /* hide input from the background while a dialog is up */
-        int smx = ui.mx, smy = ui.my;
-        bool sp = ui.pressed, sr = ui.released, sd = ui.dbl;
-        int nk = ui.nkeys;
-        struct gui_event saved_keys[32];
-        memcpy(saved_keys, ui.keys, sizeof saved_keys);
-        if (modal) { ui.mx = ui.my = -1; ui.pressed = ui.released = ui.dbl = false; ui.nkeys = 0; }
-
-        /* keys */
+        /* keys (a dialog takes them while it is up) */
         struct gui_event k;
-        while (ui_key(&ui, &k)) {
+        while (!modal && ui_key(&ui, &k)) {
             handle_key(&k, vis);
             reindex();
             int l = line_of(cur);
@@ -326,10 +319,10 @@ int main(int argc, char **argv) {
         reindex();
 
         /* mouse in the editor */
-        bool in_ed = ui_hover(&ui, tx0, ey, ew - tx0, eh);
+        bool in_ed = !modal && ui_hover(&ui, tx0, ey, ew - tx0, eh);
         if (in_ed && ui.scroll) top += ui.scroll * 3;
         if (ui.pressed && in_ed) {
-            int l = top + (ui.my - ey - 4) / LH;
+            int l = top + (ui.my - ey - SP_2) / LH;
             if (l < 0) l = 0;
             if (l >= nlines) l = nlines - 1;
             int vc = (ui.mx - tx0 + hx + CW / 2) / CW;
@@ -346,7 +339,7 @@ int main(int argc, char **argv) {
             want_col = -1;
             last_act = now;
         } else if (dragging && (ui.buttons & 1)) {
-            int l = top + (ui.my - ey - 4) / LH;
+            int l = top + (ui.my - ey - SP_2) / LH;
             if (l < top) { l = top - 1; if (l < 0) l = 0; }
             if (l >= nlines) l = nlines - 1;
             int vc = (ui.mx - tx0 + hx + CW / 2) / CW;
@@ -362,114 +355,91 @@ int main(int argc, char **argv) {
         /* ---- draw ---- */
         ui_clear(&ui);
         struct canvas *c = ui.c;
-        gfx_fill(c, 0, 0, W, tbH, UI_PANEL);
-        gfx_fill(c, 0, tbH - 1, W, 1, UI_BORDER);
-        int bx = 8;
-        const char *tl[] = { "New", "Open", "Save", "Save As" };
+        ui_toolbar(&ui, 0, 0, W);
+        int bx = SP_3, by = (tbH - H_CTL) / 2;
+        static const char *const tl[] = { "New", "Open\u2026", "Save", "Save as\u2026" };
+        static const int ti[] = { ICON_FILE_NEW, ICON_FOLDER_OPEN, ICON_SAVE, UI_NOICON };
+        static const char *const tips[] = { "New \u00b7 Ctrl+N", "Open \u00b7 Ctrl+O", "Save \u00b7 Ctrl+S", NULL };
         for (int i = 0; i < 4; i++) {
-            int bw = gfx_text_width(&font_ui, tl[i]) + 24;
-            if (ui_tool(&ui, bx, 6, bw, 32, tl[i], false)) {
-                if (i == 0) { if (!modified) new_doc(); else say(true, "%s", "Unsaved changes - save first"); }
+            int bw = ui_button_w(ti[i], tl[i]);
+            if (ui_button_ex(&ui, bx, by, bw, H_CTL, ti[i], tl[i], UI_GHOST)) {
+                if (i == 0) { if (!modified) new_doc(); else say(true, "%s", "Save your changes first (Ctrl+S)"); }
                 else if (i == 1) open_prompt(M_OPEN);
                 else if (i == 2) do_save();
                 else open_prompt(M_SAVEAS);
             }
-            bx += bw + 2;
+            if (tips[i]) ui_tooltip(&ui, bx, by, bw, H_CTL, tips[i]);
+            bx += bw + SP_2;
         }
         {
-            char t[PATH_MAX + 4];
-            snprintf(t, sizeof t, "%s%s", path[0] ? path : "Untitled", "");
-            int nw = gfx_text_width(&font_ui, t), maxw = W - bx - 24;
-            int x = W - 14 - (nw < maxw ? nw : maxw);
-            if (modified) gfx_circle_fill(c, x - 12, tbH / 2, 4, UI_ACCENT2);
-            ui_text_fit(&ui, &font_ui, x, (tbH - font_ui.height) / 2, maxw, t, UI_TEXT_DIM);
+            const char *t = path[0] ? path : "Untitled";
+            int maxw = W - bx - SP_4 - SP_5, nw = gfx_text_width(T_BODY, t);
+            ui_text_fit(&ui, T_BODY, W - SP_4 - (nw < maxw ? nw : maxw), (tbH - T_BODY->height) / 2, maxw, t, UI_TEXT2);
         }
 
         /* editor */
-        gfx_fill(c, ex, ey, ew, eh, UI_INPUT);
-        gfx_fill(c, ex, ey, gutter, eh, ui_th.gutter);
-        gfx_fill(c, ex + gutter, ey, 1, eh, UI_BORDER);
         struct canvas cc = *c;
-        canvas_clip(&cc, tx0, ey, ew - tx0 - 10, eh);
+        canvas_clip(&cc, tx0 - SP_2, ey, ew - tx0 + SP_2, eh);
         struct canvas gc = *c;
         canvas_clip(&gc, ex, ey, gutter, eh);
         int lo, hi;
         sel_range(&lo, &hi);
         int curl = line_of(cur);
         for (int i = 0; i < vis + 1 && top + i < nlines; i++) {
-            int l = top + i, y = ey + 4 + i * LH;
+            int l = top + i, y = ey + SP_2 + i * LH;
             if (y > ey + eh) break;
             int s = lines[l], e = line_end(l);
-            if (l == curl && lo == hi) gfx_fill(&cc, tx0 - 4, y - 1, ew, LH, UI_ACC(14));
+            if (l == curl && lo == hi) gfx_fill(&cc, tx0 - SP_2, y, ew, LH, ui_th.hover_ov);
             char num[16];
             snprintf(num, sizeof num, "%d", l + 1);
-            gfx_text(&gc, &font_mono, ex + gutter - 12 - gfx_text_width(&font_mono, num), y + 1, num, l == curl ? UI_ACCENT : UI_FAINT);
+            gfx_text(&gc, mf, ex + gutter - SP_4 - gfx_text_width(mf, num), y + (LH - mf->height) / 2, num, l == curl ? UI_TEXT : UI_TEXT3);
             /* selection */
             if (hi > lo && hi > s && lo <= e) {
                 int a = lo > s ? lo : s, b = hi < e ? hi : e;
                 int x0 = tx0 + vcol(l, a) * CW - hx, x1 = tx0 + vcol(l, b) * CW - hx;
                 if (hi > e) x1 += CW / 2;                       /* newline is selected too */
-                gfx_fill(&cc, x0, y - 1, x1 - x0, LH, UI_ACC(100));
+                gfx_fill(&cc, x0, y, x1 - x0, LH, UI_SELECTION);
             }
             int vc = 0;
             for (int j = s; j < e; j++) {
                 if (buf[j] == '\t') { vc = (vc / TAB + 1) * TAB; continue; }
                 int px = tx0 + vc * CW - hx;
                 if (px > ew) break;
-                if (px > tx0 - CW && buf[j] != ' ') gfx_char(&cc, &font_mono, px, y + 1, buf[j], UI_TEXT);
+                if (px > tx0 - CW && buf[j] != ' ') gfx_char(&cc, mf, px, y + (LH - mf->height) / 2, buf[j], UI_TEXT);
                 vc++;
             }
         }
         /* caret */
-        if (!modal && ui.focused && ((now - last_act) / 500) % 2 == 0 && curl >= top && curl < top + vis + 1) {
-            int cx = tx0 + vcol(curl, cur) * CW - hx, cy = ey + 4 + (curl - top) * LH;
-            gfx_fill(&cc, cx, cy, 2, LH - 2, UI_ACCENT);
+        uint32_t ci = now - last_act;
+        if (!modal && ui.focused && (ci >= D_CARET_IDLE || (ci / D_CARET) % 2 == 0) && curl >= top && curl < top + vis + 1) {
+            int cx = tx0 + vcol(curl, cur) * CW - hx, cy = ey + SP_2 + (curl - top) * LH;
+            gfx_fill(&cc, cx - 1, cy + SP_1, SP_1, LH - 2 * SP_1, UI_TEXT);
         }
-        ui_vscroll(&ui, W - 12, ey + 2, eh - 4, nlines, vis, &top);
+        ui_vscroll(&ui, W - 12, ey + SP_1, eh - 2 * SP_1, nlines, vis, &top);
 
         /* status bar */
-        gfx_fill(c, 0, H - sbH, W, sbH, UI_PANEL);
-        gfx_fill(c, 0, H - sbH, W, 1, UI_BORDER);
-        char st[96];
-        snprintf(st, sizeof st, "Ln %d, Col %d", curl + 1, vcol(curl, cur) + 1);
-        gfx_text(c, &font_ui, 14, H - sbH + 6, st, UI_TEXT_DIM);
-        if (hi > lo) {
-            snprintf(st, sizeof st, "%d selected", hi - lo);
-            gfx_text(c, &font_ui, 140, H - sbH + 6, st, UI_ACCENT);
-        }
-        snprintf(st, sizeof st, "%d chars  %d lines", len, nlines);
-        int sw = gfx_text_width(&font_ui, st);
-        gfx_text(c, &font_ui, W - 14 - sw, H - sbH + 6, st, UI_TEXT_DIM);
-        if (msg[0] && now < msg_until) {
-            int mw = gfx_text_width(&font_ui, msg);
-            gfx_text(c, &font_ui, (W - mw) / 2, H - sbH + 6, msg, msg_bad ? UI_BAD : UI_GOOD);
-        }
+        char st[96], rt[64];
+        int sn = snprintf(st, sizeof st, "Ln %d, Col %d", curl + 1, vcol(curl, cur) + 1);
+        if (hi > lo) snprintf(st + sn, sizeof st - sn, "  \u00b7  %d selected", hi - lo);
+        snprintf(rt, sizeof rt, "%d characters, %d line%s", len, nlines, nlines == 1 ? "" : "s");
+        ui_status(&ui, 0, H - sbH, W, st, rt);
 
         /* dialogs */
-        if (modal) {
-            ui.mx = smx; ui.my = smy; ui.pressed = sp; ui.released = sr; ui.dbl = sd;
-            ui.nkeys = nk;
-            memcpy(ui.keys, saved_keys, sizeof saved_keys);
-            if (mode == M_OPEN || mode == M_SAVEAS) {
-                int r = ui_prompt(&ui, mode == M_OPEN ? "Open file" : "Save as", mode == M_OPEN ? "Open" : "Save", prompt, sizeof prompt);
-                if (r == 1 && prompt[0]) {
-                    bool ok = mode == M_OPEN ? load(prompt) : save(prompt);
-                    if (ok) { mode = M_EDIT; if (closing) break; }
-                } else if (r == -1) mode = M_EDIT;
-            } else {                                              /* M_CLOSE */
-                gfx_fill(c, 0, 0, W, H, RGBA(0, 0, 0, 150));
-                int pw = 400, ph = 130, px = (W - pw) / 2, py = (H - ph) / 2;
-                gfx_shadow(c, px, py, pw, ph, 12, 14, 120);
-                gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
-                gfx_round_rect(c, px, py, pw, ph, 12, UI_OV(40));
-                gfx_text(c, &font_ui_bold, px + 20, py + 16, "Unsaved changes", UI_TEXT);
-                gfx_text(c, &font_ui, px + 20, py + 42, "Save before closing?", UI_TEXT_DIM);
-                if (ui_button(&ui, px + pw - 20 - 100, py + ph - 50, 100, 34, "Save", UI_ACCENT_BTN)) {
-                    if (path[0]) { if (save(path)) break; mode = M_EDIT; }
-                    else { closing = true; open_prompt(M_SAVEAS); }
-                }
-                if (ui_button(&ui, px + pw - 20 - 220, py + ph - 50, 110, 34, "Discard", UI_NORMAL_BTN)) break;
-                if (ui_button(&ui, px + 20, py + ph - 50, 90, 34, "Cancel", UI_GHOST_BTN)) mode = M_EDIT;
+        if (mode == M_OPEN || mode == M_SAVEAS) {
+            int r = ui_prompt(&ui, mode == M_OPEN ? "Open file" : "Save as", mode == M_OPEN ? "Open" : "Save", prompt, sizeof prompt);
+            if (r == 1 && prompt[0]) {
+                bool ok = mode == M_OPEN ? load(prompt) : save(prompt);
+                if (ok) { mode = M_EDIT; if (closing) break; }
+            } else if (r == -1) { mode = M_EDIT; closing = false; }
+        } else if (mode == M_CLOSE) {
+            char q[PATH_MAX + 40];
+            snprintf(q, sizeof q, "Save changes to \u201c%s\u201d?", path[0] ? base(path) : "Untitled");
+            int r = ui_dialog_ex(&ui, q, "Your changes will be lost if you don't save them.", "Don't save", "Cancel", "Save", UI_PRIMARY);
+            if (r == 2) break;
+            if (r == -1) mode = M_EDIT;
+            if (r == 1) {
+                if (path[0]) { if (save(path)) break; mode = M_EDIT; }
+                else { closing = true; open_prompt(M_SAVEAS); }
             }
         }
         update_title(w);
