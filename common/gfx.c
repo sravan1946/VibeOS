@@ -339,6 +339,22 @@ void gfx_blit_alpha(struct canvas *c, int x, int y, const uint32_t *src, int w, 
     }
 }
 
+/* premultiplied ARGB (the baked app/file icons): d = s + d * (255 - a) / 255 */
+void gfx_blit_premul(struct canvas *c, int x, int y, const uint32_t *src, int w, int h, int stride) {
+    int x0 = imax(x, c->cx0), y0 = imax(y, c->cy0), x1 = imin(x + w, c->cx1), y1 = imin(y + h, c->cy1);
+    for (int yy = y0; yy < y1; yy++) {
+        uint32_t *d = &c->px[yy * c->stride];
+        const uint32_t *s = &src[(yy - y) * stride - x];
+        for (int xx = x0; xx < x1; xx++) {
+            uint32_t v = s[xx], a = v >> 24;
+            if (a == 255) { d[xx] = v; continue; }
+            if (!a) continue;
+            uint32_t k = 255 - a + ((255 - a) >> 7), o = d[xx];
+            d[xx] = 0xFF000000u | (v + ((((o & 0xFF00FF) * k) >> 8 & 0xFF00FF) | (((o & 0xFF00) * k) >> 8 & 0xFF00)));
+        }
+    }
+}
+
 void gfx_blit_scaled(struct canvas *c, int x, int y, int dw, int dh, const uint32_t *src, int sw, int sh, int stride) {
     if (dw <= 0 || dh <= 0) return;
     for (int yy = imax(y, c->cy0); yy < imin(y + dh, c->cy1); yy++) {
@@ -380,14 +396,21 @@ int gfx_char(struct canvas *c, const struct font *f, int x, int y, uint32_t cp, 
     return g->adv;
 }
 
+/* proportional faces advance a 1/64 px pen (adv64) and round each glyph to whole pixels, so widths match the
+ * browser-rendered mockups; monospaced faces (and fonts without adv64) keep whole-pixel cells */
+static inline int frac_pen(const struct font *f) { return f->g['i' - 32].adv != f->g['M' - 32].adv && f->g['M' - 32].adv64; }
+
 int gfx_text_n(struct canvas *c, const struct font *f, int x, int y, const char *s, int n, color_t col) {
-    int x0 = x;
+    int fr = frac_pen(f), pen = x << 6;
     uint32_t cp;
     for (int i = 0; i < n && s[i]; ) {
         i += utf8_decode(s + i, n - i, &cp);
-        x += gfx_char(c, f, x, y, cp, col);
+        const struct glyph *g = font_glyph(f, cp);
+        int gx = (pen + 32) >> 6;
+        gfx_mask(c, gx + g->xoff, y + g->yoff, f->alpha + g->off, g->w, g->h, g->w, col);
+        pen += fr ? g->adv64 : g->adv << 6;
     }
-    return x - x0;
+    return ((pen + 32) >> 6) - x;
 }
 
 int gfx_text(struct canvas *c, const struct font *f, int x, int y, const char *s, color_t col) {
@@ -395,13 +418,14 @@ int gfx_text(struct canvas *c, const struct font *f, int x, int y, const char *s
 }
 
 int gfx_text_width_n(const struct font *f, const char *s, int n) {
-    int w = 0;
+    int fr = frac_pen(f), pen = 0;
     uint32_t cp;
     for (int i = 0; i < n && s[i]; ) {
         i += utf8_decode(s + i, n - i, &cp);
-        w += font_glyph(f, cp)->adv;
+        const struct glyph *g = font_glyph(f, cp);
+        pen += fr ? g->adv64 : g->adv << 6;
     }
-    return w;
+    return (pen + 32) >> 6;
 }
 
 int gfx_text_width(const struct font *f, const char *s) { return gfx_text_width_n(f, s, 1 << 30); }

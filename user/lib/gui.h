@@ -34,6 +34,7 @@ int gui_notify(const char *title, const char *body, const char *kind);
 /* the desktop theme (/dev/theme): loaded when the first window is created and refreshed when EV_THEME arrives,
  * so UI_* colours in ui.h are always current; draw everything again after that event */
 extern struct theme ui_th;
+extern int ui_motion;                           /* window animations on (/dev/theme anim): widgets animate only then */
 int gui_theme_load(void);                       /* re-read /dev/theme into ui_th; 0 or -1 */
 int gui_theme_state(struct theme_state *st);    /* index, accent override, animations, text size; 0 or -1 */
 int gui_theme_set(const char *cmd);             /* write a /dev/theme command ("light", "accent=blue anim=0"); 0 or -1 */
