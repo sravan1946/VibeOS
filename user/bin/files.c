@@ -1,6 +1,9 @@
 /* files - file manager: icon grid + list views, sidebar, history, multi-select (click, Ctrl/Shift, rubber band),
- * clipboard, trash, drag and drop (within Files, to/from other windows and the desktop via DRAG_FILE), thumbnails */
+ * clipboard, trash, drag and drop (within Files, to/from other windows and the desktop via DRAG_FILE), thumbnails.
+ * Graphite layout (docs/DESIGN.md §9): toolbar with crumbs, Places sidebar, 96px grid / 28px table, status bar */
 #include <ui.h>
+#include <design.h>
+#include <icons.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -12,19 +15,17 @@
 #include <sys/wait.h>
 #include <syscall.h>
 #include <fsutil.h>
-#include <fileicon.h>
 #include "image.h"
 
 #define MAX_ENT 2048
 #define HIST_MAX 32
-#define SIDE_W 168
-#define TB_H 52
-#define SB_H 28
-#define HDR_H 28
-#define LROW 28
-#define CW 104
+#define TB_H H_TOOLBAR
+#define SB_H H_STATUS
+#define HDR_H H_ROW
+#define LROW H_ROW
+#define CW 96                         /* grid cell 96x96, 4px row gap */
 #define CH 100
-#define TH 64
+#define TH ICON_APP                   /* thumbnails fit the 48px icon box */
 #define NTHUMB 64
 #define TRASH_FILES "/home/.trash/files"
 #define CLIP_HDR "vibe-files:"
@@ -47,10 +48,10 @@ static int scroll, anchor = -1, cur = -1;
 static int sort_key, sort_desc;       /* 0 name, 1 size, 2 modified */
 static bool vgrid = true, hidden, intrash, relayout;
 static int tz_min, mods, trash_n;
+static int SW = W_SIDEBAR;            /* sidebar width; 0 below a 720px window */
 static uint32_t dir_sig, tick_ms;
 static char msg[128];
-static uint32_t msg_until;
-static bool msg_bad;
+static bool msg_new;
 
 enum { M_NONE, M_MENU, M_NEWDIR, M_NEWFILE, M_RENAME, M_DELETE, M_EMPTY, M_PROPS };
 static int mode;
@@ -70,10 +71,12 @@ static int pend;                                 /* frames still waiting to lear
 static int pend_x, pend_y;
 static uint32_t drag_clear;
 
-static void say(bool bad, const char *fmt, const char *arg) {
+static void say(bool bad, const char *fmt, const char *arg) {   /* shown as a toast */
+    (void)bad;
     snprintf(msg, sizeof msg, fmt, arg);
-    msg_bad = bad;
-    msg_until = uptime_ms() + 4000;
+    char *p = strstr(msg, "item(s)");                          /* "1 item", "2 items" */
+    if (p) { bool one = !strcmp(arg, "1"); memmove(p + (one ? 4 : 5), p + 7, strlen(p + 7) + 1); if (!one) p[4] = 's'; }
+    msg_new = true;
 }
 
 static void join(char *out, const char *dir, const char *name) { snprintf(out, PATH_MAX, "%s%s%s", dir, strcmp(dir, "/") ? "/" : "", name); }
@@ -174,7 +177,7 @@ static void refresh(bool keepsel) {
     nents = 0;
     if (!ents) ents = malloc(MAX_ENT * sizeof *ents);
     DIR *d = opendir(cwd);
-    if (!d) say(true, "Cannot open %s", cwd);
+    if (!d) say(true, "Cannot open “%s”", cwd);
     struct dirent *de;
     while (d && (de = readdir(d)) && nents < MAX_ENT) {
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
@@ -226,6 +229,7 @@ static void navigate(const char *np) {
 static void go(const char *p, bool push) {
     char np[PATH_MAX];
     struct stat st;
+    if (!strcmp(p, TRASH_FILES)) { mkdir(fs_trash_dir, 0755); mkdir(TRASH_FILES, 0755); }      /* nothing trashed yet */
     if (!realpath(p, np) || stat(np, &st)) { say(true, "No such folder: %s", p); snprintf(pathbox, sizeof pathbox, "%s", cwd); return; }
     if (!S_ISDIR(st.st_mode)) { say(true, "Not a folder: %s", p); snprintf(pathbox, sizeof pathbox, "%s", cwd); return; }
     if (!nhist) { snprintf(hist[nhist++], PATH_MAX, "%s", np); hpos = 0; }
@@ -276,11 +280,11 @@ static void open_sel(void) {
         join(p, cwd, e->name);
         if (e->dir) { if (n == 1) { go(p, true); return; } continue; }
         if (started >= 8) break;
-        if (fs_open(p) < 0) { say(true, "No program to open %s", e->name); return; }
+        if (fs_open(p) < 0) { say(true, "No program opens “%s”", e->name); return; }
         snprintf(nm, sizeof nm, "%s", e->name);
         started++;
     }
-    if (started) say(false, started == 1 ? "Opening %s" : "Opening %s and more", nm);
+    if (started) say(false, started == 1 ? "Opening “%s”" : "Opening “%s” and more", nm);
 }
 
 static void open_with(const char *prog) {
@@ -369,13 +373,13 @@ static void trash_sel(void) {
     if (!ps) return;
     int n = collect(ps, 64), ok = 0;
     for (int i = 0; i < n; i++) {
-        if (protected_path(ps[i])) { say(true, "%s is protected", fs_base(ps[i])); continue; }
+        if (protected_path(ps[i])) { say(true, "“%s” is protected", fs_base(ps[i])); continue; }
         if (fs_trash_put(ps[i], NULL, 0) == 0) ok++;
     }
     char t[16];
     snprintf(t, sizeof t, "%d", ok);
-    if (ok) say(false, "Moved %s item(s) to the Trash", t);
-    else if (n) say(true, "%s", "Could not move to the Trash");
+    if (ok) say(false, "Moved %s item(s) to Trash", t);
+    else if (n) say(true, "%s", "Could not move to Trash");
     free(ps);
     int keep = cur;
     refresh(false);
@@ -387,7 +391,7 @@ static void delete_sel(void) {                          /* permanent */
     if (!ps) return;
     int n = collect(ps, 64), ok = 0;
     for (int i = 0; i < n; i++) {
-        if (protected_path(ps[i])) { say(true, "%s is protected", fs_base(ps[i])); continue; }
+        if (protected_path(ps[i])) { say(true, "“%s” is protected", fs_base(ps[i])); continue; }
         if (fs_rmrf(ps[i]) == 0) {
             ok++;
             if (intrash) { char inf[PATH_MAX]; snprintf(inf, sizeof inf, "%s/info/%s", fs_trash_dir, fs_base(ps[i])); unlink(inf); }
@@ -414,12 +418,12 @@ static void do_new(const char *name, bool dir) {
     if (!name[0] || strchr(name, '/')) { say(true, "%s", "Invalid name"); return; }
     char p[PATH_MAX];
     join(p, cwd, name);
-    if (exists(p)) { say(true, "%s already exists", name); return; }
+    if (exists(p)) { say(true, "“%s” already exists", name); return; }
     bool ok;
     if (dir) ok = mkdir(p, 0755) == 0;
     else { int fd = open(p, O_WRONLY | O_CREAT, 0644); ok = fd >= 0; if (ok) close(fd); }
-    if (!ok) { say(true, "Could not create %s", name); return; }
-    say(false, "Created %s", name);
+    if (!ok) { say(true, "Could not create “%s”", name); return; }
+    say(false, "Created “%s”", name);
     refresh(false);
     select_name(name);
 }
@@ -432,9 +436,9 @@ static void do_rename(const char *name) {
     char a[PATH_MAX], b[PATH_MAX];
     join(a, cwd, ents[i].name);
     join(b, cwd, name);
-    if (exists(b)) { say(true, "%s already exists", name); return; }
-    if (rename(a, b)) { say(true, "Could not rename to %s", name); return; }
-    say(false, "Renamed to %s", name);
+    if (exists(b)) { say(true, "“%s” already exists", name); return; }
+    if (rename(a, b)) { say(true, "Could not rename to “%s”", name); return; }
+    say(false, "Renamed to “%s”", name);
     refresh(false);
     select_name(name);
 }
@@ -470,14 +474,14 @@ struct lay { int x, y, w, h, rh, cols, vis, nrows; };
 static struct lay L;
 
 static void layout(int W, int H) {
-    L.x = SIDE_W; L.w = W - SIDE_W;
-    if (vgrid) {
-        L.y = TB_H + 6; L.rh = CH;
-        L.cols = (L.w - 24) / CW;
+    SW = W < 720 ? 0 : W_SIDEBAR;
+    L.w = W - SW;
+    if (vgrid) {                                   /* 96px cells, 12 16 padding */
+        L.x = SW + SP_5; L.y = TB_H + SP_4; L.rh = CH;
+        L.cols = (L.w - 2 * SP_5) / CW;
         if (L.cols < 1) L.cols = 1;
-        L.x = SIDE_W + 10;
-    } else { L.y = TB_H + HDR_H + 4; L.rh = LROW; L.cols = 1; }
-    L.h = H - SB_H - L.y - 2;
+    } else { L.x = SW; L.y = TB_H + HDR_H; L.rh = LROW; L.cols = 1; }
+    L.h = H - SB_H - L.y;
     L.vis = L.h / L.rh;
     if (L.vis < 1) L.vis = 1;
     L.nrows = (nord + L.cols - 1) / L.cols;
@@ -487,12 +491,12 @@ static void layout(int W, int H) {
 
 static void item_rect(int k, int *x, int *y, int *w, int *h) {
     int r = k / L.cols, c = k % L.cols;
-    *x = vgrid ? L.x + c * CW : SIDE_W; *y = L.y + (r - scroll) * L.rh;
-    *w = vgrid ? CW : L.w; *h = L.rh;
+    *x = vgrid ? L.x + c * CW : SW; *y = L.y + (r - scroll) * L.rh;
+    *w = vgrid ? CW : L.w; *h = vgrid ? CW : L.rh;
 }
 
 static int item_at(int px, int py, int W) {
-    if (py < L.y || py >= L.y + L.h || px < SIDE_W || px >= W - 14) return -1;
+    if (py < L.y || py >= L.y + L.h || px < SW || px >= W - 12) return -1;
     int r = scroll + (py - L.y) / L.rh, c = vgrid ? (px - L.x) / CW : 0;
     if (px < L.x || c >= L.cols) return -1;
     int k = r * L.cols + c;
@@ -506,78 +510,48 @@ static void ensure_visible(int k) {
     if (r >= scroll + L.vis) scroll = r - L.vis + 1;
 }
 
-/* ---- icons for the sidebar and toolbar ---- */
-static void icon_home(struct canvas *c, int x, int y, color_t col) {
-    gfx_line_aa(c, x + 2, y + 9, x + 10, y + 2, 2.2f, col);
-    gfx_line_aa(c, x + 10, y + 2, x + 18, y + 9, 2.2f, col);
-    gfx_fill(c, x + 5, y + 9, 10, 8, col);
-    gfx_fill(c, x + 9, y + 12, 3, 5, UI_PANEL);
-}
-static void icon_drive(struct canvas *c, int x, int y, color_t col) {
-    gfx_round_fill(c, x + 1, y + 5, 18, 11, 3, col);
-    gfx_circle_fill(c, x + 15, y + 11, 1, UI_PANEL);
-}
-static void icon_gear(struct canvas *c, int x, int y, color_t col) {
-    gfx_circle_fill(c, x + 10, y + 10, 8, col);
-    gfx_circle_fill(c, x + 10, y + 10, 3, UI_PANEL);
-}
-static void icon_dir(struct canvas *c, int x, int y, color_t col) {
-    gfx_round_fill(c, x + 1, y + 3, 8, 5, 2, col);
-    gfx_round_fill(c, x + 1, y + 6, 18, 12, 3, col);
-}
-static void icon_bin(struct canvas *c, int x, int y, color_t col) {
-    gfx_round_fill(c, x + 3, y + 5, 14, 3, 1, col);
-    gfx_fill(c, x + 8, y + 2, 4, 3, col);
-    gfx_round_fill(c, x + 4, y + 8, 12, 10, 2, col);
-    for (int i = 0; i < 3; i++) gfx_fill(c, x + 7 + i * 3, y + 10, 1, 6, UI_PANEL);
-}
-static void icon_screen(struct canvas *c, int x, int y, color_t col) {
-    gfx_round_fill(c, x + 1, y + 3, 18, 12, 2, col);
-    gfx_round_fill(c, x + 3, y + 5, 14, 8, 1, UI_PANEL);
-    gfx_fill(c, x + 7, y + 16, 6, 2, col);
-}
-static void icon_note(struct canvas *c, int x, int y, color_t col) {
-    gfx_circle_fill(c, x + 7, y + 15, 3, col);
-    gfx_fill(c, x + 9, y + 3, 2, 13, col);
-    gfx_fill(c, x + 9, y + 3, 7, 3, col);
-}
-static void icon_pic(struct canvas *c, int x, int y, color_t col) {
-    gfx_round_fill(c, x + 1, y + 3, 18, 14, 3, col);
-    gfx_circle_fill(c, x + 13, y + 8, 2, UI_PANEL);
-    gfx_line_aa(c, x + 3, y + 15, x + 8, y + 9, 2, UI_PANEL);
-    gfx_line_aa(c, x + 8, y + 9, x + 12, y + 15, 2, UI_PANEL);
-}
-static void icon_code(struct canvas *c, int x, int y, color_t col) {
-    gfx_line_aa(c, x + 7, y + 4, x + 2, y + 10, 2.2f, col);
-    gfx_line_aa(c, x + 2, y + 10, x + 7, y + 16, 2.2f, col);
-    gfx_line_aa(c, x + 13, y + 4, x + 18, y + 10, 2.2f, col);
-    gfx_line_aa(c, x + 18, y + 10, x + 13, y + 16, 2.2f, col);
-}
-enum { I_HOME, I_SCREEN, I_DIR, I_PIC, I_NOTE, I_CODE, I_BIN, I_DRIVE, I_GEAR };
-static void side_icon(struct canvas *c, int ic, int x, int y, color_t col) {
-    switch (ic) {
-    case I_HOME: icon_home(c, x, y, col); break;
-    case I_SCREEN: icon_screen(c, x, y, col); break;
-    case I_DIR: icon_dir(c, x, y, col); break;
-    case I_PIC: icon_pic(c, x, y, col); break;
-    case I_NOTE: icon_note(c, x, y, col); break;
-    case I_CODE: icon_code(c, x, y, col); break;
-    case I_BIN: icon_bin(c, x, y, col); break;
-    case I_DRIVE: icon_drive(c, x, y, col); break;
-    default: icon_gear(c, x, y, col); break;
+/* the FILEICON_* for a path: special folders get their emblem */
+static int ficon(const char *path, bool dir, int kind) {
+    if (dir) {
+        static const struct { const char *p; int id; } sp[] = {
+            { "/home", FILEICON_FOLDER_HOME }, { "/home/Desktop", FILEICON_FOLDER_DESKTOP }, { "/home/Documents", FILEICON_FOLDER_DOCUMENTS },
+            { "/home/Downloads", FILEICON_FOLDER_DOWNLOADS }, { "/home/Music", FILEICON_FOLDER_MUSIC }, { "/home/Pictures", FILEICON_FOLDER_PICTURES },
+            { "/home/projects", FILEICON_FOLDER_PROJECTS }, { "/home/.trash", FILEICON_FOLDER_TRASH }, { TRASH_FILES, FILEICON_FOLDER_TRASH },
+        };
+        for (unsigned i = 0; i < sizeof sp / sizeof sp[0]; i++) if (!strcmp(path, sp[i].p)) return sp[i].id;
+        return FILEICON_FOLDER;
     }
+    const char *x = strrchr(fs_base(path), '.');
+    x = x && x != fs_base(path) ? x + 1 : "";
+    switch (kind) {
+    case FK_IMAGE: return FILEICON_IMAGE;
+    case FK_AUDIO: return FILEICON_AUDIO;
+    case FK_HTML: return FILEICON_WEB;
+    case FK_TEXT: return FILEICON_TEXT;
+    case FK_CODE: return strcasecmp(x, "sh") ? FILEICON_CODE : FILEICON_SCRIPT;
+    case FK_EXE: return FILEICON_EXEC;
+    }
+    static const char *const arc[] = { "tar", "gz", "tgz", "zip", "bz2", "xz", "7z" };
+    for (unsigned i = 0; i < sizeof arc / sizeof arc[0]; i++) if (!strcasecmp(x, arc[i])) return FILEICON_ARCHIVE;
+    return FILEICON_GENERIC;
 }
 
+/* ---- sidebar: group labels have no path ---- */
 static const struct place { const char *label, *path; int ico; } places[] = {
-    { "Home", "/home", I_HOME }, { "Desktop", "/home/Desktop", I_SCREEN }, { "Documents", "/home/Documents", I_DIR },
-    { "Pictures", "/home/Pictures", I_PIC }, { "Music", "/home/Music", I_NOTE }, { "Projects", "/home/projects", I_CODE },
-    { "Trash", TRASH_FILES, I_BIN }, { 0 }, { "Root", "/", I_DRIVE }, { "Programs", "/bin", I_DIR }, { "Config", "/etc", I_GEAR },
+    { "Places", 0, 0 }, { "Home", "/home", ICON_HOME }, { "Desktop", "/home/Desktop", ICON_MONITOR },
+    { "Documents", "/home/Documents", ICON_FILE_TEXT }, { "Pictures", "/home/Pictures", ICON_IMAGE }, { "Music", "/home/Music", ICON_MUSIC },
+    { "Projects", "/home/projects", ICON_FOLDER_CODE }, { "Trash", TRASH_FILES, ICON_TRASH },
+    { "System", 0, 0 }, { "Root", "/", ICON_DRIVE }, { "Programs", "/bin", ICON_TERMINAL }, { "Config", "/etc", ICON_SETTINGS },
 };
 #define NPLACES ((int)(sizeof places / sizeof places[0]))
-#define PLACE_H 30
-static int place_y(int i) { return TB_H + 12 + i * PLACE_H + (i > 7 ? 6 : 0); }
+static int place_y(int i) {                     /* labels: 8 above the first, 16 above the rest, 4 below */
+    int y = TB_H;
+    for (int j = 0; j < i; j++) y += places[j].path ? H_ROW : (j ? SP_5 : SP_3) + T_CAPTION_B->height + SP_2;
+    return places[i].path ? y : y + (i ? SP_5 : SP_3);
+}
 static int place_at(int x, int y) {
-    for (int i = 0; i < NPLACES; i++) if (places[i].label && x >= 8 && x < SIDE_W - 8 && y >= place_y(i) && y < place_y(i) + PLACE_H - 2) return i;
+    if (!SW) return -1;
+    for (int i = 0; i < NPLACES; i++) if (places[i].path && x >= SP_3 && x < SW - SP_3 && y >= place_y(i) && y < place_y(i) + H_ROW) return i;
     return -1;
 }
 
@@ -600,21 +574,10 @@ static void centered_fit(struct ui *ui, const struct font *f, int x, int y, int 
     ui_text_fit(ui, f, tw < w ? x + (w - tw) / 2 : x, y, w, s, col);
 }
 
-/* a grid cell's name: up to two lines */
-static void cell_name(struct ui *ui, int x, int y, int w, const char *s, color_t col) {
-    if (gfx_text_width(&font_ui, s) <= w) { centered_fit(ui, &font_ui, x, y, w, s, col); return; }
-    int n = strlen(s);
-    while (n > 1 && gfx_text_width_n(&font_ui, s, n) > w) n--;
-    char l1[96];
-    snprintf(l1, sizeof l1, "%.*s", n, s);
-    centered_fit(ui, &font_ui, x, y, w, l1, col);
-    centered_fit(ui, &font_ui, x, y + font_ui.height, w, s + n, col);
-}
-
 /* ---- properties ---- */
 static struct {
     char name[96], type[40], where[PATH_MAX], size[64], when[40], perm[16], prog[96], orig[PATH_MAX];
-    int kind, count;
+    int icon, count;
 } pr;
 
 static void props_open(void) {
@@ -642,15 +605,15 @@ static void props_open(void) {
         if (stat(cwd, &st) == 0) mt = st.st_mtime;
         fs_du(cwd, &files, &dirs, &bytes);
         if (dirs) dirs--;
-        pr.kind = FK_DIR; pr.count = 1;
+        pr.icon = ficon(cwd, true, FK_DIR); pr.count = 1;
     } else if (n == 1) {
         struct ent *e = &ents[one];
         static const char *tn[] = { "Folder", "Program", "Text document", "Source code", "Image", "Audio", "Web page", "File" };
         snprintf(pr.name, sizeof pr.name, "%s", e->name);
         snprintf(pr.type, sizeof pr.type, "%s", tn[e->kind]);
         snprintf(pr.where, sizeof pr.where, "%s", cwd);
-        pr.kind = e->kind; pr.count = 1;
         join(p, cwd, e->name);
+        pr.icon = ficon(p, e->dir, e->kind); pr.count = 1;
         struct stat st;
         if (stat(p, &st) == 0) {
             int m = st.st_mode;
@@ -659,99 +622,135 @@ static void props_open(void) {
         if (!e->dir) {
             char prog[PATH_MAX];
             int r = fs_assoc(p, prog, sizeof prog);
-            snprintf(pr.prog, sizeof pr.prog, "%s", r == 1 ? fs_base(prog) : r == 2 ? "(runs itself)" : "(none)");
+            snprintf(pr.prog, sizeof pr.prog, "%s", r == 1 ? fs_base(prog) : r == 2 ? "Runs itself" : "None");
         }
         if (e->orig) snprintf(pr.orig, sizeof pr.orig, "%s", e->orig);
     } else {
         snprintf(pr.name, sizeof pr.name, "%d items", n);
         snprintf(pr.type, sizeof pr.type, "Selection");
         snprintf(pr.where, sizeof pr.where, "%s", cwd);
-        pr.kind = FK_FILE; pr.count = n;
+        pr.icon = FILEICON_GENERIC; pr.count = n;
     }
     char sz[32];
     fmt_size(sz, sizeof sz, bytes);
-    if (dirs || n > 1 || n == 0) snprintf(pr.size, sizeof pr.size, "%s  (%u files, %u folders)", sz, (unsigned)files, (unsigned)dirs);
+    if (dirs || n > 1 || n == 0) snprintf(pr.size, sizeof pr.size, "%s (%u files, %u folders)", sz, (unsigned)files, (unsigned)dirs);
     else snprintf(pr.size, sizeof pr.size, "%s", sz);
     if (n <= 1) fmt_time(pr.when, sizeof pr.when, mt);
     mode = M_PROPS;
 }
 
-static void dim_box(struct ui *ui, int pw, int ph, int *ox, int *oy) {
+/* a dialog surface over the scrim (docs/DESIGN.md §9 Dialogs) */
+static void dialog_box(struct ui *ui, int pw, int ph, int *ox, int *oy) {
     struct canvas *c = ui->c;
-    int W = ui->win->w, H = ui->win->h;
-    gfx_fill(c, 0, 0, W, H, RGBA(0, 0, 0, 150));
-    int px = (W - pw) / 2, py = (H - ph) / 2;
-    gfx_shadow(c, px, py, pw, ph, 12, 14, 120);
-    gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
-    gfx_round_rect(c, px, py, pw, ph, 12, RGBA(255, 255, 255, 40));
+    int W = ui->win->w, H = ui->win->h, px = (W - pw) / 2, py = (H - ph) / 2;
+    gfx_fill(c, 0, 0, W, H, ui_th.scrim);
+    gfx_elev(c, px, py, pw, ph, R_3, E4, ui_th.elev[E4]);
+    gfx_round_fill(c, px, py, pw, ph, R_3, ui_th.overlay);
+    gfx_round_rect(c, px, py, pw, ph, R_3, UI_LINE);
     *ox = px; *oy = py;
 }
 
 static int props_draw(struct ui *ui) {
-    int W = ui->win->w, pw = W - 20 < 520 ? W - 20 : 520, ph = 310, px, py;
-    dim_box(ui, pw, ph, &px, &py);
-    struct canvas *c = ui->c;
-    fileicon(c, pr.kind, px + 24, py + 22, 56, pr.name);
-    ui_text_fit(ui, &font_ui_bold, px + 96, py + 30, pw - 120, pr.name, UI_TEXT);
-    ui_text_fit(ui, &font_ui, px + 96, py + 54, pw - 120, pr.type, UI_TEXT_DIM);
-    gfx_fill(c, px + 20, py + 92, pw - 40, 1, UI_BORDER);
     const char *lab[] = { "Location", "Size", "Modified", "Permissions", "Opens with", "Original" };
     const char *val[] = { pr.where, pr.size, pr.when, pr.perm, pr.prog, pr.orig };
-    int y = py + 106;
+    int nr = 0;
+    for (int i = 0; i < 6; i++) nr += val[i][0] != 0;
+    int W = ui->win->w, pw = W - 2 * SP_5 < W_FORM ? W - 2 * SP_5 : W_FORM;
+    int ph = SP_6 + ICON_APP + SP_5 + 1 + SP_3 + nr * H_ROW + SP_6 + H_CTL + SP_6, px, py;
+    dialog_box(ui, pw, ph, &px, &py);
+    struct canvas *c = ui->c;
+    ui_aicon(ui, px + SP_6, py + SP_6, fileicon_get(pr.icon, ICON_APP));
+    int tx = px + SP_6 + ICON_APP + SP_5, tw = pw - (tx - px) - SP_6, ty = py + SP_6 + (ICON_APP - T_HEADING->height - SP_1 - T_BODY->height) / 2;
+    ui_text_fit(ui, T_HEADING, tx, ty, tw, pr.name, UI_TEXT);
+    ui_text_fit(ui, T_BODY, tx, ty + T_HEADING->height + SP_1, tw, pr.type, UI_TEXT2);
+    int y = py + SP_6 + ICON_APP + SP_5;
+    gfx_hline(c, px + SP_6, y, pw - 2 * SP_6, UI_LINE);
+    y += 1 + SP_3;
     for (int i = 0; i < 6; i++) {
         if (!val[i][0]) continue;
-        gfx_text(c, &font_ui, px + 24, y, lab[i], UI_TEXT_DIM);
-        ui_text_fit(ui, &font_ui, px + 130, y, pw - 154, val[i], UI_TEXT);
-        y += 30;
+        int ry = y + (H_ROW - T_BODY->height) / 2;
+        gfx_text(c, T_BODY, px + SP_6, ry, lab[i], UI_TEXT2);
+        ui_text_fit(ui, T_BODY, px + SP_6 + 112, ry, pw - 2 * SP_6 - 112, val[i], UI_TEXT);
+        y += H_ROW;
     }
-    int r = 0;
-    if (ui_button(ui, px + pw - 120, py + ph - 52, 100, 34, "Close", UI_ACCENT_BTN)) r = 1;
+    int r = 0, bw = ui_button_w(UI_NOICON, "Close") < W_CTL_MIN ? W_CTL_MIN : ui_button_w(UI_NOICON, "Close");
+    if (ui_button(ui, px + pw - SP_6 - bw, py + ph - SP_6 - H_CTL, bw, H_CTL, "Close", UI_PRIMARY)) r = 1;
     struct gui_event k;
     while (ui_key(ui, &k)) if (k.key == KEY_ESC || k.key == KEY_ENTER) r = 1;
     return r;
 }
 
-/* ---- context menu ---- */
-static void menu_add(const char *label, int id, bool dis) { menu[nmenu++] = (struct mi){ label, id, false, dis }; }
-static void menu_sep(void) { menu[nmenu++] = (struct mi){ 0, 0, true, false }; }
+/* ---- context menu (unavailable items are hidden) ---- */
+static void menu_add(const char *label, int id, bool dis) { if (!dis) menu[nmenu++] = (struct mi){ label, id, false, false }; }
+static void menu_sep(void) { if (nmenu && !menu[nmenu - 1].sep) menu[nmenu++] = (struct mi){ 0, 0, true, false }; }
 
 static void menu_open_at(int x, int y, int what) {             /* what: 0 background, 1 item(s), 2 trash place */
     nmenu = 0;
     int n = nsel();
-    if (what == 2) { menu_add("Open", A_GOTRASH, false); menu_add("Empty Trash", A_EMPTY, trash_n == 0); }
+    if (what == 2) { menu_add("Open", A_GOTRASH, false); menu_add("Empty Trash…", A_EMPTY, trash_n == 0); }
     else if (what == 1) {
         menu_add("Open", A_OPEN, false);
-        if (n == 1 && first_sel() >= 0 && !ents[first_sel()].dir) menu_add("Open With Text Editor", A_OPENTXT, false);
+        if (n == 1 && first_sel() >= 0 && !ents[first_sel()].dir) menu_add("Open with Text Editor", A_OPENTXT, false);
         menu_sep();
-        if (intrash) { menu_add("Restore", A_RESTORE, false); menu_add("Delete Permanently", A_DELETE, false); }
+        if (intrash) { menu_add("Restore", A_RESTORE, false); menu_add("Delete permanently…", A_DELETE, false); }
         else {
             menu_add("Cut", A_CUT, false); menu_add("Copy", A_COPY, false);
             menu_sep();
-            menu_add("Rename", A_RENAME, n != 1);
+            menu_add("Rename…", A_RENAME, n != 1);
             menu_add("Move to Trash", A_TRASH, false);
         }
         menu_sep();
         menu_add("Properties", A_PROPS, false);
     } else {
-        if (intrash) { menu_add("Empty Trash", A_EMPTY, nents == 0); menu_sep(); }
+        if (intrash) { menu_add("Empty Trash…", A_EMPTY, nents == 0); menu_sep(); }
         else {
-            menu_add("New Folder", A_NEWDIR, false); menu_add("New Text File", A_NEWFILE, false);
+            menu_add("New folder…", A_NEWDIR, false); menu_add("New text file…", A_NEWFILE, false);
             menu_add("Paste", A_PASTE, false);
             menu_sep();
         }
-        menu_add("Select All", A_SELALL, false);
-        menu_add(vgrid ? "View as List" : "View as Icons", A_VIEW, false);
-        menu_add("Sort by Name", A_SORTN, false); menu_add("Sort by Size", A_SORTS, false); menu_add("Sort by Date", A_SORTM, false);
-        menu_add(hidden ? "Hide Hidden Files" : "Show Hidden Files", A_HIDDEN, false);
+        menu_add("Select all", A_SELALL, false);
+        menu_add(vgrid ? "View as list" : "View as icons", A_VIEW, false);
+        menu_add("Sort by name", A_SORTN, false); menu_add("Sort by size", A_SORTS, false); menu_add("Sort by date", A_SORTM, false);
+        menu_add(hidden ? "Hide hidden files" : "Show hidden files", A_HIDDEN, false);
         menu_add("Refresh", A_REFRESH, false);
         menu_sep();
         menu_add("Properties", A_PROPS, false);
     }
+    if (nmenu && menu[nmenu - 1].sep) nmenu--;
     menu_x = x; menu_y = y;
     mode = M_MENU;
 }
 
-static int menu_h(void) { int h = 12; for (int i = 0; i < nmenu; i++) h += menu[i].sep ? 9 : 30; return h; }
+static int menu_w(void) {
+    int w = W_MENU_MIN;
+    for (int i = 0; i < nmenu; i++) if (!menu[i].sep && gfx_text_width(T_BODY, menu[i].label) + 2 * SP_4 + 2 * SP_2 > w) w = gfx_text_width(T_BODY, menu[i].label) + 2 * SP_4 + 2 * SP_2;
+    return w < W_MENU_MAX ? w : W_MENU_MAX;
+}
+static int menu_h(void) { int h = 2 * SP_2; for (int i = 0; i < nmenu; i++) h += menu[i].sep ? 2 * SP_2 + 1 : H_ROW; return h; }
+
+/* draws the open menu; returns the action picked or -1 */
+static int menu_draw(struct ui *ui) {
+    struct canvas *c = ui->c;
+    int W = ui->win->w, H = ui->win->h, mw = menu_w(), mh = menu_h();
+    int x = menu_x + mw > W - SP_2 ? menu_x - mw : menu_x, y = menu_y + mh > H - SP_2 ? menu_y - mh : menu_y;   /* flip left / up */
+    if (x < SP_2) x = SP_2;
+    if (y < SP_2) y = SP_2;
+    gfx_elev(c, x, y, mw, mh, R_3, E2, ui_th.elev[E2]);
+    gfx_round_fill(c, x, y, mw, mh, R_3, ui_th.overlay);
+    gfx_round_rect(c, x, y, mw, mh, R_3, UI_LINE);
+    int chosen = -1, ry = y + SP_2;
+    for (int i = 0; i < nmenu; i++) {
+        if (menu[i].sep) { gfx_hline(c, x + SP_4, ry + SP_2, mw - 2 * SP_4, UI_LINE); ry += 2 * SP_2 + 1; continue; }
+        bool hov = ui_hover(ui, x + SP_2, ry, mw - 2 * SP_2, H_ROW);
+        if (hov) gfx_round_fill(c, x + SP_2, ry, mw - 2 * SP_2, H_ROW, R_2, ui->buttons & 1 ? ui_th.press_ov : ui_th.hover_ov);
+        int id = menu[i].id;
+        ui_text_fit(ui, T_BODY, x + SP_2 + SP_4, ry + (H_ROW - T_BODY->height) / 2, mw - 2 * (SP_2 + SP_4), menu[i].label,
+                    id == A_DELETE || id == A_EMPTY ? UI_BAD : UI_TEXT);
+        if (ui->pressed && hov) chosen = id;
+        ry += H_ROW;
+    }
+    return chosen;
+}
 
 static void do_action(int a) {
     switch (a) {
@@ -811,6 +810,33 @@ static void drop_external(int px, int py, int W) {              /* something was
     free(ps);
 }
 
+/* breadcrumbs for cwd ("Root" first), leading parts dropped until they fit; navigates on a click.
+ * Returns the x where the crumbs end (a click past it edits the path) */
+static int crumbs(struct ui *ui, int x, int y, int maxw) {
+    const char *parts[64];
+    char buf[PATH_MAX];
+    if (intrash) { static const char *const t[] = { "Trash" }; ui_crumbs(ui, x, y, maxw, t, 1); return x + gfx_text_width(T_BODY_B, t[0]) + 2 * SP_3; }
+    int ends[64], n = 0;
+    snprintf(buf, sizeof buf, "%s", cwd);
+    parts[n] = "Root"; ends[n++] = 1;
+    for (char *s = buf + 1; *s && n < 64; ) {
+        char *e = strchr(s, '/');
+        parts[n] = s; ends[n++] = (e ? e : s + strlen(s)) - buf;
+        if (!e) break;
+        *e = 0; s = e + 1;
+    }
+    int ws[64], tot = 0, first = 0;
+    for (int i = 0; i < n; i++) { ws[i] = gfx_text_width(i == n - 1 ? T_BODY_B : T_BODY, parts[i]) + 2 * SP_3 + (i < n - 1 ? ICON_SM : 0); tot += ws[i]; }
+    while (first < n - 1 && tot > maxw) tot -= ws[first++];
+    int hit = ui_crumbs(ui, x, y, maxw, parts + first, n - first);
+    if (hit >= 0) {
+        char p[PATH_MAX];
+        snprintf(p, sizeof p, "%.*s", ends[first + hit], cwd);
+        go(p, true);
+    }
+    return x + (tot < maxw ? tot : maxw);
+}
+
 int main(int argc, char **argv) {
     struct gui_window *w = gui_window_create("Files", 920, 600, 0);
     if (!w) { perror("files"); return 1; }
@@ -835,6 +861,7 @@ int main(int argc, char **argv) {
     if (sel_name[0]) select_name(sel_name);
     uint32_t last_tick = uptime_ms();
     bool path_fresh = false;
+    char title[128] = "";
     do {
         while (waitpid(-1, NULL, WNOHANG) > 0) {}              /* reap apps we launched */
         tick_ms = uptime_ms();
@@ -878,11 +905,13 @@ int main(int argc, char **argv) {
         memcpy(saved, ui.keys, sizeof saved);
         if (modal) { ui.mx = ui.my = -1; ui.pressed = ui.released = ui.dbl = ui.rpressed = false; ui.nkeys = 0; ui.scroll = 0; }
 
-        int tbW = W - 134 - 286 < 120 ? 120 : W - 134 - 286;
-        int sx = 134 + tbW + 10;
-        uint32_t path_id = ui_id(134, 8, tbW, 36), search_id = ui_id(sx, 8, 160, 36);
+        /* toolbar geometry: back/forward/up, crumbs (or the path entry), search, view switch, more */
+        int ty = (TB_H - H_CTL) / 2, cx0 = SP_3 + 3 * (H_CTL + SP_2) - SP_2 + SP_4;
+        int more_x = W - SP_3 - H_CTL, seg_x = more_x - SP_4 - (3 * SP_1 + 2 * H_CTL);
+        int srch_w = (W - cx0) / 3 > 240 ? 240 : (W - cx0) / 3 < 120 ? 120 : (W - cx0) / 3, srch_x = seg_x - SP_4 - srch_w;
+        int srch_y = (TB_H - H_SEARCH) / 2, cmaxw = srch_x - SP_4 - cx0;
+        uint32_t path_id = ui_id(cx0, ty, cmaxw, H_CTL), search_id = ui_id(srch_x, srch_y, srch_w, H_SEARCH);
         bool typing = ui.focus == path_id || ui.focus == search_id;
-        if (ui.focus == path_id && !path_fresh) { path_fresh = true; }
         if (ui.focus != path_id) path_fresh = false;
         struct gui_event k;
 
@@ -918,7 +947,7 @@ int main(int argc, char **argv) {
                     case 'v': clip_paste(); break;
                     case 'n': do_action(A_NEWDIR); break;
                     case 'h': do_action(A_HIDDEN); break;
-                    case 'l': ui.focus = path_id; path_fresh = true; break;
+                    case 'l': ui.focus = path_id; path_fresh = true; snprintf(pathbox, sizeof pathbox, "%s", cwd); break;
                     case 'f': ui.focus = search_id; break;
                     case 'i': do_action(A_PROPS); break;
                     case 'r': refresh(true); break;
@@ -940,16 +969,17 @@ int main(int argc, char **argv) {
             }
         } else if (ui.focus == search_id) {                               /* Esc in the box clears it */
             for (int i = 0; i < ui.nkeys; i++) if (ui.keys[i].key == KEY_ESC) { qbox[0] = 0; ui.focus = 0; ui.nkeys = 0; break; }
-        } else if (ui.focus == path_id && path_fresh) {
-            for (int i = 0; i < ui.nkeys; i++) if (ui.keys[i].key == KEY_ESC) { snprintf(pathbox, sizeof pathbox, "%s", cwd); ui.focus = 0; ui.nkeys = 0; break; }                  /* typing over a freshly focused path replaces it */
-            for (int i = 0; i < ui.nkeys; i++) if (ui.keys[i].ch >= 32 && ui.keys[i].ch < 127 && !(ui.keys[i].mods & MOD_CTRL)) { pathbox[0] = 0; path_fresh = false; break; }
+        } else if (ui.focus == path_id) {
+            for (int i = 0; i < ui.nkeys; i++) if (ui.keys[i].key == KEY_ESC) { ui.focus = 0; ui.nkeys = 0; break; }
+            if (path_fresh)                                                /* typing over a freshly focused path replaces it */
+                for (int i = 0; i < ui.nkeys; i++) if (ui.keys[i].ch >= 32 && ui.keys[i].ch < 127 && !(ui.keys[i].mods & MOD_CTRL)) { pathbox[0] = 0; path_fresh = false; break; }
         }
         layout(W, H);
 
         /* ---- mouse in the content area ---- */
         int mx = ui.mx, my = ui.my;
-        bool in_c = mx >= SIDE_W && mx < W - 14 && my >= L.y - (vgrid ? 0 : HDR_H + 4) && my < H - SB_H;
-        if (!modal && ui_hover(&ui, SIDE_W, L.y, L.w, L.h) && ui.scroll) { scroll += ui.scroll * (vgrid ? 1 : 3); layout(W, H); }
+        bool in_c = mx >= SW && mx < W - 12 && my >= TB_H && my < H - SB_H;
+        if (!modal && ui_hover(&ui, SW, L.y, L.w, L.h) && ui.scroll) { scroll += ui.scroll * (vgrid ? 1 : 3); layout(W, H); }
         if (ui.pressed && in_c && my >= L.y && !modal) {
             int hit = item_at(mx, my, W);
             press_k = -1; dragging = banding = false;
@@ -969,12 +999,12 @@ int main(int argc, char **argv) {
                 anchor = cur = -1;
             }
         }
-        if (ui.rpressed && !modal && ui_hover(&ui, SIDE_W, TB_H, L.w, H - TB_H - SB_H)) {
+        if (ui.rpressed && !modal && ui_hover(&ui, SW, TB_H, L.w, H - TB_H - SB_H)) {
             int hit = my >= L.y ? item_at(mx, my, W) : -1;
             if (hit >= 0) { if (!ents[ord[hit]].sel) { sel_clear(); ents[ord[hit]].sel = true; } anchor = cur = hit; menu_open_at(mx, my, 1); }
             else { sel_clear(); menu_open_at(mx, my, 0); }
         }
-        if (ui.rpressed && !modal && mx < SIDE_W && my > TB_H) {
+        if (ui.rpressed && !modal && mx < SW && my > TB_H) {
             int pl = place_at(mx, my);
             if (pl >= 0 && !strcmp(places[pl].path, TRASH_FILES)) menu_open_at(mx, my, 2);
         }
@@ -985,7 +1015,7 @@ int main(int argc, char **argv) {
                 int cy = my - L.y + scroll * L.rh, by0 = band_y < cy ? band_y : cy, by1 = band_y < cy ? cy : band_y;
                 for (int j = 0; j < nord; j++) {
                     int r = j / L.cols, c = j % L.cols;
-                    int ix = vgrid ? c * CW + 8 : 0, iy = r * L.rh, iw = vgrid ? CW - 16 : L.w, ih = L.rh;
+                    int ix = vgrid ? c * CW + SP_3 : 0, iy = r * L.rh, iw = vgrid ? CW - 2 * SP_3 : L.w, ih = vgrid ? CW : L.rh;
                     bool hit = ix < bx1 && ix + iw > bx0 && iy < by1 && iy + ih > by0;
                     ents[ord[j]].sel = ents[ord[j]].sel0 || hit;
                 }
@@ -1006,146 +1036,150 @@ int main(int argc, char **argv) {
         /* ---- draw ---- */
         ui_clear(&ui);
         struct canvas *c = ui.c;
-        gfx_fill(c, 0, 0, W, TB_H, UI_PANEL);
-        gfx_fill(c, 0, TB_H - 1, W, 1, UI_BORDER);
-        color_t dim = UI_TEXT_DIM;
-        if (ui_tool(&ui, 10, 8, 36, 36, "", false)) go_back();
-        color_t cb = hpos > 0 ? UI_TEXT : dim;
-        gfx_line_aa(c, 36, 26, 20, 26, 2.2f, cb); gfx_line_aa(c, 20, 26, 26, 20, 2.2f, cb); gfx_line_aa(c, 20, 26, 26, 32, 2.2f, cb);
-        if (ui_tool(&ui, 50, 8, 36, 36, "", false)) go_fwd();
-        color_t cf = hpos < nhist - 1 ? UI_TEXT : dim;
-        gfx_line_aa(c, 62, 26, 78, 26, 2.2f, cf); gfx_line_aa(c, 78, 26, 72, 20, 2.2f, cf); gfx_line_aa(c, 78, 26, 72, 32, 2.2f, cf);
-        if (ui_tool(&ui, 90, 8, 36, 36, "", false)) go_up();
-        gfx_line_aa(c, 108, 34, 108, 18, 2.2f, UI_TEXT); gfx_line_aa(c, 108, 18, 102, 24, 2.2f, UI_TEXT); gfx_line_aa(c, 108, 18, 114, 24, 2.2f, UI_TEXT);
-        if (ui_textbox(&ui, 134, 8, tbW, 36, pathbox, sizeof pathbox, "path")) { go(pathbox, true); ui.focus = 0; }
-        if (ui_textbox(&ui, sx, 8, 160, 36, qbox, sizeof qbox, "Search")) ui.focus = 0;
-        int vx = sx + 168;
-        if (ui_tool(&ui, vx, 8, 34, 36, "", vgrid)) { vgrid = true; scroll = 0; relayout = true; }
-        for (int i = 0; i < 4; i++) gfx_fill(c, vx + 9 + (i & 1) * 9, 15 + (i >> 1) * 9, 7, 7, UI_TEXT);
-        if (ui_tool(&ui, vx + 34, 8, 34, 36, "", !vgrid)) { vgrid = false; scroll = 0; relayout = true; }
-        for (int i = 0; i < 3; i++) { gfx_fill(c, vx + 34 + 8, 16 + i * 7, 4, 3, UI_TEXT); gfx_fill(c, vx + 34 + 15, 16 + i * 7, 11, 3, UI_TEXT); }
-        if (ui_tool(&ui, vx + 72, 8, 34, 36, "", false) && !intrash) { namebuf[0] = 0; mode = M_NEWDIR; ui.focus = 0; }
-        gfx_fill(c, vx + 72 + 17 - 1, 17, 3, 18, UI_TEXT); gfx_fill(c, vx + 72 + 9, 25, 18, 3, UI_TEXT);
+        char tmp[PATH_MAX];
+
+        /* toolbar */
+        ui_toolbar(&ui, 0, 0, W);
+        if (ui_icon_button(&ui, SP_3, ty, ICON_CHEVRON_LEFT, hpos > 0 ? 0 : UI_DISABLED, "Back · Alt+Left")) go_back();
+        if (ui_icon_button(&ui, SP_3 + H_CTL + SP_2, ty, ICON_CHEVRON_RIGHT, hpos < nhist - 1 ? 0 : UI_DISABLED, "Forward · Alt+Right")) go_fwd();
+        if (ui_icon_button(&ui, SP_3 + 2 * (H_CTL + SP_2), ty, ICON_ARROW_UP, strcmp(cwd, "/") ? 0 : UI_DISABLED, "Enclosing folder · Alt+Up")) go_up();
+        if (ui.focus != path_id && cmaxw > 0) {
+            int end = crumbs(&ui, cx0, ty, cmaxw);
+            if (!modal && ui_clicked(&ui, end, ty, cx0 + cmaxw - end, H_CTL)) { ui.focus = path_id; path_fresh = true; snprintf(pathbox, sizeof pathbox, "%s", cwd); }
+        }
+        if (ui.focus == path_id) { if (ui_input(&ui, cx0, ty, cmaxw, H_CTL, pathbox, sizeof pathbox, "Type a path", UI_NOICON, 0)) { go(pathbox, true); ui.focus = 0; } }
+        else snprintf(pathbox, sizeof pathbox, "%s", cwd);
+        if (ui_search(&ui, srch_x, srch_y, srch_w, qbox, sizeof qbox, "Search")) ui.focus = 0;
+        static const int view_icons[] = { ICON_GRID, ICON_LIST };
+        int vsel = !vgrid;
+        if (ui_segmented(&ui, seg_x, ty, view_icons, NULL, 2, &vsel)) { vgrid = !vsel; scroll = 0; relayout = true; }
+        ui_tooltip(&ui, seg_x, ty, SP_1 + H_CTL, H_CTL, "Icons");
+        ui_tooltip(&ui, seg_x + SP_1 + H_CTL, ty, SP_1 + H_CTL, H_CTL, "List");
+        if (ui_icon_button(&ui, more_x, ty, ICON_MORE, 0, "More") && !modal) menu_open_at(more_x + H_CTL, ty + H_CTL + SP_2, 0);
 
         /* sidebar */
-        gfx_fill(c, 0, TB_H, SIDE_W, H - TB_H - SB_H, RGB(0x1A, 0x19, 0x28));
-        gfx_fill(c, SIDE_W - 1, TB_H, 1, H - TB_H - SB_H, UI_BORDER);
-        int dpl = dragging ? place_at(mx, my) : -1;
-        for (int i = 0; i < NPLACES; i++) {
-            if (!places[i].label) { gfx_fill(c, 14, place_y(i) + 11, SIDE_W - 28, 1, UI_BORDER); continue; }
-            int y = place_y(i);
-            bool act = !strcmp(cwd, places[i].path), hov = ui_hover(&ui, 8, y, SIDE_W - 16, PLACE_H - 2);
-            if (i == dpl) gfx_round_rect(c, 8, y, SIDE_W - 16, PLACE_H - 2, 8, UI_ACCENT);
-            if (act) gfx_round_fill(c, 8, y, SIDE_W - 16, PLACE_H - 2, 8, RGBA(0xB3, 0x88, 0xFF, 80));
-            else if (hov || i == dpl) gfx_round_fill(c, 8, y, SIDE_W - 16, PLACE_H - 2, 8, RGBA(255, 255, 255, 18));
-            side_icon(c, places[i].ico, 16, y + 5, act ? UI_ACCENT : UI_TEXT_DIM);
-            gfx_text(c, &font_ui, 44, y + 5, places[i].label, UI_TEXT);
-            if (places[i].ico == I_BIN && trash_n) {
-                char b[12];
-                snprintf(b, sizeof b, "%d", trash_n);
-                int bw = gfx_text_width(&font_ui, b) + 12;
-                gfx_round_fill(c, SIDE_W - 18 - bw, y + 5, bw, 18, 9, RGBA(0xB3, 0x88, 0xFF, 120));
-                gfx_text_center(c, &font_ui, SIDE_W - 18 - bw, y + 5 + (18 - font_ui.height) / 2, bw, b, UI_TEXT);
+        if (SW) {
+            ui_sidebar(&ui, 0, TB_H, SW, H - TB_H);
+            int dpl = dragging ? place_at(mx, my) : -1;
+            for (int i = 0; i < NPLACES; i++) {
+                int y = place_y(i);
+                if (!places[i].path) { ui_side_label(&ui, 0, y, places[i].label); continue; }
+                char tr[12] = "";
+                if (!strcmp(places[i].path, TRASH_FILES) && trash_n) snprintf(tr, sizeof tr, "%d", trash_n);
+                if (ui_side_item(&ui, 0, y, SW, places[i].ico, places[i].label, tr[0] ? tr : NULL, !strcmp(cwd, places[i].path)) && !modal)
+                    go(places[i].path, true);
+                if (i == dpl) gfx_round_rect(c, SP_3, y, SW - 2 * SP_3, H_ROW, R_2, ui_th.accent_line);
             }
-            if (ui.pressed && hov && !modal) go(places[i].path, true);
         }
 
         /* content */
-        char tmp[PATH_MAX];
         struct canvas cc = *c;
-        canvas_clip(&cc, SIDE_W, L.y, L.w, L.h);
+        canvas_clip(&cc, SW, L.y, L.w, L.h);
         if (relayout) { layout(W, H); relayout = false; }
-        int lcol_size = W - 190 - (intrash ? 260 : 100), lcol_mod = W - 190;
-        if (!vgrid) {
-            static const char *hn[] = { "Name", "Size", "Modified" };
+        int date_w = gfx_text_width(T_BODY, "0000-00-00 00:00"), col_mod = W - SP_4 - date_w;
+        int col_size = col_mod - SP_7, loc_w = L.w / 3 > 240 ? 240 : L.w / 3, col_loc = col_mod - SP_7 - loc_w;
+        int name_x = SW + SP_4 + ICON_LG + SP_3, name_w = (intrash ? col_loc : col_size - 80) - SP_7 - name_x;
+        if (!vgrid && nord) {
             for (int hi = 0; hi < 3; hi++) {
-                int hx = hi == 0 ? SIDE_W + 54 : hi == 1 ? lcol_size : lcol_mod;
-                const char *label = intrash ? (hi == 0 ? "Name" : hi == 1 ? "Original location" : "Deleted") : hn[hi];
-                int hw = gfx_text_width(&font_ui_bold, label);
-                bool hov = ui_hover(&ui, hx - 6, TB_H, hw + 40, HDR_H);
-                gfx_text(c, &font_ui_bold, hx, TB_H + 9, label, hov ? UI_TEXT : UI_TEXT_DIM);
-                if (sort_key == hi) {                                   /* sort arrow */
-                    int ax = hx + hw + 10, ay = TB_H + 14;
-                    if (sort_desc) { gfx_line_aa(c, ax - 4, ay - 2, ax, ay + 3, 1.8f, UI_ACCENT); gfx_line_aa(c, ax, ay + 3, ax + 4, ay - 2, 1.8f, UI_ACCENT); }
-                    else { gfx_line_aa(c, ax - 4, ay + 3, ax, ay - 2, 1.8f, UI_ACCENT); gfx_line_aa(c, ax, ay - 2, ax + 4, ay + 3, 1.8f, UI_ACCENT); }
-                }
-                if (ui.pressed && hov && !modal && !(hi == 1 && intrash)) { do_action(A_SORTN + hi); }
+                const char *label = intrash ? (hi == 0 ? "Name" : hi == 1 ? "Original location" : "Deleted") : hi == 0 ? "Name" : hi == 1 ? "Size" : "Modified";
+                int lw = gfx_text_width(T_CAPTION_B, label);
+                int hx = hi == 0 ? name_x : hi == 2 ? col_mod : intrash ? col_loc : col_size - lw;
+                bool hov = !(hi == 1 && intrash) && ui_hover(&ui, hx - SP_2, TB_H, lw + ICON_SM + SP_3, HDR_H);
+                gfx_text(c, T_CAPTION_B, hx, TB_H + (HDR_H - T_CAPTION_B->height) / 2, label, hov ? UI_TEXT : UI_TEXT2);
+                if (sort_key == hi && !(hi == 1 && intrash))
+                    ui_icon(&ui, hx + lw + SP_1, TB_H + (HDR_H - ICON_SM) / 2, sort_desc ? ICON_CHEVRON_DOWN : ICON_CHEVRON_UP, ICON_SM, UI_TEXT2);
+                if (ui.pressed && hov && !modal) do_action(A_SORTN + hi);
             }
-            gfx_fill(c, SIDE_W + 8, TB_H + HDR_H, L.w - 16, 1, UI_BORDER);
+            gfx_hline(c, SW, TB_H + HDR_H - 1, L.w, UI_LINE);
         }
-        if (!nord) gfx_text_center(&cc, &font_ui, SIDE_W, L.y + 40, L.w, nents ? "No matches" : intrash ? "The Trash is empty" : "This folder is empty", UI_TEXT_DIM);
+        if (!nord) {                                                     /* empty states */
+            int ey = TB_H, eh = H - SB_H - TB_H;
+            if (nents) { if (ui_empty(&ui, SW, ey, L.w, eh, ICON_SEARCH, "No results", "Nothing in this folder matches your search.", "Clear search")) qbox[0] = 0; }
+            else if (intrash) ui_empty(&ui, SW, ey, L.w, eh, ICON_TRASH, "Trash is empty", "Items you move to the Trash appear here.", NULL);
+            else if (ui_empty(&ui, SW, ey, L.w, eh, ICON_FOLDER_OPEN, "This folder is empty", "Drop files here or create a new folder.", "New folder…")) do_action(A_NEWDIR);
+        }
+        struct canvas *oc = ui.c;
+        ui.c = &cc;
         for (int j = scroll * L.cols; j < nord && j < (scroll + L.vis + 1) * L.cols; j++) {
             int x, y, iw, ih;
             item_rect(j, &x, &y, &iw, &ih);
             struct ent *e = &ents[ord[j]];
-            bool hov = !modal && ui_hover(&ui, x, y, iw, ih) && mx < W - 14 && my >= L.y && my < L.y + L.h;
+            bool hov = !modal && ui_hover(&ui, x, y, iw, ih) && mx < W - 12 && my >= L.y && my < L.y + L.h;
             bool dt = dragging && hov && e->dir && !e->sel;              /* a folder to drop onto */
+            join(tmp, cwd, e->name);
+            const struct aicon *ai = fileicon_get(ficon(tmp, e->dir, e->kind), vgrid ? ICON_APP : ICON_LG);
+            const struct font *nf = e->sel ? T_BODY_B : T_BODY;
             if (vgrid) {
-                if (e->sel) { gfx_round_fill(&cc, x + 4, y + 2, CW - 8, CH - 4, 10, RGBA(0xB3, 0x88, 0xFF, 85)); gfx_round_rect(&cc, x + 4, y + 2, CW - 8, CH - 4, 10, RGBA(0xD8, 0xC4, 0xFF, 120)); }
-                else if (hov) gfx_round_fill(&cc, x + 4, y + 2, CW - 8, CH - 4, 10, RGBA(255, 255, 255, 16));
-                if (dt) gfx_round_rect(&cc, x + 4, y + 2, CW - 8, CH - 4, 10, UI_ACCENT);
-                int ix = x + (CW - TH) / 2, iy = y + 8;
+                if (e->sel) gfx_round_fill(&cc, x, y, iw, ih, R_2, UI_SELECTION);
+                else if (hov) gfx_round_fill(&cc, x, y, iw, ih, R_2, ui_th.hover_ov);
+                if (dt) gfx_round_rect(&cc, x, y, iw, ih, R_2, ui_th.accent_line);
+                int ix = x + (CW - TH) / 2, iy = y + SP_3;
                 struct thumb *t = NULL;
-                if (e->kind == FK_IMAGE && !intrash) { join(tmp, cwd, e->name); t = thumb_get(tmp, e->mtime, e->size); }
+                if (e->kind == FK_IMAGE && !intrash) t = thumb_get(tmp, e->mtime, e->size);
                 if (t) {
-                    gfx_round_fill(&cc, ix + (TH - t->w) / 2 - 2, iy + (TH - t->h) / 2 - 2, t->w + 4, t->h + 4, 4, RGBA(255, 255, 255, 40));
-                    gfx_blit(&cc, ix + (TH - t->w) / 2, iy + (TH - t->h) / 2, t->px, t->w, t->h, t->w);
-                } else fileicon(&cc, e->kind, x + (CW - 56) / 2, iy + 4, 56, e->name);
-                cell_name(&ui, x + 8, y + 8 + TH + 4, CW - 16, e->name, UI_TEXT);
+                    int tx = ix + (TH - t->w) / 2, tyy = iy + (TH - t->h) / 2;
+                    gfx_blit(&cc, tx, tyy, t->px, t->w, t->h, t->w);
+                    gfx_rect(&cc, tx - 1, tyy - 1, t->w + 2, t->h + 2, UI_LINE);
+                } else ui_aicon(&ui, ix, iy, ai);
+                centered_fit(&ui, nf, x + SP_2, iy + TH + 6, CW - 2 * SP_2, e->name, UI_TEXT);
             } else {
-                if (e->sel) gfx_round_fill(&cc, x + 6, y + 1, iw - 18, ih - 2, 7, RGBA(0xB3, 0x88, 0xFF, 85));
-                else if (hov) gfx_round_fill(&cc, x + 6, y + 1, iw - 18, ih - 2, 7, RGBA(255, 255, 255, 16));
-                if (dt) gfx_round_rect(&cc, x + 6, y + 1, iw - 18, ih - 2, 7, UI_ACCENT);
-                fileicon(&cc, e->kind, x + 16, y + (ih - 20) / 2, 20, e->name);
-                int ty = y + (ih - font_ui.height) / 2;
-                ui_text_fit(&ui, &font_ui, SIDE_W + 54, ty, lcol_size - SIDE_W - 62, e->name, UI_TEXT);
+                if (e->sel) gfx_fill(&cc, x, y, iw, ih, UI_SELECTION);
+                else if (hov) gfx_fill(&cc, x, y, iw, ih, ui_th.hover_ov);
+                if (dt) gfx_rrect_ring(&cc, x, y, iw, ih, RADII(0, 0, 0, 0), 1, ui_th.accent_line);
+                ui_aicon(&ui, x + SP_4, y + (ih - ICON_LG) / 2, ai);
+                int tyy = y + (ih - T_BODY->height) / 2;
+                ui_text_fit(&ui, nf, name_x, tyy, name_w, e->name, UI_TEXT);
                 char b[PATH_MAX];
-                if (intrash) ui_text_fit(&ui, &font_ui, lcol_size, ty, lcol_mod - lcol_size - 10, e->orig ? e->orig : "?", UI_TEXT_DIM);
-                else { if (e->dir) snprintf(b, sizeof b, "--"); else fmt_size(b, sizeof b, e->size); gfx_text(&cc, &font_ui, lcol_size, ty, b, UI_TEXT_DIM); }
+                if (intrash) ui_text_fit(&ui, T_BODY, col_loc, tyy, loc_w, e->orig ? e->orig : "Unknown", UI_TEXT2);
+                else {
+                    if (e->dir) snprintf(b, sizeof b, "—"); else fmt_size(b, sizeof b, e->size);
+                    gfx_text(&cc, T_BODY, col_size - gfx_text_width(T_BODY, b), tyy, b, UI_TEXT2);
+                }
                 fmt_time(b, sizeof b, e->mtime);
-                gfx_text(&cc, &font_ui, lcol_mod, ty, b, UI_TEXT_DIM);
+                gfx_text(&cc, T_BODY, col_mod, tyy, b, UI_TEXT2);
             }
         }
+        ui.c = oc;
         if (banding && (ui.buttons & 1)) {                               /* rubber band */
             int bx0 = band_x < mx - L.x ? band_x : mx - L.x, bx1 = band_x < mx - L.x ? mx - L.x : band_x;
             int cy = my - L.y + scroll * L.rh, by0 = band_y < cy ? band_y : cy, by1 = band_y < cy ? cy : band_y;
             int rx = L.x + bx0, ry = L.y + by0 - scroll * L.rh;
-            gfx_fill(&cc, rx, ry, bx1 - bx0, by1 - by0, RGBA(0xB3, 0x88, 0xFF, 40));
-            gfx_rect(&cc, rx, ry, bx1 - bx0, by1 - by0, RGBA(0xD8, 0xC4, 0xFF, 160));
+            gfx_fill(&cc, rx, ry, bx1 - bx0, by1 - by0, TH_A(ui_th.accent, 36));
+            gfx_rect(&cc, rx, ry, bx1 - bx0, by1 - by0, ui_th.accent_line);
         }
         ui_vscroll(&ui, W - 12, L.y, L.h, L.nrows, L.vis, &scroll);
 
         /* status bar */
-        gfx_fill(c, 0, H - SB_H, W, SB_H, UI_PANEL);
-        gfx_fill(c, 0, H - SB_H, W, 1, UI_BORDER);
-        char st[200];
+        char st[200], rt[32] = "";
         int ns = nsel();
         if (ns) {
             uint64_t tot = 0;
             for (int j = 0; j < nents; j++) if (ents[j].sel && !ents[j].dir) tot += ents[j].size;
-            char sz[32];
-            fmt_size(sz, sizeof sz, tot);
-            if (ns == 1) { int i0 = first_sel(); snprintf(st, sizeof st, "%d items   |   %s%s%s", nord, ents[i0].name, ents[i0].dir ? "" : "   ", ents[i0].dir ? "" : sz); }
-            else snprintf(st, sizeof st, "%d items   |   %d selected   %s", nord, ns, sz);
-        } else snprintf(st, sizeof st, nord == nents ? "%d items" : "%d matching items", nord);
-        ui_text_fit(&ui, &font_ui, 14, H - SB_H + 6, W / 2, st, UI_TEXT_DIM);
-        if (msg[0] && tick_ms < msg_until) {
-            int mw = gfx_text_width(&font_ui, msg);
-            gfx_text(c, &font_ui, W - 14 - mw, H - SB_H + 6, msg, msg_bad ? UI_BAD : UI_GOOD);
-        }
+            int i0 = first_sel();
+            if (ns == 1) snprintf(st, sizeof st, "%d item%s, “%s” selected", nord, nord == 1 ? "" : "s", ents[i0].name);
+            else snprintf(st, sizeof st, "%d items, %d selected", nord, ns);
+            if (tot || !(ns == 1 && ents[i0].dir)) fmt_size(rt, sizeof rt, tot);
+        } else snprintf(st, sizeof st, nord == nents ? (nord == 1 ? "%d item" : "%d items") : (nord == 1 ? "%d matching item" : "%d matching items"), nord);
+        ui_status(&ui, SW, H - SB_H, W - SW, st, rt[0] ? rt : NULL);
 
         /* drag ghost */
         if (dragging) {
-            int n = nsel();
-            int gk = first_sel() >= 0 ? ents[first_sel()].kind : FK_FILE;
-            fileicon(c, gk, mx - 14, my - 14, 28, first_sel() >= 0 ? ents[first_sel()].name : "");
+            int n = nsel(), f0 = first_sel();
+            if (f0 >= 0) { join(tmp, cwd, ents[f0].name); ui_aicon(&ui, mx - 16, my - 16, fileicon_get(ficon(tmp, ents[f0].dir, ents[f0].kind), ICON_XL)); }
             if (n > 1) {
                 char b[8];
                 snprintf(b, sizeof b, "%d", n);
-                gfx_circle_fill(c, mx + 16, my - 14, 9, UI_ACCENT2);
-                gfx_text_center(c, &font_ui_bold, mx + 7, my - 14 - font_ui_bold.height / 2, 18, b, RGB(0x1A, 0x10, 0x2E));
+                int bw = gfx_text_width(T_CAPTION_B, b) + 2 * SP_2;
+                if (bw < 18) bw = 18;
+                gfx_round_fill(c, mx + 8, my - 22, bw, 18, 9, UI_ACCENT);
+                gfx_text_center(c, T_CAPTION_B, mx + 8, my - 22 + (18 - T_CAPTION_B->height) / 2, bw, b, UI_ON_ACCENT);
             }
-            if (ctrl()) gfx_text(c, &font_ui_bold, mx + 24, my + 4, "copy", UI_GOOD);
+            if (ctrl()) {
+                int pw = gfx_text_width(T_CAPTION_B, "Copy") + 2 * SP_3;
+                gfx_round_fill(c, mx + 18, my + 6, pw, 20, R_2, ui_th.overlay);
+                gfx_round_rect(c, mx + 18, my + 6, pw, 20, R_2, UI_LINE);
+                gfx_text(c, T_CAPTION_B, mx + 18 + SP_3, my + 6 + (20 - T_CAPTION_B->height) / 2, "Copy", UI_TEXT);
+            }
         }
 
         /* ---- dialogs and menu ---- */
@@ -1157,20 +1191,7 @@ int main(int argc, char **argv) {
         if (mode != M_NONE) {
             bool fresh = !modal;                      /* opened this frame: the opening click must not close it */
             if (mode == M_MENU) {
-                int mw = 210, mh = menu_h();
-                int mxp = menu_x + mw > W ? W - mw - 4 : menu_x, myp = menu_y + mh > H ? H - mh - 4 : menu_y;
-                gfx_shadow(c, mxp, myp, mw, mh, 10, 10, 120);
-                gfx_round_fill(c, mxp, myp, mw, mh, 10, RGB(0x2A, 0x27, 0x3D));
-                gfx_round_rect(c, mxp, myp, mw, mh, 10, RGBA(255, 255, 255, 45));
-                int chosen = -1, y = myp + 6;
-                for (int i = 0; i < nmenu; i++) {
-                    if (menu[i].sep) { gfx_fill(c, mxp + 12, y + 4, mw - 24, 1, UI_BORDER); y += 9; continue; }
-                    bool hov = !menu[i].dis && ui_hover(&ui, mxp + 6, y, mw - 12, 30);
-                    if (hov) gfx_round_fill(c, mxp + 6, y, mw - 12, 30, 6, RGBA(0xB3, 0x88, 0xFF, 90));
-                    gfx_text(c, &font_ui, mxp + 18, y + 6, menu[i].label, menu[i].dis ? RGBA(0x9A, 0x96, 0xB8, 120) : menu[i].id == A_TRASH || menu[i].id == A_DELETE || menu[i].id == A_EMPTY ? UI_BAD : UI_TEXT);
-                    if (ui.pressed && hov) chosen = menu[i].id;
-                    y += 30;
-                }
+                int chosen = menu_draw(&ui);
                 if (chosen >= 0 || (!fresh && (ui.pressed || ui.rpressed))) mode = M_NONE;
                 if (chosen >= 0) do_action(chosen);
                 while (ui_key(&ui, &k)) if (k.key == KEY_ESC) mode = M_NONE;
@@ -1180,19 +1201,25 @@ int main(int argc, char **argv) {
                 if (r) mode = M_NONE;
                 if (r == 1) { if (m0 == M_RENAME) do_rename(namebuf); else do_new(namebuf, m0 == M_NEWDIR); }
             } else if (mode == M_DELETE || mode == M_EMPTY) {
-                char t[160];
+                char t[200];
                 int n = nsel();
-                if (mode == M_EMPTY) snprintf(t, sizeof t, "Permanently delete all %d items in the Trash?", trash_n);
-                else if (n == 1) snprintf(t, sizeof t, "Permanently delete \"%s\"%s?", ents[first_sel()].name, ents[first_sel()].dir ? " and everything in it" : "");
-                else snprintf(t, sizeof t, "Permanently delete %d items?", n);
-                int r = ui_confirm(&ui, mode == M_EMPTY ? "Empty Trash" : "Delete", t, "Delete");
+                if (mode == M_EMPTY) snprintf(t, sizeof t, "All %d item%s in the Trash will be deleted. This can't be undone.", trash_n, trash_n == 1 ? "" : "s");
+                else if (n == 1) snprintf(t, sizeof t, "“%s”%s will be deleted. This can't be undone.", ents[first_sel()].name, ents[first_sel()].dir ? " and everything in it" : "");
+                else snprintf(t, sizeof t, "%d items will be deleted. This can't be undone.", n);
+                int r = ui_dialog(&ui, mode == M_EMPTY ? "Empty Trash?" : "Delete permanently?", t, "Cancel", mode == M_EMPTY ? "Empty Trash" : "Delete", UI_DANGER);
                 int m0 = mode;
                 if (r) mode = M_NONE;
-                if (r == 1) { if (m0 == M_EMPTY) { fs_trash_empty(); say(false, "%s", "Trash emptied"); refresh(false); } else delete_sel(); }
+                if (r == 1) { if (m0 == M_EMPTY) { fs_trash_empty(); say(false, "%s", "Emptied the Trash"); refresh(false); } else delete_sel(); }
             } else if (mode == M_PROPS) {
                 if (props_draw(&ui)) mode = M_NONE;
             }
         }
+        if (msg_new) { ui_toast(&ui, msg, NULL); msg_new = false; }
+        const char *tn = fs_base(cwd)[0] ? fs_base(cwd) : "Root";
+        for (int i = 0; i < NPLACES; i++) if (places[i].path && !strcmp(cwd, places[i].path)) tn = places[i].label;
+        char nt[128];
+        snprintf(nt, sizeof nt, "%s — Files", tn);
+        if (strcmp(nt, title)) { gui_set_title(w, nt); snprintf(title, sizeof title, "%s", nt); }
         bool more = thumb_make();
         ui_end(&ui);
         thumb_busy = more;

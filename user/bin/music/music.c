@@ -7,6 +7,8 @@
  * stream's own volume (AUDIO_SETSVOL), so it doesn't touch Doom or the master volume.
  * ponytail: the library lists file names (tags are read only for the playing track); no playlist reordering or saving. */
 #include <ui.h>
+#include <design.h>
+#include <icons.h>
 #include <audio.h>
 #include <stdlib.h>
 #include <dirent.h>
@@ -211,39 +213,39 @@ static void fill(void) {
     }
 }
 
-/* ---- drawing ---- */
-static void tri(struct canvas *c, int x0, int y0, int x1, int y1, int x2, int y2, color_t col) {
-    int lx = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2), hx = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
-    int ly = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2), hy = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
-    for (int y = ly; y <= hy; y++)
-        for (int x = lx; x <= hx; x++) {
-            int d0 = (x1 - x0) * (y - y0) - (y1 - y0) * (x - x0), d1 = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1), d2 = (x0 - x2) * (y - y2) - (y0 - y2) * (x - x2);
-            if ((d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0)) gfx_pixel(c, x, y, col);
-        }
-    gfx_line_aa(c, x0, y0, x1, y1, 1.2f, col); gfx_line_aa(c, x1, y1, x2, y2, 1.2f, col); gfx_line_aa(c, x2, y2, x0, y0, 1.2f, col);
-}
-
-enum { I_PLAY, I_PAUSE, I_NEXT, I_PREV };
-static void icon(struct canvas *c, int kind, int cx, int cy, int s, color_t col) {
-    switch (kind) {
-    case I_PLAY: tri(c, cx - s * 2 / 3, cy - s, cx - s * 2 / 3, cy + s, cx + s, cy, col); break;
-    case I_PAUSE: gfx_fill(c, cx - s * 2 / 3, cy - s, s / 2 + 1, 2 * s + 1, col); gfx_fill(c, cx + s / 6, cy - s, s / 2 + 1, 2 * s + 1, col); break;
-    case I_NEXT: tri(c, cx - s, cy - s, cx - s, cy + s, cx + s / 2, cy, col); gfx_fill(c, cx + s / 2 + 1, cy - s, 3, 2 * s + 1, col); break;
-    case I_PREV: tri(c, cx + s, cy - s, cx + s, cy + s, cx - s / 2, cy, col); gfx_fill(c, cx - s / 2 - 3, cy - s, 3, 2 * s + 1, col); break;
-    }
-}
-
-static void note_art(struct canvas *c, int x, int y) {      /* the cover when a track has none */
-    gfx_vgradient(c, x, y, ART, ART, RGB(0x3A, 0x2A, 0x6E), RGB(0x1E, 0x1C, 0x3D));
-    color_t k = RGB(0xB3, 0x88, 0xFF);
-    gfx_circle_fill(c, x + 70, y + 126, 20, k);
-    gfx_circle_fill(c, x + 118, y + 114, 20, k);
-    gfx_fill(c, x + 86, y + 52, 6, 76, k);
-    gfx_fill(c, x + 134, y + 40, 6, 76, k);
-    gfx_fill(c, x + 86, y + 44, 54, 16, k);
-}
+/* ---- drawing (docs/DESIGN.md §9): tabs + list rows on the left, now playing on the right, status bar ---- */
+#define LW 300                                  /* list pane width */
+#define RX (LW + 1 + SP_7)                      /* now-playing column */
+#define RW (W - RX - SP_7)
+#define LIST_Y (H_TAB + SP_2)
+#define FOOT_Y (H - H_STATUS - SP_3 - H_CTL)
+#define LIST_H (FOOT_Y - SP_3 - LIST_Y)
 
 static void fmt_time(char *b, int n, int ms) { snprintf(b, n, "%d:%02d", ms / 60000, ms / 1000 % 60); }
+
+/* a list of 28px rows; keys come from the app (Up/Down/Home/End/PgUp/PgDn move *sel). Returns the row double-clicked or -1 */
+static int track_list(struct ui *ui, const int *idx, int n, int playing_pos, int *sel, int *scroll) {
+    int vis = LIST_H / H_ROW, act = -1;
+    if (ui_hover(ui, 0, LIST_Y, LW, LIST_H) && ui->scroll) *scroll += ui->scroll * 3;
+    if (*sel >= n) *sel = n - 1;
+    if (*sel < 0) *sel = 0;
+    if (*sel < *scroll) *scroll = *sel;
+    if (*sel >= *scroll + vis) *scroll = *sel - vis + 1;
+    if (*scroll > n - vis) *scroll = n - vis;
+    if (*scroll < 0) *scroll = 0;
+    struct canvas cc = *ui->c, *o = ui->c;
+    canvas_clip(&cc, 0, LIST_Y, LW, LIST_H);
+    ui->c = &cc;
+    for (int i = *scroll; i < n && i < *scroll + vis + 1; i++) {
+        int y = LIST_Y + (i - *scroll) * H_ROW;
+        bool cur_row = i == playing_pos;
+        if (ui_row(ui, SP_3, y, LW - 2 * SP_3, cur_row ? (playing ? ICON_VOLUME_HIGH : ICON_PAUSE) : ICON_MUSIC, NULL, lib[idx[i]].label, NULL, NULL,
+                   i == *sel ? UI_SELECTED : 0) && y + H_ROW <= LIST_Y + LIST_H) { *sel = i; if (ui->dbl) act = i; }
+    }
+    ui->c = o;
+    ui_vscroll(ui, LW - 12, LIST_Y, LIST_H, n, vis, scroll);
+    return act;
+}
 
 int main(int argc, char **argv) {
     srand(uptime_ms());
@@ -259,28 +261,41 @@ int main(int argc, char **argv) {
     if (argc > 1 && npl) start(0);
 
     static const char *const tabs[] = { "Library", "Playlist" };
-    static char plbuf[MAXT][112];
-    static const char *plp[MAXT], *libp[MAXT];
+    static int libi[MAXT];
+    for (int i = 0; i < MAXT; i++) libi[i] = i;
     int tab = 0, sel[2] = { 0, 0 }, scroll[2] = { 0, 0 };
     bool seeking = false;
     int seekv = 0, last_pos = -1;
     uint32_t last_draw = 0;
-    char title[128] = "", shown[128] = "";
+    char title[128] = "", shown[128] = "", shown_status[128] = "";
     do {
-        /* ---- keys (the lists keep up/down/enter for themselves) ---- */
+        /* ---- keys (Space/Enter/arrows go to a widget that has keyboard focus instead) ---- */
+        int nrows = tab == 0 ? nlib : npl, act = -1;
         for (int i = 0; i < ui.nkeys; i++) {
             struct gui_event *e = &ui.keys[i];
             if (e->mods & (MOD_CTRL | MOD_ALT | MOD_SUPER)) continue;
-            int k = e->key | 0x20;
+            int k = e->key | 0x20, *s = &sel[tab];
+            bool nav = e->key == ' ' || e->key == KEY_ENTER || (e->key >= KEY_UP && e->key <= KEY_PGDN);
+            if (nav && ui.focus) continue;
             if (e->key == ' ') pause_toggle();
             else if (e->key == KEY_RIGHT) seek(pos_ms() + 5000);
             else if (e->key == KEY_LEFT) seek(pos_ms() - 5000);
+            else if (e->key == KEY_DOWN) (*s)++;
+            else if (e->key == KEY_UP) (*s)--;
+            else if (e->key == KEY_PGDN) *s += LIST_H / H_ROW;
+            else if (e->key == KEY_PGUP) *s -= LIST_H / H_ROW;
+            else if (e->key == KEY_HOME) *s = 0;
+            else if (e->key == KEY_END) *s = nrows - 1;
+            else if (e->key == KEY_ENTER && nrows) act = *s;
             else if (k == 'n') go(1, false);
             else if (k == 'p') go(-1, false);
             else if (k == 's') shuffle = !shuffle;
             else if (k == 'r') repeat = (repeat + 1) % 3;
             else if (e->key == '+' || e->key == '=') { svol = svol > 95 ? 100 : svol + 5; if (fd >= 0) ioctl(fd, AUDIO_SETSVOL, &svol); }
             else if (e->key == '-') { svol = svol < 5 ? 0 : svol - 5; if (fd >= 0) ioctl(fd, AUDIO_SETSVOL, &svol); }
+            else continue;
+            memmove(ui.keys + i, ui.keys + i + 1, (--ui.nkeys - i) * sizeof ui.keys[0]);
+            i--;
         }
         fill();
         if (playing && eof && audio_queued(fd) == 0) go(1, true);          /* the track played out */
@@ -292,73 +307,91 @@ int main(int argc, char **argv) {
             ui_clear(&ui);
             struct canvas *c = ui.c;
             /* ---- left: library / playlist ---- */
-            ui_tabs(&ui, 16, 16, 290, 32, tabs, 2, &tab);
-            for (int i = 0; i < nlib; i++) libp[i] = lib[i].label;
-            for (int i = 0; i < npl; i++) {
-                snprintf(plbuf[i], sizeof plbuf[i], "%s%s", i == cur ? "> " : "", lib[pl[i]].label);
-                plp[i] = plbuf[i];
-            }
-            int act = tab == 0 ? ui_list(&ui, 16, 58, 290, 330, libp, nlib, &sel[0], &scroll[0])
-                               : ui_list(&ui, 16, 58, 290, 330, plp, npl, &sel[1], &scroll[1]);
+            ui_tabbar(&ui, 0, 0, LW, tabs, 2, &tab, 0);
+            ui_vsep(&ui, LW, 0, H - H_STATUS);
+            int fb = 0;                                                    /* footer buttons, 8 apart */
+            const char *b0 = tab ? "Remove" : "Add", *b1 = tab ? "Clear" : "Add all", *b2 = tab ? NULL : "Refresh";
+            int w0 = ui_button_w(UI_NOICON, b0), w1 = ui_button_w(UI_NOICON, b1);
             if (tab == 0) {
+                int a = track_list(&ui, libi, nlib, cur >= 0 && dec ? pl[cur] : -1, &sel[0], &scroll[0]);
+                if (act < 0) act = a;
                 if (act >= 0) play_lib(act);
-                if (ui_button(&ui, 16, 400, 84, 34, "Add", UI_NORMAL_BTN) && nlib) pl_add(sel[0]);
-                if (ui_button(&ui, 108, 400, 96, 34, "Add all", UI_NORMAL_BTN)) for (int i = 0; i < nlib; i++) pl_add(i);
-                if (ui_button(&ui, 212, 400, 94, 34, "Refresh", UI_NORMAL_BTN)) { unload(); rescan(); for (int i = 0; i < nlib; i++) pl_add(i); }
-                if (!nlib) gfx_text_center(c, &font_ui, 16, 200, 290, "No music in ~/Music", UI_TEXT_DIM);
+                if (ui_button(&ui, SP_5, FOOT_Y, w0, H_CTL, b0, UI_SECONDARY | (nlib ? 0 : UI_DISABLED))) fb = 1;
+                if (ui_button(&ui, SP_5 + w0 + SP_3, FOOT_Y, w1, H_CTL, b1, UI_SECONDARY | (nlib ? 0 : UI_DISABLED))) fb = 2;
+                if (ui_button(&ui, SP_5 + w0 + w1 + 2 * SP_3, FOOT_Y, ui_button_w(UI_NOICON, b2), H_CTL, b2, UI_SECONDARY)) fb = 3;
+                if (fb == 1) pl_add(sel[0]);
+                if (fb == 2) for (int i = 0; i < nlib; i++) pl_add(i);
+                if (fb == 3) { unload(); rescan(); for (int i = 0; i < nlib; i++) pl_add(i); }
+                if (!nlib) ui_empty(&ui, 0, LIST_Y, LW, LIST_H, ICON_MUSIC, "No music yet", "Put WAV, MP3 or Ogg files in ~/Music, then refresh.", NULL);
             } else {
+                int a = track_list(&ui, pl, npl, cur, &sel[1], &scroll[1]);
+                if (act < 0) act = a;
                 if (act >= 0) { nhist = 0; start(act); }
-                if (ui_button(&ui, 16, 400, 120, 34, "Remove", UI_NORMAL_BTN)) pl_remove(sel[1]);
-                if (ui_button(&ui, 144, 400, 120, 34, "Clear", UI_NORMAL_BTN)) { while (npl) pl_remove(npl - 1); }
-                if (!npl) gfx_text_center(c, &font_ui, 16, 200, 290, "The playlist is empty", UI_TEXT_DIM);
+                if (ui_button(&ui, SP_5, FOOT_Y, w0, H_CTL, b0, UI_SECONDARY | (npl ? 0 : UI_DISABLED))) pl_remove(sel[1]);
+                if (ui_button(&ui, SP_5 + w0 + SP_3, FOOT_Y, w1, H_CTL, b1, UI_SECONDARY | (npl ? 0 : UI_DISABLED))) { while (npl) pl_remove(npl - 1); }
+                if (!npl) ui_empty(&ui, 0, LIST_Y, LW, LIST_H, ICON_PLAYLIST, "The playlist is empty", "Add tracks from the library.", NULL);
             }
             /* ---- right: now playing ---- */
-            ui_panel(&ui, 324, 16, 440, 418);
-            if (have_art) gfx_blit(c, 340, 32, art, ART, ART, ART); else note_art(c, 340, 32);
-            gfx_rect(c, 340, 32, ART, ART, UI_BORDER);
-            const char *name = cur >= 0 && dec ? (tags.title[0] ? tags.title : lib[pl[cur]].label) : "Nothing playing";
-            ui_text_fit(&ui, &font_title, 540, 44, 210, name, UI_TEXT);
-            if (dec) {
-                if (tags.artist[0]) ui_text_fit(&ui, &font_ui, 540, 82, 210, tags.artist, UI_ACCENT);
-                if (tags.album[0]) ui_text_fit(&ui, &font_ui, 540, 106, 210, tags.album, UI_TEXT_DIM);
-                const char *inf = adec_info(dec), *comma = strchr(inf, ',');      /* "MP3" / "44100 Hz, stereo, 64 kbps" */
-                gfx_text_n(c, &font_ui_bold, 540, 140, inf, comma ? (int)(comma - inf) : (int)strlen(inf), UI_TEXT);
-                if (comma) ui_text_fit(&ui, &font_ui, 540, 164, 210, comma + 2, UI_TEXT_DIM);
-                char b[48];
-                snprintf(b, sizeof b, "Track %d of %d", cur + 1, npl);
-                ui_text_fit(&ui, &font_ui, 540, 188, 210, b, UI_TEXT_DIM);
+            int ay = (H - H_STATUS - (ART + SP_6 + HIT_MIN + SP_5 + H_CTL + SP_7 + H_CTL)) / 2;   /* the column, centred */
+            if (have_art) gfx_blit(c, RX, ay, art, ART, ART, ART);
+            else {                                                         /* no cover: a quiet placeholder */
+                gfx_round_fill(c, RX, ay, ART, ART, R_3, UI_SURFACE);
+                ui_icon(&ui, RX + (ART - ICON_APP) / 2, ay + (ART - ICON_APP) / 2, ICON_MUSIC, ICON_APP, UI_TEXT3);
             }
-            if (dec) snprintf(title, sizeof title, "%s - Music", name); else strcpy(title, "Music");
+            gfx_ring_out(c, RX, ay, ART, ART, have_art ? 0 : R_3, UI_LINE);
+            int tx = RX + ART + SP_6, tw = W - SP_7 - tx, ty = ay + SP_3;
+            const char *name = cur >= 0 && dec ? (tags.title[0] ? tags.title : lib[pl[cur]].label) : "Nothing playing";
+            ui_text_fit(&ui, T_TITLE, tx, ty, tw, name, dec ? UI_TEXT : UI_TEXT2);
+            ty += T_TITLE->height + SP_2;
+            if (dec) {
+                if (tags.artist[0]) { ui_text_fit(&ui, T_BODY, tx, ty, tw, tags.artist, UI_TEXT); ty += T_BODY->height; }
+                if (tags.album[0]) { ui_text_fit(&ui, T_BODY, tx, ty, tw, tags.album, UI_TEXT2); ty += T_BODY->height; }
+                ty += SP_4;
+                const char *inf = adec_info(dec), *comma = strchr(inf, ',');      /* "MP3" / "44100 Hz, stereo, 64 kbps" */
+                char b[96];
+                snprintf(b, sizeof b, "%.*s", comma ? (int)(comma - inf) : (int)strlen(inf), inf);
+                ui_text_fit(&ui, T_CAPTION_B, tx, ty, tw, b, UI_TEXT2);
+                if (comma) ui_text_fit(&ui, T_CAPTION, tx, ty + T_CAPTION->height, tw, comma + 2, UI_TEXT2);
+            } else ui_text_fit(&ui, T_BODY, tx, ty, tw, npl ? "Double-click a track or press Space" : "Add tracks to the playlist", UI_TEXT2);
+            if (dec) snprintf(title, sizeof title, "%s — Music", name); else strcpy(title, "Music");
             /* seek bar */
             char tb[16];
+            int sy = ay + ART + SP_6, tl = gfx_text_width(T_CAPTION, "00:00");
             if (!seeking) seekv = len_ms ? (int)((int64_t)pos * 1000 / len_ms) : 0;
             fmt_time(tb, sizeof tb, seeking ? (int)((int64_t)seekv * len_ms / 1000) : pos);
-            gfx_text(c, &font_ui, 340, 240, tb, UI_TEXT_DIM);
-            if (ui_slider(&ui, 392, 236, 312, &seekv, 0, 1000) && dec) seeking = true;
+            gfx_text(c, T_CAPTION, RX, sy + (HIT_MIN - T_CAPTION->height) / 2, tb, UI_TEXT2);
+            if (ui_slider_ex(&ui, RX + tl + SP_4, sy, RW - 2 * (tl + SP_4), &seekv, 0, 1000, dec ? 0 : UI_DISABLED) && dec) seeking = true;
             if (seeking && ui.released) { seek((int)((int64_t)seekv * len_ms / 1000)); seeking = false; }
             fmt_time(tb, sizeof tb, len_ms);
-            gfx_text(c, &font_ui, 724, 240, tb, UI_TEXT_DIM);
-            /* transport */
-            if (ui_tool(&ui, 436, 276, 56, 56, "", false)) go(-1, false);
-            icon(c, I_PREV, 464, 304, 10, UI_TEXT);
-            if (ui_clicked(&ui, 508, 270, 68, 68)) pause_toggle();
-            gfx_circle_fill(c, 542, 304, 30, ui_hover(&ui, 508, 270, 68, 68) ? RGB(0xC4, 0xA0, 0xFF) : UI_ACCENT);
-            icon(c, playing ? I_PAUSE : I_PLAY, 542 + (playing ? 0 : 2), 304, 12, RGB(0x1A, 0x10, 0x2E));
-            if (ui_tool(&ui, 592, 276, 56, 56, "", false)) go(1, false);
-            icon(c, I_NEXT, 620, 304, 10, UI_TEXT);
-            /* shuffle, repeat, volume */
-            static const char *const rep[] = { "Repeat: off", "Repeat: all", "Repeat: one" };
-            gfx_round_rect(c, 340, 356, 100, 32, 6, UI_BORDER); gfx_round_rect(c, 448, 356, 130, 32, 6, UI_BORDER);
-            if (ui_tool(&ui, 340, 356, 100, 32, "Shuffle", shuffle)) shuffle = !shuffle;
-            if (ui_tool(&ui, 448, 356, 130, 32, rep[repeat], repeat != REP_OFF)) repeat = (repeat + 1) % 3;
-            gfx_text(c, &font_ui, 340, 400, "Volume", UI_TEXT_DIM);
-            if (ui_slider(&ui, 404, 396, 250, &svol, 0, 100) && fd >= 0) ioctl(fd, AUDIO_SETSVOL, &svol);
+            gfx_text(c, T_CAPTION, RX + RW - gfx_text_width(T_CAPTION, tb), sy + (HIT_MIN - T_CAPTION->height) / 2, tb, UI_TEXT2);
+            /* transport: shuffle, previous, play/pause (the primary action), next, repeat */
+            static const char *const rep[] = { "Repeat: off · R", "Repeat all · R", "Repeat one · R" };
+            int pw = H_CTL + 2 * SP_4, bx = RX + (RW - (4 * H_CTL + pw + 4 * SP_3)) / 2, by = sy + HIT_MIN + SP_5;
+            if (ui_icon_button(&ui, bx, by, ICON_SHUFFLE, shuffle ? UI_ON : 0, shuffle ? "Shuffle: on · S" : "Shuffle: off · S")) shuffle = !shuffle;
+            bx += H_CTL + SP_3;
+            if (ui_icon_button(&ui, bx, by, ICON_PREV, npl ? 0 : UI_DISABLED, "Previous · P")) go(-1, false);
+            bx += H_CTL + SP_3;
+            if (ui_button_ex(&ui, bx, by, pw, H_CTL, playing ? ICON_PAUSE : ICON_PLAY, NULL, UI_PRIMARY | (npl ? 0 : UI_DISABLED))) pause_toggle();
+            ui_tooltip(&ui, bx, by, pw, H_CTL, playing ? "Pause · Space" : "Play · Space");
+            bx += pw + SP_3;
+            if (ui_icon_button(&ui, bx, by, ICON_NEXT, npl ? 0 : UI_DISABLED, "Next · N")) go(1, false);
+            bx += H_CTL + SP_3;
+            if (ui_icon_button(&ui, bx, by, repeat == REP_ONE ? ICON_REPEAT_ONE : ICON_REPEAT, repeat != REP_OFF ? UI_ON : 0, rep[repeat])) repeat = (repeat + 1) % 3;
+            /* volume */
             char vb[8];
             snprintf(vb, sizeof vb, "%d%%", svol);
-            gfx_text(c, &font_ui, 676, 400, vb, UI_TEXT);
-            /* footer */
-            if (status[0]) ui_text_fit(&ui, &font_ui, 16, 448, W - 32, status, UI_BAD);
-            else gfx_text(c, &font_ui, 16, 448, "Space: play/pause   Left/Right: seek 5 s   N / P: next / previous   S: shuffle   R: repeat   + / -: volume", UI_TEXT_DIM);
+            int vw = gfx_text_width(T_BODY, "100%");
+            int vy = by + H_CTL + SP_7;
+            ui_icon(&ui, RX, vy + (H_CTL - ICON_SM) / 2, svol == 0 ? ICON_VOLUME_MUTE : svol < 50 ? ICON_VOLUME_LOW : ICON_VOLUME_HIGH, ICON_SM, UI_TEXT2);
+            if (ui_slider(&ui, RX + ICON_SM + SP_4, vy + (H_CTL - HIT_MIN) / 2, RW - ICON_SM - 2 * SP_4 - vw, &svol, 0, 100) && fd >= 0) ioctl(fd, AUDIO_SETSVOL, &svol);
+            gfx_text(c, T_BODY, RX + RW - gfx_text_width(T_BODY, vb), vy + (H_CTL - T_BODY->height) / 2, vb, UI_TEXT);
+            /* status bar; errors also as a toast */
+            char sl[48] = "", sr[64] = "";
+            if (dec) snprintf(sl, sizeof sl, "Track %d of %d", cur + 1, npl);
+            else snprintf(sl, sizeof sl, "%d track%s in the playlist", npl, npl == 1 ? "" : "s");
+            snprintf(sr, sizeof sr, "%d in the library", nlib);
+            ui_status(&ui, 0, H - H_STATUS, W, status[0] ? status : sl, sr);
+            if (strcmp(status, shown_status)) { if (status[0]) ui_toast(&ui, status, NULL); strcpy(shown_status, status); }
             ui_end(&ui);
             if (strcmp(title, shown)) { gui_set_title(w, title); strcpy(shown, title); }
         }
