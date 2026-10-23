@@ -58,3 +58,4 @@ build/
 build/
 .claude/
 root/etc/autostart
+__pycache__/
