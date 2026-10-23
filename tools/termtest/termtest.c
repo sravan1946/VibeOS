@@ -447,15 +447,15 @@ static void test_zoom(void) {
 
 static void test_render(void) {
     struct term *t = term_create(10, 3);
-    enum { CW = 9, CH = 20 };
+    enum { CW = 8, CH = 18 };   /* JetBrains Mono 13/18 */
     CHECK(term_cell_w(t) == CW && term_cell_h(t) == CH);
-    int pc, pr; term_size_for_pixels(t, 100, 65, &pc, &pr); CHECK(pc == 11 && pr == 3);
+    int pc, pr; term_size_for_pixels(t, 100, 65, &pc, &pr); CHECK(pc == 100 / CW && pr == 65 / CH);
     static uint32_t px[200 * 100];
     struct canvas c; canvas_init(&c, px, 200, 100, 200);
     struct rect d;
     for (int i = 0; i < 200 * 100; i++) px[i] = 0xFF000000;
     term_render(t, &c, 5, 7, 0, &d);                     /* first render: everything dirty */
-    CHECK(d.x == 5 && d.y == 7 && d.w == 90 && d.h == 60);
+    CHECK(d.x == 5 && d.y == 7 && d.w == 10 * CW && d.h == 3 * CH);
     CHECK(px[7 * 200 + 5 + 40] == TERM_DEFAULT_BG);
     term_render(t, &c, 5, 7, 0, &d); CHECK(d.w == 0 && d.h == 0);
     W(t, "A");                                           /* cell 0 changed, cursor moved to 1 */
@@ -477,7 +477,7 @@ static void test_render(void) {
     W(t, "\x1b[3;9H");                                   /* moving the cursor dirties old and new */
     term_render(t, &c, 5, 7, 0, &d);
     CHECK(d.y == 7 && d.h == 3 * CH);
-    term_render(t, &c, 5, 7, 1, &d); CHECK(d.w == 90 && d.h == 60);   /* full */
+    term_render(t, &c, 5, 7, 1, &d); CHECK(d.w == 10 * CW && d.h == 3 * CH);   /* full */
     /* hidden cursor */
     W(t, "\x1b[?25l");
     term_render(t, &c, 5, 7, 0, &d);

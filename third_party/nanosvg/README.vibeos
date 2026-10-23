@@ -1,0 +1,12 @@
+nanosvg in VibeOS
+=================
+
+Origin  : https://github.com/memononen/nanosvg
+Commit  : 239e102ec2c691f2902e20ace2ed36ee4a35cfe6 (master, 2026-07-09; upstream has no release tags)
+SHA-256 : e34fd5d084be106cea972d19ce5d27fd96d17ba89f8d06bdceee058420c8b2b0  nanosvg.h
+          79a9c5f4db19debf9f3a648a1589e96d92854f245a5cb4f3d823f263785234d8  nanosvgrast.h
+          e82bc3dd03400aecabe12201219ba14750dbc4b36faab58663a7a6068548d372  LICENSE.txt
+Licence : zlib, see LICENSE.txt
+
+src/nanosvg.h, src/nanosvgrast.h and LICENSE.txt fetched unmodified from raw.githubusercontent.com. Host-only: it is
+compiled into build/host/svgrast (tools/svgrast.c), which rasterises the icon bundle; nothing of it runs in VibeOS.

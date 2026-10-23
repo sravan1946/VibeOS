@@ -2,9 +2,9 @@
 #pragma once
 #include "font.h"
 
-extern const struct font font_mono_12;
-extern const struct font font_mono_bold_12;
+extern const struct font font_mono_11;
+extern const struct font font_mono_bold_11;
+extern const struct font font_mono_15;
+extern const struct font font_mono_bold_15;
 extern const struct font font_mono_18;
 extern const struct font font_mono_bold_18;
-extern const struct font font_mono_22;
-extern const struct font font_mono_bold_22;

@@ -132,7 +132,7 @@ static const char *accent_label(uint32_t rgb) {
     return "custom";
 }
 
-static const char *const sizes[] = { "12", "15", "18", "22" };   /* terminal font px, see common/termfonts.c */
+static const char *const sizes[] = { "11", "13", "15", "18" };   /* terminal font px, see common/termfonts.c */
 
 int main(void) {
     struct gui_window *w = gui_window_create("Settings", W, H, WIN_FLAG_NORESIZE);
