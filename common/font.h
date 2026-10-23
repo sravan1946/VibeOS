@@ -2,14 +2,30 @@
 #pragma once
 #include <stdint.h>
 
-struct glyph { uint8_t w, h; int8_t xoff, yoff; uint8_t adv; uint32_t off; };
+/* adv: whole-pixel advance; adv64: the exact one in 1/64 px (for a fractional pen: x = (pen64 + 32) >> 6) */
+struct glyph { uint8_t w, h; int8_t xoff, yoff; uint8_t adv; uint16_t adv64; uint32_t off; };
 /* g[] covers ASCII 32..126; xcp/xg are sorted extra codepoints (see font_glyph) */
 struct font { int height, ascent; const uint8_t *alpha; struct glyph g[95];
               int nx; const uint32_t *xcp; const struct glyph *xg; };
 
+/* type ramp (docs/DESIGN.md 3.1; design.h's T_* roles): Inter with tabular digits; height = line box,
+ * ascent = baseline in it
+ *   font_caption       11/14 400 (+0.5 px tracking)   font_caption_bold  11/14 600 (+0.3 px)
+ *   font_body          13/18 400                      font_body_bold     13/18 600
+ *   font_heading       15/20 600                      font_title         20/26 600
+ *   font_display       28/34 600
+ *   font_mono          JetBrains Mono 13/18 400       font_mono_bold     13/18 700 (zoom sizes: termfonts.h)
+ * Not ramp, kept until callers move to T_*: font_ui / font_ui_bold (Noto Sans 15), font_big (Noto 52 digits) */
+#define FONT_RAMP 1
+extern const struct font font_caption;
+extern const struct font font_caption_bold;
+extern const struct font font_body;
+extern const struct font font_body_bold;
+extern const struct font font_heading;
+extern const struct font font_title;
+extern const struct font font_display;
 extern const struct font font_mono;
 extern const struct font font_mono_bold;
 extern const struct font font_ui;
 extern const struct font font_ui_bold;
-extern const struct font font_title;
 extern const struct font font_big;

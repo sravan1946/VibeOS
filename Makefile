@@ -26,7 +26,8 @@ FS_SECTORS := $(shell echo $$(( $(FS_MB) * 2048 )))
 KSRC  := $(wildcard kernel/*/*.c)
 KASM  := $(wildcard kernel/arch/*.asm)
 KOBJ  := $(patsubst %.c,build/%.o,$(KSRC)) $(patsubst %.asm,build/%.o,$(KASM)) \
-         build/common/gfx.k.o build/common/fonts.k.o build/common/termfonts.k.o build/common/term.k.o build/common/wallpaper.k.o build/common/theme.k.o
+         build/common/gfx.k.o build/common/fonts.k.o build/common/termfonts.k.o build/common/term.k.o build/common/wallpaper.k.o build/common/theme.k.o \
+         build/gen/icons.k.o build/gen/appicons.k.o
 
 all: build/vibeos.img
 
@@ -40,6 +41,18 @@ build/kernel/%.o: kernel/%.asm
 
 build/common/%.k.o: common/%.c common/*.h
 	@mkdir -p $(dir $@)
+	$(CC) $(KGFXFLAGS) -c $< -o $@
+
+# icons (common/icons.h lists them): Lucide + tools/appicons.py artwork -> SVG bundle -> nanosvg on the host -> C arrays
+build/gen/icons.bundle: tools/mkicons.py tools/appicons.py common/icons.h $(wildcard third_party/lucide/icons/*.svg)
+	@mkdir -p $(dir $@)
+	python3 -I tools/mkicons.py $@
+build/host/svgrast: tools/svgrast.c third_party/nanosvg/nanosvg.h third_party/nanosvg/nanosvgrast.h
+	@mkdir -p $(dir $@)
+	gcc -O2 -w -Ithird_party/nanosvg $< -lm -o $@
+build/gen/icons.c build/gen/appicons.c build/gen/fileicons.c &: build/gen/icons.bundle build/host/svgrast
+	build/host/svgrast $< build/gen/icons.c build/gen/appicons.c build/gen/fileicons.c
+build/gen/%.k.o: build/gen/%.c common/icons.h
 	$(CC) $(KGFXFLAGS) -c $< -o $@
 
 build/kernel.elf: $(KOBJ) kernel/arch/linker.ld
@@ -69,7 +82,8 @@ build/ca.stamp: FORCE      # rebuild the rootfs when CA_BUNDLE points somewhere 
 FORCE:
 ULIBC_ASM := $(filter-out user/lib/crt0.asm,$(wildcard user/lib/*.asm))
 # gui.o + the shared gfx/fonts live in libgui.a so only GUI programs pay for the font data
-ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/lib/fileicon.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o build/user/obj/common/wallpaper.o build/user/obj/common/theme.o
+ULIBGUI_OBJ := build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/lib/fileicon.o build/user/obj/common/gfx.o build/user/obj/common/fonts.o build/user/obj/common/wallpaper.o build/user/obj/common/theme.o \
+               build/user/obj/gen/icons.o build/user/obj/gen/appicons.o build/user/obj/gen/fileicons.o
 ULIBC_OBJ := $(filter-out build/user/obj/lib/gui.o build/user/obj/lib/ui.o build/user/obj/lib/image.o build/user/obj/lib/jpeg.o build/user/obj/lib/gif.o build/user/obj/lib/fileicon.o build/user/obj/lib/tls.o,$(patsubst user/%.c,build/user/obj/%.o,$(ULIBC_SRC))) \
              $(patsubst user/%.asm,build/user/obj/%.o,$(ULIBC_ASM))
 ULIBS := build/user/libgui.a build/user/libtls.a build/user/libc.a
@@ -83,6 +97,10 @@ build/user/obj/%.o: user/%.c
 	$(CC) $(UCFLAGS) -c $< -o $@
 
 build/user/obj/common/%.o: common/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+build/user/obj/gen/%.o: build/gen/%.c common/icons.h
 	@mkdir -p $(dir $@)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
@@ -229,7 +247,7 @@ user: $(UBINS)
 # root/ is the static skeleton; user binaries land in /bin; empty dirs aren't tracked by the VCS
 # the in-OS toolchain's sdk (tcc is the compiler): headers in /usr/include, crt + libs in /usr/lib, tcc's own
 # runtime + headers in /usr/lib/tcc. libtcc1.a is plain gcc output (tcc's 64-bit divide/shift helpers, alloca).
-SDK_HDRS := user/lib/gui.h user/lib/ui.h user/lib/image.h user/lib/fsutil.h common/abi.h common/gfx.h common/font.h common/theme.h common/design.h
+SDK_HDRS := user/lib/gui.h user/lib/ui.h user/lib/image.h user/lib/fsutil.h common/abi.h common/gfx.h common/font.h common/theme.h common/design.h common/icons.h
 build/user/libtcc1.a: third_party/tcc/lib/libtcc1.c third_party/tcc/lib/alloca86.S Makefile
 	$(CC) $(UCFLAGS) -O0 -fno-builtin -c third_party/tcc/lib/libtcc1.c -o build/user/libtcc1.o   # -O0: at -O2 the static __udivmoddi4 gets regparm
 	objcopy --globalize-symbol=__udivmoddi4 build/user/libtcc1.o   # libc.a (gcc-built) calls it
@@ -247,6 +265,8 @@ build/root.ext2: $(shell find root 2>/dev/null) $(UBINS) $(ULIBS) $(UCRT0) build
 	cp $(UCRT0) build/rootfs/usr/lib/crt1.o && $(CC) -m32 -x c -c /dev/null -o build/rootfs/usr/lib/crti.o && cp build/rootfs/usr/lib/crti.o build/rootfs/usr/lib/crtn.o
 	@for f in $(ULIBS); do strip -g -o build/rootfs/usr/lib/$$(basename $$f) $$f; done
 	@mkdir -p build/rootfs/usr/share/quickjs && cp -a $(QJS_DIR)/tests $(QJS_DIR)/examples build/rootfs/usr/share/quickjs/
+	@mkdir -p build/rootfs/usr/share/licenses && cp third_party/lucide/LICENSE build/rootfs/usr/share/licenses/lucide.txt && \
+	  cp third_party/fonts/*-OFL.txt build/rootfs/usr/share/licenses/   # baked fonts and icons ship with their notices
 	@mkdir -p build/rootfs/etc/ssl
 	@if [ -f $(CA_BUNDLE) ]; then cp $(CA_BUNDLE) build/rootfs/etc/ssl/cert.pem; fi
 	@if [ -f build/wads/freedoom1.wad ]; then mkdir -p build/rootfs/usr/share/doom; \
@@ -277,7 +297,7 @@ debug: build/vibeos.img
 doom-wad:    # download + verify Freedoom into build/wads/ (then `make` puts it in /usr/share/doom)
 	sh tools/getwad.sh
 
-test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audio decoders, theme contrast, gfx primitives)
+test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audio decoders, theme contrast, gfx primitives, baked assets)
 	sh tools/termtest/run.sh
 	sh tools/imagetest/run.sh
 	sh tools/libctest/run.sh
@@ -289,6 +309,7 @@ test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audi
 	sh tools/filestest/run.sh
 	sh tools/themetest/run.sh
 	sh tools/gfxtest/run.sh
+	sh tools/assetsheet/run.sh
 
 test-tls:    # HTTPS against local test servers (needs openssl)
 	sh tools/tlstest/run.sh

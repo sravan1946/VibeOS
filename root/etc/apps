@@ -1,22 +1,22 @@
-# launcher entries: name|path|arg|RRGGBB|glyph
-Browser|/bin/browser||24B8E8|B
-Files|/bin/files||3D8BFD|F
-Text Editor|/bin/notepad||2EC5A0|E
-Paint|/bin/paint||FF8A3D|P
-Calculator|/bin/calc||7C4DFF|C
-Clock|/bin/clock||FF4FA3|T
-System Monitor|/bin/sysmon||4BE08A|M
-Snake|/bin/snake||9BE564|S
-Tetris|/bin/tetris||FFC24B|#
-Minesweeper|/bin/mines||5A64FF|*
-Doom|/bin/doom||E0322B|D
-Piano|/bin/piano||FF6FB5|N
-Code|/bin/code||5B8CFF|<
-Chess|/bin/chess||C9A15B|K
-2048|/bin/2048||EDB04B|2
-Solitaire|/bin/solitaire||2FA66A|&
-Settings|/bin/settings||6E7191|=
-About VibeOS|/bin/about||B388FF|i
-Photos|/bin/viewer||E85D9F|V
-Music|/bin/music||F25C54|~
-Python Paint|/bin/python|/home/projects/paint.py|3776AB|Y
+# launcher entries: name|path|arg|icon (icon = an APPICON key from common/icons.h)
+Browser|/bin/browser||browser
+Files|/bin/files||files
+Text Editor|/bin/notepad||editor
+Paint|/bin/paint||paint
+Calculator|/bin/calc||calc
+Clock|/bin/clock||clock
+System Monitor|/bin/sysmon||sysmon
+Snake|/bin/snake||snake
+Tetris|/bin/tetris||tetris
+Minesweeper|/bin/mines||mines
+Doom|/bin/doom||doom
+Piano|/bin/piano||piano
+Code|/bin/code||code
+Chess|/bin/chess||chess
+2048|/bin/2048||2048
+Solitaire|/bin/solitaire||solitaire
+Settings|/bin/settings||settings
+About VibeOS|/bin/about||about
+Photos|/bin/viewer||photos
+Music|/bin/music||music
+Python Paint|/bin/python|/home/projects/paint.py|pypaint

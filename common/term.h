@@ -35,7 +35,7 @@ void term_select(struct term *t, int c0, int r0, int c1, int r1);
 void term_select_clear(struct term *t);
 int  term_selection_text(struct term *t, char *buf, int n);  /* UTF-8, trailing blanks trimmed; 0 if none */
 
-/* zoom: font size steps, 0 = smallest (12px), TERM_ZOOM_DEF = 15px.  Returns the clamped level; the caller resizes the grid. */
+/* zoom: font size steps, 0 = smallest (11px), TERM_ZOOM_DEF = 13px.  Returns the clamped level; the caller resizes the grid. */
 #define TERM_ZOOMS    4
 #define TERM_ZOOM_DEF 1
 int  term_zoom(struct term *t);

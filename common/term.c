@@ -109,10 +109,10 @@ static uint32_t dec_gfx(uint32_t c) {
 
 /* ---- metrics ---- */
 
-/* terminal font sizes, smallest first; 15px (zoom 1) is the default and lives in fonts.c */
+/* terminal font sizes, smallest first; 13px (zoom 1) is the default and lives in fonts.c */
 static const struct font *const zoom_fonts[TERM_ZOOMS][2] = {
-    { &font_mono_12, &font_mono_bold_12 }, { &font_mono, &font_mono_bold },
-    { &font_mono_18, &font_mono_bold_18 }, { &font_mono_22, &font_mono_bold_22 },
+    { &font_mono_11, &font_mono_bold_11 }, { &font_mono, &font_mono_bold },
+    { &font_mono_15, &font_mono_bold_15 }, { &font_mono_18, &font_mono_bold_18 },
 };
 
 int term_cell_w(struct term *t) { return t->cw; }

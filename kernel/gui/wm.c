@@ -14,6 +14,7 @@
 
 uint32_t rtc_now(void);
 #include "wallpaper.h"
+#include "icons.h"
 
 static struct canvas bb, wall;          /* back buffer, wallpaper */
 static int SW, SH;
@@ -58,7 +59,7 @@ static inline bool onws(const struct window *w) { return w->ws < 0 || w->ws == c
 static inline bool shown(const struct window *w) { return w->visible && !w->minimized && onws(w); }
 
 /* ---- launcher entries: built-in terminal + /etc/apps ---- */
-struct app { char name[32]; char path[64]; char arg[64]; color_t color; char glyph; };
+struct app { char name[32]; char path[64]; char arg[64]; color_t color; char glyph; int icon; };   /* icon: APPICON_* or -1 */
 static struct app apps[24];
 static int napps;
 
@@ -443,7 +444,6 @@ static int wp_pid;
 
 static void render_wallpaper(void) {
     wallpaper_render(&wall, wall_theme);
-    wallpaper_watermark(&wall);
     wall_img = false;
 }
 
@@ -1031,7 +1031,7 @@ static void close_window(struct window *w) {
 
 static void load_apps(void) {
     napps = 0;
-    apps[napps++] = (struct app){ "Terminal", "", "", RGB(0x2D, 0x2A, 0x45), '>' };
+    apps[napps++] = (struct app){ "Terminal", "", "", RGB(0x2D, 0x2A, 0x45), '>', APPICON_TERMINAL };
     void *data; uint32_t size;
     if (vfs_read_all("/etc/apps", &data, &size) < 0) return;
     char *s = data;
@@ -1040,7 +1040,7 @@ static void load_apps(void) {
         while (*s && *s != '\n') s++;
         if (*s) *s++ = 0;
         if (*line == '#' || !*line) continue;
-        /* name|path|arg|RRGGBB|glyph */
+        /* name|path|arg|icon (an APPICON key, see common/icons.h); the old name|path|arg|RRGGBB|glyph still parses */
         char *fld[5] = { 0 };
         int n = 0;
         for (char *p = line; n < 5; ) {
@@ -1057,10 +1057,14 @@ static void load_apps(void) {
         strlcpy(a->name, fld[0], sizeof a->name);
         strlcpy(a->path, fld[1], sizeof a->path);
         strlcpy(a->arg, n > 2 ? fld[2] : "", sizeof a->arg);
-        uint32_t col = 0x6C5CE7;
-        if (n > 3) { col = 0; for (char *p = fld[3]; *p; p++) col = col * 16 + (*p <= '9' ? *p - '0' : (*p | 32) - 'a' + 10); }
+        uint32_t col = 0x45484E;
+        int hex = n > 3 && strlen(fld[3]) == 6;
+        for (char *p = n > 3 ? fld[3] : ""; hex && *p; p++) hex = (*p >= '0' && *p <= '9') || ((*p | 32) >= 'a' && (*p | 32) <= 'f');
+        if (hex) { col = 0; for (char *p = fld[3]; *p; p++) col = col * 16 + (*p <= '9' ? *p - '0' : (*p | 32) - 'a' + 10); }
         a->color = 0xFF000000u | col;
-        a->glyph = n > 4 && fld[4][0] ? fld[4][0] : fld[0][0];
+        a->glyph = hex && n > 4 && fld[4][0] ? fld[4][0] : fld[0][0];
+        a->icon = n > 3 && !hex ? appicon_find(fld[3]) : -1;
+        if (a->icon < 0) a->icon = appicon_find(a->name);
     }
     kfree(data);
 }

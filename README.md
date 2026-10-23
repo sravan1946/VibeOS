@@ -53,8 +53,9 @@ emulator, and a set of desktop apps and games.
   every app. Terminal windows have tabs (Ctrl+Shift+T/W, Ctrl+PgUp/PgDn), scrollback search (Ctrl+Shift+F),
   zoom (Ctrl+= / Ctrl+- / Ctrl+0), Ctrl+Shift+C/V and Ctrl+click on a URL to open it in the browser.
 - **Files and desktop icons**: Files has icon-grid (with image thumbnails) and list views, a sidebar, history, a typeable path bar, search, multi-select (Ctrl/Shift/rubber band), copy/cut/paste, rename, a Trash with restore, a Properties dialog, right-click menus and drag and drop; `/home/Desktop` shows as icons on the wallpaper (drag them, double-click to open, drop files on them). Double-clicks go through `/etc/open.conf` (extension -> program), also reachable as `open FILE`; `trash FILE` is the shell side of the Trash.
-- Fonts (JetBrains Mono, Noto Sans) rasterised into the build with Latin-1, arrows, symbols
-  and box/block glyphs.
+- Fonts (Inter with tabular digits for the UI type ramp, JetBrains Mono for terminals; OFL, `third_party/fonts`)
+  baked into the build with Latin-1, arrows, symbols and box/block glyphs; Lucide icons (ISC) and the app/file-type
+  icon set rasterised with nanosvg at build time (`common/icons.h`).
 - Apps are ordinary processes: a window is a file descriptor whose buffer is mapped into the
   process, and `read()` returns input events. `libgui` + `ui.h` is a small immediate-mode
   widget toolkit.

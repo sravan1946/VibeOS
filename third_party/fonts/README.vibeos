@@ -1,0 +1,18 @@
+Fonts in VibeOS
+===============
+
+Inter-VF.ttf          Inter 4.001 (git-66647c0bb), variable (opsz 14-32, wght 100-900), https://github.com/rsms/inter
+JetBrainsMono-VF.ttf  JetBrains Mono 2.211, variable (wght 100-800), https://github.com/JetBrains/JetBrainsMono
+NotoSans-VF.ttf       Noto Sans (notofonts/latin-greek-cyrillic), variable (wght, wdth); only for the legacy
+                      font_ui / font_ui_bold / font_big cuts, delete it with them once every caller uses a T_* role
+Licence : SIL Open Font License 1.1, see Inter-OFL.txt, JetBrainsMono-OFL.txt and NotoSans-OFL.txt
+SHA-256 : 29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031  Inter-VF.ttf
+          48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda  JetBrainsMono-VF.ttf
+          5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57  Inter-OFL.txt
+          b2fe5e8987594e9ffd1d2ca52a2f5d73eb8335243893c5d6254b5ad69269591d  JetBrainsMono-OFL.txt
+          bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d  NotoSans-VF.ttf
+          cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a  NotoSans-OFL.txt
+
+Unmodified copies of the upstream release files (the same ones the redesign mockups were rendered with). They are
+not used by the build: tools/mkfont.py instances them (opsz = size, wght per face, Inter's tnum digits; docs/DESIGN.md 3.1) and bakes
+8-bit glyph tables into common/fonts.c and common/termfonts.c, which are committed. Re-run it after changing fonts.
