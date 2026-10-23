@@ -171,6 +171,22 @@ static void test_mask(void) {
     CHECK(n > 10);
 }
 
+/* premultiplied blit (app/file icons) and the 1/64 px text pen */
+static void test_premul_text(void) {
+    static const uint32_t src[4] = { 0xFFE8A33Du, 0x80743F1Fu, 0x00000000u, 0x40404040u };   /* opaque, half, clear, 25% grey */
+    clear(0xFF204060u);
+    gfx_blit_premul(&cv, 10, 10, src, 4, 1, 4);
+    CHECK(px(10, 10) == 0xFFE8A33Du && px(12, 10) == 0xFF204060u);
+    CHECK(abs(red(11, 10) - (0x74 + 0x20 * 127 / 255)) <= 1 && abs((int)(px(11, 10) & 255) - (0x1F + 0x60 * 127 / 255)) <= 1);
+    CHECK(abs(red(13, 10) - (0x40 + 0x20 * 191 / 255)) <= 1 && px(13, 10) >> 24 == 255);
+    int pen = 0;                                                  /* width = the rounded sum of adv64, not of adv */
+    for (const char *s = "Appearance"; *s; s++) pen += font_body.g[*s - 32].adv64;
+    CHECK(gfx_text_width(&font_body, "Appearance") == (pen + 32) >> 6);
+    clear(BG);
+    CHECK(gfx_text(&cv, &font_body, 7, 5, "Appearance", FG) == gfx_text_width(&font_body, "Appearance"));
+    CHECK(gfx_text_width(&font_mono, "abc") == 3 * font_mono.g['M' - 32].adv);          /* mono keeps whole cells */
+}
+
 /* the contact sheet: E1-E4 over the graphite base, rings, a focused button, a tinted mask */
 static void sheet(const char *path) {
     const struct theme *t = theme_get(0);
@@ -220,6 +236,7 @@ int main(int argc, char **argv) {
     test_rings();
     test_shadow();
     test_mask();
+    test_premul_text();
     sheet(argc > 1 ? argv[1] : "gfxtest.ppm");
     printf("gfxtest: %d checks, %d failed\n", checks, fails);
     return fails != 0;

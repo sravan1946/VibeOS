@@ -49,11 +49,13 @@ void gfx_line(struct canvas *c, int x0, int y0, int x1, int y1, color_t col);
 void gfx_line_aa(struct canvas *c, float x0, float y0, float x1, float y1, float width, color_t col);
 void gfx_blit(struct canvas *c, int x, int y, const uint32_t *src, int w, int h, int stride);
 void gfx_blit_alpha(struct canvas *c, int x, int y, const uint32_t *src, int w, int h, int stride);
+void gfx_blit_premul(struct canvas *c, int x, int y, const uint32_t *src, int w, int h, int stride);   /* premultiplied ARGB (app/file icons) */
 void gfx_blit_scaled(struct canvas *c, int x, int y, int dw, int dh, const uint32_t *src, int sw, int sh, int stride);
 
 int  gfx_char(struct canvas *c, const struct font *f, int x, int y, uint32_t cp, color_t col);  /* codepoint; returns advance */
 const struct glyph *font_glyph(const struct font *f, uint32_t cp);   /* '?' if the font lacks it */
 int  utf8_decode(const char *s, int n, uint32_t *cp);                 /* bytes consumed, >= 1 */
+/* proportional faces use a 1/64 px pen (glyph adv64), monospaced ones whole-pixel cells; returns the advance */
 int  gfx_text(struct canvas *c, const struct font *f, int x, int y, const char *s, color_t col);
 /* text is UTF-8; n limits bytes */
 int  gfx_text_n(struct canvas *c, const struct font *f, int x, int y, const char *s, int n, color_t col);

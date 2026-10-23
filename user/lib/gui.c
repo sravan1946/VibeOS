@@ -18,6 +18,7 @@ static void attach(struct gui_window *win, int w, int h, uint32_t *px, int strid
 }
 
 struct theme ui_th;
+int ui_motion = 1;
 
 int gui_theme_state(struct theme_state *st) {
     int fd = open("/dev/theme", O_RDONLY), r = -1;
@@ -29,6 +30,7 @@ int gui_theme_load(void) {
     struct theme_state st;
     if (gui_theme_state(&st) < 0) { if (!ui_th.name[0]) ui_th = *theme_get(0); return -1; }   /* no /dev/theme: the built-in default */
     ui_th = st.th;
+    ui_motion = st.anim != 0;
     return 0;
 }
 

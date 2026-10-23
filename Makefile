@@ -15,8 +15,10 @@ CBASE   := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protecto
            -fno-omit-frame-pointer -fno-asynchronous-unwind-tables -nostdinc -isystem $(GCCINC) \
            -O2 -g $(CWARN) -Icommon
 KCFLAGS := $(CBASE) -mgeneral-regs-only -Ikernel/include
-# gfx_line_aa uses x87; keep floats legal in the shared gfx object
-KGFXFLAGS := $(CBASE) -Ikernel/include
+# gfx_line_aa uses x87; keep floats legal in the shared gfx object. Per-symbol sections + --gc-sections: only the
+# font faces and helpers a binary references get linked (fonts.c holds every face in one object)
+GCSECT  := -ffunction-sections -fdata-sections
+KGFXFLAGS := $(CBASE) $(GCSECT) -Ikernel/include
 
 KERNEL_LBA := 64
 FS_LBA     := 8192
@@ -56,7 +58,7 @@ build/gen/%.k.o: build/gen/%.c common/icons.h
 	$(CC) $(KGFXFLAGS) -c $< -o $@
 
 build/kernel.elf: $(KOBJ) kernel/arch/linker.ld
-	$(LD) -T kernel/arch/linker.ld --no-warn-rwx-segments -o $@ $(KOBJ) $(LIBGCC)
+	$(LD) -T kernel/arch/linker.ld --gc-sections --no-warn-rwx-segments -o $@ $(KOBJ) $(LIBGCC)
 
 build/kernel.bin: build/kernel.elf
 	objcopy -O binary $< $@
@@ -113,6 +115,7 @@ build/user/obj/lib/string.o: UCFLAGS += -fno-tree-loop-distribute-patterns
 
 build/user/libc.a: $(ULIBC_OBJ)
 	rm -f $@ && ar rcs $@ $^
+$(ULIBGUI_OBJ): UCFLAGS += $(GCSECT)
 build/user/libgui.a: $(ULIBGUI_OBJ)
 	rm -f $@ && ar rcs $@ $^
 
@@ -128,7 +131,7 @@ build/user/obj/lib/tls.o: UCFLAGS += -Ithird_party/bearssl/inc
 build/user/libtls.a: build/user/obj/lib/tls.o $(BEARSSL_OBJ)
 	rm -f $@ && ar rcs $@ $^
 
-ULDFLAGS := -T user/user.ld -z max-page-size=4096 -z noexecstack --no-warn-rwx-segments
+ULDFLAGS := -T user/user.ld --gc-sections -z max-page-size=4096 -z noexecstack --no-warn-rwx-segments
 
 # single-file programs
 $(addprefix build/user/bin/,$(UBIN_SINGLE)): build/user/bin/%: build/user/obj/bin/%.o $(UCRT0) $(ULIBS) user/user.ld

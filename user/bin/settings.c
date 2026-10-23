@@ -1,6 +1,9 @@
-/* settings - theme, accent, wallpaper, display mode and time zone. Themes go through /dev/theme (and /etc/theme for the
- * next boot); the desktop reloads wallpaper/time zone prefs via WIN_SET_PREFS; modes go through /dev/display (and /etc/display) */
+/* settings - appearance, wallpaper, display mode and time zone; the toolkit's reference app (docs/design/a-launcher.png).
+ * Themes go through /dev/theme (and /etc/theme for the next boot); the desktop reloads wallpaper/time zone prefs via
+ * WIN_SET_PREFS; modes go through /dev/display (and /etc/display) */
 #include <ui.h>
+#include <design.h>
+#include <icons.h>
 #include <wallpaper.h>
 #include <image.h>
 #include <dirent.h>
@@ -13,12 +16,13 @@
 #include <unistd.h>
 #include <syscall.h>
 
-#define W 760
-#define H 500
-#define SIDE 180
-#define TW 160
-#define TH 100
-#define MAXW 32                         /* wallpapers listed: the procedural ones plus images found */
+#define W 676
+#define H 648
+#define X0 (W_SIDEBAR + SP_7)                     /* content column: padding 20 24 24 */
+#define CW (W - X0 - SP_7)
+#define TW 132
+#define TH 80
+#define MAXW 32                                   /* wallpapers listed: the procedural ones plus images found */
 
 static const struct { const char *name; int off; } zones[] = {
     { "Honolulu (UTC-10:00)", -600 }, { "Los Angeles (UTC-08:00)", -480 }, { "Denver (UTC-07:00)", -420 },
@@ -110,38 +114,74 @@ static void make_thumb(struct wpe *w) {
     image_free(&im);
 }
 
-/* a miniature desktop in theme t: window, button, taskbar */
-static void preview(struct canvas *c, int x, int y, int w, int h, const struct theme *t) {
-    gfx_round_fill(c, x, y, w, h, 8, mix(t->bg, t->accent, 24));
-    int wx = x + 12, wy = y + 10, ww = w - 44, wh = h - 32;
-    gfx_round_fill(c, x + w - 62, y + 26, 50, 38, 5, t->surface);                  /* a second window behind */
-    gfx_round_fill(c, wx, wy, ww, wh, 5, t->frame);
-    gfx_fill(c, wx + 1, wy + 13, ww - 2, wh - 14, t->panel);
-    for (int i = 0; i < 3; i++) gfx_circle_fill(c, wx + 7 + i * 8, wy + 6, 2, i == 0 ? RGB(0xFF, 0x5F, 0x7A) : i == 1 ? RGB(0xFF, 0xC2, 0x4B) : RGB(0x4B, 0xE0, 0x8A));
-    gfx_fill(c, wx + 8, wy + 20, ww * 6 / 10, 3, t->text);
-    gfx_fill(c, wx + 8, wy + 27, ww * 4 / 10, 3, t->dim);
-    gfx_fill(c, wx + 8, wy + 34, ww / 2, 3, t->dim);
-    gfx_round_fill(c, wx + 8, wy + wh - 16, 30, 9, 3, t->accent);
-    gfx_round_fill(c, x + 6, y + h - 13, w - 12, 8, 4, t->bar | 0xFF000000u);
-    gfx_round_fill(c, x + 10, y + h - 11, 18, 4, 2, t->accent);
+/* a miniature window on the theme's own surfaces (168 x 72) */
+static void preview(struct canvas *c, int x, int y, const struct theme *t) {
+    int w = 168, h = 72;
+    gfx_round_fill(c, x, y, w, h, R_2, t->base);
+    gfx_fill(c, x, y + h - 6, w, 6, mix(t->base, t->line_strong, 128));          /* the panel */
+    int wx = x + 20, wy = y + 12, ww = w - 40, wh = h - 12 - 14;
+    gfx_round_fill(c, wx, wy, ww, wh, 3, t->dark ? t->window : t->raised);         /* the focused window, as it reads */
+    gfx_ring_out(c, wx, wy, ww, wh, 3, t->line_strong);
+    gfx_round_fill(c, wx + 10, wy + 10, 56, 4, 2, t->line_strong);
+    gfx_round_fill(c, wx + 10, wy + 20, 40, 4, 2, t->line_strong);
+    gfx_round_fill(c, wx + ww - 8 - 24, wy + wh - 6 - 8, 24, 8, 2, t->accent);
 }
 
-static const char *accent_label(uint32_t rgb) {
-    if (!rgb) return "theme default";
-    for (int i = 0; i < THEME_ACCENTS; i++) if (theme_accents[i].rgb == rgb) return theme_accents[i].name;
-    return "custom";
+/* a theme card: 4px padding around the preview, 2px accent_text ring when selected, the name 8px below */
+static bool theme_card(struct ui *ui, int x, int y, const struct theme *t, const char *name, bool on) {
+    int w = 176, h = 80;
+    bool hov = ui_hover(ui, x, y, w, h + 8 + 18);
+    preview(ui->c, x + 4, y + 4, t);
+    if (on) gfx_rrect_ring(ui->c, x - 2, y - 2, w + 4, h + 4, RADII(R_3 + 2, R_3 + 2, R_3 + 2, R_3 + 2), 2, ui_th.accent_text);
+    else gfx_round_rect(ui->c, x, y, w, h, R_3, hov ? ui_th.line_strong : ui_th.line);
+    gfx_text(ui->c, on ? T_BODY_B : T_BODY, x + 4, y + h + 8, name, on ? ui_th.text : ui_th.text2);
+    return hov && ui->pressed;
 }
+
+static void page_title(struct ui *ui, const char *title, const char *desc) {
+    gfx_text(ui->c, T_TITLE, X0, SP_6, title, ui_th.text);
+    if (desc) gfx_text(ui->c, T_BODY, X0, SP_6 + T_TITLE->height + SP_2, desc, ui_th.text2);
+}
+static int heading(struct ui *ui, int y, const char *s) { gfx_text(ui->c, T_HEADING, X0, y, s, ui_th.text); return y + T_HEADING->height + SP_3; }
 
 static const char *const sizes[] = { "11", "13", "15", "18" };   /* terminal font px, see common/termfonts.c */
+static char accent_names[THEME_ACCENTS + 1][24];
+static const char *accent_items[THEME_ACCENTS + 1];
+
+/* sidebar pages and the words the search field matches */
+static const struct { int icon; const char *name, *words; } pages[] = {
+    { ICON_PALETTE, "Appearance", "theme dark light style colour color accent contrast animations motion text size terminal font" },
+    { ICON_WALLPAPER, "Wallpaper", "background picture image desktop" },
+    { ICON_MONITOR, "Display", "resolution screen mode monitor size" },
+    { ICON_CLOCK, "Date & Time", "clock time zone timezone utc" },
+    { ICON_INFO, "About", "system version memory uptime vibeos" },
+};
+#define NPAGES 5
+
+static bool matches(int p, const char *q) {
+    if (!q[0]) return true;
+    char hay[160];
+    snprintf(hay, sizeof hay, "%s %s", pages[p].name, pages[p].words);
+    for (const char *h = hay; *h; h++) {
+        int i = 0;
+        while (q[i] && h[i] && (h[i] | 0x20) == (q[i] | 0x20)) i++;
+        if (!q[i]) return true;
+    }
+    return false;
+}
+
+static struct ui ui;
+static void apply(const char *cmd, const char *fail) {
+    if (gui_theme_set(cmd) < 0 || gui_theme_save() < 0) ui_toast(&ui, fail, NULL);
+}
 
 int main(void) {
-    struct gui_window *w = gui_window_create("Settings", W, H, WIN_FLAG_NORESIZE);
+    struct gui_window *w = gui_window_create("Appearance \xe2\x80\x94 Settings", W, H, WIN_FLAG_NORESIZE);
     if (!w) { perror("settings"); return 1; }
-    struct ui ui;
     ui_init(&ui, w);
 
-    char buf[32];
-    int tz = 0, zsel = -1, zscroll = 0, page = 0;
+    char buf[32], query[48] = "";
+    int tz = 0, zsel = -1, zscroll = 0, page = 0, shown = -1;
     char wpcur[128];                                     /* /etc/wallpaper: a procedural name or an image path */
     read_file("/etc/wallpaper", wpcur, sizeof wpcur);
     wpcur[strcspn(wpcur, "\n")] = 0;
@@ -149,12 +189,19 @@ int main(void) {
     if (read_file("/etc/tz", buf, sizeof buf) > 0) tz = atoi(buf);
     for (int i = 0; i < NZONES && zsel < 0; i++) if (zones[i].off == tz) zsel = i;
     zscroll = zsel > 3 ? zsel - 3 : 0;
+    accent_items[0] = "Theme default";
+    for (int i = 0; i < THEME_ACCENTS; i++) {
+        strlcpy(accent_names[i], theme_accents[i].name, sizeof accent_names[i]);
+        accent_names[i][0] &= ~0x20;
+        accent_items[i + 1] = accent_names[i];
+    }
 
     for (int i = 0; i < wallpaper_count() && nwps < MAXW; i++) {      /* real renders of each procedural wallpaper, made once */
         struct wpe *e = &wps[nwps++];
         memset(e, 0, sizeof *e);
         strlcpy(e->label, wallpaper_name(i), sizeof e->label);
         strlcpy(e->path, wallpaper_name(i), sizeof e->path);
+        e->label[0] &= ~0x20;
         e->proc = 1; e->tried = true;
         if (!(e->thumb = malloc(TW * TH * 4))) continue;
         struct canvas tc;
@@ -168,185 +215,196 @@ int main(void) {
     gui_theme_state(&ts);
     const char *names[NZONES];
     for (int i = 0; i < NZONES; i++) names[i] = zones[i].name;
-    char status[96] = "";
     int mcur, msel, mscroll = 0, nmodes = load_modes(&mcur);
     char prev[16] = "";                                  /* set while asking to keep a new mode */
     uint32_t keep_until = 0;
     msel = mcur;
+    ui.focus = ui_id(SP_3, SP_3, W_SIDEBAR - 2 * SP_3, H_SEARCH);    /* type to search right away */
 
     do {
         struct canvas *c = ui.c;
+        if (ui.themed || ui.pressed || ui.nkeys) gui_theme_state(&ts);
         ui_clear(&ui);
-        gfx_fill(c, 0, 0, SIDE, H, UI_PANEL);
-        gfx_fill(c, SIDE, 0, 1, H, UI_BORDER);
-        gfx_text(c, &font_title, 20, 18, "Settings", UI_TEXT);
-        static const char *const pages[] = { "Appearance", "Wallpaper", "Display", "Date & Time", "About" };
-        for (int i = 0; i < 5; i++) {
-            int y = 64 + i * 42;
-            if (i == page) gfx_round_fill(c, 10, y, SIDE - 20, 36, UI_RADIUS, UI_ACC(70));
-            else if (ui_hover(&ui, 10, y, SIDE - 20, 36)) gfx_round_fill(c, 10, y, SIDE - 20, 36, UI_RADIUS, UI_SURFACE);
-            gfx_text(c, i == page ? &font_ui_bold : &font_ui, 24, y + (36 - font_ui.height) / 2, pages[i], UI_TEXT);
-            if (ui_clicked(&ui, 10, y, SIDE - 20, 36) && !prev[0]) { page = i; status[0] = 0; }
+        /* ---- sidebar: search, then the pages that match it ---- */
+        ui_sidebar(&ui, 0, 0, W_SIDEBAR, H);
+        ui_search(&ui, SP_3, SP_3, W_SIDEBAR - 2 * SP_3, query, sizeof query, "Search settings");
+        int ry = SP_3 + H_SEARCH + SP_4, nm = 0, firstm = -1;
+        for (int i = 0; i < NPAGES; i++) if (matches(i, query)) { nm++; if (firstm < 0) firstm = i; }
+        if (query[0]) {
+            char r[24];
+            snprintf(r, sizeof r, nm == 1 ? "1 result" : "%d results", nm);
+            gfx_text(c, T_CAPTION, SP_5, ry, nm ? r : "No results", ui_th.text2);
+            ry += T_CAPTION->height + SP_2;
+            if (nm && !matches(page, query)) page = firstm;
         }
-        int x0 = SIDE + 28;
+        for (int i = 0; i < NPAGES; i++) {
+            if (!matches(i, query)) continue;
+            if (ui_side_item(&ui, 0, ry, W_SIDEBAR, pages[i].icon, pages[i].name, NULL, i == page) && !prev[0]) page = i;
+            ry += H_ROW;
+        }
+        if (page != shown) {
+            char t[64];
+            snprintf(t, sizeof t, "%s \xe2\x80\x94 Settings", pages[page].name);
+            gui_set_title(w, t);
+            shown = page;
+        }
 
         if (page == 0) {
-            gfx_text(c, &font_title, x0, 18, "Appearance", UI_TEXT);
-            gfx_text(c, &font_ui, x0, 52, "Applies at once to the desktop, terminals and apps.", UI_TEXT_DIM);
-            gui_theme_state(&ts);
-            int cw = (W - x0 - 28 - 2 * 16) / 3, ch = 90;
-            for (int i = 0; i < theme_count(); i++) {
-                int tx = x0 + (i % 3) * (cw + 16), ty = 84 + (i / 3) * (ch + 36);
+            page_title(&ui, "Appearance", "Applies at once to the desktop, the panel and every app.");
+            int y = heading(&ui, SP_6 + T_TITLE->height + SP_2 + T_BODY->height + SP_6, "Style");
+            bool hc = !strcmp(theme_get(ts.index)->name, "contrast");
+            for (int i = 0; i < 2; i++) {
                 const struct theme *t = theme_get(i);
-                bool hov = ui_hover(&ui, tx, ty, cw, ch);
-                preview(c, tx, ty, cw, ch, t);
-                if (i == ts.index) { gfx_round_rect(c, tx - 3, ty - 3, cw + 6, ch + 6, 10, UI_ACCENT); gfx_round_rect(c, tx - 4, ty - 4, cw + 8, ch + 8, 11, UI_ACCENT); }
-                else gfx_round_rect(c, tx - 1, ty - 1, cw + 2, ch + 2, 9, hov ? UI_OV(90) : UI_BORDER);
-                gfx_text_center(c, i == ts.index ? &font_ui_bold : &font_ui, tx, ty + ch + 8, cw, t->label, i == ts.index ? UI_TEXT : UI_TEXT_DIM);
-                if (ui_clicked(&ui, tx, ty, cw, ch) && i != ts.index) {
-                    if (gui_theme_set(t->name) < 0 || gui_theme_save() < 0) snprintf(status, sizeof status, "Couldn't change the theme");
-                    else status[0] = 0;
-                }
+                if (theme_card(&ui, X0 + i * (176 + SP_5), y, t, t->label, ts.index == i || (hc && i == 0)) && ts.index != i)
+                    apply(t->name, "Couldn't change the theme");
             }
-            int ay = 84 + (theme_count() + 2) / 3 * (ch + 36) + 4;
-            gfx_text(c, &font_ui_bold, x0, ay, "Accent colour", UI_TEXT_DIM);
-            for (int i = 0; i <= THEME_ACCENTS; i++) {
-                int sx = x0 + i * 38, sy = ay + 26;
-                color_t col = i ? theme_accents[i - 1].rgb : theme_get(ts.index)->accent;
-                bool on = i ? ts.accent == theme_accents[i - 1].rgb : !ts.accent, hov = ui_hover(&ui, sx, sy, 28, 28);
-                if (on || hov) gfx_circle_fill(c, sx + 14, sy + 14, 16, on ? UI_TEXT : UI_OV(70));
-                gfx_circle_fill(c, sx + 14, sy + 14, on || hov ? 13 : 14, UI_BG);
-                gfx_circle_fill(c, sx + 14, sy + 14, 11, col);
-                if (!i) gfx_text_center(c, &font_ui_bold, sx, sy + 14 - font_ui_bold.height / 2, 28, "A", ts.accent ? UI_TEXT : theme_get(ts.index)->on_accent);
-                if (ui_clicked(&ui, sx, sy, 28, 28) && !on) {
-                    char cmd[40];
-                    snprintf(cmd, sizeof cmd, "accent=%s", i ? theme_accents[i - 1].name : "default");
-                    if (gui_theme_set(cmd) < 0 || gui_theme_save() < 0) snprintf(status, sizeof status, "Couldn't change the accent");
-                    else status[0] = 0;
-                }
-            }
-            gfx_text(c, &font_ui, x0 + (THEME_ACCENTS + 1) * 38 + 4, ay + 26 + 6, accent_label(ts.accent), UI_TEXT_DIM);
-            int oy = ay + 74;
+            y = heading(&ui, y + 80 + SP_3 + T_BODY->height + SP_7, "Windows and text");
+            int ch = 3 * H_ROW2 + 2;
+            ui_card(&ui, X0, y, CW, ch);
+            int sx = X0 + CW - SP_4 - SWITCH_W;
+            ui_card_row(&ui, X0, y, CW, H_ROW2, "Window animations", "Fade and scale windows as they open and close", true);
             bool anim = ts.anim;
-            if (ui_checkbox(&ui, x0, oy + 6, "Window animations", &anim)) {
-                if (gui_theme_set(anim ? "anim=1" : "anim=0") < 0 || gui_theme_save() < 0) snprintf(status, sizeof status, "Couldn't save the setting");
-            }
-            gfx_text(c, &font_ui, x0 + 214, oy + 8, "Terminal text (px)", UI_TEXT_DIM);
-            int zsz = ts.zoom;
-            if (ui_tabs(&ui, x0 + 350, oy, W - x0 - 28 - 350, 30, sizes, TERM_ZOOMS, &zsz)) {
+            if (ui_switch(&ui, sx, y + (H_ROW2 - SWITCH_H) / 2, &anim, 0)) apply(anim ? "anim=1" : "anim=0", "Couldn't save the setting");
+            ui_card_row(&ui, X0, y + H_ROW2, CW, H_ROW2 + 1, "High contrast", "Black and white surfaces with strong edges", false);
+            bool hcv = hc;
+            if (ui_switch(&ui, sx, y + H_ROW2 + 1 + (H_ROW2 - SWITCH_H) / 2, &hcv, 0)) apply(hcv ? "contrast" : "graphite", "Couldn't change the theme");
+            int ty = y + 2 * H_ROW2 + 2;
+            ui_card_row(&ui, X0, ty - 1, CW, H_ROW2 + 1, "Terminal text size", NULL, false);
+            int zsz = ts.zoom, slx = X0 + CW - SP_4 - 40 - SP_4 - 200;
+            if (ui_slider(&ui, slx, ty + (H_ROW2 - HIT_MIN) / 2, 200, &zsz, 0, TERM_ZOOMS - 1) && zsz != (int)ts.zoom) {
                 char cmd[16];
                 snprintf(cmd, sizeof cmd, "zoom=%d", zsz);
-                if (gui_theme_set(cmd) < 0 || gui_theme_save() < 0) snprintf(status, sizeof status, "Couldn't save the setting");
+                apply(cmd, "Couldn't save the setting");
+            }
+            char px[16];
+            snprintf(px, sizeof px, "%s px", sizes[ts.zoom < TERM_ZOOMS ? ts.zoom : 1]);
+            gfx_text(c, T_BODY, X0 + CW - SP_4 - gfx_text_width(T_BODY, px), ty + (H_ROW2 - T_BODY->height) / 2, px, ui_th.text);
+            y = heading(&ui, y + ch + SP_7, "Accent");
+            ui_card(&ui, X0, y, CW, H_ROW2);
+            ui_card_row(&ui, X0, y, CW, H_ROW2, "Accent colour", NULL, true);
+            int asel = 0;
+            for (int i = 0; i < THEME_ACCENTS; i++) if (ts.accent == theme_accents[i].rgb) asel = i + 1;
+            int a0 = asel;
+            if (ui_dropdown(&ui, X0 + CW - SP_4 - 200, y + (H_ROW2 - H_CTL) / 2, 200, accent_items, THEME_ACCENTS + 1, &asel, 0) && asel != a0) {
+                char cmd[40];
+                snprintf(cmd, sizeof cmd, "accent=%s", asel ? theme_accents[asel - 1].name : "default");
+                apply(cmd, "Couldn't change the accent");
+            }
+            int rw = ui_button_w(UI_NOICON, "Reset appearance");
+            if (ui_button(&ui, W - SP_7 - rw, H - SP_7 - H_CTL, rw, H_CTL, "Reset appearance", UI_SECONDARY)) {
+                apply("graphite accent=default anim=1 zoom=1", "Couldn't reset the appearance");
+                ui_toast(&ui, "Appearance reset to the defaults", NULL);
             }
         } else if (page == 1) {
-            gfx_text(c, &font_title, x0, 18, "Wallpaper", UI_TEXT);
-            gfx_text(c, &font_ui, x0, 52, "A generated backdrop, or any PNG/JPEG picture.", UI_TEXT_DIM);
-            int top = 84, viewh = H - top - 8, rows = (nwps + 2) / 3, pitch = TH + 52;
-            int maxs = rows * pitch - viewh;
+            page_title(&ui, "Wallpaper", "A generated backdrop, or any PNG or JPEG picture.");
+            int top = SP_6 + T_TITLE->height + SP_2 + T_BODY->height + SP_6, viewh = H - top, rows = (nwps + 2) / 3, pitch = TH + 4 + SP_3 + T_BODY->height + SP_5;
+            int maxs = rows * pitch - viewh + SP_5;
             if (maxs < 0) maxs = 0;
-            if (ui_hover(&ui, SIDE, top, W - SIDE, viewh) && ui.scroll) wscroll += ui.scroll * 40;
+            if (ui_hover(&ui, W_SIDEBAR, top, W - W_SIDEBAR, viewh) && ui.scroll) wscroll += ui.scroll * 40;
             if (wscroll > maxs) wscroll = maxs;
             if (wscroll < 0) wscroll = 0;
             struct canvas cc = *c;
-            canvas_clip(&cc, SIDE + 1, top - 6, W - SIDE - 1, viewh + 6);
+            canvas_clip(&cc, W_SIDEBAR, top - 4, W - W_SIDEBAR, viewh + 4);
+            int gap = (CW - 3 * TW) / 2;
             for (int i = 0; i < nwps; i++) {
                 struct wpe *e = &wps[i];
-                int tx = x0 + (i % 3) * (TW + 18), ty = top + (i / 3) * pitch - wscroll;
-                if (ty + TH + 30 < top - 6 || ty > H) continue;
+                int tx = X0 + (i % 3) * (TW + gap), ty = top + (i / 3) * pitch - wscroll;
+                if (ty + pitch < top - 4 || ty > H) continue;
                 if (!e->tried) make_thumb(e);
-                bool cur = !strcmp(e->path, wpcur), vis = ty >= top - 6 && ty + TH <= H - 6, hov = vis && ui_hover(&ui, tx, ty, TW, TH);
-                if (cur) gfx_round_rect(&cc, tx - 4, ty - 4, TW + 8, TH + 8, 10, UI_ACCENT);
-                else if (hov) gfx_round_rect(&cc, tx - 4, ty - 4, TW + 8, TH + 8, 10, UI_OV(60));
+                bool cur = !strcmp(e->path, wpcur), vis = ty >= top - 4 && ty + TH <= H, hov = vis && ui_hover(&ui, tx, ty, TW, TH);
                 if (e->thumb) gfx_blit(&cc, tx, ty, e->thumb, TW, TH, TW);
-                else { gfx_round_fill(&cc, tx, ty, TW, TH, 6, UI_SURFACE); gfx_text_center(&cc, &font_ui, tx, ty + TH / 2 - 8, TW, "can't read", UI_TEXT_DIM); }
+                else { gfx_round_fill(&cc, tx, ty, TW, TH, R_2, ui_th.raised); gfx_text_center(&cc, T_CAPTION, tx, ty + TH / 2 - 7, TW, "Can't read it", ui_th.text2); }
+                if (cur) gfx_rrect_ring(&cc, tx - 3, ty - 3, TW + 6, TH + 6, RADII(R_2 + 3, R_2 + 3, R_2 + 3, R_2 + 3), 2, ui_th.accent_text);
+                else gfx_round_rect(&cc, tx, ty, TW, TH, 0, hov ? ui_th.line_strong : ui_th.line);
                 struct canvas lc = cc;
-                canvas_clip(&lc, tx - 8, ty + TH, TW + 16, 30);
-                gfx_text_center(&lc, cur ? &font_ui_bold : &font_ui, tx - 8, ty + TH + 10, TW + 16, e->label, cur ? UI_TEXT : UI_TEXT_DIM);
+                canvas_clip(&lc, tx, ty + TH, TW, 40);
+                struct canvas *o = ui.c;
+                ui.c = &lc;
+                ui_text_fit(&ui, cur ? T_BODY_B : T_BODY, tx, ty + TH + 4 + SP_3, TW, e->label, cur ? ui_th.text : ui_th.text2);
+                ui.c = o;
                 if (vis && ui_clicked(&ui, tx, ty, TW, TH) && !cur) {
-                    if (write_file("/etc/wallpaper", e->path)) { strlcpy(wpcur, e->path, sizeof wpcur); win_set(w->fd, WIN_SET_PREFS, 0); status[0] = 0; }
-                    else snprintf(status, sizeof status, "Couldn't write /etc/wallpaper");
+                    if (write_file("/etc/wallpaper", e->path)) { strlcpy(wpcur, e->path, sizeof wpcur); win_set(w->fd, WIN_SET_PREFS, 0); }
+                    else ui_toast(&ui, "Couldn't write /etc/wallpaper", NULL);
                 }
             }
-            ui_vscroll(&ui, W - 14, top, viewh, rows * pitch, viewh, &wscroll);
+            ui_vscroll(&ui, W - 12, top, viewh, rows * pitch + SP_5, viewh, &wscroll);
         } else if (page == 2) {
             if (!prev[0]) nmodes = load_modes(&mcur);       /* `display WxH` may have switched it meanwhile */
-            gfx_text(c, &font_title, x0, 18, "Display", UI_TEXT);
             char cur[48];
-            snprintf(cur, sizeof cur, "Resolution: %s", mcur >= 0 ? mode_names[mcur] : "unknown");
-            gfx_text(c, &font_ui, x0, 52, cur, UI_TEXT_DIM);
-            int lh = H - 88 - 64;
+            snprintf(cur, sizeof cur, "The screen is %s now.", mcur >= 0 ? mode_names[mcur] : "at an unknown resolution");
+            page_title(&ui, "Display", mcur >= 0 ? cur : "No display adapter that can change modes.");
+            int y = heading(&ui, SP_6 + T_TITLE->height + SP_2 + T_BODY->height + SP_6, "Resolution");
+            int lh = H - y - SP_7 - H_CTL - SP_6;
+            lh -= lh % H_ROW;
+            ui_card(&ui, X0, y, CW, lh + 2 * SP_2);
             int dummy = msel;
-            ui_list(&ui, x0, 88, W - x0 - 28, lh, mode_names, nmodes, prev[0] ? &dummy : &msel, &mscroll);
+            ui_list(&ui, X0, y + SP_2, CW, lh, mode_names, nmodes, prev[0] ? &dummy : &msel, &mscroll);
             bool can = msel >= 0 && msel != mcur && !prev[0];
-            if (ui_button(&ui, W - 28 - 110, H - 52, 110, 34, "Apply", can ? UI_ACCENT_BTN : UI_NORMAL_BTN) && can) {
+            int bw = ui_button_w(UI_NOICON, "Apply resolution");
+            if (ui_button(&ui, W - SP_7 - bw, H - SP_7 - H_CTL, bw, H_CTL, "Apply resolution", UI_PRIMARY | (can ? 0 : UI_DISABLED))) {
                 char old[16];
                 strlcpy(old, mcur >= 0 ? mode_names[mcur] : "", sizeof old);
                 if (write_file("/dev/display", mode_names[msel])) {
                     nmodes = load_modes(&mcur);
                     strlcpy(prev, old, sizeof prev); keep_until = now_ms() + KEEP_MS;
-                    status[0] = 0;
-                } else snprintf(status, sizeof status, "%s isn't supported by this display", mode_names[msel]);
+                } else {
+                    char m[64];
+                    snprintf(m, sizeof m, "This display can't show %s", mode_names[msel]);
+                    ui_toast(&ui, m, NULL);
+                }
             }
-            if (mcur < 0) snprintf(status, sizeof status, "No display adapter that can change modes");
         } else if (page == 3) {
             time_t now = time(NULL) + tz * 60;
             struct tm tm;
             gmtime_r(&now, &tm);
             char t[32], d[64];
             strftime(t, sizeof t, "%H:%M:%S", &tm);
-            strftime(d, sizeof d, "%A, %e %B %Y", &tm);
-            gfx_text(c, &font_title, x0, 18, "Date & Time", UI_TEXT);
-            gfx_text(c, &font_big, x0, 52, t, UI_TEXT);
-            gfx_text(c, &font_ui, x0, 52 + font_big.height + 2, d, UI_TEXT_DIM);
-            int ly = 52 + font_big.height + 2 + font_ui.height + 44;
-            gfx_text(c, &font_ui_bold, x0, ly - 26, "Time zone", UI_TEXT_DIM);
-            int prev = zsel;
-            ui_list(&ui, x0, ly, W - x0 - 28, H - ly - 50, names, NZONES, &zsel, &zscroll);
-            if (zsel != prev && zsel >= 0) {
+            strftime(d, sizeof d, "%A %e %B %Y", &tm);
+            page_title(&ui, "Date & Time", NULL);
+            int y = SP_6 + T_TITLE->height + SP_3;
+            gfx_text(c, T_DISPLAY, X0, y, t, ui_th.text);
+            gfx_text(c, T_BODY, X0, y + T_DISPLAY->height, d, ui_th.text2);
+            y = heading(&ui, y + T_DISPLAY->height + T_BODY->height + SP_7, "Time zone");
+            int lh = H - y - SP_7 - T_CAPTION->height - SP_3 - 2 * SP_2;
+            lh -= lh % H_ROW;
+            ui_card(&ui, X0, y, CW, lh + 2 * SP_2);
+            int pz = zsel;
+            ui_list(&ui, X0, y + SP_2, CW, lh, names, NZONES, &zsel, &zscroll);
+            if (zsel != pz && zsel >= 0) {
                 snprintf(buf, sizeof buf, "%d", zones[zsel].off);
                 if (write_file("/etc/tz", buf)) { tz = zones[zsel].off; win_set(w->fd, WIN_SET_PREFS, 0); }
-                else snprintf(status, sizeof status, "Couldn't write /etc/tz");
+                else ui_toast(&ui, "Couldn't write /etc/tz", NULL);
             }
-            gfx_text(c, &font_ui, x0, H - 36, "No daylight saving: pick the offset that's in effect now.", UI_TEXT_DIM);
+            gfx_text(c, T_CAPTION, X0, y + lh + 2 * SP_2 + SP_3, "No daylight saving: pick the offset that's in effect now.", ui_th.text2);
         } else {
             struct sysinfo si;
             sysinfo(&si);
-            gfx_text(c, &font_title, x0, 18, "About", UI_TEXT);
+            page_title(&ui, "About", "Bootloader, kernel, desktop, libc and apps, written from scratch.");
+            int y = heading(&ui, SP_6 + T_TITLE->height + SP_2 + T_BODY->height + SP_6, "This computer");
             read_file("/proc/version", buf, sizeof buf);
             buf[strcspn(buf, "\n")] = 0;
-            char line[96];
             const char *k[] = { "System", "Memory", "Display", "Uptime" };
             char v[4][64];
             snprintf(v[0], 64, "%s", buf);
             snprintf(v[1], 64, "%u MiB, %u MiB free", si.mem_total_kb / 1024, si.mem_free_kb / 1024);
-            snprintf(v[2], 64, "%ux%u", si.screen_w, si.screen_h);
+            snprintf(v[2], 64, "%u \xc3\x97 %u", si.screen_w, si.screen_h);
             snprintf(v[3], 64, "%u min", si.uptime_ms / 60000);
-            ui_panel(&ui, x0, 64, W - x0 - 28, 4 * 30 + 24);
+            ui_card(&ui, X0, y, CW, 4 * H_ROW2 + 3);
             for (int i = 0; i < 4; i++) {
-                gfx_text(c, &font_ui_bold, x0 + 18, 76 + i * 30, k[i], UI_TEXT_DIM);
-                ui_text_fit(&ui, &font_ui, x0 + 120, 76 + i * 30, W - x0 - 180, v[i], UI_TEXT);
+                int yy = y + i * (H_ROW2 + 1) - (i ? 1 : 0);
+                ui_card_row(&ui, X0, yy, CW, H_ROW2 + (i ? 1 : 0), k[i], NULL, i == 0);
+                int vw = gfx_text_width(T_BODY, v[i]);
+                ui_text_fit(&ui, T_BODY, X0 + CW - SP_4 - (vw < CW - 140 ? vw : CW - 140), yy + (H_ROW2 + (i ? 1 : 0) - T_BODY->height) / 2, CW - 140, v[i], ui_th.text2);
             }
-            snprintf(line, sizeof line, "Bootloader, kernel, desktop, libc and apps written from scratch.");
-            gfx_text(c, &font_ui, x0, 230, line, UI_TEXT_DIM);
         }
-        if (status[0]) gfx_text(c, &font_ui, x0, H - 36, status, UI_BAD);
         if (prev[0]) {                                /* "Keep this resolution?", reverts on its own */
             int left = (int)(keep_until - now_ms());
-            int pw = 420, ph = 150, px = (W - pw) / 2, py = (H - ph) / 2;
-            gfx_fill(c, 0, 0, W, H, RGBA(0, 0, 0, 120));
-            gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
-            gfx_round_rect(c, px, py, pw, ph, 12, UI_ACC(90));
-            gfx_text(c, &font_ui_bold, px + 20, py + 18, "Keep this resolution?", UI_TEXT);
             char msg[64];
-            snprintf(msg, sizeof msg, "Reverting to %s in %d s.", prev, left > 0 ? (left + 999) / 1000 : 0);
-            gfx_text(c, &font_ui, px + 20, py + 48, msg, UI_TEXT_DIM);
-            int r = 0;
-            if (ui_button(&ui, px + pw - 140, py + ph - 52, 120, 34, "Keep changes", UI_ACCENT_BTN)) r = 1;
-            if (ui_button(&ui, px + pw - 250, py + ph - 52, 100, 34, "Revert", UI_NORMAL_BTN) || left <= 0) r = -1;
-            struct gui_event k;
-            while (ui_key(&ui, &k)) { if (k.key == KEY_ESC) r = -1; else if (k.key == KEY_ENTER) r = 1; }
+            snprintf(msg, sizeof msg, "The display goes back to %s in %d s.", prev, left > 0 ? (left + 999) / 1000 : 0);
+            int r = ui_dialog(&ui, "Keep this resolution?", msg, "Revert", "Keep changes", UI_PRIMARY);
+            if (left <= 0) r = -1;
             snprintf(buf, sizeof buf, "%s\n", mode_names[mcur]);
-            if (r > 0 && !write_file("/etc/display", buf)) snprintf(status, sizeof status, "Couldn't write /etc/display");
+            if (r > 0 && !write_file("/etc/display", buf)) ui_toast(&ui, "Couldn't write /etc/display", NULL);
             if (r < 0) { write_file("/dev/display", prev); nmodes = load_modes(&mcur); msel = mcur; }
             if (r) prev[0] = 0;
         }
