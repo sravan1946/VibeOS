@@ -1,5 +1,7 @@
 /* calc - calculator with expression history */
 #include <ui.h>
+#include <design.h>
+#include <icons.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -133,46 +135,28 @@ static void negate(void) {
     }
 }
 
-/* operator glyphs drawn from primitives (the baked fonts are ASCII only) */
-static void icon(struct canvas *c, int kind, int cx, int cy, color_t col) {
-    switch (kind) {
-    case 0:  /* plus */
-        gfx_line_aa(c, cx - 8, cy, cx + 8, cy, 2.6f, col);
-        gfx_line_aa(c, cx, cy - 8, cx, cy + 8, 2.6f, col);
-        break;
-    case 1:  /* minus */
-        gfx_line_aa(c, cx - 8, cy, cx + 8, cy, 2.6f, col);
-        break;
-    case 2:  /* times */
-        gfx_line_aa(c, cx - 6, cy - 6, cx + 6, cy + 6, 2.6f, col);
-        gfx_line_aa(c, cx - 6, cy + 6, cx + 6, cy - 6, 2.6f, col);
-        break;
-    case 3:  /* divide */
-        gfx_line_aa(c, cx - 8, cy, cx + 8, cy, 2.6f, col);
-        gfx_circle_fill(c, cx, cy - 7, 2, col);
-        gfx_circle_fill(c, cx, cy + 7, 2, col);
-        break;
-    case 4:  /* backspace arrow */
-        gfx_line_aa(c, cx - 9, cy, cx + 9, cy, 2.4f, col);
-        gfx_line_aa(c, cx - 9, cy, cx - 2, cy - 7, 2.4f, col);
-        gfx_line_aa(c, cx - 9, cy, cx - 2, cy + 7, 2.4f, col);
-        break;
-    case 5:  /* plus/minus */
-        gfx_line_aa(c, cx - 8, cy - 4, cx, cy - 4, 2.2f, col);
-        gfx_line_aa(c, cx - 4, cy - 8, cx - 4, cy, 2.2f, col);
-        gfx_line_aa(c, cx - 8, cy + 7, cx + 8, cy + 7, 2.2f, col);
-        break;
-    }
-}
-
-struct key { const char *label; int ico; char ch; int style; };
+/* kind: 0 function (ghost), 1 operator (secondary, icon), 2 digit (secondary), 3 equals (primary) */
+struct key { const char *label; int ico; char ch; int kind; };
 static const struct key keys[5][4] = {
-    { { "C", -1, 'C', 0 },  { "",  4, 'B', 0 }, { "%", -1, '%', 0 },  { "", 3, '/', 1 } },
-    { { "7", -1, '7', 2 },  { "8", -1, '8', 2 }, { "9", -1, '9', 2 }, { "", 2, '*', 1 } },
-    { { "4", -1, '4', 2 },  { "5", -1, '5', 2 }, { "6", -1, '6', 2 }, { "", 1, '-', 1 } },
-    { { "1", -1, '1', 2 },  { "2", -1, '2', 2 }, { "3", -1, '3', 2 }, { "", 0, '+', 1 } },
-    { { "",  5, 'N', 0 },   { "0", -1, '0', 2 }, { ".", -1, '.', 2 }, { "=", -1, '=', 3 } },
+    { { "C", -1, 'C', 0 },  { 0, ICON_BACKSPACE, 'B', 0 }, { "%", -1, '%', 0 }, { 0, ICON_DIVIDE, '/', 1 } },
+    { { "7", -1, '7', 2 },  { "8", -1, '8', 2 }, { "9", -1, '9', 2 }, { 0, ICON_CLOSE, '*', 1 } },
+    { { "4", -1, '4', 2 },  { "5", -1, '5', 2 }, { "6", -1, '6', 2 }, { 0, ICON_MINUS, '-', 1 } },
+    { { "1", -1, '1', 2 },  { "2", -1, '2', 2 }, { "3", -1, '3', 2 }, { 0, ICON_PLUS, '+', 1 } },
+    { { 0, ICON_PLUS_MINUS, 'N', 0 }, { "0", -1, '0', 2 }, { ".", -1, '.', 2 }, { "=", -1, '=', 3 } },
 };
+static const char *const key_tip[] = { ['C'] = "Clear \xc2\xb7 Esc", ['B'] = "Delete \xc2\xb7 Backspace", ['N'] = "Change sign",
+                                       ['/'] = "Divide", ['*'] = "Multiply", ['-'] = "Subtract", ['+'] = "Add", ['='] = "Equals \xc2\xb7 Enter" };
+
+/* the typed * / - shown as the real multiply, divide and minus signs */
+static void pretty(char *out, int n, const char *s) {
+    int j = 0;
+    for (; *s && j < n - 4; s++) {
+        const char *g = *s == '*' ? "\xc3\x97" : *s == '/' ? "\xc3\xb7" : *s == '-' ? "\xe2\x88\x92" : NULL;
+        if (g) while (*g) out[j++] = *g++;
+        else out[j++] = *s;
+    }
+    out[j] = 0;
+}
 
 static void do_key(char ch) {
     dirty = true;
@@ -186,7 +170,7 @@ static void do_key(char ch) {
 }
 
 int main(void) {
-    struct gui_window *w = gui_window_create("Calculator", 340, 520, 0);
+    struct gui_window *w = gui_window_create("Calculator", 340, 472, 0);
     if (!w) { perror("calc"); return 1; }
     struct ui ui;
     ui_init(&ui, w);
@@ -205,62 +189,44 @@ again:
         dirty = false;
         ui_clear(&ui);
         struct canvas *c = ui.c;
-        int m = 14, gap = 10, W = w->w, H = w->h;
-        int dh = 128;
-        /* display */
-        ui_panel(&ui, m, m, W - 2 * m, dh);
-        gfx_vgradient(c, m + 6, m + 2, W - 2 * m - 12, 2, UI_ACC(80), UI_ACC(0));
-        char disp[EXPR_MAX + 8], line[EXPR_MAX + 8];
+        int gap = SP_3, W = w->w, H = w->h;
+        int dh = SP_6 + T_BODY->height + SP_2 + T_DISPLAY->height + SP_5;   /* history line, result */
+        /* keys stop growing at 96 x 64; a bigger (maximised) window centres the calculator */
+        int bw = (W - 2 * SP_5 - 3 * gap) / 4, bh = (H - dh - 2 * SP_5 - 4 * gap) / 5;
+        if (bw > 96) bw = 96;
+        if (bh > 64) bh = 64;
+        int CW = 4 * bw + 3 * gap, CH = dh + 5 * bh + 4 * gap, m = (W - CW) / 2, y0 = (H - CH) / 2, dy = y0 + SP_6;
+        char disp[3 * EXPR_MAX + 8], line[3 * EXPR_MAX + 8];   /* signs are up to 3 bytes */
         const char *src = done ? result : expr[0] ? expr : "0";
-        int j = 0;
-        for (const char *p = src; *p && j < (int)sizeof disp - 1; p++) disp[j++] = *p == '*' ? 'x' : *p;
-        disp[j] = 0;
-        snprintf(line, sizeof line, "%s", hist);
-        for (char *p = line; *p; p++) if (*p == '*') *p = 'x';
-        int maxw = W - 2 * m - 28;
-        /* history line, right aligned and clipped on the left */
-        if (line[0]) {
-            int lw = gfx_text_width(&font_ui, line);
-            struct canvas cc = *c;
-            canvas_clip(&cc, m + 14, m + 8, maxw, 24);
-            gfx_text(&cc, &font_ui, m + 14 + maxw - lw, m + 14, line, UI_TEXT_DIM);
-        }
-        const struct font *f = &font_big;
-        if (gfx_text_width(f, disp) > maxw) f = &font_title;
-        if (gfx_text_width(f, disp) > maxw) f = &font_ui_bold;
-        int tw = gfx_text_width(f, disp);
+        pretty(disp, sizeof disp, src);
+        pretty(line, sizeof line, hist);
+        int maxw = CW - 2 * SP_3, dx = m + SP_3;
         struct canvas cc = *c;
-        canvas_clip(&cc, m + 14, m + 36, maxw, dh - 40);
-        int tx = m + 14 + maxw - tw;
-        if (tx < m + 14) tx = m + 14 + maxw - tw;              /* overflow: show the tail */
-        gfx_text(&cc, f, tx, m + 40 + (dh - 48 - f->height) / 2, disp, err ? UI_BAD : UI_TEXT);
+        canvas_clip(&cc, dx, dy, maxw, dh - SP_6);
+        if (line[0])                                    /* history: right aligned, the head clipped off on overflow */
+            gfx_text(&cc, T_BODY, dx + maxw - gfx_text_width(T_BODY, line), dy, line, UI_TEXT2);
+        const struct font *f = T_DISPLAY;
+        if (gfx_text_width(f, disp) > maxw) f = T_TITLE;
+        if (gfx_text_width(f, disp) > maxw) f = T_HEADING;
+        gfx_text(&cc, f, dx + maxw - gfx_text_width(f, disp), dy + T_BODY->height + SP_2 + T_DISPLAY->height - f->height, disp, err ? UI_BAD : UI_TEXT);
 
-        /* buttons */
-        int top = m + dh + 14;
-        int bw = (W - 2 * m - 3 * gap) / 4, bh = (H - top - m - 4 * gap) / 5;
+        /* keypad */
+        int top = y0 + dh;
         for (int r = 0; r < 5; r++)
             for (int cI = 0; cI < 4; cI++) {
                 const struct key *kk = &keys[r][cI];
                 int x = m + cI * (bw + gap), y = top + r * (bh + gap);
-                uint32_t id = (uint32_t)(x * 31 + y * 17 + 1);
-                bool hov = ui_hover(&ui, x, y, bw, bh);
-                if (hov && ui.pressed) ui.active = id;
-                bool hit = ui.released && ui.active == id && hov;
-                bool down = ui.active == id && (ui.buttons & 1) && hov;
-                color_t bg, fg = UI_TEXT;
-                if (kk->style == 3) bg = down ? ui_th.accent_lo : hov ? ui_th.accent_hi : UI_ACCENT;
-                else if (kk->style == 1) bg = down ? ui_th.key_lo : hov ? ui_th.key_hi : ui_th.key;
-                else if (kk->style == 2) bg = down ? UI_PRESSED : hov ? UI_HOVER : UI_SURFACE;
-                else bg = down ? UI_PRESSED : hov ? UI_SURFACE : UI_PANEL;
-                if (kk->style == 3) fg = UI_ON_ACCENT;
-                if (kk->style == 1) fg = ui_th.key_fg;
-                gfx_round_fill(c, x, y + down, bw, bh, UI_RADIUS + 2, bg);
-                if (kk->style != 3) gfx_round_rect(c, x, y + down, bw, bh, UI_RADIUS + 2, UI_BORDER);
-                if (kk->ico >= 0) icon(c, kk->ico, x + bw / 2, y + bh / 2 + down, kk->ico == 4 && !expr[0] && !done ? UI_TEXT_DIM : fg);
+                int st = kk->kind == 3 ? UI_PRIMARY : kk->kind == 0 ? UI_GHOST : UI_SECONDARY;
+                if (kk->ch == 'B' && !expr[0] && !done) st |= UI_DISABLED;
+                bool hit = ui_button_ex(&ui, x, y, bw, bh, UI_NOICON, NULL, st);
+                bool hov = ui_hover(&ui, x, y, bw, bh) && !(st & UI_DISABLED);
+                color_t fg = kk->kind == 3 ? UI_ON_ACCENT : st & UI_DISABLED ? ui_th.disabled : kk->kind == 2 || hov ? UI_TEXT : UI_TEXT2;
+                if (kk->ico >= 0) ui_icon(&ui, x + (bw - ICON_MD) / 2, y + (bh - ICON_MD) / 2, kk->ico, ICON_MD, fg);
                 else {
-                    const struct font *f2 = &font_title;
-                    gfx_text_center(c, f2, x, y + (bh - f2->height) / 2 + down, bw, kk->label, kk->label[0] == 'C' ? UI_ACCENT2 : fg);
+                    const struct font *f2 = kk->kind == 2 || kk->kind == 3 ? T_TITLE : T_HEADING;
+                    gfx_text_center(c, f2, x, y + (bh - f2->height) / 2, bw, kk->label, fg);
                 }
+                if (key_tip[(int)kk->ch]) ui_tooltip(&ui, x, y, bw, bh, key_tip[(int)kk->ch]);
                 if (hit) do_key(kk->ch);
             }
         if (dirty) { ui.pressed = ui.released = false; goto again; }   /* buttons changed what the display shows */

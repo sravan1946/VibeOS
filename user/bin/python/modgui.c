@@ -2,9 +2,13 @@
  *   w = gui.Window("title", 400, 300)       colours: 0xRRGGBB, 0xAARRGGBB (> 0xFFFFFF) or (r, g, b[, a])
  *   w.fill(c)  w.fill(x, y, w, h, c)  w.rect(x, y, w, h, c, fill=True)  w.line(x0, y0, x1, y1, c, width=1)
  *   w.circle(cx, cy, r, c)  w.pixel(x, y[, c])  w.text(x, y, s, c, font="mono")  w.blit(x, y, buf, w, h, alpha=False)
- *   w.present()  w.poll(ms=0) -> event or None  w.events(ms=0) -> [event, ...]  w.fileno()  w.close() */
+ *   w.present()  w.poll(ms=0) -> event or None  w.events(ms=0) -> [event, ...]  w.fileno()  w.close()
+ *   gui.theme() -> {"window": 0xRRGGBB, "text": ..., "dark": True, ...}: the desktop's Graphite tokens; a "theme"
+ *   event arrives when they change (repaint then) */
 #include <string.h>
+#include <stddef.h>
 #include <gui.h>
+#include <design.h>
 
 #include "py/mperrno.h"
 #include "py/objtuple.h"
@@ -34,7 +38,7 @@ static color_t col(mp_obj_t o) {
 
 static const struct font *font_of(mp_obj_t o) {
     static const char *const names[] = { "mono", "mono_bold", "ui", "ui_bold", "title", "big" };
-    static const struct font *const fonts[] = { &font_mono, &font_mono_bold, &font_ui, &font_ui_bold, &font_title, &font_big };
+    static const struct font *const fonts[] = { &font_mono, &font_mono_bold, T_BODY, T_BODY_B, T_TITLE, T_DISPLAY };
     if (o == mp_const_none) return &font_mono;
     const char *s = mp_obj_str_get_str(o);
     for (int i = 0; i < 6; i++) if (!strcmp(s, names[i])) return fonts[i];
@@ -161,12 +165,13 @@ static mp_obj_t event(const struct gui_event *e) {
     static const qstr fields[] = { MP_QSTR_type, MP_QSTR_x, MP_QSTR_y, MP_QSTR_key, MP_QSTR_ch, MP_QSTR_mods, MP_QSTR_button,
                                    MP_QSTR_pressed, MP_QSTR_dz, MP_QSTR_w, MP_QSTR_h };
     static const qstr types[] = { MP_QSTR__question_, MP_QSTR_key, MP_QSTR_mouse_move, MP_QSTR_mouse_down, MP_QSTR_mouse_up,
-                                  MP_QSTR_scroll, MP_QSTR_resize, MP_QSTR_close, MP_QSTR_focus, MP_QSTR_mouse_leave };
+                                  MP_QSTR_scroll, MP_QSTR_resize, MP_QSTR_close, MP_QSTR_focus, MP_QSTR_mouse_leave, MP_QSTR_drop,
+                                  MP_QSTR_theme };
     char ch[3] = { 0 };
     if (e->ch > 0 && e->ch < 0x80) ch[0] = e->ch;
     else if (e->ch >= 0x80 && e->ch < 0x800) { ch[0] = 0xC0 | e->ch >> 6; ch[1] = 0x80 | (e->ch & 63); }
     mp_obj_t it[11] = {
-        MP_OBJ_NEW_QSTR(e->type > 0 && e->type < 10 ? types[e->type] : types[0]),
+        MP_OBJ_NEW_QSTR(e->type > 0 && e->type <= EV_THEME ? types[e->type] : types[0]),
         MP_OBJ_NEW_SMALL_INT(e->x), MP_OBJ_NEW_SMALL_INT(e->y), MP_OBJ_NEW_SMALL_INT(e->key), mp_obj_new_str_from_cstr(ch),
         MP_OBJ_NEW_SMALL_INT(e->mods), MP_OBJ_NEW_SMALL_INT(e->button), mp_obj_new_bool(e->pressed),
         MP_OBJ_NEW_SMALL_INT(e->dz), MP_OBJ_NEW_SMALL_INT(e->w), MP_OBJ_NEW_SMALL_INT(e->h),
@@ -235,12 +240,28 @@ static mp_obj_t gui_text_size(size_t n, const mp_obj_t *a) {         /* text_siz
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(gui_text_size_obj, 1, 2, gui_text_size);
 
+static mp_obj_t gui_theme(void) {
+#define TK(n) { MP_QSTR_##n, offsetof(struct theme, n) }
+    static const struct { uint16_t q, off; } tk[] = {
+        TK(base), TK(window), TK(raised), TK(overlay), TK(line), TK(line_strong), TK(control), TK(text), TK(text2), TK(text3),
+        TK(accent), TK(on_accent), TK(accent_text), TK(accent_line), TK(selection), TK(danger), TK(warning), TK(success), TK(info),
+    };
+    gui_theme_load();
+    mp_obj_t d = mp_obj_new_dict(20);
+    for (size_t i = 0; i < MP_ARRAY_SIZE(tk); i++)
+        mp_obj_dict_store(d, MP_OBJ_NEW_QSTR(tk[i].q), MP_OBJ_NEW_SMALL_INT(*(color_t *)((char *)&ui_th + tk[i].off) & 0xFFFFFF));
+    mp_obj_dict_store(d, MP_OBJ_NEW_QSTR(MP_QSTR_dark), mp_obj_new_bool(ui_th.dark));
+    return d;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(gui_theme_obj, gui_theme);
+
 #define K(n) { MP_ROM_QSTR(MP_QSTR_##n), MP_ROM_INT(n) }
 static const mp_rom_map_elem_t gui_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_gui) },
     { MP_ROM_QSTR(MP_QSTR_Window), MP_ROM_PTR(&gui_type_window) },
     { MP_ROM_QSTR(MP_QSTR_rgb), MP_ROM_PTR(&gui_rgb_obj) },
     { MP_ROM_QSTR(MP_QSTR_text_size), MP_ROM_PTR(&gui_text_size_obj) },
+    { MP_ROM_QSTR(MP_QSTR_theme), MP_ROM_PTR(&gui_theme_obj) },
     K(KEY_ESC), K(KEY_BACKSPACE), K(KEY_TAB), K(KEY_ENTER), K(KEY_DELETE), K(KEY_UP), K(KEY_DOWN), K(KEY_LEFT), K(KEY_RIGHT),
     K(KEY_HOME), K(KEY_END), K(KEY_PGUP), K(KEY_PGDN), K(KEY_INSERT), K(KEY_F1), K(KEY_F2), K(KEY_F3), K(KEY_F4), K(KEY_F5),
     K(KEY_F6), K(KEY_F7), K(KEY_F8), K(KEY_F9), K(KEY_F10), K(KEY_F11), K(KEY_F12),
