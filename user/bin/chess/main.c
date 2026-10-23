@@ -1,6 +1,6 @@
 /* chess - play the computer: click or drag pieces, legal-move hints, castling, en passant, promotion,
  * check / mate / stalemate / draw detection, three difficulty levels. Rules and search live in engine.c. */
-#include <ui.h>
+#include "../game.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -34,7 +34,11 @@ static bool list_stick = true;
 
 static uint32_t clock_ms(void) { return uptime_ms(); }
 
-static color_t SQ_LIGHT = RGB(0xE6, 0xDD, 0xF6), SQ_DARK = RGB(0x8E, 0x74, 0xC4);
+static color_t SQ_LIGHT, SQ_DARK;      /* two quiet warm neutrals, a step brighter on light themes */
+static void board_colours(void) {
+    SQ_LIGHT = ui_th.dark ? RGB(0xC9, 0xC5, 0xBC) : RGB(0xE8, 0xE5, 0xDE);
+    SQ_DARK = ui_th.dark ? RGB(0x8E, 0x89, 0x7F) : RGB(0xB3, 0xAE, 0xA3);
+}
 
 static int cur_side(void) { return hist[nply].side; }
 
@@ -88,13 +92,13 @@ static void draw_piece(struct ui *ui, int set, int piece, int x, int y, int size
 
 static const char *status_text(void) {
     static char b[48];
-    if (over == ST_MATE) return cur_side() == human ? "Checkmate - AI wins" : "Checkmate - you win!";
-    if (over == ST_STALEMATE) return "Stalemate - draw";
-    if (over == ST_INSUFFICIENT) return "Draw - insufficient material";
-    if (over == ST_FIFTY) return "Draw - fifty-move rule";
-    if (over == 10) return "Draw - threefold repetition";
-    if (cur_side() != human) return "Thinking...";
-    snprintf(b, sizeof b, "%s to move%s", cur_side() == WHITE ? "White" : "Black", cp_in_check(&hist[nply], cur_side()) ? " - check!" : "");
+    if (over == ST_MATE) return cur_side() == human ? "Checkmate, the computer wins" : "Checkmate, you win";
+    if (over == ST_STALEMATE) return "Stalemate, a draw";
+    if (over == ST_INSUFFICIENT) return "Draw by insufficient material";
+    if (over == ST_FIFTY) return "Draw by the fifty-move rule";
+    if (over == 10) return "Draw by threefold repetition";
+    if (cur_side() != human) return "Thinking…";
+    snprintf(b, sizeof b, "%s to move%s", cur_side() == WHITE ? "White" : "Black", cp_in_check(&hist[nply], cur_side()) ? ", check" : "");
     return b;
 }
 
@@ -118,11 +122,11 @@ static void captured_row(struct ui *ui, int x, int y, int by_side) {
         }
         if (gone[t] > 0) ox += 6;
     }
-    if (lead > 0) { char s[8]; snprintf(s, sizeof s, "+%d", lead); gfx_text(ui->c, &font_ui_bold, ox + 4, y + 4, s, UI_ACCENT); }
+    if (lead > 0) { char s[8]; snprintf(s, sizeof s, "+%d", lead); gfx_text(ui->c, T_BODY_B, ox + SP_2, y + (24 - T_BODY_B->height) / 2, s, UI_TEXT2); }
 }
 
 int main(int argc, char **argv) {
-    struct gui_window *w = gui_window_create("Chess", 840, 604, 0);
+    struct gui_window *w = gui_window_create("Chess", 840, 600, 0);
     if (!w) return 1;
     engine_clock = clock_ms;
     struct ui ui;
@@ -134,14 +138,15 @@ int main(int argc, char **argv) {
         bool animating = anim.from >= 0 && uptime_ms() - anim.t0 < ANIM_MS;
         if (!ui_poll(&ui, animating ? 16 : ai_turn ? 0 : 500)) break;
         int W = w->w, H = w->h;
-        cell = (W - PANEL_W - 48) / 8;
-        if ((H - 40) / 8 < cell) cell = (H - 40) / 8;
+        cell = (W - PANEL_W - 3 * SP_5) / 8;
+        if ((H - HEAD - 2 * SP_5) / 8 < cell) cell = (H - HEAD - 2 * SP_5) / 8;
         if (cell < 40) cell = 40;
-        bx = 24; by = (H - 8 * cell) / 2;
+        bx = SP_5; by = HEAD + SP_5;
+        board_colours();
         pieces_build(0, cell * 88 / 100);
         pieces_build(1, 24);
         int ps = cell * 88 / 100, off = (cell - ps) / 2;
-        int px0 = bx + 8 * cell + 24, pw = W - px0 - 16;
+        int px0 = bx + 8 * cell + SP_5, pw = W - px0 - SP_5;
 
         bool human_turn = !over && cur_side() == human && promo_from < 0;
 
@@ -207,30 +212,51 @@ int main(int argc, char **argv) {
         /* ---- draw ---- */
         ui_clear(&ui);
         struct canvas *c = ui.c;
-        gfx_shadow(c, bx, by, 8 * cell, 8 * cell, 10, 14, 110);
+        game_head(&ui, W);
+        int rx = W - SP_5;
+        if (game_btn(&ui, &rx, UI_NOICON, "New game", UI_SECONDARY)) new_game();
+        if (game_btn(&ui, &rx, ICON_SORT, NULL, UI_GHOST)) flipped = !flipped;
+        ui_tooltip(&ui, rx + SP_3, CTL_Y, H_CTL, H_CTL, "Flip board · F");
+        if (game_btn(&ui, &rx, ICON_UNDO, NULL, UI_GHOST | (nply ? 0 : UI_DISABLED))) undo();
+        ui_tooltip(&ui, rx + SP_3, CTL_Y, H_CTL, H_CTL, "Undo · U");
+        {
+            const char *names[2] = { "White", "Black" };
+            int sw = 3 * SP_1;
+            for (int i = 0; i < 2; i++) sw += gfx_text_width(T_BODY, names[i]) + 2 * SP_4;
+            rx -= sw;
+            side_tab = human;
+            if (ui_segmented(&ui, rx, CTL_Y, NULL, names, 2, &side_tab) && side_tab != human) { human = side_tab; new_game(); }
+            ui_tooltip(&ui, rx, CTL_Y, sw, H_CTL, "Play as");
+            rx -= SP_3 + 112;
+            const char *lv[3] = { LEVEL[0].name, LEVEL[1].name, LEVEL[2].name };
+            if (ui_dropdown(&ui, rx, CTL_Y, 112, lv, 3, &lv_tab, 0)) level = lv_tab;
+            ui_tooltip(&ui, rx, CTL_Y, 112, H_CTL, "Difficulty");
+        }
+        {
+            color_t sc = over ? (over == ST_MATE && cur_side() != human ? UI_GOOD : over == ST_MATE ? UI_BAD : UI_TEXT2) : UI_TEXT;
+            int sx = SP_5;
+            if (!over && cur_side() != human) { ui_spinner(&ui, sx, (HEAD - ICON_SM) / 2); sx += ICON_SM + SP_3; }
+            ui_text_fit(&ui, T_BODY_B, sx, (HEAD - T_BODY_B->height) / 2, rx - SP_5 - sx, status_text(), sc);
+        }
+
         for (int sq = 0; sq < 64; sq++) {
             int x = sq_x(sq), y = sq_y(sq), f = sq & 7, r = sq >> 3;
             gfx_fill(c, x, y, cell, cell, ((f + r) & 1) ? SQ_LIGHT : SQ_DARK);
         }
-        /* last move */
+        /* last move and selection in amber, check in the danger colour */
         if (nply > 0) {
-            gfx_fill(c, sq_x(mv[nply - 1].from), sq_y(mv[nply - 1].from), cell, cell, RGBA(0xFF, 0xD8, 0x4B, 90));
-            gfx_fill(c, sq_x(mv[nply - 1].to), sq_y(mv[nply - 1].to), cell, cell, RGBA(0xFF, 0xD8, 0x4B, 110));
+            gfx_fill(c, sq_x(mv[nply - 1].from), sq_y(mv[nply - 1].from), cell, cell, TH_A(UI_ACCENT, 70));
+            gfx_fill(c, sq_x(mv[nply - 1].to), sq_y(mv[nply - 1].to), cell, cell, TH_A(UI_ACCENT, 100));
         }
-        if (sel >= 0) gfx_fill(c, sq_x(sel), sq_y(sel), cell, cell, RGBA(0x7C, 0x4D, 0xFF, 130));
-        if (cp_in_check(&hist[nply], cur_side())) {
-            for (int i = 0; i < 64; i++) if (hist[nply].b[i] == (cur_side() == WHITE ? K_ : -K_)) {
-                int cx = sq_x(i) + cell / 2, cy = sq_y(i) + cell / 2;
-                struct canvas cc = *c;
-                canvas_clip(&cc, sq_x(i), sq_y(i), cell, cell);
-                for (int rr = cell * 3 / 4; rr > 4; rr -= cell / 14) gfx_circle_fill(&cc, cx, cy, rr, RGBA(0xFF, 0x30, 0x50, 26));
-            }
-        }
+        if (sel >= 0) gfx_fill(c, sq_x(sel), sq_y(sel), cell, cell, TH_A(UI_ACCENT, 150));
+        if (cp_in_check(&hist[nply], cur_side()))
+            for (int i = 0; i < 64; i++) if (hist[nply].b[i] == (cur_side() == WHITE ? K_ : -K_))
+                gfx_fill(c, sq_x(i), sq_y(i), cell, cell, TH_A(ui_th.danger, 120));
         for (int sq = 0; sq < 64; sq++) {                 /* file / rank labels */
             int x = sq_x(sq), y = sq_y(sq), f = sq & 7, r = sq >> 3;
             color_t lc = ((f + r) & 1) ? SQ_DARK : SQ_LIGHT;
-            if (r == (flipped ? 7 : 0)) { char s[2] = { 'a' + f, 0 }; gfx_text(c, &font_ui, x + cell - 11, y + cell - 18, s, lc); }
-            if (f == (flipped ? 7 : 0)) { char s[2] = { '1' + r, 0 }; gfx_text(c, &font_ui, x + 4, y + 2, s, lc); }
+            if (r == (flipped ? 7 : 0)) { char s[2] = { 'a' + f, 0 }; gfx_text(c, T_CAPTION_B, x + cell - SP_2 - gfx_text_width(T_CAPTION_B, s), y + cell - SP_1 - T_CAPTION_B->height, s, lc); }
+            if (f == (flipped ? 7 : 0)) { char s[2] = { '1' + r, 0 }; gfx_text(c, T_CAPTION_B, x + SP_2, y + SP_1, s, lc); }
         }
         /* pieces */
         int slide = animating ? (int)(ANIM_MS - (uptime_ms() - anim.t0)) : 0;
@@ -248,6 +274,7 @@ int main(int argc, char **argv) {
             draw_piece(&ui, 0, pc, x, y, ps);
         }
         /* move hints */
+        color_t hint = RGBA(0x1B, 0x1C, 0x1F, 64);
         if (sel >= 0 && human_turn) {
             for (int i = 0; i < nlegal; i++) {
                 if (legal[i].from != sel) continue;
@@ -256,96 +283,74 @@ int main(int argc, char **argv) {
                 if (cap) {
                     struct canvas cc = *c;
                     canvas_clip(&cc, x, y, cell, cell);
-                    gfx_circle_fill(&cc, x + cell / 2, y + cell / 2, cell * 3 / 5, RGBA(0x30, 0x20, 0x60, 90));
+                    gfx_circle_fill(&cc, x + cell / 2, y + cell / 2, cell * 3 / 5, hint);
                     gfx_circle_fill(&cc, x + cell / 2, y + cell / 2, cell * 3 / 5 - 5, ((to & 7) + (to >> 3)) & 1 ? SQ_LIGHT : SQ_DARK);
                     draw_piece(&ui, 0, hist[nply].b[to] ? hist[nply].b[to] : -hist[nply].b[sel], x + off, y + off, ps);
-                } else gfx_circle_fill(c, x + cell / 2, y + cell / 2, cell / 8, RGBA(0x30, 0x20, 0x60, 110));
+                } else gfx_circle_fill(c, x + cell / 2, y + cell / 2, cell / 8, hint);
             }
         }
         if (dragging && drag_from >= 0) {
             int hs = sq_at(ui.mx, ui.my);
-            if (hs >= 0) gfx_rect(c, sq_x(hs), sq_y(hs), cell, cell, RGBA(255, 255, 255, 200));
+            if (hs >= 0) gfx_rrect_ring(c, sq_x(hs), sq_y(hs), cell, cell, 0, 2, ui_th.accent_line);
             draw_piece(&ui, 0, hist[nply].b[drag_from], drag_x - ps / 2, drag_y - ps / 2, ps);
         }
         if (promo_from >= 0) {                                /* promotion chooser: a strip of pieces from the target square inward */
-            gfx_fill(c, bx, by, 8 * cell, 8 * cell, RGBA(0, 0, 0, 120));
+            gfx_fill(c, bx, by, 8 * cell, 8 * cell, ui_th.scrim);
             int tx = sq_x(promo_to), ty0 = sq_y(promo_to), down = ty0 < by + 4 * cell;
             static const int order[4] = { Q_, R_, B_, N_ };
             for (int i = 0; i < 4; i++) {
                 int yy = down ? ty0 + i * cell : ty0 - i * cell;
                 bool hov = ui_hover(&ui, tx, yy, cell, cell);
-                gfx_round_fill(c, tx + 2, yy + 2, cell - 4, cell - 4, 10, hov ? RGB(0xF4, 0xE8, 0xFF) : RGB(0xD2, 0xC4, 0xEE));
+                gfx_round_fill(c, tx + SP_1, yy + SP_1, cell - 2 * SP_1, cell - 2 * SP_1, R_2, hov ? mix(SQ_LIGHT, UI_ACCENT, 90) : SQ_LIGHT);
                 draw_piece(&ui, 0, human == WHITE ? order[i] : -order[i], tx + off, yy + off, ps);
             }
         }
         if (over) {
-            const char *t = status_text();
-            int tw = gfx_text_width(&font_title, t) + 48, th = 64;
-            int x = bx + (8 * cell - tw) / 2, y = by + (8 * cell - th) / 2;
-            gfx_shadow(c, x, y, tw, th, 14, 14, 150);
-            gfx_round_fill(c, x, y, tw, th, 14, RGBA(0x1E, 0x1C, 0x2D, 235));
-            gfx_round_rect(c, x, y, tw, th, 14, RGBA(0xB3, 0x88, 0xFF, 160));
-            gfx_text_center(c, &font_title, x, y + (th - font_title.height) / 2, tw, t, UI_TEXT);
+            const char *t = over == ST_MATE ? "Checkmate" : over == ST_STALEMATE ? "Stalemate" : "Draw";
+            const char *body = over == ST_MATE ? (cur_side() == human ? "The computer wins this one." : "You win.") : status_text();
+            int r = game_card(&ui, bx, by, 8 * cell, 8 * cell, t, body, nply ? "Undo" : NULL, "New game");
+            if (r == 1) new_game();
+            else if (r == 2) undo();
         }
 
-        /* ---- side panel ---- */
-        ui_panel(&ui, px0, by, pw, 8 * cell);
-        int y = by + 14, ix = px0 + 14, iw = pw - 28;
-        gfx_text(c, &font_title, ix, y, "Chess", UI_TEXT);
-        y += font_title.height + 6;
-        color_t sc = over ? (over == ST_MATE && cur_side() != human ? UI_GOOD : over == ST_MATE ? UI_BAD : UI_WARN)
-                          : cur_side() != human ? UI_ACCENT : UI_TEXT_DIM;
-        gfx_circle_fill(c, ix + 5, y + 9, 4, sc);
-        ui_text_fit(&ui, &font_ui, ix + 18, y, iw - 18, status_text(), sc);
-        y += 30;
+        /* ---- side panel: captures and the move list ---- */
+        ui_card(&ui, px0, by, pw, 8 * cell);
+        int y = by + SP_4, ix = px0 + SP_4, iw = pw - 2 * SP_4;
+        int on_board = 0;
+        for (int i = 0; i < 64; i++) on_board += hist[nply].b[i] != 0;
+        if (on_board == 32) gfx_text(c, T_BODY, ix, y + 28 - T_BODY->height / 2, "No captures yet", UI_TEXT3);
         captured_row(&ui, ix, y, human == WHITE ? BLACK : WHITE);   /* what the AI has taken from you */
         y += 28;
         captured_row(&ui, ix, y, human);
-        y += 34;
-        gfx_text(c, &font_ui, ix, y, "Difficulty", UI_TEXT_DIM);
-        y += 22;
-        {
-            const char *names[3] = { LEVEL[0].name, LEVEL[1].name, LEVEL[2].name };
-            if (ui_tabs(&ui, ix, y, iw, 32, names, 3, &lv_tab)) level = lv_tab;
-        }
-        y += 44;
-        gfx_text(c, &font_ui, ix, y, "Play as", UI_TEXT_DIM);
-        y += 22;
-        {
-            const char *names[2] = { "White", "Black" };
-            side_tab = human;
-            if (ui_tabs(&ui, ix, y, iw, 32, names, 2, &side_tab) && side_tab != human) { human = side_tab; new_game(); }
-        }
-        y += 46;
-        int bw = (iw - 16) / 3;
-        if (ui_button(&ui, ix, y, bw, 34, "New", UI_ACCENT_BTN)) new_game();
-        if (ui_button(&ui, ix + bw + 8, y, bw, 34, "Undo", UI_NORMAL_BTN)) undo();
-        if (ui_button(&ui, ix + 2 * (bw + 8), y, bw, 34, "Flip", UI_NORMAL_BTN)) flipped = !flipped;
-        y += 46;
-        /* move list */
-        int ly = y, lh = by + 8 * cell - 12 - ly, rows = (nply + 1) / 2, rh = 22, vis = lh / rh;
-        gfx_round_fill(c, ix, ly, iw, lh, 8, RGB(0x16, 0x15, 0x22));
+        y += 24 + SP_4;
+        gfx_hline(c, px0, y, pw, UI_LINE);
+        y += SP_4;
+        gfx_text(c, T_CAPTION_B, ix, y, "Moves", UI_TEXT2);
+        y += T_CAPTION_B->height + SP_2;
+        int ly = y, lh = by + 8 * cell - SP_3 - ly, rows = (nply + 1) / 2, rh = H_ROW, vis = lh / rh;
         if (rows > vis && list_stick) list_first = rows - vis;
         if (ui_hover(&ui, ix, ly, iw, lh) && ui.scroll) { list_first += ui.scroll; list_stick = false; }
         if (list_first > rows - vis) { list_first = rows - vis; }
         if (list_first < 0) list_first = 0;
         struct canvas lc = *c;
-        canvas_clip(&lc, ix, ly + 2, iw, lh - 4);
+        canvas_clip(&lc, px0, ly, pw, lh);
+        int mw = (iw - 40) / 2;
         for (int r = list_first; r < rows && r < list_first + vis + 1; r++) {
-            int yy = ly + 6 + (r - list_first) * rh;
+            int yy = ly + (r - list_first) * rh, ty = yy + (rh - T_BODY->height) / 2;
             char num[8];
             snprintf(num, sizeof num, "%d.", r + 1);
-            gfx_text(&lc, &font_mono, ix + 8, yy, num, UI_TEXT_DIM);
+            gfx_text(&lc, T_BODY, ix + 28 - gfx_text_width(T_BODY, num), ty, num, UI_TEXT3);
             for (int s = 0; s < 2 && r * 2 + s < nply; s++) {
-                int idx = r * 2 + s, xx = ix + 44 + s * (iw - 52) / 2;
-                if (idx == nply - 1) gfx_round_fill(&lc, xx - 4, yy - 2, (iw - 52) / 2 - 4, rh - 2, 5, RGBA(0xB3, 0x88, 0xFF, 80));
-                gfx_text(&lc, &font_mono, xx, yy, san[idx], UI_TEXT);
+                int idx = r * 2 + s, xx = ix + 40 + s * mw;
+                bool cur = idx == nply - 1;
+                if (cur) gfx_round_fill(&lc, xx - SP_3, yy + SP_1, mw - SP_2, rh - 2 * SP_1, R_2, UI_SELECTION);
+                gfx_text(&lc, cur ? T_BODY_B : T_BODY, xx, ty, san[idx], UI_TEXT);
             }
         }
-        if (!nply) gfx_text_center(c, &font_ui, ix, ly + lh / 2 - 8, iw, "No moves yet", UI_TEXT_DIM);
+        if (!nply) gfx_text_center(c, T_BODY, ix, ly + lh / 2 - T_BODY->height, iw, "No moves yet", UI_TEXT2);
         {
             int first = list_first;
-            ui_vscroll(&ui, ix + iw - 10, ly + 4, lh - 8, rows, vis, &first);
+            ui_vscroll(&ui, px0 + pw - 12, ly, lh, rows, vis, &first);
             if (first != list_first) { list_first = first; list_stick = false; }
         }
         ui_end(&ui);

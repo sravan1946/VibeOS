@@ -1,5 +1,5 @@
-/* snake - classic snake in the VibeOS style */
-#include <ui.h>
+/* snake - classic snake */
+#include "game.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,10 +8,9 @@
 #define GW 22
 #define GH 18
 #define CELL 22
-#define PAD 16
-#define HEAD 64
+#define PAD SP_5
 #define WIN_W (PAD * 2 + GW * CELL)
-#define WIN_H (HEAD + GH * CELL + PAD)
+#define WIN_H (HEAD + PAD + GH * CELL + PAD)
 #define BEST_PATH "/home/.snake_best"
 
 enum { PLAY, PAUSED, DEAD };
@@ -71,73 +70,45 @@ static void turn(int d) {
     queue[nq++] = d;
 }
 
-static void draw(struct ui *ui, uint32_t now) {
+static void draw(struct ui *ui) {
     struct canvas *c = ui->c;
     ui_clear(ui);
-    gfx_vgradient(c, 0, 0, WIN_W, HEAD, RGB(0x2C, 0x1B, 0x52), UI_BG);
-    char buf[48];
-    gfx_text(c, &font_title, PAD, 14, "Snake", UI_TEXT);
-    snprintf(buf, sizeof buf, "%d", score);
-    gfx_text(c, &font_ui, WIN_W - PAD - 150, 10, "SCORE", UI_TEXT_DIM);
-    gfx_text(c, &font_ui, WIN_W - PAD - 70, 10, "BEST", UI_TEXT_DIM);
-    gfx_text(c, &font_ui_bold, WIN_W - PAD - 150, 30, buf, UI_ACCENT);
-    snprintf(buf, sizeof buf, "%d", best);
-    gfx_text(c, &font_ui_bold, WIN_W - PAD - 70, 30, buf, UI_ACCENT2);
+    game_head(ui, WIN_W);
+    int x = game_stati(ui, PAD, "Score", score);
+    game_stati(ui, x, "Best", best);
+    int rx = WIN_W - PAD;
+    if (game_btn(ui, &rx, UI_NOICON, "New game", UI_SECONDARY)) reset();
 
-    int bx = PAD, by = HEAD, bw = GW * CELL, bh = GH * CELL;
-    gfx_shadow(c, bx, by, bw, bh, 10, 10, 120);
-    gfx_round_fill(c, bx, by, bw, bh, 10, RGB(0x10, 0x0F, 0x1A));
+    int bx = PAD, by = HEAD + PAD, bw = GW * CELL, bh = GH * CELL;
+    game_well(ui, bx, by, bw, bh);
     for (int y = 0; y < GH; y++)
         for (int x = 0; x < GW; x++)
-            if ((x + y) & 1) gfx_fill(c, bx + x * CELL + 1, by + y * CELL + 1, CELL - 2, CELL - 2, RGBA(255, 255, 255, 6));
-    gfx_round_rect(c, bx, by, bw, bh, 10, UI_BORDER);
+            if ((x + y) & 1) gfx_fill(c, bx + x * CELL, by + y * CELL, CELL, CELL, TH_A(UI_TEXT, 5));
 
-    /* food: pulsing glow */
-    int ph = (now / 8) % 200;
-    int pulse = ph < 100 ? ph : 200 - ph;                    /* 0..100 */
-    int fx = bx + food_x * CELL, fy = by + food_y * CELL;
-    gfx_round_fill(c, fx - 4 - pulse / 25, fy - 4 - pulse / 25, CELL + 8 + pulse / 12, CELL + 8 + pulse / 12, 12, RGBA(0xFF, 0x7A, 0xC6, 28 + pulse / 4));
-    gfx_round_fill(c, fx - 1, fy - 1, CELL + 2, CELL + 2, 9, RGBA(0xFF, 0x7A, 0xC6, 50));
-    int fr = 4 + pulse / 50;
-    gfx_circle_fill(c, fx + CELL / 2, fy + CELL / 2, CELL / 2 - fr / 2, UI_ACCENT2);
-    gfx_circle_fill(c, fx + CELL / 2 - 2, fy + CELL / 2 - 3, 2, RGBA(255, 255, 255, 170));
+    gfx_circle_fill(c, bx + food_x * CELL + CELL / 2, by + food_y * CELL + CELL / 2, CELL / 2 - 4, game_fill(1));
 
-    /* snake: tail darker, head bright; fade out when dead */
+    /* snake: one muted green, the tail fading toward the well; grey once dead */
+    color_t head = state == DEAD ? UI_TEXT3 : game_fill(2);
     for (int i = len - 1; i >= 0; i--) {
-        color_t col = mix(UI_ACCENT, RGB(0x4A, 0x2E, 0x8C), i * 256 / (len > 1 ? len : 1) * 3 / 4);
-        if (state == DEAD) col = mix(col, UI_BAD, 120);
+        color_t col = mix(head, ui_th.base, i * 110 / (len > 1 ? len : 1));
         int x = bx + body[i].x * CELL, y = by + body[i].y * CELL;
-        if (i == 0) gfx_round_fill(c, x - 3, y - 3, CELL + 6, CELL + 6, 10, RGBA(0xB3, 0x88, 0xFF, 36));
-        gfx_round_fill(c, x + 1, y + 1, CELL - 2, CELL - 2, i == 0 ? 8 : 6, col);
+        gfx_round_fill(c, x + 2, y + 2, CELL - 4, CELL - 4, i ? R_2 : R_3, col);
         if (i) {                                              /* bridge to the previous segment */
             int dx = body[i - 1].x - body[i].x, dy = body[i - 1].y - body[i].y;
-            if (dx == 1) gfx_fill(c, x + CELL - 3, y + 3, 6, CELL - 6, col);
-            if (dx == -1) gfx_fill(c, x - 3, y + 3, 6, CELL - 6, col);
-            if (dy == 1) gfx_fill(c, x + 3, y + CELL - 3, CELL - 6, 6, col);
-            if (dy == -1) gfx_fill(c, x + 3, y - 3, CELL - 6, 6, col);
+            if (dx == 1) gfx_fill(c, x + CELL - 4, y + 4, 8, CELL - 8, col);
+            if (dx == -1) gfx_fill(c, x - 4, y + 4, 8, CELL - 8, col);
+            if (dy == 1) gfx_fill(c, x + 4, y + CELL - 4, CELL - 8, 8, col);
+            if (dy == -1) gfx_fill(c, x + 4, y - 4, CELL - 8, 8, col);
         }
     }
-    int hx = bx + body[0].x * CELL + CELL / 2, hy = by + body[0].y * CELL + CELL / 2;
-    int ex = DX[dir], ey = DY[dir];
-    for (int s = -1; s <= 1; s += 2) {                        /* eyes */
-        int px = hx + ex * 4 - ey * 5 * s, py = hy + ey * 4 + ex * 5 * s;
-        gfx_circle_fill(c, px, py, 3, RGB(255, 255, 255));
-        gfx_circle_fill(c, px + ex, py + ey, 1, RGB(0x1A, 0x10, 0x2E));
-    }
+    int hx = bx + body[0].x * CELL + CELL / 2, hy = by + body[0].y * CELL + CELL / 2, ex = DX[dir], ey = DY[dir];
+    for (int s = -1; s <= 1; s += 2) gfx_circle_fill(c, hx + ex * 4 - ey * 4 * s, hy + ey * 4 + ex * 4 * s, 2, ui_th.base);
 
-    if (state == PAUSED || state == DEAD) {
-        gfx_round_fill(c, bx, by, bw, bh, 10, RGBA(0x0C, 0x0A, 0x16, 190));
-        int cx = bx + bw / 2, cy = by + bh / 2;
-        if (state == PAUSED) {
-            gfx_text_center(c, &font_title, bx, cy - 30, bw, "Paused", UI_TEXT);
-            gfx_text_center(c, &font_ui, bx, cy + 6, bw, "P or Space to resume", UI_TEXT_DIM);
-        } else {
-            gfx_text_center(c, &font_title, bx, cy - 74, bw, "Game over", UI_BAD);
-            snprintf(buf, sizeof buf, "Score %d", score);
-            gfx_text_center(c, &font_big, bx, cy - 40, bw, buf, UI_TEXT);
-            if (score && score >= best) gfx_text_center(c, &font_ui_bold, bx, cy - 4, bw, "New best!", UI_WARN);
-            if (ui_button(ui, cx - 70, cy + 24, 140, 38, "Play again", UI_ACCENT_BTN)) reset();
-        }
+    if (state == PAUSED) game_card(ui, bx, by, bw, bh, "Paused", "Press an arrow key or Space to play. P pauses.", NULL, NULL);
+    else if (state == DEAD) {
+        char b[48];
+        snprintf(b, sizeof b, score && score >= best ? "Score %d, a new best." : "Score %d. Best %d.", score, best);
+        if (game_card(ui, bx, by, bw, bh, "Game over", b, NULL, "Play again")) reset();
     }
 }
 
@@ -152,9 +123,9 @@ int main(void) {
     state = PAUSED;                      /* start paused so the first key press begins */
     for (;;) {
         uint32_t now = (uint32_t)uptime_ms();
-        int wait = state == PLAY ? (int)(last_step + interval() - now) : 100;    /* paused: the food glow can pulse at 10 fps */
+        int wait = state == PLAY ? (int)(last_step + interval() - now) : -1;
         if (wait > 33) wait = 33;
-        if (wait < 0) wait = 0;
+        if (wait < 0 && state == PLAY) wait = 0;
         if (!ui_poll(&ui, wait)) break;
         struct gui_event k;
         while (ui_key(&ui, &k)) {
@@ -183,7 +154,7 @@ int main(void) {
             step();
             if (now - last_step > 500) last_step = now;      /* don't spiral after a stall */
         }
-        draw(&ui, now);
+        draw(&ui);
         ui_end(&ui);
     }
     gui_window_destroy(w);

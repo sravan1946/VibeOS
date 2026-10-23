@@ -84,7 +84,7 @@ static void pump(int ms) {
 static void quit_hook(void) { vibe_sound_close(); exit(0); }   /* I_Quit returns in doomgeneric: leave here */
 
 void DG_Init(void) {
-    win = gui_window_create("DOOM", DOOMGENERIC_RESX, DOOMGENERIC_RESY, 0);
+    win = gui_window_create("Doom", DOOMGENERIC_RESX, DOOMGENERIC_RESY, 0);
     if (!win) { fprintf(stderr, "doom: cannot open a window\n"); exit(1); }
     redraw_all = 1;
     I_AtExit(quit_hook, false);
@@ -96,7 +96,7 @@ void DG_DrawFrame(void) {
     int cw = win->w < DOOMGENERIC_RESX ? win->w : DOOMGENERIC_RESX, ch = win->h < DOOMGENERIC_RESY ? win->h : DOOMGENERIC_RESY;
     int ox = (win->w - cw) / 2, oy = (win->h - ch) / 2;
     if (redraw_all) {
-        for (int y = 0; y < win->h; y++) for (int x = 0; x < win->w; x++) win->pixels[y * win->stride + x] = 0xFF000000;
+        for (int y = 0; y < win->h; y++) for (int x = 0; x < win->w; x++) win->pixels[y * win->stride + x] = 0xFF0E0F11;   /* letterbox: near-black, the frame is the game */
     }
     for (int y = 0; y < ch; y++) {
         const uint32_t *s = DG_ScreenBuffer + y * DOOMGENERIC_RESX;

@@ -1,5 +1,5 @@
 /* pieces.c - chess piece sprites drawn from polygons and circles in a 100x100 box, 3x3 supersampled,
- * with an outline and a soft vertical gradient. Rendered once per size by pieces_build(). */
+ * flat-filled with an outline. Rendered once per size by pieces_build(). */
 #include "pieces.h"
 #include <stdlib.h>
 #include <string.h>
@@ -72,8 +72,9 @@ void pieces_build(int set, int S) {
         coverage(DETAIL[t], S, det);
         for (int white = 0; white < 2; white++) {
             uint32_t *px = malloc(S * S * 4);
-            int fill_top = white ? 0xFFFFFF : 0x5A4B80, fill_bot = white ? 0xCFC3F0 : 0x1E1730;
-            int line = white ? 0x2A2140 : 0xE6DDFF;
+            /* neutral ivory and graphite; the outline is dark on both, the detail strokes light on black */
+            int fill = white ? 0xF4F2ED : 0x3A3C41;
+            int line = white ? 0x26272B : 0x111214, dline = white ? 0x26272B : 0xC9C5BC;
             for (int y = 0; y < S; y++)
                 for (int x = 0; x < S; x++) {
                     int a = cov[y * S + x], oa = a;
@@ -82,14 +83,14 @@ void pieces_build(int set, int S) {
                             int xx = x + dx, yy = y + dy;
                             if (xx >= 0 && yy >= 0 && xx < S && yy < S && cov[yy * S + xx] > oa) oa = cov[yy * S + xx];
                         }
-                    int t8 = y * 256 / S;      /* vertical gradient */
-                    uint32_t fc = mix(0xFF000000u | fill_top, 0xFF000000u | fill_bot, t8);
+                    uint32_t fc = fill;
                     int d = det[y * S + x];
                     if (d > a) d = a;
                     /* outline -> fill -> detail, straight alpha result */
                     int fr = (fc >> 16) & 255, fg = (fc >> 8) & 255, fb = fc & 255;
                     int lr = (line >> 16) & 255, lg = (line >> 8) & 255, lb = line & 255;
-                    int cr = (fr * (255 - d) + lr * d) / 255, cg = (fg * (255 - d) + lg * d) / 255, cb = (fb * (255 - d) + lb * d) / 255;
+                    int dr = (dline >> 16) & 255, dg = (dline >> 8) & 255, db = dline & 255;
+                    int cr = (fr * (255 - d) + dr * d) / 255, cg = (fg * (255 - d) + dg * d) / 255, cb = (fb * (255 - d) + db * d) / 255;
                     int A = a + oa * (255 - a) / 255;
                     if (!A) { px[y * S + x] = 0; continue; }
                     int R = (cr * a + lr * (oa * (255 - a) / 255)) / A, G = (cg * a + lg * (oa * (255 - a) / 255)) / A, Bb = (cb * a + lb * (oa * (255 - a) / 255)) / A;

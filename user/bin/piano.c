@@ -2,7 +2,7 @@
  * synth: sine/square/saw/triangle, ADSR envelope, scope. Audio is generated in 10 ms chunks and written to
  * /dev/dsp only while fewer than ~30 ms are queued, so the UI never blocks on the sound card and latency stays low.
  * ponytail: naive (aliasing) square/saw, no oscillator interpolation; fine below ~2 kHz. */
-#include <ui.h>
+#include "game.h"
 #include <audio.h>
 #include <math.h>
 #include <stdlib.h>
@@ -15,7 +15,7 @@
 #define NV 16
 #define NKEYS 24
 #define KX 30
-#define KY 196
+#define KY (HEAD + SP_5 + 108 + SP_5)
 #define KW 50
 #define KH 200
 #define BW 32
@@ -104,54 +104,57 @@ static int key_at(int mx, int my) {                           /* MIDI note under
     return base() + WSEMI[w % 7] + 12 * (w / 7);
 }
 
+/* key content colours: ivory and graphite in every theme; a held key takes the accent (it is state) */
 static void draw_keys(struct ui *ui) {
     struct canvas *c = ui->c;
+    color_t ivory = RGB(0xEE, 0xEC, 0xE7), ebony = RGB(0x2A, 0x2B, 0x2F);
     for (int pass = 0; pass < 2; pass++)                      /* whites, then blacks on top */
         for (int s = 0; s < NKEYS; s++) {
             int blk = BLACK[s % 12];
             if (blk != pass) continue;
             int x = keyx(s), w = blk ? BW : KW - 2, h = blk ? BH : KH;
             bool on = held(base() + s);
-            color_t col = blk ? (on ? UI_ACCENT : RGB(0x26, 0x22, 0x3A)) : (on ? mix(RGB(0xEE, 0xEC, 0xF8), UI_ACCENT, 150) : RGB(0xEE, 0xEC, 0xF8));
-            gfx_round_fill(c, x, KY, w, h, 6, col);
-            if (blk) gfx_round_rect(c, x, KY, w, h, 6, UI_BORDER);
+            color_t col = blk ? (on ? UI_ACCENT : ebony) : (on ? mix(ivory, UI_ACCENT, 140) : ivory);
+            gfx_round_fill(c, x, KY, w, h, R_2, col);
+            gfx_round_rect(c, x, KY, w, h, R_2, blk ? RGBA(0, 0, 0, 120) : RGBA(0, 0, 0, 40));
             if (s < 17) {
-                char l[2] = { KEYS[s] - 32, 0 };
-                if (KEYS[s] == ';') l[0] = ';';
-                gfx_text_center(c, &font_ui_bold, x, KY + h - 26, w, l, blk ? UI_TEXT_DIM : RGB(0x6A, 0x66, 0x88));
+                char l[2] = { KEYS[s] == ';' ? ';' : KEYS[s] - 32, 0 };
+                gfx_text_center(c, T_CAPTION_B, x, KY + h - SP_7, w, l, blk ? (on ? UI_ON_ACCENT : RGB(0xB4, 0xB6, 0xBB)) : RGB(0x5A, 0x5C, 0x62));
             }
             if (!blk && s % 12 == 0) {
                 char n[8];
                 snprintf(n, sizeof n, "C%d", oct + s / 12);
-                gfx_text_center(c, &font_ui, x, KY + h - 52, w, n, RGB(0x9A, 0x96, 0xB8));
+                gfx_text_center(c, T_CAPTION, x, KY + h - SP_7 - 20, w, n, RGB(0x6E, 0x70, 0x76));
             }
         }
 }
 
-static void draw_scope(struct ui *ui, int x, int y, int w, int h) {
+static void draw_scope(struct ui *ui, int x, int y, int w, int h, bool active) {
     struct canvas *c = ui->c;
-    ui_panel(ui, x, y, w, h);
+    ui_card(ui, x, y, w, h);
     int cy = y + h / 2;
-    gfx_fill(c, x + 8, cy, w - 16, 1, RGBA(255, 255, 255, 30));
+    gfx_fill(c, x + SP_3, cy, w - 2 * SP_3, 1, UI_LINE);
+    if (!active) return;
     float s[1600];
     for (int i = 0; i < 1600; i++) s[i] = scope[(scope_pos - 1600 + i) & 2047];
     int t = 1;
     while (t < 600 && !(s[t - 1] < 0 && s[t] >= 0)) t++;      /* trigger on a rising zero crossing */
     if (t >= 600) t = 0;
-    int px = x + 8, py = cy;
-    for (int j = 0; j < w - 16 && t + 2 * j < 1600; j++) {
-        int yy = cy - (int)(s[t + 2 * j] * (h / 2 - 8));
-        if (j) gfx_line(c, px, py, x + 8 + j, yy, UI_ACCENT);
-        px = x + 8 + j; py = yy;
+    int px = x + SP_3, py = cy;
+    for (int j = 0; j < w - 2 * SP_3 && t + 2 * j < 1600; j++) {
+        int yy = cy - (int)(s[t + 2 * j] * (h / 2 - SP_3));
+        if (j) gfx_line_aa(c, px, py, x + SP_3 + j, yy, 1.5f, UI_ACCENT_TEXT);
+        px = x + SP_3 + j; py = yy;
     }
 }
 
-static void slider(struct ui *ui, int x, int y, const char *name, int *v, int lo, int hi, const char *unit) {
+/* one envelope column in the card: name and value on a row, the slider below */
+static void slider(struct ui *ui, int x, int y, int w, const char *name, int *v, int lo, int hi, const char *unit) {
     char b[24];
-    ui_label(ui, x, y, name, UI_TEXT_DIM);
-    ui_slider(ui, x + 8, y + 24, 84, v, lo, hi);
+    gfx_text(ui->c, T_BODY, x, y, name, UI_TEXT);
     snprintf(b, sizeof b, "%d %s", *v, unit);
-    ui_label(ui, x, y + 46, b, UI_TEXT);
+    gfx_text(ui->c, T_BODY, x + w - gfx_text_width(T_BODY, b), y, b, UI_TEXT2);
+    ui_slider(ui, x, y + T_BODY->height + SP_3, w, v, lo, hi);
 }
 
 int main(void) {
@@ -201,24 +204,35 @@ int main(void) {
             if (ui.timeout && now - last < 30) goto next;
             last = now;
             ui_clear(&ui);
-            ui_label(&ui, 22, 20, "Piano", UI_TEXT);
-            ui_tabs(&ui, 90, 14, 300, 30, waves, 4, &wave_sel);
-            ui_label(&ui, 420, 20, "Octave", UI_TEXT_DIM);
-            if (ui_button(&ui, 486, 14, 32, 30, "-", UI_NORMAL_BTN) && oct > 1) oct--;
+            game_head(&ui, W);
+            ui_segmented(&ui, SP_5, CTL_Y, NULL, waves, 4, &wave_sel);
+            int rx = W - SP_5;
+            rx -= 100;
+            if (ui_slider(&ui, rx, CTL_Y + 2, 100, &vol, 0, 100)) ioctl(fd, AUDIO_SETVOL, &vol);
+            rx -= SP_3 + ICON_SM;
+            ui_icon(&ui, rx, (HEAD - ICON_SM) / 2, vol ? ICON_VOLUME_HIGH : ICON_VOLUME_MUTE, ICON_SM, UI_TEXT2);
+            rx -= SP_6;
+            if (game_btn(&ui, &rx, ICON_PLUS, NULL, UI_GHOST | (oct < 6 ? 0 : UI_DISABLED)) && oct < 6) oct++;
+            ui_tooltip(&ui, rx + SP_3, CTL_Y, H_CTL, H_CTL, "Octave up · X");
             char b[16];
             snprintf(b, sizeof b, "C%d", oct);
-            gfx_text_center(ui.c, &font_ui_bold, 518, 20, 36, b, UI_TEXT);
-            if (ui_button(&ui, 554, 14, 32, 30, "+", UI_NORMAL_BTN) && oct < 6) oct++;
-            ui_label(&ui, 610, 20, "Vol", UI_TEXT_DIM);
-            if (ui_slider(&ui, 646, 19, 84, &vol, 0, 100)) ioctl(fd, AUDIO_SETVOL, &vol);
-            ui_panel(&ui, 20, 60, 440, 108);
-            slider(&ui, 38, 70, "Attack", &A, 1, 500, "ms");
-            slider(&ui, 138, 70, "Decay", &D, 1, 1000, "ms");
-            slider(&ui, 238, 70, "Sustain", &S, 0, 100, "%");
-            slider(&ui, 338, 70, "Release", &R, 5, 1500, "ms");
-            draw_scope(&ui, 476, 60, 264, 108);
+            rx -= 28;
+            gfx_text_center(ui.c, T_BODY_B, rx, (HEAD - T_BODY_B->height) / 2, 28, b, UI_TEXT);
+            rx -= SP_2;
+            if (game_btn(&ui, &rx, ICON_MINUS, NULL, UI_GHOST | (oct > 1 ? 0 : UI_DISABLED)) && oct > 1) oct--;
+            ui_tooltip(&ui, rx + SP_3, CTL_Y, H_CTL, H_CTL, "Octave down · Z");
+            gfx_text(ui.c, T_BODY, rx + SP_3 - SP_3 - gfx_text_width(T_BODY, "Octave"), (HEAD - T_BODY->height) / 2, "Octave", UI_TEXT2);
+            int cy = HEAD + SP_5, cw4 = 500;
+            ui_card(&ui, SP_5, cy, cw4, 108);
+            gfx_text(ui.c, T_CAPTION_B, SP_5 + SP_4, cy + SP_4, "Envelope", UI_TEXT2);
+            int colw = (cw4 - 2 * SP_4 - 3 * SP_5) / 4;
+            slider(&ui, SP_5 + SP_4, cy + 40, colw, "Attack", &A, 1, 500, "ms");
+            slider(&ui, SP_5 + SP_4 + (colw + SP_5), cy + 40, colw, "Decay", &D, 1, 1000, "ms");
+            slider(&ui, SP_5 + SP_4 + 2 * (colw + SP_5), cy + 40, colw, "Sustain", &S, 0, 100, "%");
+            slider(&ui, SP_5 + SP_4 + 3 * (colw + SP_5), cy + 40, colw, "Release", &R, 5, 1500, "ms");
+            draw_scope(&ui, SP_5 + cw4 + SP_5, cy, W - 3 * SP_5 - cw4, 108, active || was_active);
             draw_keys(&ui);
-            ui_label(&ui, 30, KY + KH + 14, "Keys: A W S E D F T G Y H U J K O L P ;     Z / X: octave down / up     mouse: click or drag across the keys", UI_TEXT_DIM);
+            gfx_text(ui.c, T_CAPTION, KX, KY + KH + SP_4, "Play with A to ; on the keyboard or click and drag across the keys. Z and X change the octave.", UI_TEXT2);
             ui_end(&ui);
         }
     next:

@@ -1,6 +1,6 @@
 /* solitaire - Klondike with drag and drop. Double-click sends a card to a foundation, cards fly to where they land,
- * draw 1 or 3, undo, auto-complete, score / moves / time, confetti on a win. */
-#include <ui.h>
+ * draw 1 or 3, undo, auto-complete, score / moves / time. */
+#include "game.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +20,9 @@ static int nundo;
 static bool draw3, win, autoplay, started;
 static uint32_t t_start, t_end;
 
-static color_t RED = RGB(0xE0, 0x3E, 0x66), BLACK = RGB(0x2B, 0x22, 0x45), FACE = RGB(0xF6, 0xF2, 0xFF);
+/* card content colours, the same in every theme: warm paper, muted red and graphite ink, a slate back */
+static color_t RED = RGB(0xB3, 0x42, 0x3A), BLACK = RGB(0x26, 0x27, 0x2B), FACE = RGB(0xF7, 0xF5, 0xF0);
+static color_t BACK = RGB(0x4A, 0x51, 0x5B), BACK_RIM = RGB(0x6A, 0x73, 0x7E);
 
 /* ---- layout (recomputed every frame from the window size) ---- */
 static int cw, ch, gap, topY, tabY, wfan, W_, H_;
@@ -102,39 +104,34 @@ static const char *RANKS[14] = { "", "A", "2", "3", "4", "5", "6", "7", "8", "9"
 static void draw_card(struct canvas *c, int x, int y, struct card cd, int h_visible) {
     struct canvas cc = *c;
     if (h_visible < ch) canvas_clip(&cc, x, y, cw, h_visible);
-    gfx_shadow(&cc, x, y, cw, ch, 8, 4, 60);
+    gfx_elev(&cc, x, y, cw, ch, R_3, E1, ui_th.elev[E1]);
     if (!cd.up) {
-        gfx_round_fill(&cc, x, y, cw, ch, 8, RGB(0x5B, 0x44, 0xB0));
-        gfx_round_rect(&cc, x, y, cw, ch, 8, RGB(0xD9, 0xCB, 0xFF));
-        gfx_round_fill(&cc, x + 5, y + 5, cw - 10, ch - 10, 5, RGB(0x45, 0x34, 0x93));
-        for (int i = -ch; i < cw; i += 10) {                 /* diagonal hatch, clipped to the inner panel */
-            struct canvas ic = cc;
-            canvas_clip(&ic, x + 6, y + 6, cw - 12, ch - 12);
-            gfx_line(&ic, x + i, y, x + i + ch, y + ch, RGB(0x6C, 0x57, 0xC8));
-            gfx_line(&ic, x + i + ch, y, x + i, y + ch, RGB(0x6C, 0x57, 0xC8));
-        }
+        gfx_round_fill(&cc, x, y, cw, ch, R_3, BACK);
+        gfx_round_rect(&cc, x + SP_2, y + SP_2, cw - 2 * SP_2, ch - 2 * SP_2, R_2, BACK_RIM);
         return;
     }
     color_t col = (cd.suit == 1 || cd.suit == 2) ? RED : BLACK;
-    gfx_round_fill(&cc, x, y, cw, ch, 8, FACE);
-    gfx_round_rect(&cc, x, y, cw, ch, 8, RGBA(0, 0, 0, 70));
-    const struct font *f = &font_ui_bold;
+    gfx_round_fill(&cc, x, y, cw, ch, R_3, FACE);
+    gfx_round_rect(&cc, x, y, cw, ch, R_3, RGBA(0, 0, 0, 46));
+    const struct font *f = T_BODY_B;
     int tw = gfx_text_width(f, RANKS[cd.rank]);
-    gfx_text(&cc, f, x + 7, y + 4, RANKS[cd.rank], col);
-    suit_draw(&cc, 1, cd.suit, x + 7 + tw + 3, y + 6);
+    gfx_text(&cc, f, x + SP_3, y + SP_2, RANKS[cd.rank], col);
+    suit_draw(&cc, 1, cd.suit, x + SP_3 + tw + SP_2, y + SP_2 + (f->height - suit_sz[1]) / 2);
     int big = suit_sz[0];
     if (cd.rank >= 11) {
-        gfx_text_center(&cc, &font_big, x, y + ch / 2 - font_big.height / 2 - 6, cw, RANKS[cd.rank], col);
-        suit_draw(&cc, 1, cd.suit, x + cw / 2 - suit_sz[1] / 2, y + ch - suit_sz[1] - 10);
+        gfx_text_center(&cc, T_DISPLAY, x, y + ch / 2 - T_DISPLAY->height / 2 - 6, cw, RANKS[cd.rank], col);
+        suit_draw(&cc, 1, cd.suit, x + cw / 2 - suit_sz[1] / 2, y + ch - suit_sz[1] - SP_4);
     } else {
         suit_draw(&cc, 0, cd.suit, x + (cw - big) / 2, y + ch / 2 - big / 2 + 8);
     }
 }
 
-static void draw_slot(struct canvas *c, int x, int y, const char *label) {
-    gfx_round_fill(c, x, y, cw, ch, 8, RGBA(0, 0, 0, 40));
-    gfx_round_rect(c, x, y, cw, ch, 8, RGBA(255, 255, 255, 60));
-    if (label) gfx_text_center(c, &font_title, x, y + (ch - font_title.height) / 2, cw, label, RGBA(255, 255, 255, 70));
+static void draw_slot(struct ui *ui, int x, int y, const char *label, int icon) {
+    struct canvas *c = ui->c;
+    gfx_round_fill(c, x, y, cw, ch, R_3, TH_A(UI_TEXT, 6));
+    gfx_round_rect(c, x, y, cw, ch, R_3, ui_th.line_strong);
+    if (label) gfx_text_center(c, T_TITLE, x, y + (ch - T_TITLE->height) / 2, cw, label, UI_TEXT3);
+    if (icon >= 0) ui_icon(ui, x + (cw - ICON_LG) / 2, y + (ch - ICON_LG) / 2, icon, ICON_LG, UI_TEXT3);
 }
 
 /* ---- game ---- */
@@ -255,15 +252,6 @@ static bool can_autocomplete(void) {
     return true;
 }
 
-/* ---- confetti ---- */
-struct bit { float x, y, vx, vy; color_t col; int w; };
-static struct bit bits[90];
-static void confetti_init(void) {
-    static const color_t cols[6] = { RGB(0xB3, 0x88, 0xFF), RGB(0xFF, 0x7A, 0xC6), RGB(0xFF, 0xC2, 0x4B), RGB(0x4B, 0xE0, 0x8A), RGB(0x4B, 0xD8, 0xF5), RGB(0xFF, 0x5F, 0x7A) };
-    for (int i = 0; i < 90; i++)
-        bits[i] = (struct bit){ rand() % W_, -(rand() % H_), (rand() % 100 - 50) / 25.0f, 1.5f + rand() % 100 / 40.0f, cols[rand() % 6], 5 + rand() % 6 };
-}
-
 int main(int argc, char **argv) {
     struct gui_window *w = gui_window_create("Solitaire", 720, 660, 0);
     if (!w) return 1;
@@ -273,11 +261,11 @@ int main(int argc, char **argv) {
     new_game();
     int drag_p = -1, drag_i = 0, drag_n = 0;
     float press_x = 0, press_y = 0, grab_dx = 0, grab_dy = 0;
-    bool moved_drag = false, was_win = false;
+    bool moved_drag = false;
     uint32_t last_auto = 0;
     int mode_tab = 0;
     for (;;) {
-        bool busy = fly.on || autoplay || win || drag_p >= 0;
+        bool busy = fly.on || autoplay || drag_p >= 0;
         if (!ui_poll(&ui, busy ? 16 : 500)) break;
         W_ = w->w; H_ = w->h;
         gap = W_ / 60 < 8 ? 8 : W_ / 60;
@@ -285,14 +273,12 @@ int main(int argc, char **argv) {
         if (cw > 110) cw = 110;
         ch = cw * 7 / 5;
         gap = (W_ - 7 * cw) / 8;
-        topY = 64; tabY = topY + ch + 22;
+        topY = HEAD + SP_5; tabY = topY + ch + SP_6;
         wfan = cw / 5;
         suits_build(0, cw * 5 / 12);
         suits_build(1, 14);
         uint32_t now = uptime_ms();
         if (fly.on && now - fly.t0 >= FLY_MS) fly.on = false;
-        if (win && !was_win) confetti_init();
-        was_win = win;
 
         struct gui_event k;
         while (ui_key(&ui, &k)) {
@@ -302,7 +288,7 @@ int main(int argc, char **argv) {
         }
 
         /* ---- mouse ---- */
-        if (ui.pressed && !fly.on && !win && ui.my > 48) {
+        if (ui.pressed && !fly.on && !win && ui.my > HEAD) {
             int hp = -1, hi = -1;
             for (int p = NPILES - 1; p >= 0 && hp < 0; p--) {
                 struct pile *pl = &g.p[p];
@@ -371,32 +357,33 @@ int main(int argc, char **argv) {
         /* ---- draw ---- */
         ui_clear(&ui);
         struct canvas *c = ui.c;
-        gfx_vgradient(c, 0, 48, W_, H_ - 48, RGB(0x1B, 0x55, 0x45), RGB(0x10, 0x34, 0x2E));
-        gfx_fill(c, 0, 0, W_, 48, UI_PANEL);
-        gfx_fill(c, 0, 47, W_, 1, UI_BORDER);
-        if (ui_button(&ui, 10, 7, 96, 34, "New Game", UI_ACCENT_BTN)) new_game();
-        if (ui_button(&ui, 114, 7, 70, 34, "Undo", nundo ? UI_NORMAL_BTN : UI_GHOST_BTN)) undo();
+        game_head(&ui, W_);
+        {
+            char t[16];
+            uint32_t el = started ? ((win ? t_end : now) - t_start) / 1000 : 0;
+            snprintf(t, sizeof t, "%d:%02d", (int)(el / 60), (int)(el % 60));
+            game_stat(&ui, game_stati(&ui, game_stati(&ui, SP_5, "Score", g.score), "Moves", g.moves), "Time", t);
+        }
+        int rx = W_ - SP_5;
+        if (game_btn(&ui, &rx, UI_NOICON, "New game", UI_SECONDARY)) new_game();
         {
             const char *names[2] = { "Draw 1", "Draw 3" };
+            int sw = 3 * SP_1;
+            for (int i = 0; i < 2; i++) sw += gfx_text_width(T_BODY, names[i]) + 2 * SP_4;
+            rx -= sw;
             mode_tab = draw3;
-            if (ui_tabs(&ui, 194, 7, 150, 34, names, 2, &mode_tab) && mode_tab != draw3) { draw3 = mode_tab; new_game(); }
+            if (ui_segmented(&ui, rx, CTL_Y, NULL, names, 2, &mode_tab) && mode_tab != draw3) { draw3 = mode_tab; new_game(); }
+            rx -= SP_3;
         }
-        if (can_autocomplete() && !autoplay && ui_button(&ui, 354, 7, 90, 34, "Auto", UI_NORMAL_BTN)) autoplay = true;
-        {
-            char t[64];
-            uint32_t el = started ? ((win ? t_end : now) - t_start) / 1000 : 0;
-            snprintf(t, sizeof t, "Score %d    Moves %d    %d:%02d", g.score, g.moves, (int)(el / 60), (int)(el % 60));
-            int tw = gfx_text_width(&font_ui, t);
-            gfx_text(c, &font_ui, W_ - 14 - tw, 14, t, UI_TEXT_DIM);
-        }
+        if (game_btn(&ui, &rx, ICON_UNDO, NULL, UI_GHOST | (nundo ? 0 : UI_DISABLED))) undo();
+        ui_tooltip(&ui, rx + SP_3, CTL_Y, H_CTL, H_CTL, "Undo · U");
+        if (can_autocomplete() && !autoplay && game_btn(&ui, &rx, UI_NOICON, "Finish", UI_SECONDARY)) autoplay = true;
         /* top row */
         if (g.p[STOCK].n) draw_card(c, col_x(0), topY, (struct card){ 0, 0, 0 }, ch);
         else {
-            draw_slot(c, col_x(0), topY, NULL);
-            gfx_circle_fill(c, col_x(0) + cw / 2, topY + ch / 2, cw / 5, RGBA(255, 255, 255, 60));
-            gfx_circle_fill(c, col_x(0) + cw / 2, topY + ch / 2, cw / 5 - 4, RGB(0x17, 0x44, 0x38));
+            draw_slot(&ui, col_x(0), topY, NULL, g.p[WASTE].n ? ICON_REFRESH : -1);
         }
-        draw_slot(c, col_x(1), topY, NULL);
+        draw_slot(&ui, col_x(1), topY, NULL, -1);
         for (int i = 0; i < g.p[WASTE].n; i++) {
             if (g.p[WASTE].n - 1 - i > 3 && draw3) continue;
             if (drag_p == WASTE && moved_drag && i == g.p[WASTE].n - 1) continue;
@@ -409,7 +396,7 @@ int main(int argc, char **argv) {
         for (int f = FOUND0; f < TAB0; f++) {
             int x, y;
             pile_xy(f, 0, &x, &y);
-            draw_slot(c, x, y, "A");
+            draw_slot(&ui, x, y, "A", -1);
             int n = g.p[f].n;
             if (fly.on && fly.hp == f) n = fly.hidx;
             if (drag_p == f && moved_drag) n--;
@@ -419,7 +406,7 @@ int main(int argc, char **argv) {
             struct pile *pl = &g.p[p];
             int x0, y0;
             pile_xy(p, 0, &x0, &y0);
-            draw_slot(c, x0, y0, pl->n ? NULL : "K");
+            draw_slot(&ui, x0, y0, pl->n ? NULL : "K", -1);
             for (int i = 0; i < pl->n; i++) {
                 if (drag_p == p && moved_drag && i >= drag_i) break;
                 if (fly.on && fly.hp == p && i >= fly.hidx) break;
@@ -437,7 +424,7 @@ int main(int argc, char **argv) {
                 if (!ok) continue;
                 int x, y;
                 pile_xy(p, g.p[p].n ? g.p[p].n - 1 : 0, &x, &y);
-                gfx_round_rect(c, x - 2, y - 2, cw + 4, ch + 4, 10, RGBA(0xFF, 0xE0, 0x7A, 200));
+                gfx_rrect_ring(c, x - 3, y - 3, cw + 6, ch + 6, RADII(R_3 + 3, R_3 + 3, R_3 + 3, R_3 + 3), 2, ui_th.accent_line);
             }
         }
         if (fly.on) {
@@ -451,21 +438,10 @@ int main(int argc, char **argv) {
             for (int i = 0; i < drag_n; i++) draw_card(c, ui.mx - (int)grab_dx, ui.my - (int)grab_dy + i * step, g.p[drag_p].c[drag_i + i], ch);
         }
         if (win) {
-            for (int i = 0; i < 90; i++) {
-                struct bit *b = &bits[i];
-                b->x += b->vx; b->y += b->vy;
-                if (b->y > H_) { b->y = -10; b->x = rand() % W_; }
-                gfx_round_fill(c, (int)b->x, (int)b->y, b->w, b->w * 2 / 3 + 2, 2, b->col);
-            }
-            int pw = 330, ph = 150, px = (W_ - pw) / 2, py = (H_ - ph) / 2;
-            gfx_shadow(c, px, py, pw, ph, 14, 14, 150);
-            gfx_round_fill(c, px, py, pw, ph, 14, RGBA(0x1E, 0x1C, 0x2D, 240));
-            gfx_round_rect(c, px, py, pw, ph, 14, RGBA(0xB3, 0x88, 0xFF, 160));
-            gfx_text_center(c, &font_title, px, py + 16, pw, "You won!", UI_GOOD);
-            char t[48];
-            snprintf(t, sizeof t, "Score %d in %d moves", g.score, g.moves);
-            gfx_text_center(c, &font_ui, px, py + 58, pw, t, UI_TEXT_DIM);
-            if (ui_button(&ui, px + pw / 2 - 60, py + ph - 52, 120, 36, "Play again", UI_ACCENT_BTN)) new_game();
+            char t[64];
+            uint32_t el = (t_end - t_start) / 1000;
+            snprintf(t, sizeof t, "Score %d in %d moves, %d:%02d.", g.score, g.moves, (int)(el / 60), (int)(el % 60));
+            if (game_card(&ui, 0, HEAD, W_, H_ - HEAD, "You won", t, NULL, "Play again")) new_game();
         }
         ui_end(&ui);
     }

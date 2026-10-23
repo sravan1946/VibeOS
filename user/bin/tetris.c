@@ -1,5 +1,5 @@
-/* tetris - SRS-ish falling blocks in the VibeOS style */
-#include <ui.h>
+/* tetris - SRS-ish falling blocks */
+#include "game.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,11 +8,12 @@
 #define BW 10
 #define BH 20
 #define CELL 26
-#define PAD 16
-#define SIDE_X (PAD + BW * CELL + 16)
+#define PAD SP_5
+#define TOP (HEAD + PAD)
+#define SIDE_X (PAD + BW * CELL + PAD)
 #define SIDE_W 132
 #define WIN_W (SIDE_X + SIDE_W + PAD)
-#define WIN_H (BH * CELL + 2 * PAD)
+#define WIN_H (TOP + BH * CELL + PAD)
 #define BEST_PATH "/home/.tetris_best"
 
 #define DAS_DELAY 160
@@ -24,10 +25,11 @@
 enum { I_, J_, L_, O_, S_, T_, Z_ };
 enum { PLAY, PAUSED, CLEARING, DEAD };
 
-static const color_t COL[7] = {
-    RGB(0x4B, 0xD8, 0xF5), RGB(0x6C, 0x7C, 0xFF), RGB(0xFF, 0xA2, 0x4B), RGB(0xFF, 0xD8, 0x4B),
-    RGB(0x4B, 0xE0, 0x8A), RGB(0xB3, 0x88, 0xFF), RGB(0xFF, 0x5F, 0x7A),
-};
+/* I J L O S T Z in the muted content hues */
+static color_t piece_col(int t) {
+    static const signed char H[7] = { 6, 4, -1, 3, 2, 5, 1 };
+    return H[t] < 0 ? mix(game_fill(1), game_fill(3), 128) : game_fill(H[t]);
+}
 /* rotation-0 cells in the SRS bounding box; box size n (O never rotates) */
 static const signed char SHAPE[7][4][2] = {
     { {0,1},{1,1},{2,1},{3,1} }, { {0,0},{0,1},{1,1},{2,1} }, { {2,0},{0,1},{1,1},{2,1} },
@@ -169,7 +171,7 @@ static void lock_piece(uint32_t now) {
         state = CLEARING; clear_t = now;
         static const int pts[5] = { 0, 100, 300, 500, 800 };
         score += pts[nclear] * (level + 1);
-        static const char *names[5] = { "", "Single", "Double", "Triple", "TETRIS!" };
+        static const char *names[5] = { "", "Single", "Double", "Triple", "Tetris" };
         snprintf(flash_msg, sizeof flash_msg, "%s", names[nclear]);
         flash_t = now;
         beep(nclear == 4 ? 988 : 660, nclear == 4 ? 50 : 25);
@@ -202,13 +204,7 @@ static void do_hold(void) {
 }
 
 /* ---- drawing ---- */
-static void draw_cell(struct canvas *c, int x, int y, int s, color_t col, int alpha) {
-    color_t top = mix(col, RGB(255, 255, 255), 70), bot = mix(col, RGB(0, 0, 0), 60);
-    if (alpha < 255) { top = (top & 0xFFFFFF) | (alpha << 24); bot = (bot & 0xFFFFFF) | (alpha << 24); }
-    gfx_round_fill(c, x + 1, y + 1, s - 2, s - 2, 5, bot);
-    gfx_vgradient(c, x + 3, y + 3, s - 6, s - 6, (col & 0xFFFFFF) | (alpha << 24), (mix(col, RGB(0, 0, 0), 40) & 0xFFFFFF) | (alpha << 24));
-    gfx_fill(c, x + 3, y + 2, s - 6, 2, top);
-}
+static void draw_cell(struct canvas *c, int x, int y, int s, color_t col) { gfx_round_fill(c, x + 1, y + 1, s - 2, s - 2, R_1, col); }
 static void mini(struct canvas *c, int type, int cx, int cy, int s) {
     int cc[4][2], minx = 9, maxx = 0, miny = 9, maxy = 0;
     cells(type, 0, cc);
@@ -219,104 +215,93 @@ static void mini(struct canvas *c, int type, int cx, int cy, int s) {
         if (cc[i][1] > maxy) maxy = cc[i][1];
     }
     int ox = cx - (maxx - minx + 1) * s / 2 - minx * s, oy = cy - (maxy - miny + 1) * s / 2 - miny * s;
-    for (int i = 0; i < 4; i++) draw_cell(c, ox + cc[i][0] * s, oy + cc[i][1] * s, s, COL[type], 255);
+    for (int i = 0; i < 4; i++) draw_cell(c, ox + cc[i][0] * s, oy + cc[i][1] * s, s, piece_col(type));
 }
-static void stat(struct canvas *c, int y, const char *k, int v) {
-    char b[24];
+static void side_row(struct ui *ui, int y, const char *k, int v, bool first) {
+    char b[16];
     snprintf(b, sizeof b, "%d", v);
-    gfx_text(c, &font_ui, SIDE_X + 12, y, k, UI_TEXT_DIM);
-    gfx_text(c, &font_big, SIDE_X + 12, y + 14, b, UI_TEXT);
+    ui_card_row(ui, SIDE_X, y, SIDE_W, H_ROW + SP_2, k, NULL, first);
+    gfx_text(ui->c, T_BODY_B, SIDE_X + SIDE_W - SP_4 - gfx_text_width(T_BODY_B, b), y + (H_ROW + SP_2 - T_BODY->height) / 2, b, UI_TEXT);
 }
 
 static void draw(struct ui *ui, uint32_t now) {
     struct canvas *c = ui->c;
     ui_clear(ui);
-    int bx = PAD, by = PAD, bw = BW * CELL, bh = BH * CELL;
-    gfx_shadow(c, bx, by, bw, bh, 8, 10, 120);
-    gfx_round_fill(c, bx, by, bw, bh, 8, RGB(0x10, 0x0F, 0x1A));
-    for (int x = 1; x < BW; x++) gfx_fill(c, bx + x * CELL, by + 4, 1, bh - 8, RGBA(255, 255, 255, 8));
-    for (int y = 1; y < BH; y++) gfx_fill(c, bx + 4, by + y * CELL, bw - 8, 1, RGBA(255, 255, 255, 8));
-    gfx_round_rect(c, bx, by, bw, bh, 8, UI_BORDER);
+    game_head(ui, WIN_W);
+    game_stati(ui, game_stati(ui, PAD, "Score", score), "Best", best);
+    int rx = WIN_W - PAD;
+    if (game_btn(ui, &rx, UI_NOICON, "New game", UI_SECONDARY)) reset();
+
+    int bx = PAD, by = TOP, bw = BW * CELL, bh = BH * CELL;
+    game_well(ui, bx, by, bw, bh);
+    for (int x = 1; x < BW; x++) gfx_fill(c, bx + x * CELL, by, 1, bh, TH_A(UI_TEXT, 8));
+    for (int y = 1; y < BH; y++) gfx_fill(c, bx, by + y * CELL, bw, 1, TH_A(UI_TEXT, 8));
 
     for (int y = 0; y < BH; y++)
         for (int x = 0; x < BW; x++)
-            if (board[y][x] >= 0) draw_cell(c, bx + x * CELL, by + y * CELL, CELL, COL[(int)board[y][x]], 255);
+            if (board[y][x] >= 0) draw_cell(c, bx + x * CELL, by + y * CELL, CELL, piece_col(board[y][x]));
 
     if (state == CLEARING) {
         int t = (int)(now - clear_t) * 256 / CLEAR_MS;
         if (t > 256) t = 256;
-        int a = (t < 90 ? t * 255 / 90 : 255 - (t - 90) * 255 / 166);
+        int a = (t < 90 ? t * 160 / 90 : 160 - (t - 90) * 160 / 166);
         for (int i = 0; i < nclear; i++) {
             int y = by + clear_rows[i] * CELL;
-            gfx_fill(c, bx, y, bw, CELL, RGBA(255, 255, 255, a < 0 ? 0 : a));
+            gfx_fill(c, bx, y, bw, CELL, TH_A(UI_TEXT, a < 0 ? 0 : a));
             int shrink = t * bw / 512;
-            gfx_fill(c, bx, y, shrink, CELL, UI_BG);          /* wipe in from the sides */
-            gfx_fill(c, bx + bw - shrink, y, shrink, CELL, UI_BG);
+            gfx_fill(c, bx, y, shrink, CELL, ui_th.base);          /* wipe in from the sides */
+            gfx_fill(c, bx + bw - shrink, y, shrink, CELL, ui_th.base);
         }
     } else {
         int cc[4][2];
-        if (state == PLAY || state == PAUSED) {
+        cells(cur, rot, cc);
+        if (state == PLAY) {
             int gy = ghost_y();
-            cells(cur, rot, cc);
-            if (state == PLAY) {
-                for (int i = 0; i < 4; i++) {
-                    int y = gy + cc[i][1];
-                    if (y < 0) continue;
-                    int x = bx + (px + cc[i][0]) * CELL, yy = by + y * CELL;
-                    gfx_round_fill(c, x + 2, yy + 2, CELL - 4, CELL - 4, 5, (COL[cur] & 0xFFFFFF) | (40 << 24));
-                    gfx_round_rect(c, x + 2, yy + 2, CELL - 4, CELL - 4, 5, (COL[cur] & 0xFFFFFF) | (150 << 24));
-                }
-                for (int i = 0; i < 4; i++) {
-                    int y = py + cc[i][1];
-                    if (y < 0) continue;
-                    draw_cell(c, bx + (px + cc[i][0]) * CELL, by + y * CELL, CELL, COL[cur], 255);
-                }
+            color_t pc = piece_col(cur);
+            for (int i = 0; i < 4; i++) {
+                int y = gy + cc[i][1];
+                if (y < 0) continue;
+                int x = bx + (px + cc[i][0]) * CELL, yy = by + y * CELL;
+                gfx_round_fill(c, x + 1, yy + 1, CELL - 2, CELL - 2, R_1, TH_A(pc, 36));
+                gfx_round_rect(c, x + 1, yy + 1, CELL - 2, CELL - 2, R_1, TH_A(pc, 140));
             }
-        } else if (state == DEAD) {
-            cells(cur, rot, cc);
             for (int i = 0; i < 4; i++) {
                 int y = py + cc[i][1];
-                if (y >= 0) draw_cell(c, bx + (px + cc[i][0]) * CELL, by + y * CELL, CELL, RGB(0x66, 0x60, 0x80), 255);
+                if (y >= 0) draw_cell(c, bx + (px + cc[i][0]) * CELL, by + y * CELL, CELL, pc);
             }
-        }
+        } else if (state == DEAD)
+            for (int i = 0; i < 4; i++) {
+                int y = py + cc[i][1];
+                if (y >= 0) draw_cell(c, bx + (px + cc[i][0]) * CELL, by + y * CELL, CELL, UI_TEXT3);
+            }
     }
 
-    /* side panel */
-    gfx_text(c, &font_title, SIDE_X + 2, PAD - 6, "Tetris", UI_TEXT);
-    ui_panel(ui, SIDE_X, PAD + 32, SIDE_W, 78);
-    gfx_text(c, &font_ui_bold, SIDE_X + 12, PAD + 38, "HOLD", UI_TEXT_DIM);
-    if (hold >= 0) mini(c, hold, SIDE_X + SIDE_W / 2, PAD + 82, 16);
-    ui_panel(ui, SIDE_X, PAD + 120, SIDE_W, 3 * 50 + 30);
-    gfx_text(c, &font_ui_bold, SIDE_X + 12, PAD + 126, "NEXT", UI_TEXT_DIM);
-    for (int i = 0; i < 3; i++) mini(c, nextq[i], SIDE_X + SIDE_W / 2, PAD + 168 + i * 50, i ? 14 : 16);
-    stat(c, PAD + 312, "SCORE", score);
-    stat(c, PAD + 376, "LEVEL", level + 1);
-    stat(c, PAD + 440, "LINES", lines);
-    char b[24];
-    snprintf(b, sizeof b, "Best %d", best);
-    gfx_text(c, &font_ui, SIDE_X + 12, PAD + 504, b, UI_ACCENT2);
+    /* side column: hold, next, level and lines */
+    int y = TOP;
+    ui_card(ui, SIDE_X, y, SIDE_W, 92);
+    gfx_text(c, T_CAPTION_B, SIDE_X + SP_4, y + SP_3, "Hold", UI_TEXT2);
+    if (hold >= 0) mini(c, hold, SIDE_X + SIDE_W / 2, y + 54, 16);
+    y += 92 + SP_4;
+    ui_card(ui, SIDE_X, y, SIDE_W, 3 * 50 + 30);
+    gfx_text(c, T_CAPTION_B, SIDE_X + SP_4, y + SP_3, "Next", UI_TEXT2);
+    for (int i = 0; i < 3; i++) mini(c, nextq[i], SIDE_X + SIDE_W / 2, y + 54 + i * 50, i ? 14 : 16);
+    y += 3 * 50 + 30 + SP_4;
+    ui_card(ui, SIDE_X, y, SIDE_W, 2 * (H_ROW + SP_2));
+    side_row(ui, y, "Level", level + 1, true);
+    side_row(ui, y + H_ROW + SP_2, "Lines", lines, false);
 
     if (flash_msg[0] && now - flash_t < 900 && state != DEAD) {
         int a = 255 - (int)(now - flash_t) * 255 / 900;
         int dy = (int)(now - flash_t) / 40;
-        gfx_text_center(c, &font_ui_bold, bx, by + bh / 2 - dy - 40, bw, flash_msg, (UI_WARN & 0xFFFFFF) | (a << 24));
+        gfx_text_center(c, T_HEADING, bx, by + bh / 2 - dy - 40, bw, flash_msg, TH_A(UI_TEXT, a));
     }
 
-    if (state == PAUSED || state == DEAD) {
-        gfx_round_fill(c, bx, by, bw, bh, 8, RGBA(0x0C, 0x0A, 0x16, 225));
-        int cy = by + bh / 2;
-        if (state == PAUSED) {
-            gfx_text_center(c, &font_title, bx, cy - 40, bw, "Paused", UI_TEXT);
-            gfx_text_center(c, &font_ui, bx, cy - 4, bw, "P to resume", UI_TEXT_DIM);
-            gfx_text_center(c, &font_ui, bx, cy + 30, bw, "Arrows move, Up/X rotate, Z ccw", UI_TEXT_DIM);
-            gfx_text_center(c, &font_ui, bx, cy + 50, bw, "Down soft, Space hard, C hold", UI_TEXT_DIM);
-        } else {
-            gfx_text_center(c, &font_title, bx, cy - 96, bw, "Game over", UI_BAD);
-            snprintf(b, sizeof b, "Score %d", score);
-            gfx_text_center(c, &font_big, bx, cy - 58, bw, b, UI_TEXT);
-            if (score && score >= best) gfx_text_center(c, &font_ui_bold, bx, cy - 14, bw, "New best!", UI_WARN);
-            if (ui_button(ui, bx + bw / 2 - 70, cy + 20, 140, 38, "Play again", UI_ACCENT_BTN)) reset();
-        }
+    if (state == PAUSED)
+        game_card(ui, bx, by, bw, bh, "Paused", "Press any key to play. Left and Right move, Up or X rotates, Z rotates back, Down drops faster, Space drops, C holds, P pauses.", NULL, NULL);
+    else if (state == DEAD) {
+        char b[48];
+        snprintf(b, sizeof b, score && score >= best ? "Score %d, a new best." : "Score %d. Best %d.", score, best);
+        if (game_card(ui, bx, by, bw, bh, "Game over", b, NULL, "Play again")) reset();
     }
 }
 
