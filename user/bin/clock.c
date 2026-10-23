@@ -1,5 +1,7 @@
 /* clock - analog/digital clock, stopwatch and countdown timer */
 #include <ui.h>
+#include <design.h>
+#include <icons.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -62,57 +64,54 @@ static void hand(struct canvas *c, float cx, float cy, float ang, float len, flo
     gfx_line_aa(c, cx - s * tail, cy + co * tail, cx + s * len, cy - co * len, w, col);
 }
 
-/* the dial (shadow, ticks, numerals) never changes: render it once per radius into a buffer */
+/* the dial (ticks, numerals) never changes: render it once per radius and theme into a buffer */
 static void draw_dial(struct canvas *c, int cx, int cy, int r) {
-    gfx_shadow(c, cx - r, cy - r, 2 * r, 2 * r, r, 14, 90);
-    gfx_circle_fill(c, cx, cy, r, ui_th.hover);
-    gfx_circle_fill(c, cx, cy, r - 3, UI_PANEL);
-    gfx_circle_fill(c, cx, cy, r - 5, UI_BG);
+    gfx_circle_fill(c, cx, cy, r + 1, ui_th.line);
+    gfx_circle_fill(c, cx, cy, r, ui_th.raised);
     for (int i = 0; i < 60; i++) {
         float a = i * (float)M_PI / 30, s = sinf(a), co = cosf(a);
         bool major = i % 5 == 0;
-        float r0 = r - (major ? 22 : 13), r1 = r - 9;
-        gfx_line_aa(c, cx + s * r0, cy - co * r0, cx + s * r1, cy - co * r1, major ? 3.0f : 1.4f, major ? UI_ACCENT : UI_OV(80));
+        float r0 = r - (major ? 16 : 10), r1 = r - 6;
+        gfx_line_aa(c, cx + s * r0, cy - co * r0, cx + s * r1, cy - co * r1, major ? 2.0f : 1.0f, major ? ui_th.text2 : ui_th.control);
     }
     static const char *const num[] = { "12", "3", "6", "9" };
     static const int nx[] = { 0, 1, 0, -1 }, ny[] = { -1, 0, 1, 0 };
     for (int i = 0; i < 4; i++) {
-        int tw = gfx_text_width(&font_ui_bold, num[i]);
-        int px = cx + nx[i] * (r - 40) - tw / 2, py = cy + ny[i] * (r - 40) - font_ui_bold.height / 2;
-        gfx_text(c, &font_ui_bold, px, py, num[i], UI_TEXT);
+        const struct font *f = T_HEADING;
+        int tw = gfx_text_width(f, num[i]);
+        int px = cx + nx[i] * (r - 32) - tw / 2, py = cy + ny[i] * (r - 32) - f->height / 2;
+        gfx_text(c, f, px, py, num[i], ui_th.text2);
     }
 }
 
 static uint32_t *dial_buf;
 static int dial_r;
 static uint32_t dial_ser;                      /* theme the cached dial was drawn in */
-#define DIAL_PAD 20
+#define DIAL_PAD 4
 
 static void draw_face(struct ui *ui, int cx, int cy, int r, double hh, double mm, double ss) {
     struct canvas *c = ui->c;
     int sz = 2 * (r + DIAL_PAD);
-    if (dial_r != r || dial_ser != ui_th.accent + ui_th.bg) {
-        dial_ser = ui_th.accent + ui_th.bg;
+    uint32_t ser = ui_th.raised ^ ui_th.text2 * 3 ^ ui_th.window * 7;
+    if (dial_r != r || dial_ser != ser) {
+        dial_ser = ser;
         free(dial_buf);
         dial_buf = calloc(sz * sz, 4);
         dial_r = r;
         if (dial_buf) {
             struct canvas dc;
             canvas_init(&dc, dial_buf, sz, sz, sz);
-            gfx_fill(&dc, 0, 0, sz, sz, UI_BG);          /* tab background: lets us blit opaque */
+            gfx_fill(&dc, 0, 0, sz, sz, UI_BG);          /* window background: lets us blit opaque */
             draw_dial(&dc, r + DIAL_PAD, r + DIAL_PAD, r);
         }
     }
     if (dial_buf) gfx_blit(c, cx - r - DIAL_PAD, cy - r - DIAL_PAD, dial_buf, sz, sz, sz);
     else draw_dial(c, cx, cy, r);
     float cxf = cx, cyf = cy;
-    hand(c, cxf + 2, cyf + 3, (float)(hh * M_PI / 6), r * 0.5f, 0, 6.0f, RGBA(0, 0, 0, 70));     /* soft shadows */
-    hand(c, cxf + 2, cyf + 3, (float)(mm * M_PI / 30), r * 0.74f, 0, 4.5f, RGBA(0, 0, 0, 70));
-    hand(c, cxf, cyf, (float)(hh * M_PI / 6), r * 0.5f, 6, 6.0f, UI_TEXT);
-    hand(c, cxf, cyf, (float)(mm * M_PI / 30), r * 0.74f, 8, 4.0f, UI_ACCENT);
-    hand(c, cxf, cyf, (float)(ss * M_PI / 30), r * 0.84f, r * 0.16f, 2.0f, UI_ACCENT2);
-    gfx_circle_fill(c, cx, cy, 7, UI_ACCENT2);
-    gfx_circle_fill(c, cx, cy, 3, UI_BG);
+    hand(c, cxf, cyf, (float)(hh * M_PI / 6), r * 0.5f, 0, 4.0f, UI_TEXT);
+    hand(c, cxf, cyf, (float)(mm * M_PI / 30), r * 0.74f, 0, 3.0f, UI_TEXT);
+    hand(c, cxf, cyf, (float)(ss * M_PI / 30), r * 0.84f, r * 0.14f, 1.5f, ui_th.accent_line);
+    gfx_circle_fill(c, cx, cy, 4, ui_th.accent_line);
 }
 
 /* ---- tabs ---- */
@@ -130,63 +129,69 @@ static void tab_clock(struct ui *ui, int top) {
     gmtime_r(&lt, &tm);
     double ss = tm.tm_sec + frac / 1000.0, mm = tm.tm_min + ss / 60, hh = (tm.tm_hour % 12) + mm / 60;
 
-    int infoh = 124;
-    int avail_h = H - top - infoh - 12, avail_w = W - 24;
-    int r = (avail_h < avail_w ? avail_h : avail_w) / 2 - 6;
+    int infoh = T_DISPLAY->height + SP_2 + T_BODY->height + T_CAPTION->height + SP_7;
+    int avail_h = H - top - infoh - 2 * SP_7, avail_w = W - 2 * SP_7;
+    int r = (avail_h < avail_w ? avail_h : avail_w) / 2;
     if (r < 40) r = 40;
-    draw_face(ui, W / 2, top + 6 + r, r, hh, mm, ss);
+    draw_face(ui, W / 2, top + SP_7 + r, r, hh, mm, ss);
 
-    int y = top + 12 + 2 * r;
-    ui_panel(ui, 12, y, W - 24, infoh - 4 < H - y - 12 ? H - y - 12 : infoh - 4);
+    int y = top + SP_7 + 2 * r + SP_7;
     char buf[64];
     snprintf(buf, sizeof buf, "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
-    gfx_text_center(c, &font_big, 0, y + 8, W, buf, UI_TEXT);
+    gfx_text_center(c, T_DISPLAY, 0, y, W, buf, UI_TEXT);
+    y += T_DISPLAY->height + SP_2;
     snprintf(buf, sizeof buf, "%s, %d %s %d", DAY[tm.tm_wday % 7], tm.tm_mday, MONTH[tm.tm_mon % 12], tm.tm_year + 1900);
-    gfx_text_center(c, &font_ui, 0, y + 8 + font_big.height + 2, W, buf, UI_TEXT_DIM);
+    gfx_text_center(c, T_BODY, 0, y, W, buf, UI_TEXT2);
     int off = tz_min;
     snprintf(buf, sizeof buf, "UTC%c%02d:%02d", off < 0 ? '-' : '+', abs(off) / 60, abs(off) % 60);
-    gfx_text_center(c, &font_ui, 0, y + 8 + font_big.height + 22, W, buf, UI_TEXT_DIM);
+    gfx_text_center(c, T_CAPTION, 0, y + T_BODY->height, W, buf, UI_TEXT3);
 }
 
 static void tab_stopwatch(struct ui *ui, int top) {
     struct canvas *c = ui->c;
-    int W = ui->win->w, H = ui->win->h;
+    int W = ui->win->w, H = ui->win->h, m = SP_5;
     uint32_t el = sw_elapsed();
     char buf[48];
     fmt_ms(buf, sizeof buf, el, true);
-    ui_panel(ui, 12, top, W - 24, 110);
-    gfx_text_center(c, &font_big, 0, top + 28, W, buf, sw_run ? UI_TEXT : UI_TEXT_DIM);
-    int bw = (W - 24 - 20) / 3, by = top + 124;
-    if (ui_button(ui, 12, by, bw, 40, sw_run ? "Stop" : "Start", sw_run ? UI_NORMAL_BTN : UI_ACCENT_BTN)) {
+    int y = top + SP_8;
+    gfx_text_center(c, T_DISPLAY, 0, y, W, buf, sw_run || el ? UI_TEXT : UI_TEXT2);
+    y += T_DISPLAY->height + SP_7;
+    const char *go = sw_run ? "Stop" : el ? "Resume" : "Start";
+    int bw = ui_button_w(ICON_PLAY, "Resume"), lw = ui_button_w(ICON_FLAG, "Lap"), rw = ui_button_w(ICON_RESTART, "Reset");
+    int bx = (W - bw - lw - rw - 2 * SP_3) / 2;
+    if (ui_button_ex(ui, bx, y, bw, H_CTL, sw_run ? ICON_PAUSE : ICON_PLAY, go, sw_run ? UI_SECONDARY : UI_PRIMARY)) {
         if (sw_run) { sw_acc += uptime_ms() - sw_start; sw_run = false; }
         else { sw_start = uptime_ms(); sw_run = true; }
     }
-    if (ui_button(ui, 22 + bw, by, bw, 40, "Lap", UI_NORMAL_BTN) && (sw_run || el) && nlaps < MAX_LAPS) {
+    if (ui_button_ex(ui, bx + bw + SP_3, y, lw, H_CTL, ICON_FLAG, "Lap", UI_SECONDARY | ((sw_run || el) && nlaps < MAX_LAPS ? 0 : UI_DISABLED))) {
         laps[nlaps++] = el;
         lap_scroll = 1 << 20;
     }
-    if (ui_button(ui, 32 + 2 * bw, by, bw, 40, "Reset", UI_GHOST_BTN)) { sw_run = false; sw_acc = 0; nlaps = 0; }
-    int ly = by + 54, lh = H - ly - 12;
-    if (lh < 40) return;
-    ui_panel(ui, 12, ly, W - 24, lh);
-    int rowh = 26, vis = (lh - 12) / rowh;
-    if (!nlaps) { gfx_text_center(c, &font_ui, 0, ly + lh / 2 - 8, W, "No laps yet", UI_TEXT_DIM); return; }
-    if (ui_hover(ui, 12, ly, W - 24, lh) && ui->scroll) lap_scroll += ui->scroll;
+    if (ui_button_ex(ui, bx + bw + lw + 2 * SP_3, y, rw, H_CTL, ICON_RESTART, "Reset", UI_GHOST | (el || nlaps ? 0 : UI_DISABLED))) {
+        sw_run = false; sw_acc = 0; nlaps = 0;
+    }
+    int ly = y + H_CTL + SP_7, lh = H - ly - m;
+    if (lh < H_ROW + 2 * SP_2) return;
+    ui_card(ui, m, ly, W - 2 * m, lh);
+    if (!nlaps) { gfx_text_center(c, T_BODY, 0, ly + (lh - T_BODY->height) / 2, W, "Laps appear here while the stopwatch runs", UI_TEXT2); return; }
+    int vis = (lh - 2 * SP_2) / H_ROW;
+    if (ui_hover(ui, m, ly, W - 2 * m, lh) && ui->scroll) lap_scroll += ui->scroll;
     if (lap_scroll > nlaps - vis) lap_scroll = nlaps - vis;
     if (lap_scroll < 0) lap_scroll = 0;
-    ui_vscroll(ui, W - 24, ly + 6, lh - 12, nlaps, vis, &lap_scroll);
     struct canvas cc = *c;
-    canvas_clip(&cc, 12, ly + 4, W - 24, lh - 8);
+    canvas_clip(&cc, m, ly + SP_2, W - 2 * m, lh - 2 * SP_2);
     for (int i = lap_scroll; i < nlaps && i < lap_scroll + vis; i++) {
-        int y = ly + 8 + (i - lap_scroll) * rowh;
+        int ry = ly + SP_2 + (i - lap_scroll) * H_ROW, ty = ry + (H_ROW - T_BODY->height) / 2;
         char a[32], b[32];
         fmt_ms(a, sizeof a, laps[i] - (i ? laps[i - 1] : 0), true);
         fmt_ms(b, sizeof b, laps[i], true);
         snprintf(buf, sizeof buf, "Lap %d", i + 1);
-        gfx_text(&cc, &font_ui, 28, y + 2, buf, UI_TEXT_DIM);
-        gfx_text_center(&cc, &font_mono, W / 2 - 30, y + 1, 100, a, UI_TEXT);
-        gfx_text(&cc, &font_mono, W - 36 - gfx_text_width(&font_mono, b), y + 1, b, UI_ACCENT);
+        if (i > lap_scroll) gfx_hline(&cc, m + SP_4, ry, W - 2 * m - 2 * SP_4, UI_LINE);
+        gfx_text(&cc, T_BODY, m + SP_4, ty, buf, UI_TEXT2);
+        gfx_text(&cc, T_BODY, W / 2 + 40 - gfx_text_width(T_BODY, a), ty, a, UI_TEXT);
+        gfx_text(&cc, T_BODY, W - m - SP_4 - SP_4 - gfx_text_width(T_BODY, b), ty, b, UI_TEXT2);
     }
+    ui_vscroll(ui, W - m - SP_4, ly + SP_2, lh - 2 * SP_2, nlaps, vis, &lap_scroll);
 }
 
 static int tm_remaining_ms(void) {
@@ -198,47 +203,52 @@ static int tm_remaining_ms(void) {
 
 static void tab_timer(struct ui *ui, int top) {
     struct canvas *c = ui->c;
-    int W = ui->win->w, H = ui->win->h;
+    int W = ui->win->w, H = ui->win->h, m = SP_5;
     int left = tm_remaining_ms();
     bool idle = !tm_run && !tm_done && tm_left_ms == tm_set * 1000;
-    int r = (H - top - 130 < W - 60 ? H - top - 130 : W - 60) / 2;
+    int r = (H - top - 2 * SP_7 - 2 * H_CTL - SP_5 - SP_7 < W - 2 * SP_8 ? H - top - 2 * SP_7 - 2 * H_CTL - SP_5 - SP_7 : W - 2 * SP_8) / 2;
     if (r < 50) r = 50;
-    int cx = W / 2, cy = top + 14 + r;
-    /* ring */
+    int cx = W / 2, cy = top + SP_7 + r;
+    /* progress ring: line track, accent fill (DESIGN §9 Progress, bent round) */
     float frac = tm_set ? (float)left / (tm_set * 1000.0f) : 0;
-    gfx_circle_fill(ui->c, cx, cy, r + 2, UI_SURFACE);
-    gfx_circle_fill(ui->c, cx, cy, r - 12, UI_BG);
-    if (tm_done) {
-        bool flash = (uptime_ms() / 400) & 1;
-        arc(c, cx, cy, r - 5, 0, 2 * (float)M_PI, 8, flash ? UI_BAD : UI_WARN);
-    } else if (frac > 0.001f) {
-        arc(c, cx, cy, r - 5, 0, 2 * (float)M_PI * frac, 8, UI_ACCENT);
-    }
+    arc(c, cx, cy, r - 2, 0, 2 * (float)M_PI, 4, tm_done ? ui_th.warning : ui_th.line);
+    if (!tm_done && frac > 0.001f) arc(c, cx, cy, r - 2, 0, 2 * (float)M_PI * frac, 4, ui_th.accent_line);
     char buf[32];
     uint32_t secs = (left + 999) / 1000;
     if (secs >= 3600) snprintf(buf, sizeof buf, "%u:%02u:%02u", secs / 3600, secs / 60 % 60, secs % 60);
     else snprintf(buf, sizeof buf, "%02u:%02u", secs / 60, secs % 60);
-    gfx_text_center(c, &font_big, cx - r, cy - font_big.height / 2 - 4, 2 * r, buf, tm_done ? UI_WARN : UI_TEXT);
-    gfx_text_center(c, &font_ui, cx - r, cy + font_big.height / 2 + 2, 2 * r, tm_done ? "Time is up!" : tm_run ? "Running" : idle ? "Ready" : "Paused", UI_TEXT_DIM);
+    int ty = cy - (T_DISPLAY->height + T_BODY->height) / 2;
+    gfx_text_center(c, T_DISPLAY, cx - r, ty, 2 * r, buf, UI_TEXT);
+    const char *st = tm_done ? "Time is up" : tm_run ? "Running" : idle ? "Ready" : "Paused";
+    ty += T_DISPLAY->height;
+    if (tm_done) {                                     /* warning hue sits near the accent: always with its icon */
+        int sw = ICON_SM + SP_2 + gfx_text_width(T_BODY, st), sx = cx - sw / 2;
+        ui_icon(ui, sx, ty + 1, ICON_WARNING, ICON_SM, ui_th.warning);
+        gfx_text(c, T_BODY, sx + ICON_SM + SP_2, ty, st, ui_th.warning);
+    } else gfx_text_center(c, T_BODY, cx - r, ty, 2 * r, st, UI_TEXT2);
 
-    int y = cy + r + 16;
+    int y = cy + r + SP_7;
     if (idle) {
-        /* adjust minutes / seconds */
-        int bx = W / 2 - 150;
-        static const struct { const char *l; int d; } adj[] = { { "-5m", -300 }, { "-1m", -60 }, { "-10s", -10 }, { "+10s", 10 }, { "+1m", 60 }, { "+5m", 300 } };
-        for (int i = 0; i < 6; i++)
-            if (ui_button(ui, bx + i * 50, y, 46, 30, adj[i].l, UI_NORMAL_BTN)) {
+        static const struct { const char *l; int d; } adj[] = { { "\xe2\x88\x92" "5m", -300 }, { "\xe2\x88\x92" "1m", -60 }, { "\xe2\x88\x92" "10s", -10 },
+                                                            { "+10s", 10 }, { "+1m", 60 }, { "+5m", 300 } };
+        int aw[6], tw = 5 * SP_2;
+        for (int i = 0; i < 6; i++) tw += aw[i] = ui_button_w(UI_NOICON, adj[i].l);
+        int bx = (W - tw) / 2;
+        for (int i = 0; i < 6; i++) {
+            if (ui_button(ui, bx, y, aw[i], H_CTL, adj[i].l, UI_SECONDARY)) {
                 tm_set += adj[i].d;
                 if (tm_set < 10) tm_set = 10;
                 if (tm_set > 99 * 60 + 59) tm_set = 99 * 60 + 59;
                 tm_left_ms = tm_set * 1000;
             }
+            bx += aw[i] + SP_2;
+        }
     }
-    y += 40;                                          /* keep Start/Reset from jumping */
-    int bw = (W - 24 - 10) / 2;
-    if (y + 40 > H - 6) y = H - 46;
-    const char *go = tm_run ? "Pause" : tm_done ? "Restart" : "Start";
-    if (ui_button(ui, 12, y, bw, 40, go, tm_run ? UI_NORMAL_BTN : UI_ACCENT_BTN)) {
+    y += H_CTL + SP_5;                                   /* keep Start/Reset from jumping */
+    if (y + H_CTL > H - m) y = H - m - H_CTL;
+    const char *go = tm_run ? "Pause" : tm_done ? "Restart" : idle ? "Start" : "Resume";
+    int gw = ui_button_w(ICON_PLAY, "Restart"), rw = ui_button_w(ICON_RESTART, "Reset"), gx = (W - gw - rw - SP_3) / 2;
+    if (ui_button_ex(ui, gx, y, gw, H_CTL, tm_run ? ICON_PAUSE : ICON_PLAY, go, tm_run ? UI_SECONDARY : UI_PRIMARY)) {
         if (tm_run) { tm_left_ms = tm_remaining_ms(); tm_run = false; }
         else {
             if (tm_done) { tm_done = false; tm_left_ms = tm_set * 1000; beeps_left = 0; }
@@ -247,7 +257,7 @@ static void tab_timer(struct ui *ui, int top) {
             tm_run = true;
         }
     }
-    if (ui_button(ui, 22 + bw, y, bw, 40, "Reset", UI_GHOST_BTN)) {
+    if (ui_button_ex(ui, gx + gw + SP_3, y, rw, H_CTL, ICON_RESTART, "Reset", UI_GHOST | (idle ? UI_DISABLED : 0))) {
         tm_run = tm_done = false; beeps_left = 0; tm_left_ms = tm_set * 1000;
     }
 }
@@ -264,8 +274,8 @@ int main(void) {
     do {
         if (tm_run && tm_remaining_ms() == 0) { tm_run = false; tm_done = true; beeps_left = 3; }   /* fires on any tab */
         ui_clear(&ui);
-        ui_tabs(&ui, 12, 12, w->w - 24, 36, names, 3, &tab);
-        int top = 60;
+        ui_tabbar(&ui, 0, 0, w->w, names, 3, &tab, 0);
+        int top = H_TAB;
         if (tab == 0) tab_clock(&ui, top);
         else if (tab == 1) tab_stopwatch(&ui, top);
         else tab_timer(&ui, top);

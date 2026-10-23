@@ -1,5 +1,7 @@
 /* paint - bitmap canvas with pencil, line, rectangle, ellipse, bucket fill, eraser, undo, PNG/BMP save, PNG/BMP/PPM open */
 #include <ui.h>
+#include <design.h>
+#include <icons.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -14,7 +16,7 @@
 #define DOC_H 520
 #define UNDO_N 8
 
-enum { T_PENCIL, T_LINE, T_RECT, T_ELLIPSE, T_FILL, T_ERASER, T_COUNT };
+enum { TL_PENCIL, TL_LINE, TL_RECT, TL_ELLIPSE, TL_FILL, TL_ERASER, TL_COUNT };
 
 static uint32_t *doc;
 static struct canvas dc;                      /* canvas over doc, so the gfx primitives clip for us */
@@ -22,30 +24,28 @@ static uint32_t *undo[UNDO_N];
 static int nundo;
 static bool dirty, again;                      /* again: a button changed the canvas after it was drawn */
 
-static int tool = T_PENCIL, brush = 3;
+static int tool = TL_PENCIL, brush = 3;
 static bool fill_shapes;
-static color_t fg = RGB(0x1A, 0x10, 0x2E), bg = RGB(255, 255, 255);
+static color_t fg = RGB(0x1B, 0x1C, 0x1F), bg = RGB(255, 255, 255);
 
+/* drawing colours (content, not chrome): a grey ramp and muted hues that sit with Graphite in both themes */
 static const color_t palette[] = {
-    RGB(0, 0, 0), RGB(0x55, 0x55, 0x55), RGB(0x99, 0x99, 0x99), RGB(255, 255, 255),
-    RGB(0xFF, 0x5F, 0x7A), RGB(0xE5, 0x1C, 0x23), RGB(0x8B, 0x1A, 0x1A), RGB(0xFF, 0x8A, 0x3D),
-    RGB(0xFF, 0xC2, 0x4B), RGB(0xFF, 0xEB, 0x3B), RGB(0x9B, 0xE5, 0x64), RGB(0x4B, 0xE0, 0x8A),
-    RGB(0x2E, 0xC5, 0xA0), RGB(0x1B, 0x7F, 0x4B), RGB(0x3D, 0x8B, 0xFD), RGB(0x1E, 0x4E, 0xB8),
-    RGB(0x5A, 0x64, 0xFF), RGB(0x7C, 0x4D, 0xFF), RGB(0xB3, 0x88, 0xFF), RGB(0xFF, 0x7A, 0xC6),
-    RGB(0xFF, 0x4F, 0xA3), RGB(0xA0, 0x52, 0x2D), RGB(0xD2, 0xB4, 0x8C), RGB(0x2A, 0x27, 0x3D),
+    RGB(0x1B, 0x1C, 0x1F), RGB(0x55, 0x58, 0x5E), RGB(0x8A, 0x8D, 0x94), RGB(0xC5, 0xC8, 0xCD), RGB(0xFF, 0xFF, 0xFF),
+    RGB(0x7A, 0x2B, 0x27), RGB(0xC2, 0x45, 0x3E), RGB(0xD9, 0x82, 0x2B), RGB(0xE8, 0xA3, 0x3D), RGB(0xE3, 0xC7, 0x5A),
+    RGB(0x9A, 0xA5, 0x48), RGB(0x4F, 0x9A, 0x5E), RGB(0x2F, 0x5E, 0x3A), RGB(0x3E, 0x8F, 0x8A), RGB(0x4A, 0x7F, 0xC1),
+    RGB(0x2A, 0x4E, 0x7A), RGB(0x5B, 0x67, 0xB0), RGB(0x8A, 0x63, 0xA8), RGB(0x4E, 0x3A, 0x6B), RGB(0xC2, 0x66, 0x8F),
+    RGB(0x8B, 0x5E, 0x3C), RGB(0x5A, 0x3E, 0x28), RGB(0xC9, 0xA9, 0x7E), RGB(0xE9, 0xDC, 0xC4),
 };
 #define NPAL ((int)(sizeof palette / sizeof palette[0]))
 
-static char msg[128];
-static uint32_t msg_until;
-static bool msg_bad;
 static char savepath[PATH_MAX] = "/home/Pictures/drawing.png";
 static bool saving, opening;
+static struct ui *U;
 
-static void say(bool bad, const char *fmt, const char *arg) {
-    snprintf(msg, sizeof msg, fmt, arg);
-    msg_bad = bad;
-    msg_until = uptime_ms() + 4000;
+static void say(const char *fmt, const char *arg) {
+    char m[96];
+    snprintf(m, sizeof m, fmt, arg);
+    ui_toast(U, m, NULL);
 }
 
 /* ---- undo ---- */
@@ -61,7 +61,7 @@ static void push_undo(void) {
     undo[nundo++] = copy;
 }
 static void do_undo(void) {
-    if (!nundo) { say(true, "%s", "Nothing to undo"); return; }
+    if (!nundo) { say("%s", "Nothing to undo"); return; }
     again = true;
     memcpy(doc, undo[--nundo], DOC_W * DOC_H * 4);
     free(undo[nundo]);
@@ -224,47 +224,12 @@ static bool open_doc(const char *path) {
     return true;
 }
 
-/* ---- tool icons ---- */
-static void tool_icon(struct canvas *c, int t, int cx, int cy, color_t col) {
-    switch (t) {
-    case T_PENCIL:
-        gfx_line_aa(c, cx - 8, cy + 8, cx + 6, cy - 6, 5.0f, col);
-        gfx_line_aa(c, cx - 9, cy + 9, cx - 7, cy + 7, 3.0f, UI_ACCENT2);
-        break;
-    case T_LINE: gfx_line_aa(c, cx - 9, cy + 9, cx + 9, cy - 9, 2.4f, col); break;
-    case T_RECT:
-        gfx_line_aa(c, cx - 9, cy - 7, cx + 9, cy - 7, 2.2f, col);
-        gfx_line_aa(c, cx + 9, cy - 7, cx + 9, cy + 7, 2.2f, col);
-        gfx_line_aa(c, cx + 9, cy + 7, cx - 9, cy + 7, 2.2f, col);
-        gfx_line_aa(c, cx - 9, cy + 7, cx - 9, cy - 7, 2.2f, col);
-        break;
-    case T_ELLIPSE: {
-        float px = cx + 10, py = cy;
-        for (int i = 1; i <= 24; i++) {
-            float a = i * 2 * (float)M_PI / 24, x = cx + 10 * cosf(a), y = cy + 7 * sinf(a);
-            gfx_line_aa(c, px, py, x, y, 2.2f, col);
-            px = x; py = y;
-        }
-        break;
-    }
-    case T_FILL:                                  /* tilted bucket with a drop */
-        gfx_line_aa(c, cx - 8, cy - 1, cx, cy - 9, 2.2f, col);
-        gfx_line_aa(c, cx - 8, cy - 1, cx - 1, cy + 6, 2.2f, col);
-        gfx_line_aa(c, cx, cy - 9, cx + 7, cy - 2, 2.2f, col);
-        gfx_line_aa(c, cx - 1, cy + 6, cx + 7, cy - 2, 2.2f, col);
-        gfx_circle_fill(c, cx + 9, cy + 6, 3, UI_ACCENT);
-        break;
-    case T_ERASER:
-        gfx_round_fill(c, cx - 9, cy - 5, 18, 11, 3, col);
-        gfx_round_fill(c, cx - 9, cy - 5, 7, 11, 3, UI_ACCENT2);
-        break;
-    }
-}
-
+static const char *const TOOL_TIP[] = { "Pencil \xc2\xb7 1", "Line \xc2\xb7 2", "Rectangle \xc2\xb7 3", "Ellipse \xc2\xb7 4", "Fill \xc2\xb7 5", "Eraser \xc2\xb7 6" };
 static const char *const TOOL_NAME[] = { "Pencil", "Line", "Rectangle", "Ellipse", "Fill", "Eraser" };
+static const int TOOL_ICON[] = { ICON_PENCIL, ICON_LINE, ICON_RECT, ICON_ELLIPSE, ICON_FILL, ICON_ERASER };
 
 int main(void) {
-    struct gui_window *w = gui_window_create("Paint", 960, 680, 0);
+    struct gui_window *w = gui_window_create("Paint", 880, 652, 0);
     if (!w) { perror("paint"); return 1; }
     doc = malloc(DOC_W * DOC_H * 4);
     if (!doc) { perror("paint"); return 1; }
@@ -272,12 +237,13 @@ int main(void) {
     canvas_init(&dc, doc, DOC_W, DOC_H, DOC_W);
     struct ui ui;
     ui_init(&ui, w);
+    U = &ui;
 
     bool drawing = false;
     int dbtn = 1, lx = 0, ly = 0, sx = 0, sy = 0;     /* active button, last point, shape start */
     do {
         int W = w->w, H = w->h;
-        int sideW = 88, palH = 72;
+        int palH = H_TOOLBAR + H_STATUS;                /* swatch strip + status bar */
         bool modal = saving || opening;
         int smx = ui.mx, smy = ui.my;
         bool sp = ui.pressed, sr = ui.released, srp = ui.rpressed;
@@ -287,7 +253,7 @@ int main(void) {
         if (modal) { ui.mx = ui.my = -1; ui.pressed = ui.released = ui.rpressed = false; ui.nkeys = 0; }
 
         /* canvas placement */
-        int ax = sideW, ay = 0, aw = W - sideW, ah = H - palH;
+        int ax = 0, ay = H_TOOLBAR, aw = W, ah = H - H_TOOLBAR - palH;
         int cx0 = ax + (aw > DOC_W + 24 ? (aw - DOC_W) / 2 : 12), cy0 = ay + (ah > DOC_H + 24 ? (ah - DOC_H) / 2 : 12);
         int mx = ui.mx - cx0, my = ui.my - cy0;
         bool over = ui_hover(&ui, ax, ay, aw, ah);
@@ -307,23 +273,23 @@ int main(void) {
         /* drawing interaction */
         if (!drawing && over && (ui.pressed || ui.rpressed) && mx >= -20 && my >= -20) {
             dbtn = ui.pressed ? 1 : 2;
-            color_t col = tool == T_ERASER ? bg : dbtn == 1 ? fg : bg;
+            color_t col = tool == TL_ERASER ? bg : dbtn == 1 ? fg : bg;
             push_undo();
             dirty = true;
             sx = lx = mx; sy = ly = my;
-            if (tool == T_FILL) flood(mx, my, col);
+            if (tool == TL_FILL) flood(mx, my, col);
             else {
                 drawing = true;
-                if (tool == T_PENCIL || tool == T_ERASER) stamp(mx, my, brush, col);
+                if (tool == TL_PENCIL || tool == TL_ERASER) stamp(mx, my, brush, col);
             }
         } else if (drawing) {
-            color_t col = tool == T_ERASER ? bg : dbtn == 1 ? fg : bg;
-            if (tool == T_PENCIL || tool == T_ERASER) {
+            color_t col = tool == TL_ERASER ? bg : dbtn == 1 ? fg : bg;
+            if (tool == TL_PENCIL || tool == TL_ERASER) {
                 stroke(lx, ly, mx, my, brush, col);
             } else if (nundo) {                                   /* shapes: redraw from the pre-stroke snapshot */
                 memcpy(doc, undo[nundo - 1], DOC_W * DOC_H * 4);
-                if (tool == T_LINE) stroke(sx, sy, mx, my, brush, col);
-                else if (tool == T_RECT) shape_rect(sx, sy, mx, my, brush, col, fill_shapes);
+                if (tool == TL_LINE) stroke(sx, sy, mx, my, brush, col);
+                else if (tool == TL_RECT) shape_rect(sx, sy, mx, my, brush, col, fill_shapes);
                 else shape_ellipse(sx, sy, mx, my, brush, col, fill_shapes);
             }
             lx = mx; ly = my;
@@ -334,83 +300,66 @@ int main(void) {
 redraw:
         ui_clear(&ui);
         struct canvas *c = ui.c;
-        /* canvas */
-        gfx_fill(c, ax, ay, aw, ah, RGB(0x10, 0x0F, 0x1A));
+        /* the document on a neutral pasteboard */
+        gfx_fill(c, ax, ay, aw, ah, ui_th.base);
         struct canvas cc = *c;
         canvas_clip(&cc, ax, ay, aw, ah);
-        gfx_shadow(&cc, cx0, cy0, DOC_W, DOC_H, 4, 12, 140);
+        gfx_elev(&cc, cx0, cy0, DOC_W, DOC_H, 0, E1, ui_th.elev[E1]);
         gfx_blit(&cc, cx0, cy0, doc, DOC_W, DOC_H, DOC_W);
-        gfx_rect(&cc, cx0 - 1, cy0 - 1, DOC_W + 2, DOC_H + 2, RGBA(255, 255, 255, 50));
-        if (over && !modal && mx >= 0 && my >= 0 && mx < DOC_W && my < DOC_H && tool != T_FILL) {
-            int r = brush <= 1 ? 1 : brush / 2;
+        gfx_ring_out(&cc, cx0, cy0, DOC_W, DOC_H, 0, ui_th.line);
+        if (over && !modal && mx >= 0 && my >= 0 && mx < DOC_W && my < DOC_H && tool != TL_FILL) {
+            int r = brush <= 1 ? 1 : brush / 2;                   /* brush outline: reads on any paint colour */
             gfx_circle_fill(&cc, ui.mx, ui.my, r + 1, RGBA(255, 255, 255, 60));
-            gfx_circle_fill(&cc, ui.mx, ui.my, r, RGBA(0x1A, 0x10, 0x2E, 90));
+            gfx_circle_fill(&cc, ui.mx, ui.my, r, RGBA(0, 0, 0, 90));
         }
 
-        /* sidebar */
-        gfx_fill(c, 0, 0, sideW, H - palH, UI_PANEL);
-        gfx_fill(c, sideW - 1, 0, 1, H - palH, UI_BORDER);
-        for (int t = 0; t < T_COUNT; t++) {
-            int bx = 8 + (t % 2) * 38, by = 10 + (t / 2) * 40;
-            bool hov = ui_hover(&ui, bx, by, 36, 36);
-            if (ui.pressed && hov) tool = t;
-            if (t == tool) gfx_round_fill(c, bx, by, 36, 36, 8, UI_ACCENT);
-            else if (hov) gfx_round_fill(c, bx, by, 36, 36, 8, UI_HOVER);
-            else gfx_round_fill(c, bx, by, 36, 36, 8, UI_SURFACE);
-            tool_icon(c, t, bx + 18, by + 18, t == tool ? RGB(0x1A, 0x10, 0x2E) : UI_TEXT);
-            if (hov) {                                          /* tooltip under the toolbar */
-                int tw = gfx_text_width(&font_ui, TOOL_NAME[t]);
-                gfx_round_fill(c, 8, 138, tw + 16, 24, 6, RGB(0x2A, 0x27, 0x3D));
-                gfx_text(c, &font_ui, 16, 142, TOOL_NAME[t], UI_TEXT);
-            }
-        }
-        gfx_text(c, &font_ui_bold, 12, 172, "Size", UI_TEXT_DIM);
+        /* toolbar: tools | size, filled | undo, clear | open, save */
+        ui_toolbar(&ui, 0, 0, W);
+        int ty = (H_TOOLBAR - H_CTL) / 2, tx = SP_3;
+        for (int t = 0; t < TL_COUNT; t++, tx += H_CTL + SP_2)
+            if (ui_icon_button(&ui, tx, ty, TOOL_ICON[t], t == tool ? UI_ON : 0, TOOL_TIP[t])) tool = t;
+        tx += SP_4 - SP_2;
+        gfx_text(c, T_BODY, tx, (H_TOOLBAR - T_BODY->height) / 2, "Size", UI_TEXT2);
+        tx += gfx_text_width(T_BODY, "Size") + SP_4;
+        ui_slider(&ui, tx, (H_TOOLBAR - HIT_MIN) / 2, 112, &brush, 1, 40);
+        tx += 112 + SP_3;
         char b[16];
-        snprintf(b, sizeof b, "%d", brush);
-        gfx_text(c, &font_ui, sideW - 14 - gfx_text_width(&font_ui, b), 172, b, UI_TEXT);
-        ui_slider(&ui, 16, 194, sideW - 36, &brush, 1, 40);
-        /* brush preview */
-        gfx_round_fill(c, 10, 222, sideW - 20, 44, 8, RGB(0xF4, 0xF2, 0xFF));
-        {
-            struct canvas pc = *c;
-            canvas_clip(&pc, 10, 222, sideW - 20, 44);
-            int r = brush <= 1 ? 1 : brush / 2;
-            if (brush <= 1) gfx_pixel(&pc, sideW / 2, 244, fg);
-            else if (brush == 2) gfx_fill(&pc, sideW / 2 - 1, 243, 2, 2, fg);
-            else gfx_circle_fill(&pc, sideW / 2, 244, r > 20 ? 20 : r, fg);
-        }
-        if (tool == T_RECT || tool == T_ELLIPSE) ui_checkbox(&ui, 14, 280, "Filled", &fill_shapes);
-        int by = 316;
-        if (ui_button(&ui, 10, by, sideW - 20, 32, "Undo", UI_NORMAL_BTN)) { do_undo(); drawing = false; }
-        if (ui_button(&ui, 10, by + 40, sideW - 20, 32, "Clear", UI_NORMAL_BTN)) clear_doc();
-        if (ui_button(&ui, 10, by + 80, sideW - 20, 32, "Save", UI_ACCENT_BTN)) saving = true;
-        if (ui_button(&ui, 10, by + 120, sideW - 20, 32, "Open", UI_NORMAL_BTN)) opening = true;
+        snprintf(b, sizeof b, "%d px", brush);
+        gfx_text(c, T_BODY, tx + 40 - gfx_text_width(T_BODY, b), (H_TOOLBAR - T_BODY->height) / 2, b, UI_TEXT);
+        tx += 40 + SP_4;
+        if (tool == TL_RECT || tool == TL_ELLIPSE) ui_checkbox(&ui, tx, ty, "Filled", &fill_shapes);
+        int rx = W - SP_3 - H_CTL;
+        if (ui_icon_button(&ui, rx, ty, ICON_SAVE, 0, "Save \xc2\xb7 Ctrl+S")) saving = true;
+        rx -= H_CTL + SP_2;
+        if (ui_icon_button(&ui, rx, ty, ICON_FOLDER_OPEN, 0, "Open \xc2\xb7 Ctrl+O")) opening = true;
+        rx -= H_CTL + SP_4;
+        if (ui_icon_button(&ui, rx, ty, ICON_TRASH, 0, "Clear canvas")) clear_doc();
+        rx -= H_CTL + SP_2;
+        if (ui_icon_button(&ui, rx, ty, ICON_UNDO, nundo ? 0 : UI_DISABLED, "Undo \xc2\xb7 Ctrl+Z")) { do_undo(); drawing = false; }
 
-        /* palette bar */
-        gfx_fill(c, 0, H - palH, W, palH, UI_PANEL);
-        gfx_fill(c, 0, H - palH, W, 1, UI_BORDER);
-        int py = H - palH + 10;
-        gfx_round_fill(c, 36, py + 22, 32, 32, 6, bg);                          /* secondary, behind */
-        gfx_round_rect(c, 36, py + 22, 32, 32, 6, RGBA(255, 255, 255, 80));
-        gfx_round_fill(c, 14, py + 4, 36, 36, 6, fg);
-        gfx_round_rect(c, 14, py + 4, 36, 36, 6, RGBA(255, 255, 255, 120));
+        /* colour strip: the colour 1 / colour 2 pair, then the swatches */
+        int py = H - palH;
+        gfx_fill(c, 0, py, W, H_TOOLBAR, UI_BG);
+        gfx_hline(c, 0, py, W, UI_LINE);
+        gfx_round_fill(c, SP_3 + 12, py + 14, 20, 20, R_2, bg);                 /* colour 2, behind */
+        gfx_round_rect(c, SP_3 + 12, py + 14, 20, 20, R_2, ui_th.control);
+        gfx_round_fill(c, SP_3, py + 6, 20, 20, R_2, ui_th.window);
+        gfx_round_fill(c, SP_3 + 1, py + 7, 18, 18, R_2, fg);
+        gfx_round_rect(c, SP_3 + 1, py + 7, 18, 18, R_2, ui_th.control);
+        ui_tooltip(&ui, SP_3, py + 6, 32, 28, "Colour 1 (left click) and colour 2 (right click)");
+        int sx0 = SP_3 + 32 + SP_5;
         for (int i = 0; i < NPAL; i++) {
-            int col = i % 12, row = i / 12;
-            int sx2 = 92 + col * 30, sy2 = py + 4 + row * 30;
-            bool hov = ui_hover(&ui, sx2, sy2, 26, 26);
-            gfx_round_fill(c, sx2, sy2, 26, 26, 6, palette[i]);
-            gfx_round_rect(c, sx2, sy2, 26, 26, 6, hov ? RGB(255, 255, 255) : RGBA(255, 255, 255, 50));
+            int sx2 = sx0 + i * (20 + SP_2), sy2 = py + (H_TOOLBAR - 20) / 2;
+            bool hov = ui_hover(&ui, sx2 - SP_1, sy2 - SP_1, 24, 24);
+            gfx_round_fill(c, sx2, sy2, 20, 20, R_2, palette[i]);
+            gfx_round_rect(c, sx2, sy2, 20, 20, R_2, hov ? UI_TEXT : ui_th.line_strong);
             if (hov && ui.pressed) fg = palette[i];
             if (hov && ui.rpressed) bg = palette[i];
         }
-        char st[64];
+        char st[64], lt[96];
         snprintf(st, sizeof st, "%d, %d", mx < 0 ? 0 : mx >= DOC_W ? DOC_W - 1 : mx, my < 0 ? 0 : my >= DOC_H ? DOC_H - 1 : my);
-        gfx_text(c, &font_ui, W - 14 - gfx_text_width(&font_ui, st), H - palH + 12, st, UI_TEXT_DIM);
-        if (msg[0] && uptime_ms() < msg_until) {
-            int mw = gfx_text_width(&font_ui, msg);
-            gfx_text(c, &font_ui, W - 14 - mw, H - palH + 40, msg, msg_bad ? UI_BAD : UI_GOOD);
-        }
-        gfx_text(c, &font_ui, 92 + 12 * 30 + 12, H - palH + 12, "Left click: colour 1   Right click: colour 2", UI_TEXT_DIM);
+        snprintf(lt, sizeof lt, "%s, %d px \xc2\xb7 Left click paints colour 1, right click colour 2", TOOL_NAME[tool], brush);
+        ui_status(&ui, 0, H - H_STATUS, W, lt, st);
 
         if (again) { again = false; ui.pressed = ui.released = ui.rpressed = false; goto redraw; }
         if (modal) {
@@ -421,15 +370,15 @@ redraw:
         if (saving) {
             int r = ui_prompt(&ui, "Save as PNG or BMP", "Save", savepath, sizeof savepath);
             if (r == 1) {
-                gfx_text_center(ui.c, &font_ui_bold, 0, H / 2 + 60, W, "Saving...", UI_TEXT);   /* the ext2 write takes a few seconds */
+                gfx_text_center(ui.c, T_BODY_B, 0, H / 2 + 60, W, "Saving\xe2\x80\xa6", UI_TEXT);   /* the ext2 write takes a few seconds */
                 ui_end(&ui);                                          /* show it before the slow write */
-                if (save_doc(savepath)) { say(false, "Saved %s", savepath); dirty = false; }
-                else say(true, "Could not write %s", savepath);
+                if (save_doc(savepath)) { say("Saved %s", savepath); dirty = false; }
+                else say("Couldn't write %s", savepath);
             }
             if (r) saving = false;
         } else if (opening) {
             int r = ui_prompt(&ui, "Open image", "Open", savepath, sizeof savepath);
-            if (r == 1) { if (open_doc(savepath)) say(false, "Opened %s", savepath); else say(true, "Cannot open %s", savepath); }
+            if (r == 1) { if (open_doc(savepath)) say("Opened %s", savepath); else say("Couldn't open %s", savepath); }
             if (r) opening = false;
         }
         if (again) { again = false; ui.pressed = ui.released = ui.rpressed = false; goto redraw; }   /* the open replaced the canvas */

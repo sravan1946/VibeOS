@@ -36,7 +36,8 @@
     X(UNDO, "undo-2") X(REDO, "redo-2") X(ZOOM_IN, "zoom-in") X(ZOOM_OUT, "zoom-out") X(FIT, "scan") X(EXPAND, "expand") \
     X(REPLACE, "replace") X(MATCH_CASE, "case-sensitive") X(WHOLE_WORD, "whole-word") X(REGEX, "regex") \
     X(ENTER, "corner-down-left") X(BACKSPACE, "delete") X(FLAG, "flag") X(BOMB, "bomb") X(GAMEPAD, "gamepad-2") \
-    X(CALCULATOR, "calculator")
+    X(CALCULATOR, "calculator") \
+    X(DIVIDE, "divide") X(PLUS_MINUS, "diff")
 
 /* the launcher's 48 px object icons; key = the /etc/apps icon column, name = the app's display name */
 #define APPICON_LIST(X) \
