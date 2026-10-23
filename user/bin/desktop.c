@@ -14,19 +14,22 @@
 #include <sys/wait.h>
 #include <syscall.h>
 #include <fsutil.h>
-#include <fileicon.h>
+#include <design.h>
+#include <icons.h>
 
 #define DIR_PATH "/home/Desktop"
 #define POS_FILE "/home/.desktop-icons"
-#define CELL_W 96
-#define CELL_H 104
-#define MARGIN 14
+#define CELL_W 96                 /* pitch; a cell is 84 x 84 (docs/DESIGN.md §9 Desktop icons) */
+#define CELL_H 96
+#define CELL 84
+#define MARGIN SP_5
+#define LABEL RGB(0xF2, 0xF2, 0xF2)   /* the wallpaper is dark in both themes */
 #define MAXI 256
 #define SPR_W 300
 #define SPR_H 240
 
-struct icon { char name[96]; int kind, cx, cy; bool dir; };
-static struct icon ic[MAXI];
+struct item { char name[96]; int kind, cx, cy; bool dir; };
+static struct item ic[MAXI];
 static int nic, sel = -1, hov = -1, rows = 1, cols = 1;
 static bool dirty = true;
 static uint32_t *tbk, *twh;
@@ -66,41 +69,82 @@ static void sprite(struct ui *ui, int x, int y, int w, int h, void (*fn)(struct 
     }
 }
 
-struct cellarg { const struct icon *i; bool sel, hov; };
+/* premultiplied ARGB artwork: d = s + d * (255 - a) / 255 */
+static void blit_pm(struct canvas *c, int x, int y, const struct aicon *a) {
+    if (!a) return;
+    for (int j = 0; j < a->h; j++)
+        for (int i = 0; i < a->w; i++) {
+            int dx = x + i, dy = y + j;
+            uint32_t p = a->argb[j * a->w + i], al = p >> 24;
+            if (!al || dx < c->cx0 || dy < c->cy0 || dx >= c->cx1 || dy >= c->cy1) continue;
+            uint32_t *d = &c->px[dy * c->stride + dx], k = 255 - al, q = *d;
+            k += k >> 7;
+            *d = 0xFF000000u | (((p & 0xFF00FF) + (((q & 0xFF00FF) * k >> 8) & 0xFF00FF)) + ((p & 0xFF00) + (((q & 0xFF00) * k >> 8) & 0xFF00)));
+        }
+}
+
+/* the icon's drop shadow, 0 1 2 at 30%: its alpha blurred 3x3, one pixel down */
+static void icon_shadow(struct canvas *c, int x, int y, const struct aicon *a) {
+    if (!a) return;
+    for (int j = -1; j <= a->h; j++)
+        for (int i = -1; i <= a->w; i++) {
+            int sum = 0;
+            for (int v = -1; v <= 1; v++)
+                for (int u = -1; u <= 1; u++) {
+                    int sx = i + u, sy = j - 1 + v;
+                    if (sx >= 0 && sy >= 0 && sx < a->w && sy < a->h) sum += a->argb[sy * a->w + sx] >> 24;
+                }
+            if (sum) gfx_pixel(c, x + i, y + j, RGBA(0, 0, 0, sum * 77 / (9 * 255)));
+        }
+}
+
+/* file-type artwork; the standard folders get their emblem */
+static int icon_for(const struct item *e) {
+    static const struct { const char *name; int id; } folders[] = {
+        { "Documents", FILEICON_FOLDER_DOCUMENTS }, { "Downloads", FILEICON_FOLDER_DOWNLOADS }, { "Music", FILEICON_FOLDER_MUSIC },
+        { "Pictures", FILEICON_FOLDER_PICTURES }, { "Projects", FILEICON_FOLDER_PROJECTS }, { "Desktop", FILEICON_FOLDER_DESKTOP },
+        { "Trash", FILEICON_FOLDER_TRASH },
+    };
+    const char *x = strrchr(e->name, '.');
+    x = x ? x + 1 : "";
+    switch (e->kind) {
+    case FK_DIR:
+        for (unsigned i = 0; i < sizeof folders / sizeof folders[0]; i++) if (!strcmp(e->name, folders[i].name)) return folders[i].id;
+        return FILEICON_FOLDER;
+    case FK_EXE: return FILEICON_EXEC;
+    case FK_TEXT: return FILEICON_TEXT;
+    case FK_CODE: return !strcmp(x, "sh") ? FILEICON_SCRIPT : FILEICON_CODE;
+    case FK_IMAGE: return FILEICON_IMAGE;
+    case FK_AUDIO: return FILEICON_AUDIO;
+    case FK_HTML: return FILEICON_WEB;
+    }
+    return !strcmp(x, "zip") || !strcmp(x, "tar") || !strcmp(x, "gz") || !strcmp(x, "tgz") ? FILEICON_ARCHIVE : FILEICON_GENERIC;
+}
+
+/* a label with its 0 1 2 black-70% text shadow */
+static void label(struct canvas *c, const struct font *f, int x, int y, int maxw, const char *s) {
+    static const signed char off[4][3] = { { 0, 1, 140 }, { -1, 1, 45 }, { 1, 1, 45 }, { 0, 2, 60 } };
+    for (int k = 0; k < 4; k++) gfx_text_ell(c, f, x + off[k][0], y + off[k][1], maxw, s, RGBA(0, 0, 0, off[k][2]));
+    gfx_text_ell(c, f, x, y, maxw, s, LABEL);
+}
+
+struct cellarg { const struct item *i; bool sel, hov; };
 static void draw_cell(struct canvas *c, void *p) {
     struct cellarg *a = p;
-    if (a->sel) { gfx_round_fill(c, 2, 2, CELL_W - 4, CELL_H - 4, 10, RGBA(0xB3, 0x88, 0xFF, 90)); gfx_round_rect(c, 2, 2, CELL_W - 4, CELL_H - 4, 10, RGBA(0xD8, 0xC4, 0xFF, 140)); }
-    else if (a->hov) gfx_round_fill(c, 2, 2, CELL_W - 4, CELL_H - 4, 10, RGBA(255, 255, 255, 30));
-    fileicon(c, a->i->kind, (CELL_W - 48) / 2, 8, 48, a->i->name);
+    if (a->sel) gfx_round_fill(c, 0, 0, CELL, CELL, R_2, ui_th.selection);
+    else if (a->hov) gfx_round_fill(c, 0, 0, CELL, CELL, R_2, RGBA(255, 255, 255, 20));
+    const struct aicon *ic = fileicon_get(icon_for(a->i), ICON_APP);
+    int ix = (CELL - ICON_APP) / 2, iy = 6;
+    icon_shadow(c, ix, iy, ic);
+    blit_pm(c, ix, iy, ic);
     const char *s = a->i->name;
-    int n = strlen(s), maxw = CELL_W - 8;
-    char l1[96];
-    const char *l2 = "";
-    if (gfx_text_width(&font_ui, s) > maxw) {
-        n = strlen(s);
-        while (n > 1 && gfx_text_width_n(&font_ui, s, n) > maxw) n--;
-        l2 = s + n;
-    }
-    snprintf(l1, sizeof l1, "%.*s", n, s);
-    char l2f[96];
-    if (l2[0] && gfx_text_width(&font_ui, l2) > maxw) {
-        int m = strlen(l2);
-        while (m > 1 && gfx_text_width_n(&font_ui, l2, m) + gfx_text_width(&font_ui, "...") > maxw) m--;
-        snprintf(l2f, sizeof l2f, "%.*s...", m, l2);
-        l2 = l2f;
-    }
-    for (int ln = 0; ln < 2; ln++) {
-        const char *t = ln ? l2 : l1;
-        if (!t[0]) continue;
-        int x = 4 + (maxw - gfx_text_width(&font_ui, t)) / 2, y = 8 + 48 + 6 + ln * font_ui.height;
-        gfx_text(c, &font_ui, x + 1, y + 1, t, RGBA(0, 0, 0, 200));
-        gfx_text(c, &font_ui, x, y, t, RGB(255, 255, 255));
-    }
+    int maxw = CELL - 2 * SP_2, w = gfx_text_width(T_BODY, s);
+    label(c, T_BODY, SP_2 + (w < maxw ? (maxw - w) / 2 : 0), iy + ICON_APP + SP_2, maxw, s);
 }
 
 /* ---- the icon table ---- */
 static int cmp_icon(const void *a, const void *b) {
-    const struct icon *x = a, *y = b;
+    const struct item *x = a, *y = b;
     if (x->dir != y->dir) return y->dir - x->dir;
     return strcasecmp(x->name, y->name);
 }
@@ -144,15 +188,15 @@ static uint32_t dir_sig(void) {
 static void rescan(void) {
     char oldsel[96] = "";
     if (sel >= 0 && sel < nic) snprintf(oldsel, sizeof oldsel, "%s", ic[sel].name);
-    struct icon old[MAXI];
+    struct item old[MAXI];
     int nold = nic;
-    memcpy(old, ic, sizeof(struct icon) * nic);
+    memcpy(old, ic, sizeof(struct item) * nic);
     nic = 0; sel = hov = -1;
     DIR *d = opendir(DIR_PATH);
     struct dirent *de;
     while (d && (de = readdir(d)) && nic < MAXI) {
         if (de->d_name[0] == '.') continue;
-        struct icon *e = &ic[nic++];
+        struct item *e = &ic[nic++];
         memset(e, 0, sizeof *e);
         snprintf(e->name, sizeof e->name, "%s", de->d_name);
         char p[PATH_MAX];
@@ -187,9 +231,9 @@ static void rescan(void) {
     dirty = true;
 }
 
-static void cell_xy(const struct icon *e, int *x, int *y) { *x = MARGIN + e->cx * CELL_W; *y = MARGIN + e->cy * CELL_H; }
+static void cell_xy(const struct item *e, int *x, int *y) { *x = MARGIN + e->cx * CELL_W; *y = MARGIN + e->cy * CELL_H; }
 static int icon_at(int px, int py) {
-    for (int i = 0; i < nic; i++) { int x, y; cell_xy(&ic[i], &x, &y); if (px >= x && py >= y && px < x + CELL_W && py < y + CELL_H) return i; }
+    for (int i = 0; i < nic; i++) { int x, y; cell_xy(&ic[i], &x, &y); if (px >= x && py >= y && px < x + CELL && py < y + CELL) return i; }
     return -1;
 }
 
@@ -200,19 +244,28 @@ static void open_icon(int i) {
     else if (fs_open(p) < 0) gui_notify("Can't open", ic[i].name, "bad");
 }
 
-/* ---- context menu ---- */
+/* ---- context menu (docs/DESIGN.md §9 Menus) ---- */
 static const char *mlab[] = { "Open", "Show in Files", "Move to Trash" };
+static const short mico[] = { ICON_FOLDER_OPEN, ICON_FOLDER, ICON_TRASH };
+#define MW 200
+#define MH (2 * SP_2 + 3 * H_ROW + 2 * SP_2 + 1)
+#define MPAD 24                                            /* room for the E2 shadow in the sprite */
 static int mx0, my0, mhov = -1;
 static bool menu_on;
+static int m_iy(int i) { return SP_2 + i * H_ROW + (i == 2 ? 2 * SP_2 + 1 : 0); }
 static void draw_menu(struct canvas *c, void *p) {
-    int w = 190, h = 12 + 3 * 30;
-    gfx_shadow(c, 12, 12, w, h, 10, 10, 120);
-    gfx_round_fill(c, 12, 12, w, h, 10, RGBA(0x2A, 0x27, 0x3D, 245));
-    gfx_round_rect(c, 12, 12, w, h, 10, RGBA(255, 255, 255, 45));
+    int x = MPAD, y = MPAD;
+    gfx_elev(c, x, y, MW, MH, R_3, E2, ui_th.elev[E2]);
+    gfx_round_fill(c, x, y, MW, MH, R_3, ui_th.overlay);
+    gfx_round_rect(c, x, y, MW, MH, R_3, ui_th.line);
+    gfx_hline(c, x + SP_4, y + m_iy(2) - SP_2 - 1, MW - 2 * SP_4, ui_th.line);
     for (int i = 0; i < 3; i++) {
-        int y = 12 + 6 + i * 30;
-        if (i == mhov) gfx_round_fill(c, 12 + 6, y, w - 12, 30, 6, RGBA(0xB3, 0x88, 0xFF, 90));
-        gfx_text(c, &font_ui, 12 + 18, y + 6, mlab[i], i == 2 ? UI_BAD : UI_TEXT);
+        int iy = y + m_iy(i);
+        color_t fg = i == 2 ? ui_th.danger : ui_th.text;
+        if (i == mhov) gfx_round_fill(c, x + SP_2, iy, MW - 2 * SP_2, H_ROW, R_2, ui_th.hover_ov);
+        const struct icon *ic = icon_get(mico[i], ICON_SM);
+        if (ic) gfx_mask(c, x + SP_4, iy + (H_ROW - ICON_SM) / 2, ic->a8, ic->w, ic->h, ic->w, i == 2 ? ui_th.danger : ui_th.text2);
+        gfx_text(c, T_BODY, x + SP_4 + ICON_SM + SP_3, iy + (H_ROW - T_BODY->height) / 2, mlab[i], fg);
     }
 }
 
@@ -342,8 +395,8 @@ int main(void) {
             dirty = true;
         }
         if (menu_on) {
-            int mxp = mx0 + 190 > w->w ? w->w - 190 - 4 : mx0, myp = my0 + 102 > w->h ? w->h - 102 - 4 : my0, nh = -1;
-            if (mx >= mxp + 6 && mx < mxp + 184 && my >= myp + 6 && my < myp + 96) nh = (my - myp - 6) / 30;
+            int mxp = mx0 + MW > w->w ? mx0 - MW : mx0, myp = my0 + MH > w->h ? my0 - MH : my0, nh = -1;
+            for (int i = 0; i < 3; i++) if (mx >= mxp && mx < mxp + MW && my >= myp + m_iy(i) && my < myp + m_iy(i) + H_ROW) nh = i;
             if (nh != mhov) { mhov = nh; dirty = true; }
         }
         if ((ui.buttons & 1) && press >= 0) {
@@ -368,17 +421,17 @@ int main(void) {
                 if (i == drag_i) continue;
                 int x, y;
                 cell_xy(&ic[i], &x, &y);
-                for (int j = y; j < y + CELL_H && j < c->h; j++) for (int k2 = x; k2 < x + CELL_W && k2 < c->w; k2++) if (!c->px[j * c->stride + k2]) c->px[j * c->stride + k2] = 0x02000000;
+                for (int j = y; j < y + CELL && j < c->h; j++) for (int k2 = x; k2 < x + CELL && k2 < c->w; k2++) if (!c->px[j * c->stride + k2]) c->px[j * c->stride + k2] = 0x02000000;
                 struct cellarg a = { &ic[i], i == sel, i == hov };
-                sprite(&ui, x, y, CELL_W, CELL_H, draw_cell, &a);
+                sprite(&ui, x, y, CELL, CELL, draw_cell, &a);
             }
             if (dragging && press >= 0) {
                 struct cellarg a = { &ic[press], true, false };
-                sprite(&ui, gx - CELL_W / 2, gy - CELL_H / 2, CELL_W, CELL_H, draw_cell, &a);
+                sprite(&ui, gx - CELL / 2, gy - CELL / 2, CELL, CELL, draw_cell, &a);
             }
             if (menu_on) {
-                int mxp = mx0 + 190 > w->w ? w->w - 190 - 4 : mx0, myp = my0 + 102 > w->h ? w->h - 102 - 4 : my0;
-                sprite(&ui, mxp - 12, myp - 12, 230, 160, draw_menu, NULL);
+                int mxp = mx0 + MW > w->w ? mx0 - MW : mx0, myp = my0 + MH > w->h ? my0 - MH : my0;
+                sprite(&ui, mxp - MPAD, myp - MPAD, MW + 2 * MPAD, MH + 2 * MPAD, draw_menu, NULL);
             }
             ui_end(&ui);
         }

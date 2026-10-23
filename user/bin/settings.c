@@ -1,6 +1,7 @@
 /* settings - theme, accent, wallpaper, display mode and time zone. Themes go through /dev/theme (and /etc/theme for the
  * next boot); the desktop reloads wallpaper/time zone prefs via WIN_SET_PREFS; modes go through /dev/display (and /etc/display) */
 #include <ui.h>
+#include <design.h>
 #include <wallpaper.h>
 #include <image.h>
 #include <dirent.h>
@@ -332,17 +333,21 @@ int main(void) {
         if (status[0]) gfx_text(c, &font_ui, x0, H - 36, status, UI_BAD);
         if (prev[0]) {                                /* "Keep this resolution?", reverts on its own */
             int left = (int)(keep_until - now_ms());
-            int pw = 420, ph = 150, px = (W - pw) / 2, py = (H - ph) / 2;
-            gfx_fill(c, 0, 0, W, H, RGBA(0, 0, 0, 120));
-            gfx_round_fill(c, px, py, pw, ph, 12, UI_PANEL);
-            gfx_round_rect(c, px, py, pw, ph, 12, UI_ACC(90));
-            gfx_text(c, &font_ui_bold, px + 20, py + 18, "Keep this resolution?", UI_TEXT);
+            /* an alert (docs/DESIGN.md §9 Dialogs): 400 wide, 20 inset, title, body, primary rightmost */
+            int pw = W_ALERT, ph = 2 * SP_6 + T_HEADING->height + SP_3 + T_BODY->height + SP_6 + H_CTL, px = (W - pw) / 2, py = (H - ph) / 2;
+            gfx_fill(c, 0, 0, W, H, ui_th.scrim);
+            gfx_elev(c, px, py, pw, ph, R_3, E4, ui_th.elev[E4]);
+            gfx_round_fill(c, px, py, pw, ph, R_3, ui_th.overlay);
+            gfx_round_rect(c, px, py, pw, ph, R_3, ui_th.line);
+            gfx_text(c, T_HEADING, px + SP_6, py + SP_6, "Keep this resolution?", ui_th.text);
             char msg[64];
-            snprintf(msg, sizeof msg, "Reverting to %s in %d s.", prev, left > 0 ? (left + 999) / 1000 : 0);
-            gfx_text(c, &font_ui, px + 20, py + 48, msg, UI_TEXT_DIM);
-            int r = 0;
-            if (ui_button(&ui, px + pw - 140, py + ph - 52, 120, 34, "Keep changes", UI_ACCENT_BTN)) r = 1;
-            if (ui_button(&ui, px + pw - 250, py + ph - 52, 100, 34, "Revert", UI_NORMAL_BTN) || left <= 0) r = -1;
+            snprintf(msg, sizeof msg, "It goes back to %s in %d s unless you keep it.", prev, left > 0 ? (left + 999) / 1000 : 0);
+            gfx_text(c, T_BODY, px + SP_6, py + SP_6 + T_HEADING->height + SP_3, msg, ui_th.text2);
+            int r = 0, bw1 = gfx_text_width(T_BODY_B, "Keep changes") + 2 * SP_4, bw0 = gfx_text_width(T_BODY_B, "Revert") + 2 * SP_4;
+            if (bw0 < W_CTL_MIN) bw0 = W_CTL_MIN;
+            int by = py + ph - SP_6 - H_CTL, bx1 = px + pw - SP_6 - bw1;
+            if (ui_button(&ui, bx1, by, bw1, H_CTL, "Keep changes", UI_ACCENT_BTN)) r = 1;
+            if (ui_button(&ui, bx1 - SP_3 - bw0, by, bw0, H_CTL, "Revert", UI_NORMAL_BTN) || left <= 0) r = -1;
             struct gui_event k;
             while (ui_key(&ui, &k)) { if (k.key == KEY_ESC) r = -1; else if (k.key == KEY_ENTER) r = 1; }
             snprintf(buf, sizeof buf, "%s\n", mode_names[mcur]);

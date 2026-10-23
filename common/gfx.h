@@ -60,3 +60,5 @@ int  gfx_text_n(struct canvas *c, const struct font *f, int x, int y, const char
 int  gfx_text_width(const struct font *f, const char *s);
 int  gfx_text_width_n(const struct font *f, const char *s, int n);
 void gfx_text_center(struct canvas *c, const struct font *f, int x, int y, int w, const char *s, color_t col);
+/* s cut to maxw px with an ellipsis; returns the width drawn */
+int  gfx_text_ell(struct canvas *c, const struct font *f, int x, int y, int maxw, const char *s, color_t col);
