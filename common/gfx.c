@@ -433,3 +433,19 @@ int gfx_text_width(const struct font *f, const char *s) { return gfx_text_width_
 void gfx_text_center(struct canvas *c, const struct font *f, int x, int y, int w, const char *s, color_t col) {
     gfx_text(c, f, x + (w - gfx_text_width(f, s)) / 2, y, s, col);
 }
+
+/* s in at most maxw px, cut with an ellipsis (trailing spaces dropped before it); returns the width drawn */
+int gfx_text_ell(struct canvas *c, const struct font *f, int x, int y, int maxw, const char *s, color_t col) {
+    if (gfx_text_width(f, s) <= maxw) return gfx_text(c, f, x, y, s, col);
+    static const char ell[] = "\xe2\x80\xa6";
+    int n = 0, ew = gfx_text_width(f, ell), w = 0;
+    uint32_t cp;
+    for (int i = 0, k; s[i]; i += k) {                  /* longest prefix that leaves room for the ellipsis */
+        k = utf8_decode(s + i, 8, &cp);
+        if ((w += font_glyph(f, cp)->adv) + ew > maxw) break;
+        n = i + k;
+    }
+    while (n > 0 && s[n - 1] == ' ') n--;
+    int d = gfx_text_n(c, f, x, y, s, n, col);
+    return d + gfx_text(c, f, x + d, y, ell, col);
+}

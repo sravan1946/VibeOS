@@ -1,22 +1,22 @@
-# launcher entries: name|path|arg|icon (icon = an APPICON key from common/icons.h)
-Browser|/bin/browser||browser
-Files|/bin/files||files
-Text Editor|/bin/notepad||editor
-Paint|/bin/paint||paint
-Calculator|/bin/calc||calc
-Clock|/bin/clock||clock
-System Monitor|/bin/sysmon||sysmon
-Snake|/bin/snake||snake
-Tetris|/bin/tetris||tetris
-Minesweeper|/bin/mines||mines
-Doom|/bin/doom||doom
-Piano|/bin/piano||piano
-Code|/bin/code||code
-Chess|/bin/chess||chess
-2048|/bin/2048||2048
-Solitaire|/bin/solitaire||solitaire
-Settings|/bin/settings||settings
-About VibeOS|/bin/about||about
-Photos|/bin/viewer||photos
-Music|/bin/music||music
-Python Paint|/bin/python|/home/projects/paint.py|pypaint
+# launcher entries: name|path|arg|icon|description (icon = an APPICON key from common/icons.h; description: one short line)
+Browser|/bin/browser||browser|Open pages on the web
+Files|/bin/files||files|Browse and manage your files
+Text Editor|/bin/notepad||editor|Write and edit plain text
+Paint|/bin/paint||paint|Draw and retouch pictures
+Calculator|/bin/calc||calc|Work out sums, with a history
+Clock|/bin/clock||clock|Time, a stopwatch and a timer
+System Monitor|/bin/sysmon||sysmon|CPU, memory and processes
+Snake|/bin/snake||snake|Eat, grow, don’t bite your tail
+Tetris|/bin/tetris||tetris|Stack the falling blocks
+Minesweeper|/bin/mines||mines|Clear the field, flag the mines
+Doom|/bin/doom||doom|The 1993 shooter, natively
+Piano|/bin/piano||piano|Play notes from the keyboard
+Code|/bin/code||code|Edit source with highlighting
+Chess|/bin/chess||chess|Play against the computer
+2048|/bin/2048||2048|Slide and merge numbered tiles
+Solitaire|/bin/solitaire||solitaire|Klondike patience
+Settings|/bin/settings||settings|Change how VibeOS looks
+About VibeOS|/bin/about||about|Version and hardware details
+Photos|/bin/viewer||photos|View the pictures you keep
+Music|/bin/music||music|Play your music library
+Python Paint|/bin/python|/home/projects/paint.py|pypaint|A paint app written in Python

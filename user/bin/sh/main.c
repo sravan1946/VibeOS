@@ -21,7 +21,7 @@ static void build_prompt(char *out, size_t n) {
         snprintf(tilde, sizeof tilde, "~%s", cwd + hl);
         disp = tilde;
     }
-    snprintf(title, sizeof title, "\x1b]0;sh: %s\x07", disp);
+    snprintf(title, sizeof title, "\x1b]0;%s@%s: %s\x07", user && *user ? user : "vibe", host && *host ? host : "vibeos", disp);
     write(1, title, strlen(title));
     snprintf(out, n, C("32") "%s@%s" C("90") ":" C("34") "%s" C("%s") "$" C("0") " ",
              user && *user ? user : "vibe", host && *host ? host : "vibeos", disp, g_status ? "31" : "90");

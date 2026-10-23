@@ -4,9 +4,9 @@
 #include "gfx.h"
 #include "theme.h"
 
-#define WM_TITLE_H   34
-#define WM_RADIUS    10
-#define WM_TASKBAR_H 44
+#define WM_TITLE_H   32             /* design.h H_TITLE */
+#define WM_RADIUS    8              /* R_3; 0 when maximised or snapped */
+#define WM_TASKBAR_H 40             /* H_PANEL */
 #define WM_WS        4
 
 struct window {
@@ -25,6 +25,7 @@ struct window {
     uint32_t qh, qt;
     bool minimized, maximized, visible, topmost;
     int ws;                         /* workspace 0..WM_WS-1, -1 = on all (toasts) */
+    int icon;                       /* Lucide ICON_* for the title bar and panel button */
     struct rect restore;
     /* kernel-side windows (terminals) */
     void (*on_event)(struct window *w, const struct gui_event *ev);
