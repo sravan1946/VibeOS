@@ -624,7 +624,7 @@ static void open_tag(int t) {
     case T_BODY:
         if ((v = A("bgcolor"))) parse_color(v, &L.d->bg);
         if ((v = A("text"))) { parse_color(v, &L.d->fg); L.fr[0].s.col = L.d->fg; }
-        if ((v = A("link"))) parse_color(v, &L.d->linkc);
+        if ((v = A("link"))) { parse_color(v, &L.d->linkc); L.d->hoverc = L.d->fg; }
         else if (dark(L.d->bg)) { L.d->linkc = RGB(0x8C, 0xB4, 0xFF); L.d->hoverc = RGB(0xFF, 0x9A, 0xD0); }
         if (dark(L.d->bg) && !A("text")) { L.d->fg = RGB(0xE8, 0xE6, 0xF5); L.fr[0].s.col = L.d->fg; }
         L.em = dark(L.d->bg) ? RGB(0xFF, 0xA0, 0xD8) : RGB(0x8A, 0x1C, 0x8A);

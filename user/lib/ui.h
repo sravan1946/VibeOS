@@ -193,3 +193,8 @@ int ui_dialog(struct ui *ui, const char *title, const char *body, const char *ca
 /* ui_prompt edits buf (focus is taken automatically); ui_confirm just asks */
 int ui_prompt(struct ui *ui, const char *title, const char *okl, char *buf, int cap);
 int ui_confirm(struct ui *ui, const char *title, const char *text, const char *okl);
+
+/* --- ui-apps-editors --- */
+/* ui_dialog with a third button `alt` at the left (e.g. "Don't save", returns 2), or cancel == NULL for a one-button
+ * alert (Esc and Enter return 1). alt == NULL with a cancel is plain ui_dialog */
+int ui_dialog_ex(struct ui *ui, const char *title, const char *body, const char *alt, const char *cancel, const char *ok, int style);

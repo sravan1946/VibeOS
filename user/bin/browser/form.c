@@ -144,6 +144,13 @@ void form_reset(const struct doc *d, int form) {
 /* ---------- drawing ---------- */
 static int dark_page(const struct doc *d) { return (((d->bg >> 16) & 255) * 3 + ((d->bg >> 8) & 255) * 6 + (d->bg & 255)) / 10 < 110; }
 
+/* page content keeps neutral web colours; only focus and checked marks take the theme accent, kept at 3:1 on the page */
+static color_t page_accent(const struct doc *d) {
+    color_t a = ui_th.accent_text, to = dark_page(d) ? RGB(0xFF, 0xFF, 0xFF) : RGB(0, 0, 0);
+    for (int i = 0; i < 8 && theme_contrast(a, d->bg) < 300; i++) a = mix(a, to, 48);
+    return a;
+}
+
 static int caret_x(const char *v, int p) { return gfx_text_width_n(&font_ui, v, p); }
 
 static void line_geometry(const char *v, int *lines, int p, int *cl) {     /* number of lines, line of byte p */
@@ -155,15 +162,15 @@ static void line_geometry(const char *v, int *lines, int p, int *cl) {     /* nu
 void ctl_draw(struct canvas *cv, const struct doc *d, const struct ctl *t, int x, int y, int w, int h, int focused, int caret) {
     int ci = t - d->ct, dk = dark_page(d);
     struct fstate *s = fs_get(d, ci);
-    color_t fill = dk ? RGB(0x1E, 0x1C, 0x2D) : RGB(0xFF, 0xFF, 0xFF), line = dk ? RGB(0x5A, 0x56, 0x7A) : RGB(0x76, 0x76, 0x76),
-            txt = dk ? UI_TEXT : RGB(0x1A, 0x1A, 0x22), dim = dk ? UI_TEXT_DIM : RGB(0x80, 0x80, 0x88);
-    color_t ring = focused ? UI_ACCENT : line;
+    color_t fill = dk ? RGB(0x23, 0x24, 0x27) : RGB(0xFF, 0xFF, 0xFF), line = dk ? RGB(0x74, 0x77, 0x7E) : RGB(0x76, 0x76, 0x76),
+            txt = dk ? RGB(0xE6, 0xE7, 0xE9) : RGB(0x1A, 0x1A, 0x22), dim = dk ? RGB(0xA4, 0xA7, 0xAD) : RGB(0x6B, 0x6B, 0x73);
+    color_t acc = page_accent(d), ring = focused ? acc : line;
     struct canvas c2 = *cv;
     switch (t->kind) {
     case C_TEXT: case C_PASS: case C_AREA: {
         gfx_round_fill(cv, x, y, w, h, 4, fill);
         gfx_round_rect(cv, x, y, w, h, 4, ring);
-        if (focused) gfx_round_rect(cv, x - 1, y - 1, w + 2, h + 2, 5, RGBA(0xB3, 0x88, 0xFF, 110));
+        if (focused) gfx_ring_out(cv, x, y, w, h, 4, ring);
         canvas_clip(&c2, x + 4, y + 2, w - 8, h - 4);
         const char *v = s->val ? s->val : "";
         char *shown = 0;
@@ -181,7 +188,7 @@ void ctl_draw(struct canvas *cv, const struct doc *d, const struct ctl *t, int x
             for (int r = 0; p && r < rows + 1; r++) {
                 int le = line_end(p, 0);
                 gfx_text_n(&c2, &font_ui, x + 6, y + 5 + r * 18, p, le, txt);
-                if (focused && cl == s->sy + r) gfx_fill(&c2, x + 6 + caret_x(p, cp - (int)(p - v)), y + 6 + r * 18, 1, 15, UI_ACCENT);
+                if (focused && cl == s->sy + r) gfx_fill(&c2, x + 6 + caret_x(p, cp - (int)(p - v)), y + 6 + r * 18, 1, 15, txt);
                 if (!p[le]) break;
                 p += le + 1;
             }
@@ -191,27 +198,28 @@ void ctl_draw(struct canvas *cv, const struct doc *d, const struct ctl *t, int x
             if (!focused) s->sx = 0;
             int ty = y + (h - font_ui.height) / 2;
             gfx_text(&c2, &font_ui, x + 6 - s->sx, ty, v, txt);
-            if (focused) gfx_fill(&c2, x + 6 - s->sx + cw, ty, 1, font_ui.height, UI_ACCENT);
+            if (focused) gfx_fill(&c2, x + 6 - s->sx + cw, ty, 1, font_ui.height, txt);
         }
         free(shown);
         break;
     }
     case C_BTN: {
         int hot = focused;
-        gfx_round_fill(cv, x, y, w, h, 5, dk ? (hot ? UI_HOVER : UI_SURFACE) : RGB(0xEF, 0xEF, 0xF3));
-        gfx_round_rect(cv, x, y, w, h, 5, ring);
+        gfx_round_fill(cv, x, y, w, h, 4, dk ? RGB(0x2C, 0x2D, 0x31) : RGB(0xEF, 0xEF, 0xF1));
+        gfx_round_rect(cv, x, y, w, h, 4, ring);
+        if (hot) gfx_ring_out(cv, x, y, w, h, 4, ring);
         gfx_text_center(cv, &font_ui, x, y + (h - font_ui.height) / 2, w, d->txt + t->o0, txt);
         break;
     }
     case C_CHECK:
         gfx_round_fill(cv, x, y, w, h, 3, fill);
         gfx_round_rect(cv, x, y, w, h, 3, ring);
-        if (s->on) { gfx_line_aa(cv, x + 3.5f, y + 8.5f, x + 6.5f, y + 12, 2, UI_ACCENT); gfx_line_aa(cv, x + 6.5f, y + 12, x + 12.5f, y + 4, 2, UI_ACCENT); }
+        if (s->on) { gfx_line_aa(cv, x + 3.5f, y + 8.5f, x + 6.5f, y + 12, 2, acc); gfx_line_aa(cv, x + 6.5f, y + 12, x + 12.5f, y + 4, 2, acc); }
         break;
     case C_RADIO:
         gfx_circle_fill(cv, x + 8, y + 8, 8, ring);
         gfx_circle_fill(cv, x + 8, y + 8, 7, fill);
-        if (s->on) gfx_circle_fill(cv, x + 8, y + 8, 4, UI_ACCENT);
+        if (s->on) gfx_circle_fill(cv, x + 8, y + 8, 4, acc);
         break;
     case C_SELECT: {
         gfx_round_fill(cv, x, y, w, h, 4, fill);
