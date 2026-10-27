@@ -172,37 +172,43 @@ static char **names_of(const char *dir, int *cnt) {            /* names first, s
 
 static void free_names(char **v, int k) { for (int i = 0; i < k; i++) free(v[i]); free(v); }
 
-static int rmrf(const char *p, int depth) {
+static int rmrf(const char *p, int depth, fs_hook h, void *cx) {
     struct stat st;
     if (stat(p, &st)) return -1;
+    if (h && h(cx, p, 0)) return FS_CANCEL;
     if (!S_ISDIR(st.st_mode)) return unlink(p);
     if (depth > 16) return -1;
     int k, rc = 0;
     char **v = names_of(p, &k);
-    for (int i = 0; i < k; i++) {
+    for (int i = 0; i < k && rc != FS_CANCEL; i++) {
         char c[PATH_MAX];
         snprintf(c, sizeof c, "%s/%s", p, v[i]);
-        if (rmrf(c, depth + 1)) rc = -1;
+        int r = rmrf(c, depth + 1, h, cx);
+        if (r) rc = r == FS_CANCEL ? r : -1;
     }
     free_names(v, k);
     return rc ? rc : rmdir(p);
 }
-int fs_rmrf(const char *path) { return rmrf(path, 0); }
+int fs_rmrf(const char *path) { return rmrf(path, 0, NULL, NULL); }
+int fs_rmrf_x(const char *path, fs_hook h, void *cx) { return rmrf(path, 0, h, cx); }
 
-static int copy(const char *src, const char *dst, int depth) {
+#define CHUNK 32768
+static int copy(const char *src, const char *dst, int depth, fs_hook h, void *cx) {
     struct stat st;
     if (stat(src, &st)) return -1;
+    if (h && h(cx, src, 0)) return FS_CANCEL;
     if (S_ISDIR(st.st_mode)) {
         size_t sl = strlen(src);
         if (depth > 16 || (!strncmp(dst, src, sl) && (dst[sl] == '/' || !dst[sl]))) return -1;
         if (mkdir(dst, 0755) && !exists(dst)) return -1;
         int k, rc = 0;
         char **v = names_of(src, &k);
-        for (int i = 0; i < k; i++) {
+        for (int i = 0; i < k && rc != FS_CANCEL; i++) {
             char a[PATH_MAX], b[PATH_MAX];
             snprintf(a, sizeof a, "%s/%s", src, v[i]);
             snprintf(b, sizeof b, "%s/%s", dst, v[i]);
-            if (copy(a, b, depth + 1)) rc = -1;
+            int r = copy(a, b, depth + 1, h, cx);
+            if (r) rc = r == FS_CANCEL ? r : -1;
         }
         free_names(v, k);
         return rc;
@@ -211,14 +217,26 @@ static int copy(const char *src, const char *dst, int depth) {
     if (in < 0) return -1;
     int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 0777), rc = 0;
     if (out < 0) { close(in); return -1; }
-    char buf[4096];
-    int r;
-    while ((r = read(in, buf, sizeof buf)) > 0) if (write(out, buf, r) != r) { rc = -1; break; }
-    if (r < 0) rc = -1;
+    char *buf = malloc(CHUNK);
+    int r = -1;
+    if (buf) {
+        while ((r = read(in, buf, CHUNK)) > 0) {
+            if (write(out, buf, r) != r) { rc = -1; break; }
+            if (h && h(cx, src, r)) { rc = FS_CANCEL; break; }
+        }
+        if (r < 0) rc = -1;
+    } else rc = -1;
+    free(buf);
     close(in); close(out);
+    if (rc) unlink(dst);                                            /* never leave a half-written file */
     return rc;
 }
-int fs_copy(const char *src, const char *dst) { return copy(src, dst, 0); }
+int fs_copy(const char *src, const char *dst) { return copy(src, dst, 0, NULL, NULL); }
+int fs_copy_x(const char *src, const char *dst, fs_hook h, void *cx) {
+    int rc = copy(src, dst, 0, h, cx);
+    if (rc == FS_CANCEL) fs_rmrf(dst);                              /* a cancelled tree copy leaves nothing behind */
+    return rc;
+}
 
 static void du(const char *p, uint32_t *f, uint32_t *d, uint64_t *b, int depth) {
     struct stat st;
@@ -297,18 +315,23 @@ int fs_trash_restore(const char *name, char *dest, int n) {
     return 0;
 }
 
-int fs_trash_empty(void) {
+int fs_trash_empty(void) { return fs_trash_empty_x(NULL, NULL); }
+
+int fs_trash_empty_x(fs_hook h, void *cx) {
     char d[PATH_MAX];
     int rc = 0, k;
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 2; i++) {                   /* files first (cancellable), each with its info; then stray infos */
         snprintf(d, sizeof d, "%s/%s", fs_trash_dir, i ? "info" : "files");
         char **v = names_of(d, &k);
-        for (int j = 0; j < k; j++) {
-            char c[PATH_MAX];
+        for (int j = 0; j < k && rc != FS_CANCEL; j++) {
+            char c[PATH_MAX], inf[PATH_MAX];
             snprintf(c, sizeof c, "%s/%s", d, v[j]);
-            if (fs_rmrf(c)) rc = -1;
+            int r = rmrf(c, 0, i ? NULL : h, cx);
+            if (r) rc = r == FS_CANCEL ? r : -1;
+            else if (!i) { tpath(inf, "info", v[j]); unlink(inf); }
         }
         free_names(v, k);
+        if (rc == FS_CANCEL) break;
     }
     return rc;
 }

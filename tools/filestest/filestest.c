@@ -20,6 +20,10 @@ static int exists(const char *p) { struct stat st; return stat(p, &st) == 0; }
 static char T[PATH_MAX];
 static char *P(const char *rel) { static char b[8][PATH_MAX]; static int i; i = (i + 1) & 7; snprintf(b[i], PATH_MAX, "%s/%s", T, rel); return b[i]; }
 
+/* hook that counts and cancels after `limit` calls (limit < 0: never) */
+struct hk { int calls, limit; uint32_t bytes; };
+static int hook(void *cx, const char *path, uint32_t b) { struct hk *h = cx; h->calls++; h->bytes += b; return h->limit >= 0 && h->calls > h->limit; }
+
 int main(void) {
     snprintf(T, sizeof T, "/tmp/filestest.XXXXXX");
     if (!mkdtemp(T)) { perror("mkdtemp"); return 1; }
@@ -106,6 +110,37 @@ int main(void) {
     CHECK(!strcmp(u, P("src/new")));
     CHECK(fs_mkdirs(P("a/b/c")) == 0 && exists(P("a/b/c")) && fs_mkdirs(P("a/b/c")) == 0);
     CHECK(!strcmp(fs_base("/x/y/z.txt"), "z.txt") && !strcmp(fs_base("z"), "z"));
+
+    /* cancellable copy / delete / empty */
+    struct hk h = { 0, -1, 0 };
+    CHECK(fs_copy_x(P("src"), P("dst2"), hook, &h) == 0 && exists(P("dst2/in/f2")) && h.bytes == 13 && h.calls >= 4);
+    h = (struct hk){ 0, 2, 0 };                                                  /* cancelled mid-tree: nothing is left */
+    CHECK(fs_copy_x(P("src"), P("dst3"), hook, &h) == FS_CANCEL && !exists(P("dst3")));
+    {   /* cancelled mid-file (3 chunks of 32 KiB): no partial destination */
+        FILE *f = fopen(P("big"), "w");
+        char blk[32768] = { 1 };
+        for (int i = 0; i < 3; i++) fwrite(blk, 1, sizeof blk, f);
+        fclose(f);
+        h = (struct hk){ 0, 2, 0 };
+        CHECK(fs_copy_x(P("big"), P("big2"), hook, &h) == FS_CANCEL && !exists(P("big2")) && exists(P("big")));
+        h = (struct hk){ 0, -1, 0 };
+        CHECK(fs_copy_x(P("big"), P("big2"), hook, &h) == 0 && h.bytes == 3 * 32768);
+        struct stat st;
+        CHECK(stat(P("big2"), &st) == 0 && st.st_size == 3 * 32768);
+    }
+    CHECK(fs_copy_x(P("nope"), P("dst4"), NULL, NULL) == -1 && !exists(P("dst4")));
+    h = (struct hk){ 0, 1, 0 };                                                  /* cancelled delete keeps the rest */
+    CHECK(fs_rmrf_x(P("dst2"), hook, &h) == FS_CANCEL && exists(P("dst2")));
+    h = (struct hk){ 0, -1, 0 };
+    CHECK(fs_rmrf_x(P("dst2"), hook, &h) == 0 && !exists(P("dst2")) && h.calls == 5);                  /* dst2, f1, in, in/f2, g.tar.gz */
+    mkdir(P("w"), 0755); touch(P("w/a"), "a", 0644); touch(P("w/b"), "b", 0644);
+    CHECK(fs_trash_put(P("w/a"), NULL, 0) == 0 && fs_trash_put(P("w/b"), NULL, 0) == 0 && fs_trash_count() == 2);
+    h = (struct hk){ 0, 1, 0 };                                                  /* one item emptied, the other keeps its info */
+    CHECK(fs_trash_empty_x(hook, &h) == FS_CANCEL && fs_trash_count() == 1);
+    char kept[PATH_MAX], org[PATH_MAX];
+    snprintf(kept, sizeof kept, "%s", exists(P(".trash/files/a")) ? "a" : "b");
+    CHECK(fs_trash_info(kept, org, sizeof org, NULL) == 0);
+    CHECK(fs_trash_empty_x(NULL, NULL) == 0 && fs_trash_count() == 0 && !exists(P(".trash/info/a")) && !exists(P(".trash/info/b")));
 
     char cmd[PATH_MAX + 16];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", T);

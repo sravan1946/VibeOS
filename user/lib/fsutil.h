@@ -21,6 +21,14 @@ int  fs_trash_empty(void);
 int  fs_trash_count(void);
 int  fs_in_trash(const char *path);
 
+/* Cancellable work: the hook runs at the start of every entry (bytes 0, path = the entry) and after every chunk copied
+ * (bytes = chunk size); a non-zero return stops with FS_CANCEL. A cancelled or failed copy removes what it wrote. */
+typedef int (*fs_hook)(void *ctx, const char *path, uint32_t bytes);
+#define FS_CANCEL (-2)
+int  fs_copy_x(const char *src, const char *dst, fs_hook h, void *ctx);   /* dst must not exist */
+int  fs_rmrf_x(const char *path, fs_hook h, void *ctx);
+int  fs_trash_empty_x(fs_hook h, void *ctx);
+
 int  fs_rmrf(const char *path);
 int  fs_copy(const char *src, const char *dst);              /* file or tree; refuses a folder into itself */
 int  fs_mkdirs(const char *path);

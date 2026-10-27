@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <syscall.h>
 #include <fsutil.h>
+#include <pthread.h>
 #include "image.h"
 
 #define MAX_ENT 2048
@@ -51,9 +52,9 @@ static int tz_min, mods, trash_n;
 static int SW = W_SIDEBAR;            /* sidebar width; 0 below a 720px window */
 static uint32_t dir_sig, tick_ms;
 static char msg[128];
-static bool msg_new;
+static bool msg_new, msg_undo;        /* msg_undo: the toast carries an Undo action */
 
-enum { M_NONE, M_MENU, M_NEWDIR, M_NEWFILE, M_RENAME, M_DELETE, M_EMPTY, M_PROPS };
+enum { M_NONE, M_MENU, M_NEWDIR, M_NEWFILE, M_RENAME, M_DELETE, M_EMPTY, M_PROPS, M_CONFLICT };
 static int mode;
 static char namebuf[96];
 static int menu_x, menu_y;
@@ -73,6 +74,7 @@ static uint32_t drag_clear;
 
 static void say(bool bad, const char *fmt, const char *arg) {   /* shown as a toast */
     (void)bad;
+    msg_undo = false;
     snprintf(msg, sizeof msg, fmt, arg);
     char *p = strstr(msg, "item(s)");                          /* "1 item", "2 items" */
     if (p) { bool one = !strcmp(arg, "1"); memmove(p + (one ? 4 : 5), p + 7, strlen(p + 7) + 1); if (!one) p[4] = 's'; }
@@ -315,37 +317,185 @@ static void clip_put(bool cut) {
     free(b); free(ps);
 }
 
-/* move or copy path into dir under a fresh name; 0 on success */
-static int put_into(const char *src, const char *dir, bool copy, char *made) {
-    char dst[PATH_MAX], par[PATH_MAX];
+/* ---- undo: the last few Trash / Restore / rename / new-folder operations of this window (Ctrl+Z, or the toast's Undo) ---- */
+enum { U_TRASH, U_RESTORE, U_RENAME, U_NEW };
+struct uit { char a[PATH_MAX], b[PATH_MAX]; uint32_t mtime, size; };    /* trash: name, original; restore: path; rename: old, new */
+struct undo { int kind, n; struct uit *it; };
+#define NUNDO 8
+static struct undo ustk[NUNDO];
+static int nundo;
+
+static void undo_push(int kind, struct uit *it, int n) {                 /* takes it; the toast offers Undo for this one */
+    if (!it || !n) { free(it); return; }
+    if (nundo == NUNDO) { free(ustk[0].it); memmove(ustk, ustk + 1, (NUNDO - 1) * sizeof *ustk); nundo--; }
+    ustk[nundo++] = (struct undo){ kind, n, it };
+    msg_undo = true;
+}
+
+static const char *items_s(int n) { static char b[4][24]; static int i; i = (i + 1) & 3; snprintf(b[i], sizeof b[i], n == 1 ? "%d item" : "%d items", n); return b[i]; }
+
+/* ---- copy / move / delete run on a worker thread so the window stays alive. The worker touches no libgui state: it
+ * only calls fsutil and updates the counters below, which the UI thread polls each frame (ponytail: plain volatile
+ * words, a 32-bit byte counter (4 GiB) and a double-buffered name that can tear for one frame; add a mutex if they matter) ---- */
+enum { J_COPY, J_MOVE, J_DELETE, J_EMPTY };
+enum { C_NONE, C_REPLACE, C_SKIP, C_KEEP };
+static struct job {
+    int kind, n;
+    char (*src)[PATH_MAX];
+    char dir[PATH_MAX];
+    uint32_t *it, *by;                                  /* per source: entries and bytes, from fs_du */
+    pthread_t tid;
+    bool active;                                        /* UI thread only: a job exists (running or waiting to be reaped) */
+    uint32_t t0;
+    volatile int done, ready, cancel, ask, answer, all_ans;   /* ask: a name conflict waits for `answer`; all_ans: remembered for the rest */
+    volatile uint32_t items, items_total, bytes, bytes_total;
+    char cur[2][96];
+    volatile int ci;
+    char ask_name[96];
+    bool ask_dir;
+    int ok, bad, skipped;
+    char made[96];
+} J;
+
+static int job_hook(void *cx, const char *path, uint32_t b) {
+    struct job *j = cx;
+    if (b) j->bytes += b;
+    else { int n = !j->ci; j->items++; snprintf(j->cur[n], sizeof j->cur[n], "%s", fs_base(path)); j->ci = n; }
+    return j->cancel;
+}
+
+static int job_ask(struct job *j, const char *name, bool dir) {
+    if (j->all_ans) return j->all_ans;
+    snprintf(j->ask_name, sizeof j->ask_name, "%s", name);
+    j->ask_dir = dir;
+    j->answer = 0;
+    j->ask = 1;
+    while (!j->answer && !j->cancel) usleep(20000);
+    j->ask = 0;
+    return j->answer ? j->answer : C_SKIP;
+}
+
+static void job_one(struct job *j, int i) {
+    const char *src = j->src[i];
+    uint32_t it = j->it[i], by = j->by[i];
+    char dst[PATH_MAX], tmp[PATH_MAX], par[PATH_MAX];
+    int rc;
+    if (j->kind == J_DELETE) {
+        rc = fs_rmrf_x(src, job_hook, j);
+        if (!rc && fs_in_trash(src)) { snprintf(tmp, sizeof tmp, "%s/info/%s", fs_trash_dir, fs_base(src)); unlink(tmp); }
+        if (rc == FS_CANCEL) return;
+        if (rc) j->bad++; else j->ok++;
+        return;
+    }
+    bool move = j->kind == J_MOVE;
     snprintf(par, sizeof par, "%s", src);
     char *sl = strrchr(par, '/');
     if (sl && sl != par) *sl = 0; else if (sl) sl[1] = 0;
     size_t sn = strlen(src);
-    if (!strncmp(dir, src, sn) && (dir[sn] == '/' || !dir[sn])) return -1;                   /* into itself */
-    if (!copy && !strcmp(par, dir)) return 1;                                                /* already there */
-    join(dst, dir, fs_base(src));
-    fs_unique(dst, sizeof dst);
-    int r;
-    if (copy) r = fs_copy(src, dst);
-    else { r = rename(src, dst); if (r && !fs_copy(src, dst)) r = fs_rmrf(src); }
-    if (made) snprintf(made, 96, "%s", fs_base(dst));
-    return r ? -1 : 0;
+    if (!strncmp(j->dir, src, sn) && (j->dir[sn] == '/' || !j->dir[sn])) { j->bad++; return; }        /* into itself */
+    bool same = !strcmp(par, j->dir);
+    if (move && same) { j->items_total -= it; j->bytes_total -= by; return; }                           /* already there */
+    join(dst, j->dir, fs_base(src));
+    bool replace = false;
+    if (exists(dst)) {
+        if (same) fs_unique(dst, sizeof dst);                                                            /* a copy next to its original */
+        else {
+            int a = job_ask(j, fs_base(src), is_dir(dst));
+            if (j->cancel) return;
+            if (a == C_SKIP) { j->skipped++; j->items_total -= it; j->bytes_total -= by; return; }
+            if (a == C_KEEP) fs_unique(dst, sizeof dst);
+            else {
+                size_t dl = strlen(dst);
+                if (!strncmp(src, dst, dl) && src[dl] == '/') { j->bad++; return; }                      /* the source lives inside what it would replace */
+                replace = true;
+            }
+        }
+    }
+    const char *to = dst;
+    if (replace) { join(tmp, j->dir, ""); snprintf(tmp + strlen(tmp), sizeof tmp - strlen(tmp), ".%s.part", fs_base(src)); fs_unique(tmp, sizeof tmp); to = tmp; }
+    if (j->cancel) return;
+    if (move && rename(src, to) == 0) { j->items += it; j->bytes += by; rc = 0; }
+    else {
+        rc = fs_copy_x(src, to, job_hook, j);                                                            /* a cancelled copy removes itself */
+        if (!rc && move) rc = fs_rmrf(src);                                                              /* past the point of no return: not cancellable */
+    }
+    if (rc == 0 && replace) rc = fs_rmrf(dst) || rename(tmp, dst) ? -1 : 0;                             /* old one goes only once the new one is whole */
+    if (rc && replace) fs_rmrf(tmp);
+    if (rc == FS_CANCEL) return;
+    if (rc) { j->bad++; return; }
+    j->ok++;
+    snprintf(j->made, sizeof j->made, "%s", fs_base(dst));
 }
 
-static void paste_list(char (*ps)[PATH_MAX], int n, const char *dir, bool copy) {
-    int ok = 0, bad = 0;
-    char made[96] = "", t[16];
-    for (int i = 0; i < n; i++) {
-        int r = put_into(ps[i], dir, copy, made);
-        if (r == 0) ok++; else if (r < 0) bad++;
+static void *job_main(void *a) {
+    struct job *j = a;
+    char d[PATH_MAX];
+    uint32_t f, dd;
+    uint64_t b;
+    if (j->kind == J_EMPTY) {
+        snprintf(d, sizeof d, "%s/files", fs_trash_dir);
+        fs_du(d, &f, &dd, &b);
+        j->items_total = f + dd ? f + dd - 1 : 0;                                                         /* the files folder itself stays */
+    } else for (int i = 0; i < j->n; i++) {
+        fs_du(j->src[i], &f, &dd, &b);
+        j->it[i] = f + dd; j->by[i] = b > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)b;
+        j->items_total += j->it[i]; j->bytes_total += j->by[i];
     }
-    snprintf(t, sizeof t, "%d", ok);
-    if (bad) say(true, "%s: some items could not be moved", copy ? "Copy" : "Move");
-    else if (ok) say(false, copy ? "Copied %s item(s)" : "Moved %s item(s)", t);
-    refresh(false);
-    if (ok == 1 && !strcmp(dir, cwd)) select_name(made);
+    j->ready = 1;
+    if (j->kind == J_EMPTY) {
+        int rc = fs_trash_empty_x(job_hook, j);
+        if (rc == 0) j->ok = 1; else if (rc != FS_CANCEL) j->bad = 1;
+    } else for (int i = 0; i < j->n && !j->cancel; i++) job_one(j, i);
+    j->done = 1;
+    return NULL;
 }
+
+/* queue a job over n paths (copied); dir is the destination of a copy / move */
+static void job_start(int kind, char (*ps)[PATH_MAX], int n, const char *dir) {
+    if (J.active) { say(true, "%s", "Another file operation is still running"); return; }
+    memset(&J, 0, sizeof J);
+    J.kind = kind; J.n = n;
+    J.src = malloc((n + 1) * PATH_MAX);
+    J.it = calloc(n + 1, sizeof *J.it);
+    J.by = calloc(n + 1, sizeof *J.by);
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setstacksize(&at, 256 * 1024);                                                           /* the fs walks recurse */
+    if (!J.src || !J.it || !J.by) goto fail;
+    if (n) memcpy(J.src, ps, (size_t)n * PATH_MAX);
+    snprintf(J.dir, sizeof J.dir, "%s", dir ? dir : "");
+    J.t0 = uptime_ms();
+    if (pthread_create(&J.tid, &at, job_main, &J)) goto fail;
+    J.active = true;
+    return;
+fail:
+    free(J.src); free(J.it); free(J.by);
+    memset(&J, 0, sizeof J);
+    say(true, "%s", "Could not start the operation");
+}
+
+static void job_finish(void) {                                                                           /* the worker is done: report */
+    pthread_join(J.tid, NULL);
+    static const char *const past[] = { "Copied", "Moved", "Deleted", "Emptied" }, *const verb[] = { "copied", "moved", "deleted", "emptied" };
+    char b[160];
+    int k = J.kind, bad = J.bad, ok = J.ok;
+    b[0] = 0;
+    if (J.cancel) { if (ok) snprintf(b, sizeof b, "Cancelled · %s %s", items_s(ok), verb[k]); else snprintf(b, sizeof b, "Cancelled · nothing %s", verb[k]); }
+    else if (bad) { snprintf(b, sizeof b, "%s could not be %s", items_s(bad), verb[k]); if (ok) snprintf(b + strlen(b), sizeof b - strlen(b), " · %d done", ok); }
+    else if (k == J_EMPTY) snprintf(b, sizeof b, "Emptied the Trash");
+    else if (ok) { snprintf(b, sizeof b, "%s %s", past[k], items_s(ok)); if (J.skipped) snprintf(b + strlen(b), sizeof b - strlen(b), " · skipped %d", J.skipped); }
+    else if (J.skipped) snprintf(b, sizeof b, "Skipped %s", items_s(J.skipped));
+    if (b[0]) say(bad != 0, "%s", b);
+    char made[96];
+    snprintf(made, sizeof made, "%s", J.made);
+    bool pick = ok == 1 && k <= J_MOVE && !strcmp(J.dir, cwd);
+    free(J.src); free(J.it); free(J.by);
+    J.active = false;
+    refresh(false);
+    if (pick) select_name(made);
+}
+
+static void paste_list(char (*ps)[PATH_MAX], int n, const char *dir, bool copy) { job_start(copy ? J_COPY : J_MOVE, ps, n, dir); }
 
 static void clip_paste(void) {
     if (intrash) { say(true, "%s", "Can't paste into the Trash"); return; }
@@ -368,49 +518,57 @@ static void clip_paste(void) {
     free(ps); free(c);
 }
 
+static char (*collect_all(int *n))[PATH_MAX] {                  /* paths of the whole selection */
+    char (*ps)[PATH_MAX] = malloc((nsel() + 1) * PATH_MAX);
+    *n = ps ? collect(ps, nsel()) : 0;
+    return ps;
+}
+
 static void trash_sel(void) {
-    char (*ps)[PATH_MAX] = malloc(64 * PATH_MAX);
-    if (!ps) return;
-    int n = collect(ps, 64), ok = 0;
-    for (int i = 0; i < n; i++) {
+    int n, ok = 0;
+    char (*ps)[PATH_MAX] = collect_all(&n);
+    struct uit *u = calloc(n + 1, sizeof *u);
+    for (int i = 0; ps && u && i < n; i++) {
         if (protected_path(ps[i])) { say(true, "“%s” is protected", fs_base(ps[i])); continue; }
-        if (fs_trash_put(ps[i], NULL, 0) == 0) ok++;
+        if (fs_trash_put(ps[i], u[ok].a, sizeof u[ok].a) == 0) { fs_trash_info(u[ok].a, u[ok].b, sizeof u[ok].b, NULL); ok++; }
     }
     char t[16];
     snprintf(t, sizeof t, "%d", ok);
-    if (ok) say(false, "Moved %s item(s) to Trash", t);
+    if (ok) { say(false, "Moved %s item(s) to Trash", t); undo_push(U_TRASH, u, ok); u = NULL; }
     else if (n) say(true, "%s", "Could not move to Trash");
-    free(ps);
+    free(u); free(ps);
     int keep = cur;
     refresh(false);
     if (keep >= 0 && nord) anchor = cur = keep < nord ? keep : nord - 1;
 }
 
-static void delete_sel(void) {                          /* permanent */
-    char (*ps)[PATH_MAX] = malloc(64 * PATH_MAX);
-    if (!ps) return;
-    int n = collect(ps, 64), ok = 0;
-    for (int i = 0; i < n; i++) {
+static void delete_sel(void) {                          /* permanent: a job, with progress */
+    int n, m = 0;
+    char (*ps)[PATH_MAX] = collect_all(&n);
+    for (int i = 0; ps && i < n; i++) {
         if (protected_path(ps[i])) { say(true, "“%s” is protected", fs_base(ps[i])); continue; }
-        if (fs_rmrf(ps[i]) == 0) {
-            ok++;
-            if (intrash) { char inf[PATH_MAX]; snprintf(inf, sizeof inf, "%s/info/%s", fs_trash_dir, fs_base(ps[i])); unlink(inf); }
-        }
+        if (m != i) memcpy(ps[m], ps[i], PATH_MAX);
+        m++;
     }
-    char t[16];
-    snprintf(t, sizeof t, "%d", ok);
-    if (ok) say(false, "Deleted %s item(s)", t);
-    else say(true, "%s", "Could not delete");
+    if (m) job_start(J_DELETE, ps, m, NULL);
     free(ps);
-    refresh(false);
 }
 
 static void restore_sel(void) {
-    int ok = 0;
+    int ok = 0, n;
     char t[16], dest[PATH_MAX];
-    for (int k = 0; k < nord; k++) if (ents[ord[k]].sel && fs_trash_restore(ents[ord[k]].name, dest, sizeof dest) == 0) ok++;
+    char (*ps)[PATH_MAX] = collect_all(&n);                      /* the selected names, as paths (only the base is used) */
+    struct uit *u = calloc(n + 1, sizeof *u);
+    for (int i = 0; ps && u && i < n; i++) {
+        if (fs_trash_restore(fs_base(ps[i]), dest, sizeof dest)) continue;
+        struct stat st;
+        snprintf(u[ok].a, sizeof u[ok].a, "%s", dest);
+        if (stat(dest, &st) == 0 && !S_ISDIR(st.st_mode)) { u[ok].mtime = st.st_mtime; u[ok].size = st.st_size; }
+        ok++;
+    }
     snprintf(t, sizeof t, "%d", ok);
-    if (ok) say(false, "Restored %s item(s)", t); else say(true, "%s", "Could not restore");
+    if (ok) { say(false, "Restored %s item(s)", t); undo_push(U_RESTORE, u, ok); u = NULL; } else say(true, "%s", "Could not restore");
+    free(u); free(ps);
     refresh(false);
 }
 
@@ -424,6 +582,8 @@ static void do_new(const char *name, bool dir) {
     else { int fd = open(p, O_WRONLY | O_CREAT, 0644); ok = fd >= 0; if (ok) close(fd); }
     if (!ok) { say(true, "Could not create “%s”", name); return; }
     say(false, "Created “%s”", name);
+    struct uit *u = calloc(1, sizeof *u);
+    if (u) { snprintf(u->a, sizeof u->a, "%s", p); undo_push(U_NEW, u, 1); }
     refresh(false);
     select_name(name);
 }
@@ -439,8 +599,64 @@ static void do_rename(const char *name) {
     if (exists(b)) { say(true, "“%s” already exists", name); return; }
     if (rename(a, b)) { say(true, "Could not rename to “%s”", name); return; }
     say(false, "Renamed to “%s”", name);
+    struct uit *u = calloc(1, sizeof *u);
+    if (u) { snprintf(u->a, sizeof u->a, "%s", a); snprintf(u->b, sizeof u->b, "%s", b); undo_push(U_RENAME, u, 1); }
     refresh(false);
     select_name(name);
+}
+
+/* undo the newest operation. Nothing is overwritten or deleted that changed since: such items are skipped and the toast says why */
+static void do_undo(void) {
+    if (!nundo) { say(true, "%s", "Nothing to undo"); return; }
+    struct undo u = ustk[--nundo];
+    int done = 0, skip = 0;
+    const char *why = "";
+    char what[96] = "";
+    char b[PATH_MAX], dest[PATH_MAX], org[PATH_MAX];
+    struct stat st;
+    for (int i = 0; i < u.n; i++) {
+        struct uit *t = &u.it[i];
+        bool ok = false;
+        switch (u.kind) {
+        case U_TRASH:
+            snprintf(b, sizeof b, "%s/files/%s", fs_trash_dir, t->a);
+            if (!exists(b)) why = "no longer in the Trash";
+            else if (exists(t->b)) why = "the original name is taken";
+            else if (fs_trash_info(t->a, org, sizeof org, NULL) || strcmp(org, t->b) || fs_trash_restore(t->a, dest, sizeof dest)) why = "it can't be put back";
+            else ok = true;
+            break;
+        case U_RESTORE:
+            if (stat(t->a, &st)) why = "it was moved or deleted";
+            else if (!S_ISDIR(st.st_mode) && ((uint32_t)st.st_mtime != t->mtime || (uint32_t)st.st_size != t->size)) why = "it changed since";
+            else if (fs_trash_put(t->a, NULL, 0)) why = "it can't be moved to the Trash";
+            else ok = true;
+            break;
+        case U_RENAME:
+            if (!exists(t->b)) why = "it was moved or deleted";
+            else if (exists(t->a)) why = "the old name is taken";
+            else if (rename(t->b, t->a)) why = "it can't be renamed";
+            else ok = true;
+            break;
+        case U_NEW:
+            if (stat(t->a, &st)) why = "it was moved or deleted";
+            else if (S_ISDIR(st.st_mode) ? rmdir(t->a) : (st.st_size ? 1 : unlink(t->a))) why = "it is no longer empty";
+            else ok = true;
+            break;
+        }
+        if (ok) { done++; if (!what[0]) snprintf(what, sizeof what, "%s", fs_base(u.kind == U_TRASH ? t->b : t->a)); } else skip++;
+    }
+    static const char *const did[] = { "Put back %s", "Moved %s back to the Trash", "Renamed back to “%s”", "Removed “%s”" };
+    char head[96], m[160];
+    if (u.kind == U_RENAME || u.kind == U_NEW) snprintf(head, sizeof head, did[u.kind], what);
+    else if (u.kind == U_TRASH && done == 1) snprintf(head, sizeof head, "Put back “%s”", what);
+    else snprintf(head, sizeof head, did[u.kind], items_s(done));
+    if (!skip) snprintf(m, sizeof m, "%s", head);
+    else if (!done) snprintf(m, sizeof m, "Can't undo: %s", why);
+    else snprintf(m, sizeof m, "%s · skipped %d (%s)", head, skip, why);
+    say(skip != 0, "%s", m);
+    free(u.it);
+    refresh(false);
+    if (done == 1 && what[0] && (u.kind == U_TRASH || u.kind == U_RENAME)) select_name(what);
 }
 
 /* ---- drag payload shared with the desktop and other Files windows (DRAG_FILE) ---- */
@@ -680,6 +896,80 @@ static int props_draw(struct ui *ui) {
     return r;
 }
 
+/* the name conflict dialog (Replace / Skip / Keep both, plus "apply to all" when more items are queued) */
+static bool cf_first, cf_all;
+static int conflict_draw(struct ui *ui) {
+    char title[PATH_MAX], body[200];
+    snprintf(title, sizeof title, "“%s” already exists", J.ask_name);
+    snprintf(body, sizeof body, "“%s” already has %s with this name. Replace it, keep both (the new one gets a number), or skip this one.%s",
+             fs_base(J.dir), J.ask_dir ? "a folder" : "an item", J.ask_dir ? " Replacing a folder deletes everything in it." : "");
+    int W = ui->win->w, pw = W - 2 * SP_5 < W_ALERT ? W - 2 * SP_5 : W_ALERT, tw = pw - 2 * SP_6, px, py;
+    bool multi = J.n > 1;
+    int bh = ui_text_wrap(ui, T_BODY, 0, 0, tw, body, 0);
+    int ph = SP_6 + T_HEADING->height + SP_3 + bh + (multi ? SP_4 + SWITCH_H : 0) + SP_6 + H_CTL + SP_6;
+    dialog_box(ui, pw, ph, &px, &py);
+    ui_text_fit(ui, T_HEADING, px + SP_6, py + SP_6, tw, title, UI_TEXT);
+    ui_text_wrap(ui, T_BODY, px + SP_6, py + SP_6 + T_HEADING->height + SP_3, tw, body, UI_TEXT2);
+    if (multi) {
+        int sy = py + SP_6 + T_HEADING->height + SP_3 + bh + SP_4;
+        ui_switch(ui, px + SP_6, sy, &cf_all, 0);
+        gfx_text(ui->c, T_BODY, px + SP_6 + SWITCH_W + SP_3, sy + (SWITCH_H - T_BODY->height) / 2, "Do this for all remaining conflicts", UI_TEXT);
+    }
+    static const char *const lab[] = { "Skip", "Replace", "Keep both" };       /* the primary sits rightmost */
+    static const int ans[] = { C_SKIP, C_REPLACE, C_KEEP };
+    int r = 0, by = py + ph - SP_6 - H_CTL, x = px + pw - SP_6;
+    for (int i = 2; i >= 0; i--) {
+        int bw = ui_button_w(UI_NOICON, lab[i]) < W_CTL_MIN ? W_CTL_MIN : ui_button_w(UI_NOICON, lab[i]);
+        x -= bw;
+        if (cf_first && i == 2) ui->focus = ui_id(x, by, bw, H_CTL);
+        if (ui_button(ui, x, by, bw, H_CTL, lab[i], i == 2 ? UI_PRIMARY : i == 1 ? UI_DANGER : UI_SECONDARY)) r = ans[i];
+        x -= SP_3;
+    }
+    cf_first = false;
+    struct gui_event k;
+    while (ui_key(ui, &k)) { if (k.key == KEY_ESC) r = C_SKIP; else if (k.key == KEY_ENTER) r = C_KEEP; }
+    return r;
+}
+
+/* the progress card: bottom right, above the status bar, once a job has run for a moment */
+static void job_card(struct ui *ui, int W, int H) {
+    if (!J.active || J.done || mode == M_CONFLICT || uptime_ms() - J.t0 < 300) return;
+    static const char *const ttl[] = { "Copying", "Moving", "Deleting", "Emptying the Trash" };
+    char t[PATH_MAX + 64], st[96], name[96];
+    int total = J.items_total, done = J.items < J.items_total ? J.items : J.items_total;
+    if (J.kind == J_EMPTY) snprintf(t, sizeof t, "%s", ttl[J.kind]);
+    else if (J.kind == J_DELETE) snprintf(t, sizeof t, "%s %s", ttl[J.kind], items_s(J.n));
+    else snprintf(t, sizeof t, "%s %s to “%s”", ttl[J.kind], items_s(J.n), fs_base(J.dir));
+    snprintf(name, sizeof name, "%s", J.cur[J.ci]);
+    if (!J.ready) snprintf(st, sizeof st, "Preparing…");
+    else {
+        snprintf(st, sizeof st, "%d of %s", done, items_s(total));
+        if (J.bytes_total && J.kind <= J_MOVE) {
+            char a[24], b[24];
+            fmt_size(a, sizeof a, J.bytes < J.bytes_total ? J.bytes : J.bytes_total);
+            fmt_size(b, sizeof b, J.bytes_total);
+            snprintf(st + strlen(st), sizeof st - strlen(st), " · %s of %s", a, b);
+        }
+    }
+    int cw = W - 2 * SP_4 < 360 ? W - 2 * SP_4 : 360, iw = cw - 2 * SP_4;
+    int ch = SP_4 + T_BODY_B->height + SP_1 + T_CAPTION->height + SP_3 + 4 + SP_3 + H_CTL + SP_4;
+    int x = W - cw - SP_4, y = H - SB_H - SP_4 - ch;
+    struct canvas *c = ui->c;
+    gfx_elev(c, x, y, cw, ch, R_3, E2, ui_th.elev[E2]);
+    gfx_round_fill(c, x, y, cw, ch, R_3, ui_th.overlay);
+    gfx_round_rect(c, x, y, cw, ch, R_3, UI_LINE);
+    ui_text_fit(ui, T_BODY_B, x + SP_4, y + SP_4, iw, t, UI_TEXT);
+    ui_text_fit(ui, T_CAPTION, x + SP_4, y + SP_4 + T_BODY_B->height + SP_1, iw, name, UI_TEXT2);
+    int by = y + SP_4 + T_BODY_B->height + SP_1 + T_CAPTION->height + SP_3;
+    if (!J.ready) ui_progress(ui, x + SP_4, by, iw, -1, 0);
+    else if (J.bytes_total && J.kind <= J_MOVE) ui_progress(ui, x + SP_4, by, iw, J.bytes >> 10, J.bytes_total >> 10);
+    else ui_progress(ui, x + SP_4, by, iw, done, total);
+    int bw = ui_button_w(UI_NOICON, "Cancel") < W_CTL_MIN ? W_CTL_MIN : ui_button_w(UI_NOICON, "Cancel");
+    int ry = by + 4 + SP_3;
+    gfx_text(c, T_CAPTION, x + SP_4, ry + (H_CTL - T_CAPTION->height) / 2, st, UI_TEXT2);
+    if (ui_button(ui, x + cw - SP_4 - bw, ry, bw, H_CTL, "Cancel", UI_SECONDARY)) J.cancel = 1;
+}
+
 /* ---- context menu (unavailable items are hidden) ---- */
 static void menu_add(const char *label, int id, bool dis) { if (!dis) menu[nmenu++] = (struct mi){ label, id, false, false }; }
 static void menu_sep(void) { if (nmenu && !menu[nmenu - 1].sep) menu[nmenu++] = (struct mi){ 0, 0, true, false }; }
@@ -783,9 +1073,9 @@ static void do_action(int a) {
 
 /* ---- drag and drop target (inside the window): a folder item, a sidebar place, else the current folder ---- */
 static void drop_internal(int px, int py, int W, bool copy) {
-    char (*ps)[PATH_MAX] = malloc(64 * PATH_MAX);
+    int n;
+    char (*ps)[PATH_MAX] = collect_all(&n);
     if (!ps) return;
-    int n = collect(ps, 64);
     char dir[PATH_MAX];
     snprintf(dir, sizeof dir, "%s", cwd);
     int pl = place_at(px, py), k = item_at(px, py, W);
@@ -887,6 +1177,9 @@ int main(int argc, char **argv) {
             int tn = fs_trash_count();
             if (tn != trash_n) { trash_n = tn; if (intrash) refresh(true); }
         }
+        if (J.active && J.done) job_finish();
+        if (ui_toast_action(&ui)) do_undo();
+        if (J.active && J.ask && !J.answer && (mode == M_NONE || mode == M_MENU)) { mode = M_CONFLICT; cf_first = true; cf_all = false; }
         if (drag_clear && tick_ms >= drag_clear) { drag_clear = 0; unlink(DRAG_FILE); }
         if (strcmp(qbox, qlast)) { build_order(); scroll = 0; }
         layout(W, H);
@@ -945,6 +1238,7 @@ int main(int argc, char **argv) {
                     case 'c': clip_put(false); break;
                     case 'x': if (!intrash) clip_put(true); break;
                     case 'v': clip_paste(); break;
+                    case 'z': do_undo(); break;
                     case 'n': do_action(A_NEWDIR); break;
                     case 'h': do_action(A_HIDDEN); break;
                     case 'l': ui.focus = path_id; path_fresh = true; snprintf(pathbox, sizeof pathbox, "%s", cwd); break;
@@ -1182,6 +1476,8 @@ int main(int argc, char **argv) {
             }
         }
 
+        job_card(&ui, W, H);
+
         /* ---- dialogs and menu ---- */
         if (modal) {
             ui.mx = smx; ui.my = smy; ui.pressed = sp; ui.released = sr; ui.dbl = sd; ui.rpressed = srp;
@@ -1209,12 +1505,15 @@ int main(int argc, char **argv) {
                 int r = ui_dialog(&ui, mode == M_EMPTY ? "Empty Trash?" : "Delete permanently?", t, "Cancel", mode == M_EMPTY ? "Empty Trash" : "Delete", UI_DANGER);
                 int m0 = mode;
                 if (r) mode = M_NONE;
-                if (r == 1) { if (m0 == M_EMPTY) { fs_trash_empty(); say(false, "%s", "Emptied the Trash"); refresh(false); } else delete_sel(); }
+                if (r == 1) { if (m0 == M_EMPTY) job_start(J_EMPTY, NULL, 0, NULL); else delete_sel(); }
             } else if (mode == M_PROPS) {
                 if (props_draw(&ui)) mode = M_NONE;
+            } else if (mode == M_CONFLICT) {
+                int r = conflict_draw(&ui);
+                if (r) { mode = M_NONE; J.all_ans = cf_all ? r : 0; J.answer = r; }
             }
         }
-        if (msg_new) { ui_toast(&ui, msg, NULL); msg_new = false; }
+        if (msg_new) { ui_toast(&ui, msg, msg_undo && nundo ? "Undo" : NULL); msg_new = false; }
         const char *tn = fs_base(cwd)[0] ? fs_base(cwd) : "Root";
         for (int i = 0; i < NPLACES; i++) if (places[i].path && !strcmp(cwd, places[i].path)) tn = places[i].label;
         char nt[128];
@@ -1223,7 +1522,8 @@ int main(int argc, char **argv) {
         bool more = thumb_make();
         ui_end(&ui);
         thumb_busy = more;
-    } while (ui_poll(&ui, thumb_busy ? 0 : pend ? 60 : 1000));
+    } while (ui_poll(&ui, thumb_busy ? 0 : J.active ? 50 : pend ? 60 : 1000));
+    if (J.active) { J.cancel = 1; pthread_join(J.tid, NULL); }        /* closing the window cancels: the worker removes its partial copy */
     gui_window_destroy(w);
     return 0;
 }
