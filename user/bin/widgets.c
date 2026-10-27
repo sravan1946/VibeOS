@@ -22,12 +22,13 @@ int main(int argc, char **argv) {
     ui_init(&ui, w);
     char t1[64] = "", t2[64] = "notes.txt", t3[64] = "Bad name/", t4[64] = "", q1[64] = "", q2[64] = "wallpaper";
     bool cb[4] = { false, true, true, true }, sw[5] = { false, true, false, true, true };
-    int rad = 0, sl[4] = { 50, 30, 70, 40 }, seg = 1, segi = 0, dd[2] = { 0, 2 }, tab = 0, tab2 = 1, side = 0, lsel = 3, lscroll = 2;
+    int rad = 0, sl[4] = { 50, 30, 70, 40 }, seg = 1, segi = 0, dd[2] = { 0, 2 }, tab = 0, tab2 = 5, tab3 = 0, side = 0, lsel = 3, lscroll = 2;
     int dlg = !strcmp(mode, "dialog") ? 1 : !strcmp(mode, "danger") ? 2 : 0, opened = 0;
     static const char *const fonts[] = { "Inter 13", "Inter 15", "JetBrains Mono 13", "Noto Sans 13" };
     static const char *const segs[] = { "Day", "Week", "Month" };
     static const int segicons[] = { ICON_GRID, ICON_LIST };
     static const char *const tabs[] = { "General", "Appearance", "Keyboard" };
+    static const char *const files[] = { "main.c", "ui.c", "Makefile", "README.md", "notes.txt", "wm.c", "termwin.c" };
     static const char *const crumbs[] = { "Home", "Projects", "vibeos" };
     static const char *items[20];
     char ibuf[20][24];
@@ -91,9 +92,10 @@ int main(int argc, char **argv) {
         y += 48;
         head(x, y, "Tabs");
         y += 28;
-        ui_tabbar(&ui, x, y, 416, tabs, 3, &tab, 0);
+        ui_tabbar(&ui, x, y, 200, tabs, 2, &tab, 0);
+        ui_tabbar_ex(&ui, x + 216, y, 200, files, 2, &tab3, UI_TAB_CLOSE | UI_TAB_NEW, 2);
         y += 40;
-        ui_tabbar(&ui, x, y, 416, tabs, 3, &tab2, UI_INACTIVE);
+        ui_tabbar_ex(&ui, x, y, 416, files, 7, &tab2, UI_TAB_CLOSE | UI_TAB_NEW | (strcmp(mode, "tabs") ? UI_INACTIVE : 0), 0x12);   /* overflows */
         y += 44;
 
         /* ---- column 2: toggles, slider, segmented, dropdown ---- */

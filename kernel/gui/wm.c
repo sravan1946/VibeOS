@@ -73,7 +73,7 @@ static struct mitem mi[16];
 static int mn, mkind, msel = -1;
 static bool mkbd;                                       /* the selection came from the keyboard: show the focus ring */
 static struct rect mr;
-static uint32_t m_born;
+static struct ov mov;
 static int m_up;                                        /* opened upward: it slides down into place */
 static struct window *mwin;
 static void m_close(void);
@@ -188,6 +188,47 @@ static int enter_e(uint32_t born, int dur, struct rect r, int pad) {
     return ease_o[age * 256 / d];
 }
 static inline int slide(int e, int px) { return theme_anim ? px * (256 - e) / 256 : 0; }
+
+/* an overlay's motion: in over dur from born (ease out), and once closed out over D_EXIT(dur) from gone (ease in),
+ * starting from wherever the entrance had got to. ov_e: visibility 0..256, or -1 when there's nothing to draw */
+struct ov { bool out; uint32_t born, gone; };
+static void ov_open(struct ov *o) { o->born = ticks_ms; o->out = false; }
+static void ov_close(struct ov *o, int dur) {
+    int d = theme_anim ? dur : D_REDUCED, x = theme_anim ? D_EXIT(dur) : D_REDUCED, p = 0;
+    uint32_t age = ticks_ms - o->born;
+    int v = age < (uint32_t)d ? ease_o[age * 256 / d] : 256;
+    while (p < 256 && 256 - ease_i[p] > v) p++;
+    o->gone = ticks_ms - p * x / 256; o->out = true;
+}
+static int ov_e(struct ov *o, bool open, int dur, struct rect r, int pad) {
+    if (open) return enter_e(o->born, dur, r, pad);
+    if (!o->out) return -1;
+    int d = theme_anim ? D_EXIT(dur) : D_REDUCED;
+    uint32_t age = ticks_ms - o->gone;
+    if (age >= (uint32_t)d) { o->out = false; return -1; }
+    animating = true;
+    dmg(r, pad);
+    return 256 - ease_i[age * 256 / d];
+}
+
+/* the keyboard focus ring that just left a row or button fades out over D_FAST (it appears at once) */
+static struct { int owner, inset; struct rect r; uint32_t t; } rg;
+static void ring_left(int owner, struct rect r, int inset) { rg.owner = owner; rg.r = r; rg.inset = inset; rg.t = ticks_ms; dmg(r, 3); }
+static void ring_draw(struct canvas *c, struct rect r, int inset, color_t col) {
+    if (inset) gfx_rrect_ring(c, r.x, r.y, r.w, r.h, RADII(R_2, R_2, R_2, R_2), FOCUS_W, col);
+    else gfx_focus_ring(c, r.x, r.y, r.w, r.h, R_2, col);
+}
+static void ring_fade(struct canvas *c, int owner, int dy) {
+    if (rg.owner != owner) return;
+    int d = theme_anim ? D_FAST : D_REDUCED;
+    uint32_t age = ticks_ms - rg.t;
+    if (age >= (uint32_t)d) { rg.owner = 0; return; }
+    animating = true;
+    dmg(rg.r, 3);
+    struct rect r = rg.r;
+    r.y += dy;
+    ring_draw(c, r, rg.inset, TH_A(TH.accent_text, ALPHA(TH.accent_text) * (256 - ease_i[age * 256 / d]) >> 8));
+}
 
 /* fade: keep what's under r, draw, then mix the new pixels over the kept ones */
 static struct rect fade_r;
@@ -541,7 +582,9 @@ static void draw_tip(struct canvas *c) {
 static char lq[32];                                     /* the search text */
 static int lhit[32], nhit, lsel = -1, ltop, lhov = -1;  /* matching apps, selected match (-1 none), first row shown, hovered footer button */
 static bool lkbd;
-static uint32_t l_born, l_typed;
+static int lfoc;                                        /* Tab focus: 0 the search field (and the list), 1 Restart, 2 Shut down */
+static uint32_t l_typed;
+static struct ov lov;
 
 static int l_allrows(void) { return (napps + 1) / 2; }  /* the list keeps its height while you type: it doesn't jump */
 static int l_rows(void) { return imax(1, imin(l_allrows(), (TB_Y - SP_2 - SP_3 - L_LIST_Y - SP_3 - H_FOOTER) / H_ROW2)); }
@@ -585,7 +628,8 @@ static void l_filter(void) {
 
 static void draw_launcher(struct canvas *c) {
     struct rect m = l_rect();
-    int e = enter_e(l_born, D_NORMAL, m, ELEV_PAD(E4) + 8);
+    int e = ov_e(&lov, menu_open, D_NORMAL, m, ELEV_PAD(E4) + 8);
+    if (e < 0) return;
     int off = slide(e, 8);
     m.y += off;
     bool f = e < 256 && fade_begin(c, m, ELEV_PAD(E4));
@@ -601,7 +645,7 @@ static void draw_launcher(struct canvas *c) {
     int tw = lq[0] ? gfx_text_ell(c, T_BODY, tx, ty, sw - (tx - sx) - SP_4, lq, TH.text) : 0;
     if (!lq[0]) gfx_text(c, T_BODY, tx + 2, ty, "Search apps", TH.text3);
     uint32_t idle = ticks_ms - l_typed;
-    if (idle >= D_CARET_IDLE || (idle / D_CARET) % 2 == 0) gfx_fill(c, tx + tw, sy + (H_SEARCH_LG - 16) / 2, 1, 16, TH.text);
+    if (menu_open && !lfoc && (idle >= D_CARET_IDLE || (idle / D_CARET) % 2 == 0)) gfx_fill(c, tx + tw, sy + (H_SEARCH_LG - 16) / 2, 1, 16, TH.text);
     gfx_text(c, T_CAPTION_B, sx + SP_3, sy + H_SEARCH_LG + SP_5, lq[0] ? "Results" : "All apps", TH.text2);
     if (!nhit) {
         char s[64];
@@ -615,7 +659,7 @@ static void draw_launcher(struct canvas *c) {
         const struct app *a = &apps[lhit[i]];
         if (i == lsel) {
             gfx_round_fill(c, q.x, q.y, q.w, q.h, R_2, TH.hover_ov);
-            if (lkbd) gfx_rrect_ring(c, q.x, q.y, q.w, q.h, RADII(R_2, R_2, R_2, R_2), FOCUS_W, TH.accent_text);
+            if (lkbd && !lfoc) gfx_rrect_ring(c, q.x, q.y, q.w, q.h, RADII(R_2, R_2, R_2, R_2), FOCUS_W, TH.accent_text);
         }
         if (a->icon >= 0) blit_pm(c, q.x + SP_3, q.y + (H_ROW2 - ICON_XL) / 2, appicon_get(a->icon, ICON_XL));
         int lx = q.x + SP_3 + ICON_XL + SP_4, lw = q.w - (lx - q.x) - SP_3;
@@ -640,18 +684,22 @@ static void draw_launcher(struct canvas *c) {
         if (lhov == i) gfx_round_fill(c, b.x, b.y, b.w, b.h, R_2, TH.hover_ov);
         icon(c, i ? ICON_POWER : ICON_RESTART, ICON_SM, b.x + 10, b.y + (H_CTL - ICON_SM) / 2, TH.text2);
         gfx_text(c, T_BODY, b.x + 10 + ICON_SM + 6, b.y + (H_CTL - T_BODY->height) / 2, i ? "Shut down" : "Restart", TH.text);
+        if (lfoc == i + 1) ring_draw(c, b, 0, TH.accent_text);
     }
+    ring_fade(c, 1, off);
     if (f) fade_end(e);
 }
 
 /* ================= menus (docs/DESIGN.md §9 Menus) ================= */
 static int m_ih(int i) { return (mi[i].sep ? 2 * SP_2 + 1 : 0) + H_ROW; }
 static int m_iy(int i) { int y = mr.y + SP_2; for (int k = 0; k < i; k++) y += m_ih(k); return y + (mi[i].sep ? 2 * SP_2 + 1 : 0); }
+static struct rect m_row(int i) { return (struct rect){ mr.x + SP_2, m_iy(i), mr.w - 2 * SP_2, H_ROW }; }
 static bool m_icons(void) { for (int i = 0; i < mn; i++) if (mi[i].icon >= 0) return true; return false; }
 
 static void draw_mmenu(struct canvas *c) {
     struct rect m = mr;
-    int e = enter_e(m_born, D_NORMAL, m, ELEV_PAD(E2) + SP_2);
+    int e = ov_e(&mov, mkind, D_NORMAL, m, ELEV_PAD(E2) + SP_2);
+    if (e < 0) return;
     int dy = slide(e, SP_2) * (m_up ? 1 : -1);
     m.y += dy;
     bool f = e < 256 && fade_begin(c, m, ELEV_PAD(E2));
@@ -673,6 +721,7 @@ static void draw_mmenu(struct canvas *c) {
         if (hw) gfx_text(c, T_BODY, m.x + m.w - SP_4 - hw, ty, mi[i].hint, TH.dark ? TH.text2 : TH.text3);
         gfx_text_ell(c, T_BODY, x, ty, m.x + m.w - SP_4 - (hw ? hw + SP_5 : 0) - x, mi[i].label, fg);
     }
+    ring_fade(c, 2, dy);
     if (f) fade_end(e);
 }
 
@@ -784,7 +833,8 @@ static int wrap(const struct font *f, const char *s, int maxw, int *off, int *le
 #define NQ 24
 #define NVIS 3
 #define NT_PAD SP_4
-struct notif { char title[48], body[160], app[32]; uint8_t kind; short sym; uint32_t born, wall, until; bool toast; };   /* kind: 0 info, 1 good, 2 warn, 3 bad */
+struct notif { char title[48], body[160], app[32]; uint8_t kind, toast; short sym; uint32_t wall, until; struct ov mo; };   /* kind: 0 info, 1 good, 2 warn, 3 bad;
+                                                                                    toast: 1 in the stack, 2 leaving it */
 static struct notif hist[NQ];
 static int nhist, toast_hov = -1;                       /* the toast under the pointer: they all wait while it's there */
 
@@ -847,7 +897,8 @@ static void draw_toasts(struct canvas *c) {
     int k = toast_layout(r, n);
     for (int i = 0; i < k; i++) {
         struct rect q = r[i];
-        int e = enter_e(n[i]->born, D_NORMAL, q, ELEV_PAD(E2) + 8);
+        int e = ov_e(&n[i]->mo, n[i]->toast == 1, D_NORMAL, q, ELEV_PAD(E2) + 8);
+        if (e < 0) { n[i]->toast = 0; dmg(q, ELEV_PAD(E2) + 8); toast_damage(); continue; }   /* gone: the rest settle */
         q.y += slide(e, 8);
         bool f = e < 256 && fade_begin(c, q, ELEV_PAD(E2));
         gfx_elev(c, q.x, q.y, q.w, q.h, R_3, E2, TH.elev[E2]);
@@ -864,7 +915,7 @@ static void draw_toasts(struct canvas *c) {
 #define CN_ROW 96
 #define CN_EMPTY 136
 static int cn_off, cn_hov = -1, cn_clr_hot;
-static uint32_t cn_born;
+static struct ov cov;
 static int cn_vis(void) { return imax(1, imin(imax(1, nhist), (TB_Y - SP_2 - SP_3 - CN_HEAD - 1) / CN_ROW)); }
 static struct rect cn_rect(void) {
     int h = CN_HEAD + 1 + (nhist ? cn_vis() * CN_ROW : CN_EMPTY);
@@ -876,11 +927,13 @@ static struct rect cn_clear(void) {
     return (struct rect){ m.x + m.w - SP_3 - w, m.y + (CN_HEAD - H_CTL) / 2, w, H_CTL };
 }
 static void cn_damage(void) { dmg(cn_rect(), ELEV_PAD(E4) + 8); }
-static void cn_close(void) { if (!cn_open) return; cn_damage(); cn_open = false; wm_damage(0, TB_Y, SW, WM_TASKBAR_H); }
+static void cn_close(void) { if (!cn_open) return; cn_damage(); cn_open = false; ov_close(&cov, D_NORMAL); cn_hov = -1; cn_clr_hot = 0; wm_damage(0, TB_Y, SW, WM_TASKBAR_H); }
 
 static void draw_center(struct canvas *c) {
     struct rect m = cn_rect();
-    int e = enter_e(cn_born, D_NORMAL, m, ELEV_PAD(E4) + 8), off = slide(e, 8);
+    int e = ov_e(&cov, cn_open, D_NORMAL, m, ELEV_PAD(E4) + 8);
+    if (e < 0) return;
+    int off = slide(e, 8);
     m.y += off;
     bool f = e < 256 && fade_begin(c, m, ELEV_PAD(E4));
     gfx_elev(c, m.x, m.y, m.w, m.h, R_3, E4, TH.elev[E4]);
@@ -917,7 +970,7 @@ static void draw_center(struct canvas *c) {
 /* ---- quick settings (volume, network), a panel popover over the tray ---- */
 #define QS_W 320
 static bool qs_drag, qs_hot;                            /* dragging the volume thumb; pointer over the mute button */
-static uint32_t qs_born;
+static struct ov qov;
 static struct rect qs_rect(void) {
     panel_layout();
     int h = SP_3 + (vol_cache >= 0 ? H_ROW2 + 1 : 0) + H_ROW2 + SP_3;
@@ -926,11 +979,12 @@ static struct rect qs_rect(void) {
 #define QS_SX0(m) ((m).x + SP_4 + H_CTL + SP_4)
 #define QS_SX1(m) ((m).x + (m).w - SP_5 - 40 - SP_3)
 static void qs_damage(void) { dmg(qs_rect(), ELEV_PAD(E2) + 8); }
-static void qs_close(void) { if (!qs_open) return; qs_damage(); qs_open = false; qs_drag = false; wm_damage(0, TB_Y, SW, WM_TASKBAR_H); }
+static void qs_close(void) { if (!qs_open) return; qs_damage(); qs_open = false; qs_drag = false; qs_hot = false; ov_close(&qov, D_NORMAL); wm_damage(0, TB_Y, SW, WM_TASKBAR_H); }
 
 static void draw_qs(struct canvas *c) {
     struct rect m = qs_rect();
-    int e = enter_e(qs_born, D_NORMAL, m, ELEV_PAD(E2) + 8);
+    int e = ov_e(&qov, qs_open, D_NORMAL, m, ELEV_PAD(E2) + 8);
+    if (e < 0) return;
     m.y += slide(e, 4);
     bool f = e < 256 && fade_begin(c, m, ELEV_PAD(E2));
     gfx_elev(c, m.x, m.y, m.w, m.h, R_3, E2, TH.elev[E2]);
@@ -949,7 +1003,7 @@ static void draw_qs(struct canvas *c) {
         }
         int ks = qs_drag ? SLIDER_THUMB_HOT : SLIDER_THUMB;
         gfx_elev(c, kx - ks / 2, cy - ks / 2, ks, ks, R_F(ks), E1, TH.elev[E1]);
-        gfx_round_fill(c, kx - ks / 2, cy - ks / 2, ks, ks, R_F(ks), RGB(255, 255, 255));
+        gfx_round_fill(c, kx - ks / 2, cy - ks / 2, ks, ks, R_F(ks), (TH.thumb & 0xFFFFFF) < 0x808080 ? TH.thumb : RGB(255, 255, 255));   /* white; black in contrast */
         gfx_round_rect(c, kx - ks / 2, cy - ks / 2, ks, ks, R_F(ks), TH.line_strong);
         char pct[8];
         snprintf(pct, sizeof pct, "%d%%", vol_cache);
@@ -976,7 +1030,7 @@ static void draw_qs(struct canvas *c) {
 #define SW_COLS 6
 static struct window *sw_list[16];
 static int sw_n, sw_sel;
-static uint32_t sw_born;
+static struct ov sov;
 static struct rect sw_rect(void) {
     int cols = imin(sw_n, SW_COLS), rows = (sw_n + SW_COLS - 1) / SW_COLS, w = cols * SW_CW + 2 * SP_4, h = rows * SW_CH + 2 * SP_4;
     return (struct rect){ (SW - w) / 2, (TB_Y - h) / 2, w, h };
@@ -1011,7 +1065,8 @@ static void draw_thumb(struct canvas *c, int x, int y, int tw, int th, struct wi
 
 static void draw_switcher(struct canvas *c) {
     struct rect m = sw_rect();
-    int e = enter_e(sw_born, D_NORMAL, m, ELEV_PAD(E4));
+    int e = ov_e(&sov, sw_open, D_NORMAL, m, ELEV_PAD(E4));
+    if (e < 0) return;
     bool f = e < 256 && fade_begin(c, m, ELEV_PAD(E4));
     gfx_elev(c, m.x, m.y, m.w, m.h, R_3, E4, TH.elev[E4]);
     gfx_round_fill(c, m.x, m.y, m.w, m.h, R_3, TH.overlay);
@@ -1057,12 +1112,12 @@ static bool compose(void) {
     draw_ghost(&c);
     if (d.y + d.h > TB_Y) draw_taskbar(&c);
     if (tip_on) draw_tip(&c);
-    if (menu_open) draw_launcher(&c);
-    if (mkind) draw_mmenu(&c);
-    if (qs_open) draw_qs(&c);
-    if (cn_open) draw_center(&c);
+    if (menu_open || lov.out) draw_launcher(&c);
+    if (mkind || mov.out) draw_mmenu(&c);
+    if (qs_open || qov.out) draw_qs(&c);
+    if (cn_open || cov.out) draw_center(&c);
     draw_toasts(&c);
-    if (sw_open) draw_switcher(&c);
+    if (sw_open || sov.out) draw_switcher(&c);
     draw_cursor(&c);
     if (!no_present)
         for (int y = d.y; y < d.y + d.h; y++)
@@ -1199,6 +1254,7 @@ void wm_destroy(struct window *w) {
     if (last_click_win == w) last_click_win = 0;
     if (mwin == w) m_close();
     if (sw_open) sw_close(false);
+    if (sov.out) { sov.out = false; sw_damage(); }   /* its thumbnails read the window buffers */
     if (w->user_va) {
         struct task *o = task_find(w->owner_pid);
         if (o && o->dir == w->owner_dir) vmm_unmap_range(w->owner_dir, w->user_va, w->buf_frames * PAGE_SIZE, false);
@@ -1341,7 +1397,7 @@ static void power(bool reboot) {
 }
 
 static void l_damage(void) { dmg(l_rect(), ELEV_PAD(E4) + 8); wm_damage(0, TB_Y, H_PANEL, WM_TASKBAR_H); }
-static void l_close(void) { if (!menu_open) return; l_damage(); menu_open = false; }
+static void l_close(void) { if (!menu_open) return; l_damage(); menu_open = false; ov_close(&lov, D_NORMAL); }
 
 static void launch(int app) {
     l_close();
@@ -1359,10 +1415,11 @@ static void l_toggle(void) {
     if (menu_open) { l_close(); return; }
     close_popups();
     load_apps();
-    lq[0] = 0; lkbd = false; lhov = -1;
+    lq[0] = 0; lkbd = false; lhov = -1; lfoc = 0;
     l_filter();
     menu_open = true;
-    l_born = l_typed = ticks_ms;
+    ov_open(&lov);
+    l_typed = ticks_ms;
     l_damage();
 }
 
@@ -1377,11 +1434,27 @@ static void l_show_sel(void) {
 static bool l_key(const struct gui_event *ev) {
     if (ev->mods & (MOD_CTRL | MOD_ALT | MOD_SUPER)) return false;
     int len = strlen(lq), k = ev->key;
+    struct rect q;
     if (k == KEY_ESC) { l_close(); return true; }
+    if (k == KEY_TAB) {                                 /* search/list -> Restart -> Shut down -> search */
+        int n = (lfoc + (ev->mods & MOD_SHIFT ? 2 : 1)) % 3;
+        if (lfoc) ring_left(1, l_btn(lfoc - 1), 0);
+        else if (lkbd && lsel >= 0 && l_item(lsel, &q)) ring_left(1, q, 1);
+        lfoc = n;
+        l_damage();
+        return true;
+    }
+    if (lfoc) {                                         /* a footer button has the keyboard */
+        if (k == KEY_ENTER || ev->ch == ' ') { power(lfoc == 1); return true; }
+        if (k == KEY_LEFT || k == KEY_RIGHT) { ring_left(1, l_btn(lfoc - 1), 0); lfoc = lfoc == 1 ? 2 : 1; l_damage(); return true; }
+        if (k == KEY_UP || k == KEY_DOWN || k == KEY_BACKSPACE || (ev->ch >= 32 && ev->ch < 127)) { ring_left(1, l_btn(lfoc - 1), 0); lfoc = 0; }
+        else return true;
+    }
     if (k == KEY_ENTER) { if (nhit) launch(lhit[lsel >= 0 ? lsel : 0]); return true; }
     if (k == KEY_UP || k == KEY_DOWN || k == KEY_LEFT || k == KEY_RIGHT) {
         if (nhit) {
             int d = k == KEY_UP ? -1 : k == KEY_DOWN ? 1 : k == KEY_LEFT ? -l_hrows() : l_hrows();
+            if (lkbd && lsel >= 0 && l_item(lsel, &q)) ring_left(1, q, 1);
             if (lsel < 0) lsel = 0;
             else if (lsel + d >= 0 && lsel + d < nhit) lsel += d;
             lkbd = true;
@@ -1411,10 +1484,13 @@ static bool l_mouse(int x, int y, bool down, int dz) {
     }
     int sel = item >= 0 ? item : lkbd || lq[0] ? lsel : -1;
     if (hov != lhov || sel != lsel || (item >= 0 && lkbd)) {
+        struct rect q;
+        if (item >= 0 && lkbd && lsel >= 0 && l_item(lsel, &q)) ring_left(1, q, 1);   /* the pointer takes over */
         lhov = hov; lsel = sel;
         if (item >= 0) lkbd = false;
         l_damage();
     }
+    if (down && lfoc) { ring_left(1, l_btn(lfoc - 1), 0); lfoc = 0; l_damage(); }
     if (!inside(m, x, y)) return false;
     if (dz && l_hrows() > l_rows()) { ltop = imax(0, imin(l_hrows() - l_rows(), ltop + (dz > 0 ? 1 : -1))); l_damage(); }
     if (down && item >= 0) launch(lhit[item]);
@@ -1505,7 +1581,7 @@ void wm_notify(const char *msg, int n) {
     int a = proc_app();                                  /* who sent it: an /etc/apps program, else the system */
     strlcpy(h->app, a >= 0 ? apps[a].name : "VibeOS", sizeof h->app);
     h->sym = a >= 0 ? app_sym(apps[a].icon) : ICON_BELL;
-    h->born = ticks_ms; h->until = ticks_ms + D_NOTIF; h->wall = rtc_now();
+    ov_open(&h->mo); h->until = ticks_ms + D_NOTIF; h->wall = rtc_now();
     h->toast = !cn_open;
     int k = 0;
     for (int i = 0; i < nhist; i++) if (hist[i].toast && ++k > NVIS) hist[i].toast = false;
@@ -1519,7 +1595,7 @@ static void cn_toggle(void) {
     toast_damage();
     for (int i = 0; i < nhist; i++) hist[i].toast = false;
     unseen = 0; cn_off = 0; cn_hov = -1; cn_clr_hot = 0; cn_open = true;
-    cn_born = ticks_ms;
+    ov_open(&cov);
     cn_damage();
     wm_damage(0, TB_Y, SW, WM_TASKBAR_H);
 }
@@ -1554,7 +1630,7 @@ static bool cn_mouse(int x, int y, bool down, int dz) {
 static bool toasts_mouse(int x, int y, bool down) {
     struct rect r[NVIS]; struct notif *n[NVIS];
     int k = toast_layout(r, n), hov = -1;
-    for (int i = 0; i < k; i++) if (inside(r[i], x, y)) hov = i;
+    for (int i = 0; i < k; i++) if (n[i]->toast == 1 && inside(r[i], x, y)) hov = i;
     if (hov != toast_hov) {
         if (hov < 0) for (int i = 0; i < nhist; i++) { if (hist[i].until < (uint32_t)ticks_ms + 2000) hist[i].until = ticks_ms + 2000; }   /* they waited while hovered */
         toast_hov = hov;
@@ -1562,7 +1638,8 @@ static bool toasts_mouse(int x, int y, bool down) {
     }
     if (!down || hov < 0) return false;
     toast_damage();
-    n[hov]->toast = false;                               /* a click anywhere on it (or its close box) dismisses it */
+    n[hov]->toast = 2;                                   /* a click anywhere on it (or its close box) dismisses it */
+    ov_close(&n[hov]->mo, D_NORMAL);
     toast_hov = -1;
     return true;
 }
@@ -1578,7 +1655,7 @@ static void qs_toggle(void) {
     if (qs_open) { qs_close(); return; }
     close_popups();
     qs_open = true; qs_hot = false;
-    qs_born = ticks_ms;
+    ov_open(&qov);
     qs_damage();
     wm_damage(0, TB_Y, SW, WM_TASKBAR_H);
 }
@@ -1614,7 +1691,8 @@ static void m_close(void) {
     if (!mkind) return;
     dmg(mr, ELEV_PAD(E2) + SP_2);
     if (mkind == MK_TASKS) wm_damage(0, TB_Y, SW, WM_TASKBAR_H);
-    mkind = 0; mwin = 0; msel = -1;
+    mkind = 0; mwin = 0;                                 /* msel stays lit while the menu fades out */
+    ov_close(&mov, D_NORMAL);
 }
 
 static void m_add(const char *label, int ic, int act, const char *hint, bool sep, bool danger) {
@@ -1639,8 +1717,10 @@ static void m_show(int kind, int x, int y, bool above) {
     m_up = above || y + h > TB_Y - SP_2;
     if (x + w > SW - SP_2) x = imax(SP_2, x - w);
     if (m_up) y = imax(SP_2, y - h);
+    if (mov.out) dmg(mr, ELEV_PAD(E2) + SP_2);            /* the last one was still fading out */
+    if (rg.owner == 2) rg.owner = 0;
     mr = (struct rect){ x, y, w, h };
-    mkind = kind; msel = -1; mkbd = false; m_born = ticks_ms;
+    mkind = kind; msel = -1; mkbd = false; ov_open(&mov);
     dmg(mr, ELEV_PAD(E2) + SP_2);
 }
 
@@ -1708,7 +1788,7 @@ static void m_act(int i) {
 static bool m_mouse(int x, int y, bool click) {
     int i = -1;
     if (inside(mr, x, y)) for (int k = 0; k < mn; k++) if (y >= m_iy(k) && y < m_iy(k) + H_ROW) i = k;
-    if (i != msel && (i >= 0 || !mkbd)) { msel = i; mkbd = false; dmg(mr, 0); }
+    if (i != msel && (i >= 0 || !mkbd)) { if (mkbd && msel >= 0) ring_left(2, m_row(msel), 1); msel = i; mkbd = false; dmg(mr, 0); }
     if (inside(mr, x, y)) {
         if (click && i >= 0) m_act(i);
         return true;
@@ -1723,9 +1803,11 @@ static bool m_mouse(int x, int y, bool click) {
 static void m_key(const struct gui_event *ev) {
     if (ev->key == KEY_ESC) { m_close(); return; }
     if (ev->key == KEY_ENTER) { if (msel >= 0) m_act(msel); return; }
-    if (ev->key != KEY_UP && ev->key != KEY_DOWN) return;
-    int d = ev->key == KEY_UP ? mn - 1 : 1;
-    msel = msel < 0 ? (d == 1 ? 0 : mn - 1) : (msel + d) % mn;
+    int k = ev->key, d = k == KEY_UP ? mn - 1 : 1;
+    if (k != KEY_UP && k != KEY_DOWN && k != KEY_HOME && k != KEY_END) return;
+    if (mkbd && msel >= 0) ring_left(2, m_row(msel), 1);
+    if (k == KEY_HOME || k == KEY_END) msel = k == KEY_HOME ? 0 : mn - 1;
+    else msel = msel < 0 ? (d == 1 ? 0 : mn - 1) : (msel + d) % mn;
     mkbd = true;
     dmg(mr, 0);
 }
@@ -1743,7 +1825,7 @@ static void sw_start(bool back) {
     for (int i = 0; i < sw_n; i++) sw_list[i] = tmp[n - 1 - i];     /* most recently used first */
     sw_sel = back ? sw_n - 1 : focused == sw_list[0] ? 1 : 0;
     sw_open = true;
-    sw_born = ticks_ms;
+    ov_open(&sov);
     sw_damage();
 }
 
@@ -1753,6 +1835,7 @@ static void sw_close(bool commit) {
     if (!sw_open) return;
     sw_damage();
     sw_open = false;
+    ov_close(&sov, D_NORMAL);
     struct window *w = sw_list[sw_sel];
     if (commit && w) wm_focus(w);
 }
@@ -2322,7 +2405,7 @@ static int wm_thread(void *arg) {
             poll_tray();
             if (wp_redo && !(wp_pid && task_find(wp_pid))) { wp_redo = false; wp_pid = wm_spawn_app("/bin/theme", "-W"); }
             for (int i = 0, k = 0; i < nhist && toast_hov < 0; i++)   /* notifications time out (not while one is hovered) */
-                if (hist[i].toast && (int32_t)((uint32_t)ticks_ms - hist[i].until) >= 0) { if (!k++) toast_damage(); hist[i].toast = false; }
+                if (hist[i].toast == 1 && (int32_t)((uint32_t)ticks_ms - hist[i].until) >= 0) { if (!k++) toast_damage(); hist[i].toast = 2; ov_close(&hist[i].mo, D_NORMAL); }
             uint32_t t = rtc_now() + tz_minutes * 60;
             if ((int)((t / 60) % 60) != last_minute) { last_minute = (t / 60) % 60; wm_damage(0, TB_Y, SW, WM_TASKBAR_H); }
             if (menu_open && ticks_ms - l_typed < D_CARET_IDLE + 250) l_damage();   /* the search caret blinks */

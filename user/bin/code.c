@@ -1317,43 +1317,19 @@ int main(int argc, char **argv) {
             ui_vscroll(&ui, sbw - 12, ly, lh, nrows, tvis, &tree_scroll);
         }
 
-        /* tab strip (ui_tabbar), with a close box or a modified dot at the end of each tab */
+        /* tab strip: a close box (or a modified dot) per tab, + for a new file; scrolls when the tabs don't fit */
         {
-            static char nbuf[MAX_TABS][72];
             const char *names[MAX_TABS];
-            int pad = SP_3 + 20, spw = gfx_text_width(T_BODY_B, " "), ns = (pad + spw - 1) / (spw ? spw : 1);
-            int tx[MAX_TABS], tw[MAX_TABS], x = mx0 + SP_2, closing = -1, sel = curdoc;
+            uint32_t mod = 0;
+            int sel = curdoc;
             for (int i = 0; i < ndocs; i++) {
-                const char *nm = docs[i]->path[0] ? base(docs[i]->path) : "Untitled";
-                int n = snprintf(nbuf[i], 40, "%.39s", nm);
-                for (int k = 0; k < ns && n < 70; k++) nbuf[i][n++] = ' ';
-                nbuf[i][n] = 0;
-                names[i] = nbuf[i];
-                tx[i] = x; tw[i] = gfx_text_width(T_BODY_B, nbuf[i]) + 2 * SP_4;
-                x += tw[i];
+                names[i] = docs[i]->path[0] ? base(docs[i]->path) : "Untitled";
+                if (docs[i]->modified) mod |= 1u << i;
             }
-            int ty = TB_H + (TABS_H - 20) / 2;
-            for (int i = 0; i < ndocs; i++) {                              /* the close box takes its press first */
-                int cx = tx[i] + tw[i] - SP_4 - 20 + SP_1;
-                if (ui.pressed && ui_hover(&ui, cx, ty, 20, 20)) { closing = i; ui.pressed = false; }
-            }
-            struct canvas tc = *c, *oc = ui.c;
-            canvas_clip(&tc, mx0, TB_H, mw, TABS_H);
-            ui.c = &tc;
-            if (ndocs) { if (ui_tabbar(&ui, mx0, TB_H, mw, names, ndocs, &sel, 0)) select_doc(sel); }
-            else { gfx_fill(&tc, mx0, TB_H, mw, TABS_H, ui.focused ? ui_th.window : ui_th.base); gfx_hline(&tc, mx0, TB_H + TABS_H - 1, mw, UI_LINE); }
-            for (int i = 0; i < ndocs; i++) {
-                int cx = tx[i] + tw[i] - SP_4 - 20 + SP_1;
-                bool tabhov = ui_hover(&ui, tx[i], TB_H, tw[i], TABS_H), xh = ui_hover(&ui, cx, ty, 20, 20);
-                if (docs[i]->modified && !xh) gfx_circle_fill(&tc, cx + 10, ty + 10, 4, i == curdoc ? UI_TEXT : UI_TEXT2);
-                else if (i == curdoc || tabhov) {
-                    if (xh) gfx_round_fill(&tc, cx, ty, 20, 20, R_2, (ui.buttons & 1) ? ui_th.press_ov : ui_th.hover_ov);
-                    ui_icon(&ui, cx + 2, ty + 2, ICON_CLOSE, ICON_SM, xh ? UI_TEXT : UI_TEXT3);
-                }
-            }
-            ui.c = oc;
-            if (x + SP_2 + H_CTL <= W && ui_icon_button(&ui, x + SP_2, TB_H + (TABS_H - H_CTL) / 2 - 1, ICON_PLUS, 0, "New file · Ctrl+N")) new_untitled();
-            if (closing >= 0) request_close_tab(closing);
+            int r = ui_tabbar_ex(&ui, mx0, TB_H, mw, names, ndocs, &sel, UI_TAB_CLOSE | UI_TAB_NEW, mod);
+            if (sel != curdoc) select_doc(sel);
+            if (r == UI_TAB_ADD) new_untitled();
+            else if (r >= 0) request_close_tab(r);
         }
 
         /* editor */

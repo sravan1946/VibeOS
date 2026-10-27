@@ -54,7 +54,10 @@ enum {
     UI_ERROR    = 0x1000,   /* inputs: danger ring */
     UI_INACTIVE = 0x2000,   /* tab strip of an unfocused window */
     UI_MIXED    = 0x4000,   /* checkbox: indeterminate */
+    UI_TAB_CLOSE = 0x8000,  /* ui_tabbar_ex: a close box on the active and the hovered tab */
+    UI_TAB_NEW  = 0x10000,  /* ui_tabbar_ex: a ghost + after the last tab */
 };
+#define UI_TAB_ADD (-2)     /* ui_tabbar_ex: the + was clicked */
 #define UI_NOICON (-1)
 
 struct ui {
@@ -85,7 +88,9 @@ struct ui {
     uint32_t pop_id; const char *const *pop_items; int pop_n, pop_sel, pop_hi, pop_pick; struct rect pop_r, pop_anchor; bool pop_seen;
     uint32_t tip_id, tip_t0, tip_seen; const char *tip; struct rect tip_r; bool tip_show;
     char toast_msg[96], toast_act[24]; uint32_t toast_until; struct rect toast_r, toast_btn; bool toast_hit;
-    uint32_t caret_id, caret_t0; int caret, scroll_x;
+    uint32_t caret_id, caret_t0; int caret, scroll_x, anchor;   /* the selection runs from anchor to caret */
+    uint32_t pop_t0, pop_t1, toast_t0; bool pop_out;              /* overlay motion: opened, closed (fading out) */
+    uint32_t ring_id, ring_old, ring_t;                           /* the focus ring shown, and the one fading out */
     int drag_off;
     int force;                      /* widget gallery only: draw as UI_F_HOVER | UI_F_PRESS | UI_F_FOCUS */
 };
@@ -138,6 +143,10 @@ bool ui_tabs(struct ui *ui, int x, int y, int w, int h, const char *const *names
 bool ui_segmented(struct ui *ui, int x, int y, const int *icons, const char *const *names, int n, int *sel);
 /* in-window tab strip (H_TAB) with the amber signal line under the active tab; flags: UI_INACTIVE */
 bool ui_tabbar(struct ui *ui, int x, int y, int w, const char *const *names, int n, int *sel, int flags);
+/* the same with UI_TAB_CLOSE / UI_TAB_NEW; bit i of `modified` puts a dot where tab i's close box goes (the box shows
+ * on hover). Tabs past w scroll: chevrons at the right (the wheel too), the selected tab kept in view. Returns the tab
+ * whose close box was pressed, UI_TAB_ADD, or -1; *sel changes on a click or Left/Right */
+int  ui_tabbar_ex(struct ui *ui, int x, int y, int w, const char *const *names, int n, int *sel, int flags, uint32_t modified);
 /* dropdown/select: a secondary button showing items[*sel]; opens a menu list. Returns true when *sel changed */
 bool ui_dropdown(struct ui *ui, int x, int y, int w, const char *const *items, int n, int *sel, int flags);
 
