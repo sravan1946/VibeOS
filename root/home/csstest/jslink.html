@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html><head><title>JS + link + table</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+<h1>Script page with a linked sheet and a table</h1>
+<div class="t base">[ok] linked sheet applies on a page with scripts</div>
+<table border="1" cellpadding="4"><tr><th>k</th><th>v</th></tr><tr><td>a</td><td id="v">?</td></tr><tr><td colspan="2"><input id="i" value="field in a cell"></td></tr></table>
+<script>document.getElementById('v').textContent = 'set by script';</script>
+</body></html>

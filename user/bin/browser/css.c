@@ -1,19 +1,24 @@
-/* css.c - a small CSS engine: stylesheet parser, selector matcher (type, .class, #id, descendant, child,
- * comma lists) and a cascade that boils the matching declarations of one element down to a `struct cprops`.
- * Anything it doesn't understand (pseudo-classes, attribute selectors, @rules, unknown properties, vw/calc
- * values) is skipped without disturbing the rest of the sheet. */
+/* css.c - a small CSS engine: stylesheet parser, selector matcher (type, .class, #id, [attr], :first-child, :root,
+ * descendant, child, comma lists) and a cascade that boils the matching declarations of one element down to a
+ * `struct cprops`. @media (screen/all, width queries against the window), @import and @layer are followed; anything
+ * else it doesn't understand (other pseudo-classes, sibling combinators, other @rules, unknown properties,
+ * vw/calc values) is skipped without disturbing the rest of the sheet. ponytail: :last-child needs lookahead the
+ * streaming layout doesn't have. */
 #include "browser.h"
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
 
 struct decl { uint8_t prop, imp, kind; int v; };
-struct comp { char tag[12], id[24], cls[3][20]; uint8_t ncls, child; };   /* child: '>' to the previous compound */
+struct comp { char tag[12], id[24], cls[3][20], an[14], av[24]; uint8_t ncls, child, hasa, aop, aci, first, root; };   /* child: '>' to the previous compound; [an aop av] */
 struct rule { struct comp c[5]; uint8_t n; uint16_t spec; int d0, nd, order; };
 static struct rule *R; static int nr, rcap;
 static struct decl *D; static int nd, dcap;
+static int attrs_used, vpw = 960;
 
-void css_reset(void) { nr = nd = 0; }
+void css_reset(void) { nr = nd = 0; attrs_used = 0; }
+int  css_attrs(void) { return attrs_used; }
+void css_viewport(int w) { vpw = w; }
 int  css_any(void) { return nr > 0; }
 
 /* ---------- colours ---------- */
@@ -230,6 +235,12 @@ static void decl(char *name, char *val, int imp) {
         if (!strcasecmp(val, "none")) put(p, K_AUTO, 0, imp);
         else if (parse_len(val, &v, &k)) put(p, k, v, imp);
     }
+    else if (!strcmp(name, "vertical-align")) {
+        int a = !strcasecmp(val, "top") || !strcasecmp(val, "text-top") || !strcasecmp(val, "baseline") ? 0 : !strcasecmp(val, "middle") ? 1 : !strcasecmp(val, "bottom") || !strcasecmp(val, "text-bottom") ? 2 : -1;
+        if (a >= 0) put(P_VALIGN, K_PX, a, imp);
+    }
+    else if (!strcmp(name, "border-collapse")) put(P_COLLAPSE, K_PX, !strncasecmp(val, "collapse", 8), imp);
+    else if (!strcmp(name, "border-spacing")) { if (parse_len(val, &v, &k) && k == K_PX) put(P_SPACING, K_PX, v < 0 ? 0 : v, imp); }
     else if (!strcmp(name, "border")) border(-1, val, imp);
     else if (!strncmp(name, "border-", 7)) {
         const char *r = name + 7;
@@ -305,6 +316,45 @@ static int parse_sel(const char *s, int n, struct rule *r) {
         while (i < n && !isspace((unsigned char)s[i]) && s[i] != '>') {
             char ch = s[i];
             if (ch == '*') { i++; any = 1; continue; }
+            if (ch == '[') {                            /* [name], [name=v], ~= |= ^= $= *=, optional quotes and i flag */
+                int j = i + 1;
+                while (j < n && isspace((unsigned char)s[j])) j++;
+                int ns = j;
+                while (j < n && (isalnum((unsigned char)s[j]) || s[j] == '-' || s[j] == '_' || s[j] == ':')) j++;
+                int nl = j - ns;
+                if (!nl || nl >= (int)sizeof c->an || c->hasa) return 0;
+                for (int k = 0; k < nl; k++) c->an[k] = tolower((unsigned char)s[ns + k]);
+                while (j < n && isspace((unsigned char)s[j])) j++;
+                if (j < n && s[j] != ']') {
+                    if (s[j] == '=') c->aop = '=';
+                    else if (j + 1 < n && s[j + 1] == '=' && strchr("~|^$*", s[j])) c->aop = s[j++];
+                    else return 0;
+                    j++;
+                    while (j < n && isspace((unsigned char)s[j])) j++;
+                    char q = j < n && (s[j] == '"' || s[j] == '\'') ? s[j++] : 0;
+                    int vs = j;
+                    while (j < n && (q ? s[j] != q : s[j] != ']' && !isspace((unsigned char)s[j]))) j++;
+                    if (j - vs >= (int)sizeof c->av) return 0;
+                    memcpy(c->av, s + vs, j - vs);
+                    if (q && j < n) j++;
+                    while (j < n && isspace((unsigned char)s[j])) j++;
+                    if (j < n && (s[j] | 32) == 'i') { c->aci = 1; j++; while (j < n && isspace((unsigned char)s[j])) j++; }
+                }
+                if (j >= n || s[j] != ']') return 0;
+                c->hasa = 1; spec += 10; attrs_used = 1; any = 1;
+                i = j + 1;
+                continue;
+            }
+            if (ch == ':') {                            /* :first-child and :root; every other pseudo-class drops the rule */
+                int j = i + 1, st = j;
+                while (j < n && (isalpha((unsigned char)s[j]) || s[j] == '-')) j++;
+                if (j - st == 11 && !strncmp(s + st, "first-child", 11)) c->first = 1;
+                else if (j - st == 4 && !strncmp(s + st, "root", 4)) c->root = 1;
+                else return 0;
+                spec += 10; any = 1;
+                i = j;
+                continue;
+            }
             if (ch == '#' || ch == '.' || isalpha((unsigned char)ch) || ch == '_' || ch == '-') {
                 int j = i + (ch == '#' || ch == '.');
                 int st = j;
@@ -340,10 +390,46 @@ static int has_class(const char *list, const char *cls) {
     return 0;
 }
 
+static const char *at_find(const char *at, const char *name, int *vl) {      /* value of attribute `name` in el.at */
+    int nl = strlen(name);
+    for (const char *p = at; *p == 1; ) {
+        const char *n = p + 1, *v = strchr(n, 2);
+        if (!v) break;
+        const char *e = v + 1;
+        while (*e && *e != 1) e++;
+        if ((int)(v - n) == nl && !strncmp(n, name, nl)) { *vl = e - (v + 1); return v + 1; }
+        p = e;
+    }
+    return 0;
+}
+
+static int attr_match(const struct comp *c, const struct el *e) {
+    int vl, cl = strlen(c->av);
+    const char *v = at_find(e->at, c->an, &vl);
+    if (!v) return 0;
+    if (!c->aop) return 1;
+    #define EQ(a, b, l) (c->aci ? !strncasecmp(a, b, l) : !strncmp(a, b, l))
+    switch (c->aop) {
+    case '=': return vl == cl && EQ(v, c->av, cl);
+    case '^': return cl && vl >= cl && EQ(v, c->av, cl);
+    case '$': return cl && vl >= cl && EQ(v + vl - cl, c->av, cl);
+    case '|': return vl >= cl && EQ(v, c->av, cl) && (vl == cl || v[cl] == '-');
+    case '*': for (int k = 0; cl && k + cl <= vl; k++) if (EQ(v + k, c->av, cl)) return 1; return 0;
+    case '~': for (int k = 0; cl && k + cl <= vl; k++)
+                  if ((!k || isspace((unsigned char)v[k - 1])) && EQ(v + k, c->av, cl) && (k + cl == vl || isspace((unsigned char)v[k + cl]))) return 1;
+              return 0;
+    }
+    #undef EQ
+    return 0;
+}
+
 static int comp_match(const struct comp *c, const struct el *e) {
     if (c->tag[0] && strcmp(c->tag, e->name)) return 0;
     if (c->id[0] && strcmp(c->id, e->id)) return 0;
     for (int i = 0; i < c->ncls; i++) if (!has_class(e->cls, c->cls[i])) return 0;
+    if (c->first && !e->first) return 0;
+    if (c->root && strcmp(e->name, "html")) return 0;
+    if (c->hasa && !attr_match(c, e)) return 0;
     return 1;
 }
 
@@ -369,39 +455,174 @@ int css_match(const char *sel, const struct el *st, int n) {
     return ok ? 0 : -1;
 }
 
-/* ---------- stylesheet ---------- */
-void css_add(const char *src, size_t n) {
-    char *s = malloc(n + 1);
-    if (!s) return;
-    size_t m = 0;
-    for (size_t i = 0; i < n; ) {                       /* drop comments and <!-- --> wrappers */
-        if (i + 1 < n && src[i] == '/' && src[i + 1] == '*') {
-            i += 2;
-            while (i + 1 < n && !(src[i] == '*' && src[i + 1] == '/')) i++;
-            i += 2;
-        } else if (i + 4 <= n && !strncmp(src + i, "<!--", 4)) i += 4;
-        else if (i + 3 <= n && !strncmp(src + i, "-->", 3)) i += 3;
-        else s[m++] = src[i++];
+/* ---------- @media ---------- */
+static int cmp_len(int op, int have, int want) {    /* have OP want, for the range syntax and min-/max- */
+    return op == '<' ? have < want : op == 'l' ? have <= want : op == '>' ? have > want : op == 'g' ? have >= want : have == want;
+}
+
+/* one "(feature)" without the parentheses */
+static int media_feature(char *f) {
+    for (char *p = f; *p; p++) *p = tolower((unsigned char)*p);
+    char *colon = strchr(f, ':'), *val = "";
+    int op = '=', v = 0, k;
+    if (colon) { *colon = 0; val = colon + 1; }
+    else {                                            /* (width >= 600px), (400px <= width) is not handled */
+        char *r = f + strcspn(f, "<>=");
+        if (*r) {
+            op = *r == '=' ? '=' : r[1] == '=' ? (*r == '<' ? 'l' : 'g') : *r;
+            val = r + 1 + (r[1] == '=' && *r != '=');
+            *r = 0;
+        }
     }
-    s[m] = 0;
+    char *e = f + strlen(f);
+    while (e > f && isspace((unsigned char)e[-1])) *--e = 0;
+    while (isspace((unsigned char)*f)) f++;
+    while (isspace((unsigned char)*val)) val++;
+    int num = parse_len(val, &v, &k) && k == K_PX;
+    if (!strcmp(f, "width")) return num && cmp_len(op, vpw, v);
+    if (!strcmp(f, "min-width")) return num && vpw >= v;
+    if (!strcmp(f, "max-width")) return num && vpw <= v;
+    if (!strcmp(f, "height")) return num && cmp_len(op, 600, v);          /* the window height isn't known here */
+    if (!strcmp(f, "min-height")) return num && 600 >= v;
+    if (!strcmp(f, "max-height")) return num && 600 <= v;
+    if (!strcmp(f, "orientation")) return !strncmp(val, "landscape", 9) ? vpw >= 600 : vpw < 600;
+    if (!strcmp(f, "prefers-color-scheme")) return !strncmp(val, "light", 5);
+    if (!strcmp(f, "prefers-reduced-motion")) return !strncmp(val, "no-pref", 7);
+    if (!strcmp(f, "hover") || !strcmp(f, "any-hover")) return !strncmp(val, "hover", 5);
+    if (!strcmp(f, "pointer") || !strcmp(f, "any-pointer")) return !strncmp(val, "fine", 4);
+    if (strstr(f, "resolution") || strstr(f, "pixel-ratio")) {                 /* we are always 1 dppx / 96 dpi */
+        double x = atof(val);
+        if (strstr(val, "dpi")) x /= 96;
+        return strstr(f, "min") ? x <= 1.0001 : strstr(f, "max") ? x >= 0.9999 : x > 0.9999 && x < 1.0001;
+    }
+    if (!strcmp(f, "color") || !strcmp(f, "grid")) return !strcmp(f, "color");
+    return 0;                                         /* unknown feature: doesn't match, like a browser */
+}
+
+static int media_one(const char *q, int n) {          /* [not|only] type [and (feature)]... */
+    char b[256];
+    if (n >= (int)sizeof b) n = sizeof b - 1;
+    memcpy(b, q, n);
+    b[n] = 0;
+    char *p = b;
+    int neg = 0, ok = 1;
+    for (;;) {
+        while (isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        if (*p == '(') {
+            char *e = strchr(p, ')');
+            if (!e) return 0;
+            *e = 0;
+            ok &= media_feature(p + 1);
+            p = e + 1;
+            continue;
+        }
+        char *w = p;
+        while (*p && !isspace((unsigned char)*p) && *p != '(') p++;
+        int wl = p - w;
+        if (wl == 3 && !strncasecmp(w, "not", 3)) neg = 1;
+        else if (wl == 4 && !strncasecmp(w, "only", 4)) { }
+        else if (wl == 3 && !strncasecmp(w, "and", 3)) { }
+        else if (!((wl == 3 && !strncasecmp(w, "all", 3)) || (wl == 6 && !strncasecmp(w, "screen", 6)))) ok = 0;   /* print, speech, tv... */
+    }
+    return ok != neg;
+}
+
+int css_media(const char *q) {                        /* comma list: any query matching is enough; empty = all */
+    if (!q) return 1;
+    int len = strlen(q), any = 0;
+    for (int a = 0; a <= len; ) {
+        int b = a, depth = 0;
+        while (b < len && (depth || q[b] != ',')) { if (q[b] == '(') depth++; else if (q[b] == ')' && depth) depth--; b++; }
+        int e = b;
+        while (a < e && isspace((unsigned char)q[a])) a++;
+        if (e == a && len == 0) return 1;
+        if (e > a) { any = 1; if (media_one(q + a, e - a)) return 1; }
+        a = b + 1;
+    }
+    return !any;
+}
+
+/* ---------- stylesheet ---------- */
+static void sheet(const char *s, size_t m, const char *base, int depth);
+
+/* @import "x" / url(x) [media]; the sheet comes from sheet.c (NULL while it loads: the page relayouts when it arrives) */
+static void do_import(const char *pre, size_t n, const char *base, int depth) {
+    char ref[URL_MAX], q[160];
+    size_t i = 0;
+    while (i < n && isspace((unsigned char)pre[i])) i++;
+    int k = 0;
+    if (i + 4 <= n && !strncasecmp(pre + i, "url(", 4)) {
+        i += 4;
+        while (i < n && isspace((unsigned char)pre[i])) i++;
+        char c = i < n && (pre[i] == '"' || pre[i] == '\'') ? pre[i++] : 0;
+        while (i < n && k < (int)sizeof ref - 1 && (c ? pre[i] != c : pre[i] != ')' && !isspace((unsigned char)pre[i]))) ref[k++] = pre[i++];
+        while (i < n && pre[i] != ')') i++;
+        i++;
+    } else if (i < n && (pre[i] == '"' || pre[i] == '\'')) {
+        char c = pre[i++];
+        while (i < n && pre[i] != c && k < (int)sizeof ref - 1) ref[k++] = pre[i++];
+        i++;
+    } else return;
+    ref[k] = 0;
+    k = 0;
+    while (i < n && isspace((unsigned char)pre[i])) i++;
+    if (i + 5 <= n && (!strncasecmp(pre + i, "layer", 5) || !strncasecmp(pre + i, "suppo", 5))) i = n;   /* import layers/supports: ignore the condition */
+    while (i < n && k < (int)sizeof q - 1) q[k++] = pre[i++];
+    q[k] = 0;
+    if (!ref[0] || !css_media(q) || depth >= 4) return;
+    char full[URL_MAX];
+    url_resolve(base ? base : "", ref, full, sizeof full);
+    size_t len;
+    const char *t = sheet_get(full, &len);
+    if (t) { static int nest; if (nest < 4) { nest++; css_add_from(t, len, full); nest--; } }
+}
+
+static void sheet(const char *s, size_t m, const char *base, int depth) {
     size_t i = 0;
     while (i < m) {
         while (i < m && isspace((unsigned char)s[i])) i++;
         if (i >= m) break;
-        if (s[i] == '@') {                              /* skip @media/@import/@font-face ... */
-            while (i < m && s[i] != '{' && s[i] != ';') i++;
-            if (i < m && s[i] == ';') { i++; continue; }
-            int depth = 0;
-            for (; i < m; i++) { if (s[i] == '{') depth++; else if (s[i] == '}' && --depth == 0) { i++; break; } }
+        if (s[i] == '@') {
+            size_t ns = ++i;
+            while (i < m && (isalpha((unsigned char)s[i]) || s[i] == '-')) i++;
+            size_t nl = i - ns, ps = i;
+            int par = 0;
+            char qt = 0;
+            for (; i < m && (qt || par || (s[i] != '{' && s[i] != ';')); i++) {
+                if (qt) { if (s[i] == qt) qt = 0; }
+                else if (s[i] == '"' || s[i] == '\'') qt = s[i];
+                else if (s[i] == '(') par++;
+                else if (s[i] == ')' && par) par--;
+            }
+            size_t pe = i;
+            if (i >= m) break;
+            if (s[i] == ';') {
+                if (nl == 6 && !strncasecmp(s + ns, "import", 6)) do_import(s + ps, pe - ps, base, depth);
+                i++;
+                continue;
+            }
+            size_t bs = ++i;
+            int d = 1;
+            while (i < m && d) { if (s[i] == '{') d++; else if (s[i] == '}') d--; i++; }
+            size_t be = d ? i : i - 1;
+            if (depth < 6 && ((nl == 5 && !strncasecmp(s + ns, "media", 5)) || (nl == 5 && !strncasecmp(s + ns, "layer", 5)))) {
+                char mq[256];
+                size_t l = pe - ps < sizeof mq - 1 ? pe - ps : sizeof mq - 1;
+                memcpy(mq, s + ps, l);
+                mq[l] = 0;
+                if (nl == 5 && (s[ns] | 32) == 'l') mq[0] = 0;                 /* @layer name { ... }: always applies */
+                if (css_media(mq)) sheet(s + bs, be - bs, base, depth + 1);
+            }
             continue;
         }
         size_t ps = i;
         while (i < m && s[i] != '{') i++;
         if (i >= m) break;
         size_t pe = i, bs = ++i;
-        int depth = 1;
-        while (i < m && depth) { if (s[i] == '{') depth++; else if (s[i] == '}') depth--; i++; }
-        size_t be = depth ? i : i - 1;
+        int depth2 = 1;
+        while (i < m && depth2) { if (s[i] == '{') depth2++; else if (s[i] == '}') depth2--; i++; }
+        size_t be = depth2 ? i : i - 1;
         int d0 = nd;
         parse_decls(s + bs, be - bs);
         if (nd == d0) continue;
@@ -419,6 +640,25 @@ void css_add(const char *src, size_t n) {
             a = b + 1;
         }
     }
+}
+
+void css_add(const char *src, size_t n) { css_add_from(src, n, 0); }
+
+void css_add_from(const char *src, size_t n, const char *base) {
+    char *s = malloc(n + 1);
+    if (!s) return;
+    size_t m = 0;
+    for (size_t i = 0; i < n; ) {                       /* drop comments and <!-- --> wrappers */
+        if (i + 1 < n && src[i] == '/' && src[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < n && !(src[i] == '*' && src[i + 1] == '/')) i++;
+            i += 2;
+        } else if (i + 4 <= n && !strncmp(src + i, "<!--", 4)) i += 4;
+        else if (i + 3 <= n && !strncmp(src + i, "-->", 3)) i += 3;
+        else s[m++] = src[i++];
+    }
+    s[m] = 0;
+    sheet(s, m, base, 0);
     free(s);
 }
 

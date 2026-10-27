@@ -164,6 +164,7 @@ static void commit(const char *url, char *raw, size_t n, int html) {
     internal = false;
     if (!keep_imgs) img_reset();
     keep_imgs = false;
+    sheet_reset();
     fs_reset();
     fo = sel_ci = -1; mk.from_it = mk.to_it = -1; selecting = false; img_dirty = false;
     last_needle[0] = 0; find_count = 0; mk.find = 0;
@@ -628,7 +629,7 @@ int main(int argc, char **argv) {
     char last_title[96] = "";
 
     for (;;) {
-        int timeout = loading || img_busy() || js_busy() ? 40 : -1, jt = js_timeout();
+        int timeout = loading || img_busy() || sheet_busy() || js_busy() ? 40 : -1, jt = js_timeout();
         if (jt >= 0 && (timeout < 0 || jt < timeout)) timeout = jt;
         if (scroll != target) timeout = 16;
         struct pollfd pf[2] = { { win->fd, POLLIN, 0 }, { fe.fd, POLLIN, 0 } };
@@ -637,6 +638,7 @@ int main(int argc, char **argv) {
         fetch_reap();
         if (loading) service_fetch();
         if (pg.have && img_pump()) img_dirty = true;
+        if (pg.have && sheet_pump()) { relayout(); img_dirty = false; }    /* a stylesheet arrived (or failed): lay the page out again */
         if (img_dirty && pg.have && (!img_busy() || uptime_ms() - last_relayout > 400)) { relayout(); img_dirty = false; }
 
         int W = win->w, H = win->h, vw = view_w(), vh = view_h();
@@ -876,7 +878,7 @@ int main(int argc, char **argv) {
 
         /* status bar */
         ui_status(&ui, 0, H - STH, W, NULL, NULL);
-        ui_text_fit(&ui, T_CAPTION, SP_4, H - STH + (STH - T_CAPTION->height) / 2, W - 2 * SP_4, hover >= 0 ? hover_url : img_busy() ? "Loading images\u2026" : status,
+        ui_text_fit(&ui, T_CAPTION, SP_4, H - STH + (STH - T_CAPTION->height) / 2, W - 2 * SP_4, hover >= 0 ? hover_url : sheet_busy() ? "Loading styles\u2026" : img_busy() ? "Loading images\u2026" : status,
                     status_bad && hover < 0 ? UI_BAD : UI_TEXT2);
 
         if (alert_msg && alert_box(&ui, alert_msg)) { free(alert_msg); alert_msg = 0; }
