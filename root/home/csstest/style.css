@@ -1,0 +1,19 @@
+@import "base.css";
+@import url("print.css") print;
+h1 { color: #5b3fa0; }
+.t { margin: 4px 0; padding: 3px 8px; }
+.card { background: #eeeaff; border: 1px solid #8878c8; }
+.scr { }
+@media screen and (min-width: 300px) { .scr { background: #dff5df; color: #145214; } }
+@media (min-width: 700px) { .wide { background: #dff5df; color: #145214; } }
+@media (max-width: 500px) { .narrow { background: #dff5df; color: #145214; } }
+@media print { .printonly { background: #dff5df; color: #145214; } body { display: none; } }
+@media not screen { .notscreen { background: #dff5df; color: #145214; } }
+a[href^="http"] { border-bottom: 1px dotted #a50; color: #a50; }
+ul.fc li:first-child { font-weight: bold; color: #8b1a1a; }
+span[data-kind] { background: #dff5df; color: #145214; }
+p[lang|=en] { background: #dff5df; color: #145214; }
+p[rel~=b] { background: #dff5df; color: #145214; }
+p[class*=sub] { background: #dff5df; color: #145214; }
+div > p:first-child.only { background: #dff5df; color: #145214; }
+p.second:first-child { background: #dff5df; }

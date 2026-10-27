@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Linked stylesheet test</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="missing.css">
+<link rel="stylesheet" href="print.css" media="print">
+<link rel="stylesheet" href="sub/../wide.css" media="screen and (min-width: 600px)">
+<style>.inline { border-left: 6px solid #2a8; padding-left: 8px; }</style>
+</head>
+<body>
+<h1>Linked stylesheet test</h1>
+<p>Every line marked <b>[ok]</b> should be green on a pale green band when its rule applies; <b>[no]</b> lines should look plain.
+A missing.css link sits in the head and must not stop the page.</p>
+
+<div class="t base">[ok] style.css @import "base.css": this band has the imported background</div>
+<div class="t card">[ok] .card from style.css: lilac box with a border</div>
+<div class="t inline">[ok] inline &lt;style&gt; after the links: green bar on the left</div>
+<div class="t scr">[ok] @media screen and (min-width: 300px)</div>
+<div class="t wide">[ok] @media (min-width: 700px): only when the window is wider than 700px</div>
+<div class="t narrow">[ok] @media (max-width: 500px): only when the window is narrower than 500px</div>
+<div class="t printonly">[no] @media print block: must stay plain</div>
+<div class="t notscreen">[no] @media not screen: must stay plain</div>
+<div class="t linkw">[ok] wide.css (media screen and min-width 600px): orange text when wide</div>
+<div class="t printlink">[no] print.css (media print link): must stay plain</div>
+
+<h2>Selectors</h2>
+<p><a href="http://example.com/">absolute link, [href^=http] gives it a dotted look</a> and <a href="local.html">a local link (plain)</a>.</p>
+<ul class="fc">
+<li>first-child item: bold and dark red
+<li>second item: plain
+<li>third item: plain
+</ul>
+<form><input type="text" value="type=text"> <input type="submit" value="submit"> <span class="t data" data-kind="x">[ok] [data-kind] attribute selector</span></form>
+<p class="t lang" lang="en-GB">[ok] [lang|=en] matches en-GB</p>
+<p class="t tilde" rel="a b c">[ok] [rel~=b] matches a word in a list</p>
+<p class="t sub">[ok] [class*=sub] contains: this paragraph's class contains "sub"</p>
+<div><p class="t only">[ok] div &gt; p:first-child</p><p class="t second">[no] second child stays plain</p></div>
+</body>
+</html>

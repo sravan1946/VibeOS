@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Table torture test</title>
+<style>
+table.css { border-collapse: collapse; margin: 6px 0; }
+table.css th, table.css td { border: 1px solid #667; padding: 4px 8px; }
+table.css th { background: #e4e6ee; }
+table.css tr.alt td { background: #f4f5fa; }
+td.r { text-align: right; }
+.cap { border: 1px solid #99a; }
+</style>
+</head>
+<body>
+<h1>Table torture test</h1>
+
+<h2>1. border=1, cellpadding=6, th centred and bold</h2>
+<table border="1" cellpadding="6">
+<tr><th>Name</th><th>Kind</th><th>Size</th></tr>
+<tr><td>alpha</td><td>file</td><td>12 KB</td></tr>
+<tr><td>beta</td><td>folder</td><td>-</td></tr>
+<tr><td>gamma</td><td>file</td><td>3 MB</td></tr>
+</table>
+
+<h2>2. colspan and rowspan</h2>
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><td colspan="3" align="center">colspan 3</td><td rowspan="3" bgcolor="#ffe9a8">rowspan 3</td></tr>
+<tr><td>a</td><td rowspan="2" bgcolor="#cfe8ff">rowspan 2<br>two lines</td><td>c</td></tr>
+<tr><td>d</td><td>f</td></tr>
+<tr><td>g</td><td colspan="2">colspan 2</td><td>j</td></tr>
+</table>
+
+<h2>3. Widths: attribute, percentage, content</h2>
+<table border="1" cellpadding="3" width="90%">
+<tr><td width="100">100px</td><td width="30%">30%</td><td>auto, takes the rest and wraps a bit of longer text so that the column has something to do</td></tr>
+</table>
+
+<h2>4. CSS: collapsed borders, padding, th background, right-aligned numbers, vertical-align</h2>
+<table class="css">
+<caption>Quarterly numbers</caption>
+<thead><tr><th>Region</th><th>Q1</th><th>Q2</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>North</td><td class="r">1,204</td><td class="r">1,310</td><td>steady</td></tr>
+<tr class="alt"><td>South</td><td class="r">980</td><td class="r">1,022</td><td>new store opened in May<br>second line</td></tr>
+<tr><td>East</td><td class="r">1,550</td><td class="r">1,498</td><td style="vertical-align: top">top aligned note<br>with a second line<br>and a third</td></tr>
+<tr class="alt"><td>West</td><td class="r">702</td><td class="r">815</td><td style="vertical-align: bottom">bottom<br>aligned<br>cell</td></tr>
+</tbody>
+</table>
+
+<h2>5. Nested tables</h2>
+<table border="1" cellpadding="6">
+<tr><td>outer left
+<table border="1" cellpadding="3" bgcolor="#eef7ee">
+<tr><td>in1</td><td>in2</td></tr>
+<tr><td colspan="2" align="center">in colspan
+<table border="1"><tr><td>deep</td><td>deeper</td></tr></table>
+</td></tr>
+</table>
+</td>
+<td valign="top">outer right, top aligned, with a paragraph:<p>second paragraph inside a cell</p></td></tr>
+</table>
+
+<h2>6. Layout table, 100% wide with a fixed left column</h2>
+<table width="100%" cellpadding="8" style="background:#f1f1f5">
+<tr><td width="160" valign="top" bgcolor="#dde3f0"><b>Menu</b><br>Home<br>About<br>Contact</td>
+<td valign="top">This is the main column of an old-style layout table. It has a few sentences so that the text has to wrap inside the cell,
+and the left column keeps its 160 pixel width however the window is resized. Resize the window to check that the grid follows.</td></tr>
+</table>
+
+<h2>7. Cell content: list, link, image-less, tall cell next to short ones</h2>
+<table border="1" cellpadding="5">
+<tr><td valign="middle">middle</td><td valign="top">top</td><td valign="bottom">bottom</td>
+<td><ul><li>one<li>two<li>three</ul></td><td><a href="tables.html">a link in a cell</a></td></tr>
+</table>
+
+<h2>8. No attributes at all, cells flow side by side</h2>
+<table><tr><td>plain</td><td>cells</td><td>with no</td><td>border</td></tr></table>
+
+<p>The end. Text after the last table.</p>
+</body>
+</html>

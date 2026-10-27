@@ -41,17 +41,29 @@ void fetch_finish(struct fetch *f, struct response *r);   /* consumes f->buf */
 
 /* ---- css.c: <style>/style="" -> per-element property set ---- */
 enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB, P_PL, P_DISPLAY, P_DECO,
-       P_BWT, P_BWR, P_BWB, P_BWL, P_BCT, P_BCR, P_BCB, P_BCL, P_WIDTH, P_MAXW, P_HEIGHT, P_FSIZE, P_MONO, P_ITALIC, P_LIST, P_N };
+       P_BWT, P_BWR, P_BWB, P_BWL, P_BCT, P_BCR, P_BCB, P_BCL, P_WIDTH, P_MAXW, P_HEIGHT, P_FSIZE, P_MONO, P_ITALIC, P_LIST,
+       P_VALIGN, P_COLLAPSE, P_SPACING, P_N };   /* the last three are for tables; P_N must stay <= 32 (cprops.set is a bitmask) */
 enum { K_PX, K_PCT, K_AUTO };                    /* value kinds; colours are K_PX with the colour in v (0 = transparent) */
 enum { D_NONE = 1, D_BLOCK, D_INLINE };
 struct cprops { uint32_t set; int v[P_N]; uint8_t k[P_N]; };
-struct el { char name[16], id[32], cls[64]; int tag, js; };   /* one open element, for selector matching; js: DOM node id */
+struct el { char name[16], id[32], cls[64]; int tag, js; char at[80]; short nkids; uint8_t first; };   /* one open element, for selector matching; js: DOM node id;
+                                                  at: "\1name\2value" pairs (only filled when css_attrs()); first: no earlier sibling element */
 void css_reset(void);
 void css_add(const char *s, size_t n);           /* append a stylesheet */
+void css_add_from(const char *s, size_t n, const char *base);   /* same; base resolves @import (0 = none) */
+void css_viewport(int w);                        /* window width for @media (min-width) and friends */
+int  css_media(const char *q);                   /* media query list (a media="" attribute): 1 = applies on screen */
+int  css_attrs(void);                            /* some rule uses an attribute selector: elements need el.at */
 int  css_any(void);
 void css_cascade(const struct el *st, int n, const char *style, struct cprops *out);   /* st[n-1] is the subject */
 int  css_color(const char *s, color_t *out, int legacy);   /* names, #rgb, #rrggbb, rgb()/rgba(); legacy: bare hex too */
 int  css_match(const char *sel, const struct el *st, int n);   /* selector list vs st[n-1]: 1/0, -1 = nothing parsable */
+
+/* ---- sheet.c: external stylesheets (<link rel=stylesheet>, @import): one fetch each, kept until the next page ---- */
+const char *sheet_get(const char *url, size_t *len);   /* the text once loaded; NULL while loading or failed (queues on first use) */
+int  sheet_pump(void);                           /* advance downloads; nonzero when a sheet arrived or failed */
+int  sheet_busy(void);
+void sheet_reset(void);                          /* new page */
 
 /* ---- img.c: per-page image cache. Images are fetched by helper processes (two at a time), decoded
  * in-process and kept (plus one scaled copy) until the next page. ---- */
@@ -88,6 +100,7 @@ struct doc {
     char title[128];
     color_t bg, fg, linkc, hoverc;
     int height, truncated, maxh;     /* maxh: tallest item (images, textareas), for the y search */
+    int *pmax, *smin;                /* per item: max bottom edge of items 0..i, min top edge of items i..end (table cells make y non-monotonic) */
 };
 void doc_free(struct doc *d);
 void doc_layout(struct doc *d, const char *src, size_t n, int is_html, int width, const char *base);

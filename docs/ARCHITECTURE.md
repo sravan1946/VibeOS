@@ -345,8 +345,10 @@ The kernel runs `#!interp [arg]` scripts itself (`proc_spawn_ex`, one level, 128
 
 `/bin/browser` (`user/bin/browser/`) is the Vibe Browser. `fetch.c` runs HTTP in a helper process (`browser --fetch URL [POST-BODY]`)
 so DNS/connect never block the UI; `url.c` resolves URLs; `html.c` is a tolerant tokenizer plus a one-pass block/inline layout
-into a flat display list (items sorted by y, so drawing and hit tests binary-search; layout reruns only on a new page, a resize,
-or when an image's size becomes known). `css.c` parses `<style>`/`style=""` (type, class, id, descendant, child, comma selectors;
+into a flat display list in reading order (drawing and hit tests binary-search it through a prefix-max/suffix-min of y, because table cells
+break monotonic y; layout reruns only on a new page, a resize, or when an image's size or a stylesheet arrives). Tables are a grid: the source
+of a `<table>` is read ahead, each cell measured at huge width (rolled back) and then laid out at its column's width. `sheet.c` fetches
+`<link>`/`@import` stylesheets like `img.c` fetches images. `css.c` parses `<style>`/`style=""` (type, class, id, `[attr]`, `:first-child`, descendant, child, comma selectors; `@media`/`@import`;
 specificity, `!important`) and the layout asks it for the cascaded properties of every element as its tag streams past, keeping an
 element stack for ancestry; properties land on the layout frame (colour, weight, alignment, margins, padding, 1-6px borders,
 background boxes patched to their final height when the element closes, centred `width`/`max-width` columns, `display`). `img.c` is the
