@@ -13,12 +13,14 @@ static inline int imin(int a, int b) { return a < b ? a : b; }
 static inline int imax(int a, int b) { return a > b ? a : b; }
 static bool in_rect(struct rect r, int x, int y) { return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h; }
 
+/* the toast is up (toast_until: when it starts fading out; 0 = none) */
+static bool toast_on(struct ui *ui) { return ui->toast_until && (int)(ui->toast_until - ui->now) > 0; }
 /* overlays (menu, toast, a dialog) take the pointer from the widgets under them */
 static bool blocked(struct ui *ui) {
     if (ui->in_ov) return false;
     if (ui->modal_prev) return true;
     if (ui->pop_id && in_rect(ui->pop_r, ui->mx, ui->my)) return true;
-    return ui->toast_until && in_rect(ui->toast_r, ui->mx, ui->my);
+    return toast_on(ui) && in_rect(ui->toast_r, ui->mx, ui->my);
 }
 static bool inside(struct ui *ui, int x, int y, int w, int h) {
     return ui->mx >= x && ui->my >= y && ui->mx < x + w && ui->my < y + h && !blocked(ui);
@@ -42,12 +44,35 @@ static bool focusable(struct ui *ui, uint32_t id, bool dis) {
     if (ui->nf < 64) ui->fl[ui->nf++] = id;
     return ui->focus == id;
 }
-static void ring(struct ui *ui, bool foc, int x, int y, int w, int h, int r) {
-    if ((foc && ui->kbd) || (ui->force & UI_F_FOCUS)) gfx_focus_ring(ui->c, x, y, w, h, r, TH.accent_text);
-}
-
 /* ---- motion: tweened values per (widget id, slot), eased out (cubic) ---- */
 static int ease(int e, int dur) { int p = 256 - e * 256 / dur; return 256 - p * p / 256 * p / 256; }
+
+/* the focus ring's opacity (0..256) for widget id: at once when it gets keyboard focus, fading out over D_FAST when
+ * it loses it (only one ring at a time fades) */
+static int ring_a(struct ui *ui, uint32_t id, bool on) {
+    if (ui->force & UI_F_FOCUS) return 256;
+    if (on) {
+        if (ui->ring_id != id) { if (ui->ring_id) { ui->ring_old = ui->ring_id; ui->ring_t = ui->now; } ui->ring_id = id; }
+        return 256;
+    }
+    if (ui->ring_id == id) { ui->ring_old = id; ui->ring_t = ui->now; ui->ring_id = 0; }
+    if (ui->ring_old != id) return 0;
+    int a = (int)(ui->now - ui->ring_t), d = ui_motion ? D_FAST : D_REDUCED;
+    if (a >= d) { ui->ring_old = 0; return 0; }
+    wake_at(ui, ui->now + 16);
+    int p = a * 256 / d;
+    return 256 - p * p / 256;                                     /* exits ease in */
+}
+static color_t ring_col(int a) { return TH_A(TH.accent_text, ALPHA(TH.accent_text) * a >> 8); }
+static void ring(struct ui *ui, bool foc, int x, int y, int w, int h, int r) {
+    int a = ring_a(ui, rid(x, y, w, h) ^ 0x9E3779B9u, foc && ui->kbd);
+    if (a) gfx_focus_ring(ui->c, x, y, w, h, r, ring_col(a));
+}
+/* the inset ring on a row backplate (lists, sidebars, menus) */
+static void ring_in(struct ui *ui, struct canvas *c, bool foc, int x, int y, int w, int h) {
+    int a = ring_a(ui, rid(x, y, w, h) ^ 0x7F4A7C15u, foc && ui->kbd);
+    if (a) gfx_rrect_ring(c, x, y, w, h, RADII(R_2, R_2, R_2, R_2), FOCUS_W, ring_col(a));
+}
 static struct tw { uint32_t id; int from, to; uint32_t t0; } tws[48];
 static int tween(struct ui *ui, uint32_t id, int to, int dur) {
     struct tw *t = 0;
@@ -90,6 +115,20 @@ void ui_init(struct ui *ui, struct gui_window *win) {
     ensure_back(ui);
 }
 
+/* close the dropdown's menu; it fades out from a copy of its items (the app's array may not outlive it) */
+static char pop_txt[16][64];
+static const char *pop_cp[16];
+static void pop_close(struct ui *ui, bool fade) {
+    if (!ui->pop_id) return;
+    ui->pop_out = fade && ui->pop_n <= 16;
+    if (ui->pop_out) {
+        for (int i = 0; i < ui->pop_n; i++) { strlcpy(pop_txt[i], ui->pop_items[i], sizeof pop_txt[i]); pop_cp[i] = pop_txt[i]; }
+        ui->pop_t1 = ui->now;
+        wake_at(ui, ui->now);
+    }
+    ui->pop_id = 0;
+}
+
 /* the open menu / toast see the press before any widget; keys for the menu never reach the app */
 static void overlay_input(struct ui *ui) {
     if (ui->pop_id) {
@@ -99,22 +138,22 @@ static void overlay_input(struct ui *ui) {
             else if (k == KEY_UP) ui->pop_hi = imax(ui->pop_hi - 1, 0);
             else if (k == KEY_HOME) ui->pop_hi = 0;
             else if (k == KEY_END) ui->pop_hi = ui->pop_n - 1;
-            else if (k == KEY_ENTER || k == ' ') { ui->pop_pick = ui->pop_hi; ui->focus = ui->pop_id; ui->pop_id = 0; }
-            else if (k == KEY_ESC || k == KEY_TAB) { ui->focus = ui->pop_id; ui->pop_id = 0; }
+            else if (k == KEY_ENTER || k == ' ') { ui->pop_pick = ui->pop_hi; ui->focus = ui->pop_id; pop_close(ui, true); }
+            else if (k == KEY_ESC || k == KEY_TAB) { ui->focus = ui->pop_id; pop_close(ui, true); }
             else eat = 0;
             if (eat) { memmove(ui->keys + i, ui->keys + i + 1, (--ui->nkeys - i) * sizeof ui->keys[0]); ui->kbd = true; } else i++;
         }
         if (ui->pressed) {
             if (in_rect(ui->pop_r, ui->mx, ui->my)) {
                 int i = (ui->my - ui->pop_r.y - SP_2) / H_ROW;
-                if (i >= 0 && i < ui->pop_n) { ui->pop_pick = i; ui->focus = ui->pop_id; ui->pop_id = 0; }
-            } else ui->pop_id = 0;
+                if (i >= 0 && i < ui->pop_n) { ui->pop_pick = i; ui->focus = ui->pop_id; pop_close(ui, true); }
+            } else pop_close(ui, true);
             ui->pressed = false;
             return;
         }
     }
-    if (ui->toast_until && ui->pressed && in_rect(ui->toast_r, ui->mx, ui->my)) {
-        if (ui->toast_act[0] && in_rect(ui->toast_btn, ui->mx, ui->my)) { ui->toast_hit = true; ui->toast_until = 0; }
+    if (toast_on(ui) && ui->pressed && in_rect(ui->toast_r, ui->mx, ui->my)) {
+        if (ui->toast_act[0] && in_rect(ui->toast_btn, ui->mx, ui->my)) { ui->toast_hit = true; ui->toast_until = ui->now; }
         ui->pressed = false;
     }
 }
@@ -185,7 +224,7 @@ void ui_end(struct ui *ui) {
             break;
         }
     ui->modal_prev = ui->modal;
-    if (!ui->pop_seen) ui->pop_id = 0;                      /* its dropdown wasn't drawn: the items may be gone */
+    if (!ui->pop_seen) pop_close(ui, false);                /* its dropdown wasn't drawn: the items may be gone */
     ui->pop_seen = false;
     draw_overlays(ui);
     struct gui_window *w = ui->win;
@@ -514,32 +553,83 @@ bool ui_segmented(struct ui *ui, int x, int y, const int *icons, const char *con
     return segs(ui, x, y, H_CTL, ws, icons, names, n, sel);
 }
 
-bool ui_tabbar(struct ui *ui, int x, int y, int w, const char *const *names, int n, int *sel, int flags) {
-    int old = *sel, tx = x + SP_2;
-    bool off = (flags & UI_INACTIVE) || !ui->focused;
+/* tab widths: 0 12 padding, or with a close box 12 | label | 4 | 20 | 6 (as the terminal's); at most 200 */
+static int tab_w(const char *name, bool cl) { return imin(200, gfx_text_width(T_BODY_B, name) + (cl ? SP_4 + SP_2 + 20 + 6 : 2 * SP_4)); }
+static struct { uint32_t id; int first, sel; } tscroll[4];       /* scrolled tab strips: first tab shown, last selection */
+
+int ui_tabbar_ex(struct ui *ui, int x, int y, int w, const char *const *names, int n, int *sel, int flags, uint32_t modified) {
+    bool off = (flags & UI_INACTIVE) || !ui->focused, cl = flags & UI_TAB_CLOSE, add = flags & UI_TAB_NEW;
     uint32_t id = rid(x, y, w, H_TAB);
+    int r = -1, ws[32], total = SP_2;
+    n = imin(n, 32);
     bool foc = focusable(ui, id, false);
     if (foc) {
         if (take_key(ui, KEY_LEFT) && *sel > 0) (*sel)--;
         if (take_key(ui, KEY_RIGHT) && *sel < n - 1) (*sel)++;
     }
+    for (int i = 0; i < n; i++) total += ws[i] = tab_w(names[i], cl);
+    if (add) total += SP_2 + H_CTL;
+    int *first = 0, k = 0;
+    for (int i = 0; i < 4 && !first; i++) if (tscroll[i].id == id) first = &tscroll[i].first, k = i;
+    bool over = total > w;
+    if (over && !first) {                                         /* starts overflowing: take the oldest slot */
+        for (k = 0; k < 3 && tscroll[k].id; k++) {}
+        tscroll[k] = (typeof(tscroll[0])){ id, 0, -1 };
+        first = &tscroll[k].first;
+    }
+    int f = over ? imax(0, imin(*first, n - 1)) : 0;
+    int ax = x + w - (over ? 2 * H_CTL + 2 * SP_2 : 0), right = ax - (add && over ? H_CTL + SP_2 : 0);   /* arrows, then + */
+    if (over) {
+        if (tscroll[k].sel != *sel && *sel >= 0 && *sel < n) {     /* keep a newly selected tab in view */
+            if (*sel < f) f = *sel;
+            for (;;) { int e = x + SP_2; for (int i = f; i <= *sel; i++) e += ws[i]; if (e <= right || f >= *sel) break; f++; }
+            tscroll[k].sel = *sel;
+        }
+        if (ui->scroll && inside(ui, x, y, right - x, H_TAB)) f = imin(imax(f + (ui->scroll > 0 ? 1 : -1), 0), n - 1);
+    }
     gfx_fill(ui->c, x, y, w, H_TAB, off ? TH.base : TH.window);
     gfx_hline(ui->c, x, y + H_TAB - 1, w, TH.line);
-    int lx = 0, lw = 0;
-    for (int i = 0; i < n; i++) {
-        int tw = gfx_text_width(T_BODY_B, names[i]) + 2 * SP_4;
-        bool hov = inside(ui, tx, y, tw, H_TAB), on = i == *sel;
-        if (hov && ui->pressed) *sel = i;
+    struct canvas cc = *ui->c, *oc = ui->c;
+    canvas_clip(&cc, x, y, right - x, H_TAB);
+    ui->c = &cc;
+    int tx = x + SP_2, lx = 0, lw = 0, by = y + (H_TAB - 20) / 2;
+    for (int i = f; i < n && tx < right; tx += ws[i++]) {
+        int tw = ws[i], bx = tx + tw - 6 - 20;
+        bool hov = inside(ui, tx, y, imin(tw, right - tx), H_TAB), on = i == *sel;
+        bool bh = cl && hov && ui->mx >= bx && ui->mx < bx + 20 && ui->my >= by && ui->my < by + 20;
+        if (bh && ui->pressed) { r = i; ui->pressed = false; }    /* the close box takes its press first */
+        else if (hov && ui->pressed) *sel = i;
         if (hov && !on) gfx_round_fill(ui->c, tx, y + SP_1, tw, H_TAB - 2 * SP_1 - 1, R_2, TH.hover_ov);
-        gfx_text(ui->c, on ? T_BODY_B : T_BODY, tx + SP_4, y + (H_TAB - T_BODY->height) / 2, names[i], on || hov ? TH.text : TH.text2);
-        if (i == *sel) { lx = tx + SP_4; lw = tw - 2 * SP_4; }
-        if (foc && on) ring(ui, true, tx, y + SP_1, tw, H_TAB - 2 * SP_1 - 1, R_2);
-        tx += tw;
+        ui_text_fit(ui, on ? T_BODY_B : T_BODY, tx + SP_4, y + (H_TAB - T_BODY->height) / 2, tw - SP_4 - (cl ? SP_2 + 20 + 6 : SP_4),
+                    names[i], on || hov ? TH.text : TH.text2);
+        if (i < 32 && (modified >> i & 1) && !bh) gfx_circle_fill(ui->c, bx + 10, by + 10, 4, on ? TH.text : TH.text2);
+        else if (cl && (on || hov)) {
+            if (bh) gfx_round_fill(ui->c, bx, by, 20, 20, R_2, (ui->buttons & 1) ? TH.press_ov : TH.hover_ov);
+            ui_icon(ui, bx + 2, by + 2, ICON_CLOSE, ICON_SM, bh ? TH.text : TH.text3);
+        }
+        if (on) { lx = tx + SP_4; lw = tw - 2 * SP_4; }
+        ring(ui, foc && on, tx, y + SP_1, tw, H_TAB - 2 * SP_1 - 1, R_2);
     }
     if (lw) {                                                    /* the signal line slides between tabs */
-        int ax = tween(ui, id, lx, D_NORMAL), aw = tween(ui, id + 1, lw, D_NORMAL);
-        gfx_round_fill(ui->c, ax, y + H_TAB - 1 - SIGNAL, aw, SIGNAL, R_1, off ? TH.text3 : TH.accent_line);
+        int lxa = tween(ui, id, lx, D_NORMAL), lwa = tween(ui, id + 1, lw, D_NORMAL);
+        gfx_round_fill(ui->c, lxa, y + H_TAB - 1 - SIGNAL, lwa, SIGNAL, R_1, off ? TH.text3 : TH.accent_line);
     }
+    ui->c = oc;
+    int py = y + (H_TAB - H_CTL) / 2 - 1;
+    if (add && (over ? true : tx + SP_2 + H_CTL <= x + w) && ui_icon_button(ui, over ? right + SP_2 / 2 : tx + SP_2, py, ICON_PLUS, 0, "New tab")) r = UI_TAB_ADD;
+    if (over) {
+        bool more = false;
+        for (int i = f, e = x + SP_2; i < n; e += ws[i++]) if (e + ws[i] > right) more = true;
+        if (ui_icon_button(ui, ax + SP_2, py, ICON_CHEVRON_LEFT, f > 0 ? 0 : UI_DISABLED, NULL)) f--;
+        if (ui_icon_button(ui, ax + SP_2 + H_CTL, py, ICON_CHEVRON_RIGHT, more ? 0 : UI_DISABLED, NULL)) f++;
+        *first = imax(0, imin(f, n - 1));
+    }
+    return r;
+}
+
+bool ui_tabbar(struct ui *ui, int x, int y, int w, const char *const *names, int n, int *sel, int flags) {
+    int old = *sel;
+    ui_tabbar_ex(ui, x, y, w, names, n, sel, flags & ~(UI_TAB_CLOSE | UI_TAB_NEW), 0);
     return *sel != old;
 }
 
@@ -554,6 +644,7 @@ bool ui_dropdown(struct ui *ui, int x, int y, int w, const char *const *items, i
     if (c && !dis && !open) {
         ui->pop_id = id; ui->pop_items = items; ui->pop_n = n; ui->pop_sel = *sel; ui->pop_hi = imax(*sel, 0);
         ui->pop_anchor = (struct rect){ x, y, w, H_CTL }; ui->focus = id;
+        ui->pop_t0 = ui->now; ui->pop_out = false;
         open = true;
     }
     gfx_round_fill(ui->c, x, y, w, H_CTL, R_2, fade(TH.raised, dis));
@@ -584,31 +675,50 @@ static void ins(char *buf, int cap, int *caret, const char *s, int k) {
     *caret += k;
 }
 
+/* the selection [*lo, *hi) of the focused input; false if empty */
+static bool sel_span(struct ui *ui, int *lo, int *hi) { *lo = imin(ui->anchor, ui->caret); *hi = imax(ui->anchor, ui->caret); return *lo < *hi; }
+static bool del_sel(struct ui *ui, char *buf) {
+    int lo, hi;
+    if (!sel_span(ui, &lo, &hi)) return false;
+    memmove(buf + lo, buf + hi, strlen(buf + hi) + 1);
+    ui->caret = ui->anchor = lo;
+    return true;
+}
+static bool word_ch(char c) { return c == '_' || (uint8_t)c >= 0x80 || (c >= '0' && c <= '9') || ((c | 32) >= 'a' && (c | 32) <= 'z'); }
+
 static bool edit(struct ui *ui, char *buf, int cap) {
-    int *cr = &ui->caret, n = strlen(buf);
+    int *cr = &ui->caret, n = strlen(buf), lo, hi;
     bool enter = false;
     if (*cr > n) *cr = n;
+    if (ui->anchor > n || ui->anchor < 0) ui->anchor = *cr;
     for (int i = 0; i < ui->nkeys; ) {
         struct gui_event k = ui->keys[i];
-        int eat = 1;
-        bool ctrl = k.mods & MOD_CTRL;
-        if (k.key == KEY_ENTER) enter = true;
-        else if (k.key == KEY_BACKSPACE) { if (*cr) { int p = prev_cp(buf, *cr); memmove(buf + p, buf + *cr, strlen(buf + *cr) + 1); *cr = p; } }
-        else if (k.key == KEY_DELETE) { int q = next_cp(buf, *cr); memmove(buf + *cr, buf + q, strlen(buf + q) + 1); }
-        else if (k.key == KEY_LEFT) *cr = prev_cp(buf, *cr);
-        else if (k.key == KEY_RIGHT) *cr = next_cp(buf, *cr);
-        else if (k.key == KEY_HOME) *cr = 0;
-        else if (k.key == KEY_END) *cr = strlen(buf);
+        int eat = 1, kc = k.key;
+        bool ctrl = k.mods & MOD_CTRL, shift = k.mods & MOD_SHIFT, sel = sel_span(ui, &lo, &hi), move = false;
+        if (kc == KEY_ENTER) enter = true;
+        else if (kc == KEY_BACKSPACE) { if (!del_sel(ui, buf) && *cr) { int p = prev_cp(buf, *cr); memmove(buf + p, buf + *cr, strlen(buf + *cr) + 1); *cr = p; } }
+        else if (kc == KEY_DELETE) { if (!del_sel(ui, buf)) { int q = next_cp(buf, *cr); memmove(buf + *cr, buf + q, strlen(buf + q) + 1); } }
+        else if (kc == KEY_LEFT) { move = true; *cr = sel && !shift ? lo : prev_cp(buf, *cr); }
+        else if (kc == KEY_RIGHT) { move = true; *cr = sel && !shift ? hi : next_cp(buf, *cr); }
+        else if (kc == KEY_HOME) { move = true; *cr = 0; }
+        else if (kc == KEY_END) { move = true; *cr = strlen(buf); }
         else if (k.ch == 21) { buf[0] = 0; *cr = 0; }                       /* ^U */
-        else if (ctrl && (k.key | 0x20) == 'v') {                          /* paste the first line */
+        else if (ctrl && (kc | 0x20) == 'a') { ui->anchor = 0; *cr = strlen(buf); }
+        else if (ctrl && ((kc | 0x20) == 'c' || (kc | 0x20) == 'x')) {    /* copy / cut the selection */
+            if (sel) { gui_clip_set(buf + lo, hi - lo); if ((kc | 0x20) == 'x') del_sel(ui, buf); }
+        }
+        else if (ctrl && (kc | 0x20) == 'v') {                             /* paste the first line over the selection */
+            del_sel(ui, buf);
             char *c = gui_clip_get(NULL);
             for (char *p = c; p && *p && *p != '\n'; p++) if ((uint8_t)*p >= 32) ins(buf, cap, cr, p, 1);
             free(c);
         }
-        else if (ctrl && (k.key | 0x20) == 'c') gui_clip_set(buf, strlen(buf));
-        else if (!ctrl && k.ch >= 32 && k.ch < 127) { char ch = k.ch; ins(buf, cap, cr, &ch, 1); }
+        else if (!ctrl && k.ch >= 32 && k.ch < 127) { char ch = k.ch; del_sel(ui, buf); ins(buf, cap, cr, &ch, 1); }
         else eat = 0;                                                      /* Tab, Esc, Up/Down... stay for others */
-        if (eat) { memmove(ui->keys + i, ui->keys + i + 1, (--ui->nkeys - i) * sizeof k); ui->caret_t0 = ui->now; }
+        if (eat) {
+            if (!(move && shift) && !(ctrl && (kc | 0x20) == 'a') && !(ctrl && (kc | 0x20) == 'c')) ui->anchor = *cr;   /* Shift+moves extend */
+            memmove(ui->keys + i, ui->keys + i + 1, (--ui->nkeys - i) * sizeof k); ui->caret_t0 = ui->now;
+        }
         else i++;
         if (enter) break;
     }
@@ -622,15 +732,26 @@ bool ui_input(struct ui *ui, int x, int y, int w, int h, char *buf, int cap, con
     if (ui->pressed && in) ui->focus = id;
     bool foc = focusable(ui, id, dis), enter = false;
     const struct font *f = T_BODY;
-    if (foc && ui->caret_id != id) { ui->caret_id = id; ui->caret = strlen(buf); ui->scroll_x = 0; ui->caret_t0 = ui->now; }
-    if (foc && ui->pressed && in) {                                /* click places the caret */
-        int n = strlen(buf), i = 0, best = 0, bd = 1 << 30;
-        for (; i <= n; i = next_cp(buf, i)) {
+    if (foc && ui->caret_id != id) { ui->caret_id = id; ui->caret = ui->anchor = strlen(buf); ui->scroll_x = 0; ui->caret_t0 = ui->now; }
+    bool drag = foc && ui->active == id && (ui->buttons & 1) && !ui->pressed;
+    if (foc && ((ui->pressed && in) || drag)) {                    /* click places the caret, drag selects, double click a word */
+        int n = strlen(buf), best = 0, bd = 1 << 30;
+        for (int i = 0; i <= n; i = next_cp(buf, i)) {
             int d = abs(tx0 - ui->scroll_x + gfx_text_width_n(f, buf, i) - ui->mx);
             if (d < bd) { bd = d; best = i; }
             if (i == n) break;
         }
         ui->caret = best; ui->caret_t0 = ui->now;
+        if (ui->pressed) {
+            ui->active = id;
+            ui->anchor = best;
+            if (ui->dbl) {
+                int lo = best, hi = best;
+                while (lo > 0 && word_ch(buf[lo - 1])) lo--;
+                while (buf[hi] && word_ch(buf[hi])) hi++;
+                ui->anchor = lo; ui->caret = hi;
+            }
+        }
     }
     if (foc) enter = edit(ui, buf, cap);
     gfx_round_fill(ui->c, x, y, w, h, R_2, fade(TH.raised, dis));
@@ -646,7 +767,11 @@ bool ui_input(struct ui *ui, int x, int y, int w, int h, char *buf, int cap, con
         if (cx - ui->scroll_x < 0) ui->scroll_x = cx;
         if (gfx_text_width(f, buf) - ui->scroll_x < tw0) ui->scroll_x = imax(gfx_text_width(f, buf) - tw0, 0);
     }
-    int sx = foc ? ui->scroll_x : 0;
+    int sx = foc ? ui->scroll_x : 0, lo, hi;
+    if (foc && sel_span(ui, &lo, &hi)) {                           /* the selection: an R_1 selection-token plate */
+        int a = gfx_text_width_n(f, buf, lo), b = gfx_text_width_n(f, buf, hi);
+        gfx_round_fill(&cc, tx0 - sx + a, y + (h - 18) / 2, b - a, 18, R_1, TH.selection);
+    }
     if (!buf[0] && placeholder) gfx_text(&cc, f, tx0, ty, placeholder, dis ? TH.disabled : TH.text3);
     gfx_text(&cc, f, tx0 - sx, ty, buf, dis ? TH.disabled : TH.text);
     if (foc) {                                                     /* caret: 1x16, blinks D_CARET, steady after D_CARET_IDLE */
@@ -752,7 +877,7 @@ int ui_list(struct ui *ui, int x, int y, int w, int h, const char *const *items,
         if (rh_ && ui->pressed) { *sel = i; if (ui->dbl) act = i; }
         if (i == *sel) gfx_round_fill(&cc, x + SP_2, ry, w - 2 * SP_2, rh, R_2, TH.selection);
         else if (rh_) gfx_round_fill(&cc, x + SP_2, ry, w - 2 * SP_2, rh, R_2, TH.hover_ov);
-        if (i == *sel && foc && ui->kbd) gfx_rrect_ring(&cc, x + SP_2, ry, w - 2 * SP_2, rh, RADII(R_2, R_2, R_2, R_2), 2, TH.accent_text);
+        ring_in(ui, &cc, i == *sel && foc, x + SP_2, ry, w - 2 * SP_2, rh);
         struct canvas *o = ui->c;
         ui->c = &cc;
         ui_text_fit(ui, i == *sel ? T_BODY_B : T_BODY, x + SP_4, ry + (rh - T_BODY->height) / 2, w - 2 * SP_4 - 8, items[i], TH.text);
@@ -800,7 +925,7 @@ bool ui_side_item(struct ui *ui, int x, int y, int w, int icon, const char *labe
     if (icon >= 0) { ui_icon(ui, tx, y + (H_ROW - ICON_SM) / 2, icon, ICON_SM, sel ? TH.accent_text : TH.text2); tx += ICON_SM + SP_3; }
     ui_text_fit(ui, sel ? T_BODY_B : T_BODY, tx, y + (H_ROW - T_BODY->height) / 2, bx + bw - SP_3 - tr - tx, label, TH.text);
     if (trail) gfx_text(ui->c, T_CAPTION, bx + bw - SP_3 - tr + SP_3, y + (H_ROW - T_CAPTION->height) / 2, trail, TH.text3);
-    if ((foc && ui->kbd) || (ui->force & UI_F_FOCUS)) gfx_rrect_ring(ui->c, bx, y, bw, H_ROW, RADII(R_2, R_2, R_2, R_2), 2, TH.accent_text);
+    ring_in(ui, ui->c, foc, bx, y, bw, H_ROW);
     return c;
 }
 
@@ -917,6 +1042,7 @@ void ui_tooltip(struct ui *ui, int x, int y, int w, int h, const char *text) {
 void ui_toast(struct ui *ui, const char *msg, const char *action) {
     strlcpy(ui->toast_msg, msg, sizeof ui->toast_msg);
     strlcpy(ui->toast_act, action ? action : "", sizeof ui->toast_act);
+    if (!toast_on(ui)) ui->toast_t0 = ui->now;              /* a new message in a toast already up just replaces it */
     ui->toast_until = ui->now + D_TOAST;
     wake_at(ui, ui->now);
 }
@@ -930,27 +1056,65 @@ static void surface(struct ui *ui, int x, int y, int w, int h, int r, int lvl) {
     gfx_round_rect(ui->c, x, y, w, h, r, TH.line);
 }
 
+/* overlay motion: visibility 0..256 coming in from t0 over dur (ease out), going from t1 over D_EXIT(dur) (ease in);
+ * -1 once it's gone. Window animations off: D_REDUCED fades */
+static int ov_vis(struct ui *ui, bool open, uint32_t t0, uint32_t t1, int dur) {
+    int d = ui_motion ? (open ? dur : D_EXIT(dur)) : D_REDUCED, a = (int)(ui->now - (open ? t0 : t1));
+    if (open && (a >= d || a < 0)) return 256;
+    if (!open && (a >= d || a < 0)) return -1;
+    wake_at(ui, ui->now + 16);
+    if (open) return ease(a, d);
+    int p = a * 256 / d;
+    return 256 - p * p / 256;
+}
+static int ov_slide(int v, int px) { return ui_motion ? px * (256 - v) / 256 : 0; }
+
+/* fade: keep what's under r, draw over it, then mix the new pixels in at a/256 */
+static uint32_t *fbuf; static int fcap; static struct rect fr;
+static bool fade_begin(struct ui *ui, int x, int y, int w, int h, int pad) {
+    struct canvas *c = ui->c;
+    int x0 = imax(0, x - pad), y0 = imax(0, y - pad), x1 = imin(c->w, x + w + pad), y1 = imin(c->h, y + h + pad);
+    if (x0 >= x1 || y0 >= y1) return false;
+    int n = (x1 - x0) * (y1 - y0);
+    if (n > fcap) { free(fbuf); fbuf = malloc(n * 4); fcap = fbuf ? n : 0; if (!fbuf) return false; }
+    fr = (struct rect){ x0, y0, x1 - x0, y1 - y0 };
+    for (int j = 0; j < fr.h; j++) memcpy(fbuf + j * fr.w, c->px + (y0 + j) * c->stride + x0, fr.w * 4);
+    return true;
+}
+static void fade_end(struct ui *ui, int a) {
+    struct canvas *c = ui->c;
+    for (int j = 0; j < fr.h; j++) {
+        uint32_t *o = c->px + (fr.y + j) * c->stride + fr.x, *u = fbuf + j * fr.w;
+        for (int i = 0; i < fr.w; i++) o[i] = mix(u[i], o[i], a);
+    }
+}
+#define OV_PAD (3 * (ELEV[E2].blur / 2) + ELEV[E2].dy)          /* an E2 shadow's reach */
+
 static void draw_overlays(struct ui *ui) {
     struct canvas *c = ui->c;
     int W = ui->win->w, H = ui->win->h;
     canvas_noclip(c);
     ui->in_ov = true;
-    if (ui->toast_until && (int)(ui->toast_until - ui->now) <= 0) ui->toast_until = 0;
-    if (ui->toast_until) {
+    int tv = ui->toast_until ? ov_vis(ui, toast_on(ui), ui->toast_t0, ui->toast_until, D_NORMAL) : -1;
+    if (tv < 0) ui->toast_until = 0;
+    if (tv >= 0) {                                                /* fades in rising 8px, fades out sinking back */
         const struct font *f = T_BODY, *fb = T_BODY_B;
         int tw = gfx_text_width(f, ui->toast_msg), aw = ui->toast_act[0] ? gfx_text_width(fb, ui->toast_act) + 2 * SP_3 : 0;
         int w = imin(SP_4 + tw + (aw ? SP_4 + aw + SP_2 : SP_4), W - 2 * SP_5), h = 36;
         int x = (W - w) / 2, y = H - SP_7 - h;
         ui->toast_r = (struct rect){ x, y, w, h };
+        y += ov_slide(tv, SP_3);
+        bool fd = tv < 256 && fade_begin(ui, x, y, w, h, OV_PAD);
         surface(ui, x, y, w, h, R_3, E2);
         ui_text_fit(ui, f, x + SP_4, y + (h - f->height) / 2, w - SP_4 - (aw ? SP_4 + aw + SP_2 : SP_4), ui->toast_msg, TH.text);
         if (aw) {
             int bx = x + w - SP_2 - aw, by = y + (h - H_CTL) / 2;
             ui->toast_btn = (struct rect){ bx, by, aw, H_CTL };
-            if (in_rect(ui->toast_btn, ui->mx, ui->my)) gfx_round_fill(c, bx, by, aw, H_CTL, R_2, (ui->buttons & 1) ? TH.press_ov : TH.hover_ov);
+            if (toast_on(ui) && in_rect(ui->toast_btn, ui->mx, ui->my)) gfx_round_fill(c, bx, by, aw, H_CTL, R_2, (ui->buttons & 1) ? TH.press_ov : TH.hover_ov);
             gfx_text(c, fb, bx + SP_3, by + (H_CTL - fb->height) / 2, ui->toast_act, TH.accent_text);
         }
-        wake_at(ui, ui->toast_until);
+        if (fd) fade_end(ui, tv);
+        if (toast_on(ui)) wake_at(ui, ui->toast_until);
     }
     if (ui->tip_show && ui->tip_id) {
         ui->tip_show = false;
@@ -961,30 +1125,37 @@ static void draw_overlays(struct ui *ui) {
         surface(ui, x, y, w, h, R_2, E2);
         ui_text_fit(ui, f, x + SP_3, y + SP_2, w - 2 * SP_3, ui->tip, TH.text);
     }
-    if (ui->pop_id) {                                             /* the dropdown's menu */
+    int pv = ui->pop_id ? ov_vis(ui, true, ui->pop_t0, 0, D_NORMAL) : ui->pop_out ? ov_vis(ui, false, 0, ui->pop_t1, D_NORMAL) : -1;
+    if (pv < 0) ui->pop_out = false;
+    if (pv >= 0) {                                                /* the dropdown's menu: fades in sliding 4px from the anchor */
         const struct font *f = T_BODY;
+        const char *const *items = ui->pop_id ? ui->pop_items : pop_cp;
         int n = ui->pop_n, w = ui->pop_anchor.w, h = n * H_ROW + 2 * SP_2;
-        for (int i = 0; i < n; i++) w = imax(w, gfx_text_width(f, ui->pop_items[i]) + 2 * SP_4 + ICON_SM + SP_3 + 2 * SP_2);
+        for (int i = 0; i < n; i++) w = imax(w, gfx_text_width(f, items[i]) + 2 * SP_4 + ICON_SM + SP_3 + 2 * SP_2);
         w = imin(w, W_MENU_MAX);
         int x = imin(ui->pop_anchor.x, W - w - SP_2), y = ui->pop_anchor.y + ui->pop_anchor.h + SP_2;
-        if (y + h > H - SP_2) y = imax(ui->pop_anchor.y - SP_2 - h, SP_2);
-        ui->pop_r = (struct rect){ x, y, w, h };
-        if (in_rect(ui->pop_r, ui->mx, ui->my)) { int i = (ui->my - y - SP_2) / H_ROW; if (i >= 0 && i < n) ui->pop_hi = i; }
+        bool up = y + h > H - SP_2;
+        if (up) y = imax(ui->pop_anchor.y - SP_2 - h, SP_2);
+        if (ui->pop_id) {
+            ui->pop_r = (struct rect){ x, y, w, h };
+            if (in_rect(ui->pop_r, ui->mx, ui->my)) { int i = (ui->my - y - SP_2) / H_ROW; if (i >= 0 && i < n) ui->pop_hi = i; }
+        }
+        y += ov_slide(pv, SP_2) * (up ? 1 : -1);
+        bool fd = pv < 256 && fade_begin(ui, x, y, w, h, OV_PAD);
         surface(ui, x, y, w, h, R_3, E2);
         struct canvas cc = *c;
         canvas_clip(&cc, x, y + SP_2, w, h - 2 * SP_2);
         ui->c = &cc;
         for (int i = 0; i < n; i++) {
             int ry = y + SP_2 + i * H_ROW;
-            if (i == ui->pop_hi) {
-                gfx_round_fill(&cc, x + SP_2, ry, w - 2 * SP_2, H_ROW, R_2, TH.hover_ov);
-                if (ui->kbd) gfx_rrect_ring(&cc, x + SP_2, ry, w - 2 * SP_2, H_ROW, RADII(R_2, R_2, R_2, R_2), 2, TH.accent_text);
-            }
+            if (i == ui->pop_hi) gfx_round_fill(&cc, x + SP_2, ry, w - 2 * SP_2, H_ROW, R_2, TH.hover_ov);
+            ring_in(ui, &cc, i == ui->pop_hi && ui->pop_id, x + SP_2, ry, w - 2 * SP_2, H_ROW);
             if (i == ui->pop_sel) ui_icon(ui, x + SP_2 + SP_4, ry + (H_ROW - ICON_SM) / 2, ICON_CHECK, ICON_SM, TH.text);
             int tx = x + SP_2 + SP_4 + ICON_SM + SP_3;
-            ui_text_fit(ui, f, tx, ry + (H_ROW - f->height) / 2, x + w - SP_2 - SP_4 - tx, ui->pop_items[i], TH.text);
+            ui_text_fit(ui, f, tx, ry + (H_ROW - f->height) / 2, x + w - SP_2 - SP_4 - tx, items[i], TH.text);
         }
         ui->c = c;
+        if (fd) fade_end(ui, pv);
     }
     ui->in_ov = false;
 }
