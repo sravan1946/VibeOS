@@ -54,6 +54,23 @@ t empty-files "" "$(ls $TD/files)"
 t empty-info "" "$(ls $TD/info)"
 trash /nonexistent 2>/dev/null; t trash-missing 1 $?
 
+# ---- df (statfs): the Avail column follows writes and deletes
+avail() { df -k "${1:-$T}" | awk 'NR == 2 { print $4 }'; }
+a0=$(avail)
+seq 1 40000 > d/big.txt                       # ~ 218 KB
+a1=$(avail)
+t df-avail-drops yes "$([ $((a0 - a1)) -ge 200 ] && [ $((a0 - a1)) -le 260 ] && echo yes || echo no)"
+rm d/big.txt
+t df-avail-returns "$a0" "$(avail)"
+t df-header "Filesystem" "$(df | awk 'NR == 1 { print $1 }')"
+t df-root-row ext2 "$(df / | awk 'NR == 2 { print $1 }')"
+t df-mount-col / "$(df / | awk 'NR == 2 { print $NF }')"
+t df-dev-row devfs "$(df /dev | awk 'NR == 2 { print $1 }')"
+t df-default-only-real 2 "$(df | wc -l)"
+t df-h-unit yes "$(df -h / | awk 'NR == 2 && $2 ~ /[MG]$/ { print "yes" }')"
+df /nonexistent >/dev/null 2>&1; t df-missing 1 $?
+df -z >/dev/null 2>&1; t df-usage 1 $?
+
 rm -rf $T
 echo "$pass passed, $fail failed"
 [ $fail -eq 0 ]

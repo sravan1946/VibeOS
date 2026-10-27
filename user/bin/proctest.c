@@ -10,6 +10,8 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sys/wait.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <syscall.h>
 
 static int pass, fail;
@@ -381,6 +383,46 @@ int main(int argc, char **argv) {
     check(run(a_me) == 0 && uptime_ms() - t0 >= 90, "pthread_exit in main waits for the last thread, exits 0");
     char *a_et[] = { "proctest", "x-execthr", 0 };
     check(run(a_et) == 0, "exec from a threaded process");
+
+    /* statfs: ext2 free counts follow writes and deletes; devfs, procfs and pipes report no blocks */
+    struct statfs sf0, sf1;
+    struct statvfs sv;
+    check(statfs("/tmp", &sf0) == 0 && sf0.f_type == EXT2_SUPER_MAGIC && sf0.f_blocks > sf0.f_bfree &&
+          sf0.f_bfree >= sf0.f_bavail && sf0.f_files > sf0.f_ffree && sf0.f_namelen == 255 && !(sf0.f_flags & ST_RDONLY), "statfs /tmp: ext2 sane");
+    check(statvfs("/tmp", &sv) == 0 && sv.f_bfree == sf0.f_bfree && sv.f_bsize == sf0.f_bsize && sv.f_frsize == sv.f_bsize &&
+          sv.f_namemax == 255 && sv.f_ffree == sf0.f_ffree, "statvfs agrees with statfs");
+    int sfd = open("/tmp/statfs.test", O_CREAT | O_WRONLY | O_TRUNC);
+    static char blk[4096];
+    for (int i = 0; i < 100; i++) write(sfd, blk, sizeof blk);           /* 400 KiB */
+    statfs("/tmp", &sf1);
+    uint32_t want = 400 * 1024 / sf0.f_bsize;
+    check(sf0.f_bfree - sf1.f_bfree >= want && sf0.f_bfree - sf1.f_bfree <= want + want / 8 + 4, "free blocks drop by what was written");
+    check(sf0.f_ffree - sf1.f_ffree == 1, "free inodes drop by one");
+    struct statfs fs1;
+    check(fstatfs(sfd, &fs1) == 0 && fs1.f_bfree == sf1.f_bfree, "fstatfs on the open file");
+    close(sfd);
+    unlink("/tmp/statfs.test");
+    statfs("/tmp", &sf1);
+    check(sf1.f_bfree == sf0.f_bfree && sf1.f_ffree == sf0.f_ffree, "free blocks and inodes come back after unlink");
+    ftruncate(sfd = open("/tmp/statfs.test", O_CREAT | O_WRONLY), 100000);
+    write(sfd, blk, 10);
+    close(sfd);
+    unlink("/tmp/statfs.test");
+    statfs("/tmp", &sf1);
+    check(sf1.f_bfree == sf0.f_bfree, "...also for a file that was extended and removed");
+    check(statfs("/dev", &sf1) == 0 && sf1.f_type == DEVFS_SUPER_MAGIC && sf1.f_blocks == 0 && sf1.f_files == 0, "statfs /dev: devfs, no blocks");
+    check(statfs("/proc", &sf1) == 0 && sf1.f_type == PROC_SUPER_MAGIC && sf1.f_blocks == 0 && (sf1.f_flags & ST_RDONLY), "statfs /proc: read-only procfs");
+    check(statfs("/dev/null", &sf1) == 0 && sf1.f_blocks == 0, "statfs /dev/null");
+    int pp[2];
+    pipe(pp);
+    check(fstatfs(pp[0], &sf1) == 0 && sf1.f_type == PIPEFS_MAGIC && sf1.f_blocks == 0, "fstatfs on a pipe");
+    close(pp[0]); close(pp[1]);
+    errno = 0;
+    check(statfs("/no/such/dir", &sf1) < 0 && errno == ENOENT, "statfs of a missing path: ENOENT");
+    errno = 0;
+    check(fstatfs(99, &sf1) < 0 && errno == EBADF, "fstatfs of a bad fd: EBADF");
+    errno = 0;
+    check(statfs("/tmp", (struct statfs *)8) < 0 && errno == EFAULT, "statfs into a bad pointer: EFAULT");
 
     printf("%d passed, %d failed\n", pass, fail);
     return fail != 0;

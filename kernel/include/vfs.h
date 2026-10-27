@@ -28,6 +28,7 @@ struct vnode_ops {
     void (*close)(struct vnode *v, int flags);                                  /* an open file on v closed */
     void (*release)(struct vnode *v);                                           /* refs hit 0 */
     int  (*sync)(struct vnode *v);
+    int  (*statfs)(struct vnode *v, struct statfs *out);                        /* capacity of v's filesystem; out is zeroed; absent = no blocks (see vfs_statfs) */
     int  (*clone)(struct vnode *v, struct vnode **out);                         /* devfs lookup of v hands out a private vnode (refs 1) instead: one per open */
 };
 
@@ -87,6 +88,7 @@ int  vfs_read(struct file *f, void *buf, uint32_t n);
 int  vfs_write(struct file *f, const void *buf, uint32_t n);
 int  vfs_seek(struct file *f, int32_t off, int whence);
 int  vfs_stat_vnode(struct vnode *v, struct stat *st);
+int  vfs_statfs(struct vnode *v, struct statfs *out);        /* zeroed unless the fs reports; ops without .statfs read as devfs */
 int  vfs_mkdir(const char *cwd, const char *path);
 int  vfs_unlink(const char *cwd, const char *path, bool is_dir);
 int  vfs_rename(const char *cwd, const char *oldp, const char *newp);

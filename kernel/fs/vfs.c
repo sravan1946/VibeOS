@@ -175,6 +175,14 @@ int vfs_stat_vnode(struct vnode *v, struct stat *st) {
     return 0;
 }
 
+int vfs_statfs(struct vnode *v, struct statfs *sf) {
+    memset(sf, 0, sizeof *sf);
+    sf->f_bsize = 4096; sf->f_namelen = NAME_MAX;
+    if (v->ops->statfs) return v->ops->statfs(v, sf);
+    sf->f_type = DEVFS_SUPER_MAGIC;        /* ponytail: every in-kernel fs without an op is devfs; /proc says so itself */
+    return 0;
+}
+
 int vfs_mkdir(const char *cwd, const char *path) {
     struct vnode *dir, *v; char name[NAME_MAX + 1];
     int r = parent_of(cwd, path, &dir, name);

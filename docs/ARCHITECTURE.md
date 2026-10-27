@@ -125,6 +125,11 @@ header shared by the kernel and libc: `common/abi.h`.
 * **devfs** at `/dev`: `null zero random urandom tty kmsg clipboard screen notify display theme wallpaper` (+ `dsp mixer` with an AC'97 card; `screen` reads as `u32 w, u32 h` then the composed
   screen as ARGB rows, taken from the compositor's back buffer). **procfs** at `/proc`:
   `meminfo uptime cpuinfo version processes`.
+* **statfs** (`SYS_statfs`/`SYS_fstatfs`, `struct statfs` in `abi.h`; libc `statfs`/`statvfs` + `fstatvfs`): the
+  optional `vnode_ops.statfs` reports capacity. ext2 answers from the in-memory superblock, whose free counts
+  `alloc_block`/`free_blk`/`alloc_inode`/`free_inode` keep current (`f_bavail` leaves out the root reserve);
+  devfs, procfs and pipes report zero blocks and inodes with their own magic. `df`, Python's `os.statvfs` and
+  the Files status bar use it. There is no mount-table syscall, so `df` knows the three mounts by name.
 * **Pipes**: 8 KiB ring buffers with blocking read/write and EOF/EPIPE.
 
 ## Audio

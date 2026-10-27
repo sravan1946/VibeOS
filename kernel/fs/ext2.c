@@ -778,10 +778,23 @@ static void e2_release(struct vnode *v) {
     flush_fs(fs);
 }
 
+static int e2_statfs(struct vnode *v, struct statfs *sf) {
+    struct e2fs *fs = NODE(v)->fs;
+    struct e2_sb *sb = fs->sb;
+    sf->f_type = EXT2_SUPER_MAGIC;
+    sf->f_bsize = fs->bs;
+    sf->f_blocks = sb->blocks_count - sb->first_data_block;
+    sf->f_bfree = sb->free_blocks;
+    sf->f_bavail = sb->free_blocks > sb->r_blocks_count ? sb->free_blocks - sb->r_blocks_count : 0;
+    sf->f_files = sb->inodes_count;
+    sf->f_ffree = sb->free_inodes;
+    return 0;
+}
+
 static const struct vnode_ops e2_ops = {
     .read = e2_read, .write = e2_write, .readdir = e2_readdir, .lookup = e2_lookup,
     .create = e2_create, .unlink = e2_unlink, .rename = e2_rename, .truncate = e2_truncate,
-    .release = e2_release, .sync = e2_sync,
+    .release = e2_release, .sync = e2_sync, .statfs = e2_statfs,
 };
 
 /* ---- mount ---- */

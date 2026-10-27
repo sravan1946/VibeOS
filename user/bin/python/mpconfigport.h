@@ -41,7 +41,7 @@
 #define MICROPY_VFS                     (1)
 #define MICROPY_VFS_POSIX               (1)
 #define MICROPY_READER_VFS              (1)
-#define MICROPY_PY_OS_STATVFS           (0)
+#define MICROPY_PY_OS_STATVFS           (1)
 /* our struct stat has no device or owner: os.stat() reports 0 for them (sb.st_uid -> sb.st_ino * 0) */
 #define st_dev st_ino * 0
 #define st_uid st_ino * 0

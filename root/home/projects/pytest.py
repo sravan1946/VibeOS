@@ -187,6 +187,18 @@ with open(p, "rb") as f:
     eq("seek/read bytes", f.read(3), b"one")
     eq("tell", f.tell(), 8)
 eq("stat size", os.stat(p)[6], 24)
+sv = os.statvfs(d)                                    # (bsize frsize blocks bfree bavail files ffree favail flag namemax)
+check("statvfs tuple", len(sv) == 10 and sv[0] == sv[1] and sv[2] > sv[3] >= sv[4] and sv[5] > sv[6] and sv[9] == 255, sv)
+with open(d + "/big.bin", "wb") as f:
+    f.write(bytes(300 * 1024))
+sv2 = os.statvfs(d)
+dropped = (sv[3] - sv2[3]) * sv[0]
+check("statvfs free blocks drop after a write", 300 * 1024 <= dropped <= 340 * 1024, dropped)
+eq("statvfs free inodes drop", sv[6] - sv2[6], 1)
+os.remove(d + "/big.bin")
+eq("statvfs free blocks return after remove", os.statvfs(d)[3], sv[3])
+eq("statvfs /dev has no blocks", os.statvfs("/dev")[2], 0)
+raises("statvfs missing", OSError, lambda: os.statvfs("/no/such"))
 check("listdir", "f.txt" in os.listdir(d), os.listdir(d))
 os.rename(p, d + "/g.txt")
 eq("rename", os.listdir(d), ["g.txt"])

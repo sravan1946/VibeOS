@@ -41,7 +41,14 @@ static int sdir_lookup(struct vnode *d, const char *name, struct vnode **out) {
     return -ENOENT;
 }
 
-static const struct vnode_ops sdir_ops = { .readdir = sdir_readdir, .lookup = sdir_lookup };
+/* /dev and /proc are both sdirs; their own nodes carry ino 1 and 101 */
+static int sdir_statfs(struct vnode *v, struct statfs *sf) {
+    sf->f_type = v->ino >= 100 ? PROC_SUPER_MAGIC : DEVFS_SUPER_MAGIC;
+    if (v->ino >= 100) sf->f_flags = ST_RDONLY;
+    return 0;
+}
+
+static const struct vnode_ops sdir_ops = { .readdir = sdir_readdir, .lookup = sdir_lookup, .statfs = sdir_statfs };
 
 /* ---- /dev nodes ---- */
 static uint32_t rng_state = 0x2545F491;
@@ -153,7 +160,7 @@ static int gen_read(struct vnode *v, uint32_t off, void *buf, uint32_t n) {
     kfree(tmp);
     return r;
 }
-static const struct vnode_ops gen_ops = { .read = gen_read };
+static const struct vnode_ops gen_ops = { .read = gen_read, .statfs = sdir_statfs };
 
 #define GEN(nm, fn, i) { nm, { .mode = S_IFREG | 0444, .ino = i, .refs = 1, .ops = &gen_ops, .fs = fn, .size = 0 } }
 static struct snode proc_nodes[] = {

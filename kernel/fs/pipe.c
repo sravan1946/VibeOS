@@ -57,8 +57,11 @@ static void pipe_close(struct vnode *v, int flags) {
 
 static void pipe_release(struct vnode *v) { kfree(v->priv); }
 
+static int pipe_statfs(struct vnode *v, struct statfs *sf) { sf->f_type = PIPEFS_MAGIC; return 0; }
+
 static const struct vnode_ops pipe_ops = {
     .read = pipe_read, .write = pipe_write, .poll = pipe_poll, .close = pipe_close, .release = pipe_release,
+    .statfs = pipe_statfs,
 };
 
 int pipe_create(struct file **rd, struct file **wr) {

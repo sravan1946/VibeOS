@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/wait.h>
 #include <syscall.h>
 #include <fsutil.h>
@@ -1150,7 +1151,7 @@ int main(int argc, char **argv) {
         ui_vscroll(&ui, W - 12, L.y, L.h, L.nrows, L.vis, &scroll);
 
         /* status bar */
-        char st[200], rt[32] = "";
+        char st[200], rt[64] = "";
         int ns = nsel();
         if (ns) {
             uint64_t tot = 0;
@@ -1160,6 +1161,15 @@ int main(int argc, char **argv) {
             else snprintf(st, sizeof st, "%d items, %d selected", nord, ns);
             if (tot || !(ns == 1 && ents[i0].dir)) fmt_size(rt, sizeof rt, tot);
         } else snprintf(st, sizeof st, nord == nents ? (nord == 1 ? "%d item" : "%d items") : (nord == 1 ? "%d matching item" : "%d matching items"), nord);
+        struct statfs sf;                                                /* free space of the folder's filesystem, right-aligned */
+        if (statfs(cwd, &sf) == 0 && sf.f_blocks) {
+            uint64_t fb = (uint64_t)sf.f_bavail * sf.f_bsize;
+            char fr[24];
+            if (fb >> 30) snprintf(fr, sizeof fr, "%u.%u GiB", (unsigned)(fb >> 30), (unsigned)((fb & 0x3FFFFFFF) * 10 >> 30));
+            else fmt_size(fr, sizeof fr, fb);
+            int l = strlen(rt);
+            snprintf(rt + l, sizeof rt - l, "%s%s free", l ? "  ·  " : "", fr);
+        }
         ui_status(&ui, SW, H - SB_H, W - SW, st, rt[0] ? rt : NULL);
 
         /* drag ghost */

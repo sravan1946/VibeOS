@@ -4,6 +4,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <sys/ioctl.h>
 #include <poll.h>
 #include <signal.h>
@@ -24,6 +26,16 @@ int close(int fd) { return __sysret(__syscall1(SYS_close, fd)); }
 off_t lseek(int fd, off_t off, int whence) { return __sysret(__syscall3(SYS_lseek, fd, off, whence)); }
 int stat(const char *path, struct stat *st) { return __sysret(__syscall2(SYS_stat, P(path), P(st))); }
 int fstat(int fd, struct stat *st) { return __sysret(__syscall2(SYS_fstat, fd, P(st))); }
+int statfs(const char *path, struct statfs *sf) { return __sysret(__syscall2(SYS_statfs, P(path), P(sf))); }
+int fstatfs(int fd, struct statfs *sf) { return __sysret(__syscall2(SYS_fstatfs, fd, P(sf))); }
+static void tovfs(const struct statfs *f, struct statvfs *v) {
+    v->f_bsize = v->f_frsize = f->f_bsize;
+    v->f_blocks = f->f_blocks; v->f_bfree = f->f_bfree; v->f_bavail = f->f_bavail;
+    v->f_files = f->f_files; v->f_ffree = v->f_favail = f->f_ffree;
+    v->f_fsid = f->f_fsid[0]; v->f_flag = f->f_flags; v->f_namemax = f->f_namelen;
+}
+int statvfs(const char *path, struct statvfs *sv) { struct statfs f; if (statfs(path, &f) < 0) return -1; tovfs(&f, sv); return 0; }
+int fstatvfs(int fd, struct statvfs *sv) { struct statfs f; if (fstatfs(fd, &f) < 0) return -1; tovfs(&f, sv); return 0; }
 int __readdir(int fd, struct dirent *d) { return __sysret(__syscall2(SYS_readdir, fd, P(d))); }
 int mkdir(const char *path, mode_t mode) { return __sysret(__syscall1(SYS_mkdir, P(path))); }
 int unlink(const char *path) { return __sysret(__syscall1(SYS_unlink, P(path))); }

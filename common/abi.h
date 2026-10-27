@@ -69,6 +69,8 @@ enum {
     SYS_mmap,         /* (uintptr addr, uint32 len, int prot | flags << 8, int fd, uint32 off) -> address; pages fault in lazily */
     SYS_munmap,       /* (uintptr addr, uint32 len): only mmap'd pages are affected */
     SYS_mprotect,     /* (uintptr addr, uint32 len, int prot) */
+    SYS_statfs,       /* (const char *path, struct statfs *sf) */
+    SYS_fstatfs,      /* (int fd, struct statfs *sf) */
     SYS_MAX
 };
 
@@ -143,6 +145,23 @@ struct stat {
     uint32_t st_mtime, st_ctime, st_atime;
     uint32_t st_blocks;   /* 512-byte blocks */
 };
+
+/* statfs: counts are in f_bsize blocks. f_bavail excludes the blocks ext2 reserves for root; devfs, procfs and
+ * pipes report no blocks or inodes. */
+struct statfs {
+    uint32_t f_type;      /* *_MAGIC */
+    uint32_t f_bsize;
+    uint32_t f_blocks, f_bfree, f_bavail;
+    uint32_t f_files, f_ffree;
+    uint32_t f_namelen;
+    uint32_t f_flags;     /* ST_RDONLY */
+    uint32_t f_fsid[2];
+};
+#define EXT2_SUPER_MAGIC  0xEF53
+#define DEVFS_SUPER_MAGIC 0x1373
+#define PROC_SUPER_MAGIC  0x9FA0
+#define PIPEFS_MAGIC      0x50495045
+#define ST_RDONLY 1
 
 #define NAME_MAX 255
 #define PATH_MAX 512

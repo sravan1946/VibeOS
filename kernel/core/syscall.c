@@ -104,6 +104,24 @@ static int sys_fstat(int fd, struct stat *st) {
     return vfs_stat_vnode(f->vn, st);
 }
 
+static int sys_statfs(const char *up, struct statfs *sf) {
+    UPATH(p, up);
+    if (!uok(sf, sizeof *sf, true)) return -EFAULT;
+    struct vnode *v;
+    int r = vfs_lookup(current->proc->cwd, p, &v);
+    if (r < 0) return r;
+    r = vfs_statfs(v, sf);
+    vnode_put(v);
+    return r;
+}
+
+static int sys_fstatfs(int fd, struct statfs *sf) {
+    struct file *f = fd_get(fd);
+    if (!f) return -EBADF;
+    if (!uok(sf, sizeof *sf, true)) return -EFAULT;
+    return vfs_statfs(f->vn, sf);
+}
+
 static int sys_readdir(int fd, struct dirent *ud) {
     struct file *f = fd_get(fd);
     if (!f) return -EBADF;
@@ -356,6 +374,8 @@ static void syscall_handler(struct regs *r) {
     case SYS_lseek:    { struct file *f = fd_get(a); ret = f ? vfs_seek(f, b, c) : -EBADF; break; }
     case SYS_stat:     ret = sys_stat((const char *)a, (struct stat *)b); break;
     case SYS_fstat:    ret = sys_fstat(a, (struct stat *)b); break;
+    case SYS_statfs:   ret = sys_statfs((const char *)a, (struct statfs *)b); break;
+    case SYS_fstatfs:  ret = sys_fstatfs(a, (struct statfs *)b); break;
     case SYS_readdir:  ret = sys_readdir(a, (struct dirent *)b); break;
     case SYS_mkdir: case SYS_unlink: case SYS_rmdir:
                        ret = sys_path1(r->eax, (const char *)a); break;
