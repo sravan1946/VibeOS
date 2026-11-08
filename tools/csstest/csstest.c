@@ -326,6 +326,28 @@ static void test_extras(void) {
     css_counter_format(LT_DECIMAL, -3, b, sizeof b); CHECK(!strcmp(b, "-3"));
 }
 
+/* odd and broken declarations must not crash or leave state behind (run under ASAN by hand: gcc -fsanitize=address) */
+static void test_garbage(void) {
+    static const char *const props[] = { "grid-area", "grid-column", "grid-row", "grid-template", "font", "background", "border", "border-radius", "margin", "flex", "transform",
+        "box-shadow", "outline", "content", "counter-reset", "background-position", "object-position", "font-family", "aspect-ratio", "mask", "inset", "gap", "list-style", "overflow",
+        "place-items", "text-decoration", "width", "color", "line-height", "vertical-align", "border-spacing", "grid-template-columns", "animation", "transition", "will-change" };
+    static const char *const vals[] = { "", "2", "a/b", "1 / 2 / 3 / 4 / 5", "(", ")", "calc(", "calc()", "calc(1px +)", "var(", "var(--x", "url(", "url(x", "'unterminated", "\\", "/", "///", "1px 2px 3px 4px 5px 6px",
+        "red red red red red", "inherit", "translate(", "translate(1px", "scale(2) translate(1px,2px,3px,4px)", "0 0 0 0 0 0 0 0 0 0 0 0", "a b c d e f g h i j k l m n o p", "repeat(", "minmax(1px", "-", "--", "!important", "1e999px", "999999999999px" };
+    reset_dom();
+    int html = el(0, "html", 0, 0), body = el(html, "body", 0, 0), d = el(body, "div", 0, "g");
+    char css[4096];
+    for (unsigned i = 0; i < sizeof props / sizeof *props; i++) {
+        for (unsigned j = 0; j < sizeof vals / sizeof *vals; j++) {
+            snprintf(css, sizeof css, ".g{%s:%s} .g::before{%s:%s;content:%s} @media (%s){.g{%s:%s}} @supports (%s:%s){.g{color:red}}", props[i], vals[j], props[i], vals[j], vals[j], vals[j], props[i], vals[j], props[i], vals[j]);
+            new_page(css);
+            struct cprops c = compute(d), pe;
+            css_compute(d, PE_BEFORE, &c, &pe);
+            css_match_node(vals[j], d);
+        }
+    }
+    CHECK(1);
+}
+
 static void test_restyle(void) {
     reset_dom();
     int html = el(0, "html", 0, 0), body = el(html, "body", 0, 0), ul = el(body, "ul", 0, "menu"), li = el(ul, "li", 0, "item"), a = el(li, "a", 0, 0);
@@ -395,6 +417,7 @@ int main(int argc, char **argv) {
     test_cascade();
     test_vars_media();
     test_pseudo_ua();
+    test_garbage();
     test_extras();
     test_restyle();
     bench(argc > 1 ? atoi(argv[1]) : 20000, 3000);

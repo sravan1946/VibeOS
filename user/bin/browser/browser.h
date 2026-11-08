@@ -96,7 +96,7 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
        P_OUTW, P_OUTS, P_OUTC, P_OUTO,                                 /* outline width/style (BS_*)/colour/offset */
        P_SHX, P_SHY, P_SHB, P_SHS, P_SHC, P_SHI,                       /* box-shadow, first layer: offset x/y, blur, spread, colour (K_NONE = no shadow), inset 0/1 */
        P_CRESET, P_CINC,                                               /* counter-reset / counter-increment: K_STR "name N name N" (K_NONE = none); see css_cnt_* */
-       P_OBJPX, P_OBJPY, P_TRX, P_TRY,                                 /* object-position (px/%), transform: translate() offset (px/%) */
+       P_OBJPX, P_OBJPY, P_TRX, P_TRY, P_MASKIMG,                      /* object-position (px/%), transform: translate() offset (px/%), mask-image (K_STR url or K_NONE; draw the background colour through it) */
        P_N };
 /* value kinds. K_PX also carries every keyword/enum/colour (value in v). Lengths: K_PX px, K_PCT percent*100, K_CALC compiled
  * calc()/min()/max()/clamp() with a percentage inside (resolve with css_len()). Never read p->v of a length directly: css_len(). */

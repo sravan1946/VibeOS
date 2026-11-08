@@ -621,7 +621,7 @@ static const struct pdef PD[] = {
     SPEC("grid-row-end", P_GRE), SPEC("grid-area", P_GAREA), SPEC("text-decoration-line", P_DECO),
     SPEC("outline-width", P_OUTW), KW("outline-style", P_OUTS, "none|solid|dashed|dotted|double|groove|ridge|inset|outset|hidden:0|auto:1"), COL("outline-color", P_OUTC),
     LEN("outline-offset", P_OUTO, F_NEG), SPEC("box-shadow", P_SHX), SPEC("counter-reset", P_CRESET), SPEC("counter-increment", P_CINC),
-    SPEC("object-position", P_OBJPX), SPEC("transform", P_TRX),
+    SPEC("object-position", P_OBJPX), SPEC("transform", P_TRX), SPEC("mask-image", P_MASKIMG),
 };
 
 /* shorthands (and two-valued longhands): the properties a global keyword (inherit/initial/unset) applies to */
@@ -641,7 +641,7 @@ static const struct grp { const char *n; uint8_t p[14]; } GRP[] = {
     { "place-items", { P_ALIGNI, P_JUSTI, 255 } }, { "place-content", { P_ALIGNC, P_JUSTC, 255 } }, { "place-self", { P_ALIGNS, P_JUSTS, 255 } },
     { "text-decoration", { P_DECO, 255 } }, { "grid-column", { P_GCS, P_GCE, 255 } }, { "grid-row", { P_GRS, P_GRE, 255 } },
     { "grid-area", { P_GAREA, P_GRS, P_GCS, P_GRE, P_GCE, 255 } }, { "outline", { P_OUTW, P_OUTS, P_OUTC, 255 } },
-    { "box-shadow", { P_SHX, P_SHY, P_SHB, P_SHS, P_SHC, P_SHI, 255 } }, { "object-position", { P_OBJPX, P_OBJPY, 255 } }, { "transform", { P_TRX, P_TRY, 255 } }, { "border-spacing", { P_SPACING, P_SPACINGY, 255 } },
+    { "mask-image", { P_MASKIMG, 255 } }, { "box-shadow", { P_SHX, P_SHY, P_SHB, P_SHS, P_SHC, P_SHI, 255 } }, { "object-position", { P_OBJPX, P_OBJPY, 255 } }, { "transform", { P_TRX, P_TRY, 255 } }, { "border-spacing", { P_SPACING, P_SPACINGY, 255 } },
     { "grid-template", { P_GROWS, P_GCOLS, P_GAREAS, 255 } }, { "vertical-align", { P_VALIGN, P_VAOFF, 255 } },
 };
 
@@ -1005,7 +1005,9 @@ static void special(const struct pdef *d, char *val) {
     case P_ASPECT: {
         char buf[100], *tk[5];
         int n = toks(val, buf, sizeof buf, tk, 5), i = 0;
-        if (n && !strcasecmp(tk[0], "auto")) { i = 1; if (n == 1) { put(p, K_AUTO, 0); break; } }
+        if (!n) break;
+        if (!strcasecmp(tk[0], "auto")) { i = 1; if (n == 1) { put(p, K_AUTO, 0); break; } }
+        if (i >= n) break;
         double a = atof(tk[i]), b = 1;
         if (i + 2 < n && !strcmp(tk[i + 1], "/")) b = atof(tk[i + 2]);
         if (a > 0 && b > 0) put(p, K_PX, rnd(a / b * 1000));
@@ -1031,6 +1033,7 @@ static void special(const struct pdef *d, char *val) {
             const char *e = a + 1;
             int d = 1;
             while (*e && d) { if (*e == '(') d++; else if (*e == ')') d--; e++; }
+            if (d) continue;                               /* unterminated */
             char args[200];
             size_t l = (size_t)(e - 1 - (a + 1)) < sizeof args - 1 ? (size_t)(e - 1 - (a + 1)) : sizeof args - 1;
             memcpy(args, a + 1, l); args[l] = 0;
@@ -1067,6 +1070,16 @@ static void special(const struct pdef *d, char *val) {
         put(P_SHS, nl > 3 ? kk[3] : K_PX, nl > 3 ? vv[3] : 0); put(P_SHC, ck, cv); put(P_SHI, K_PX, inset);
         break;
     }
+    case P_MASKIMG: {
+        char url[URL_MAX], buf[600], *tk[12];
+        int n = toks(val, buf, sizeof buf, tk, 12);
+        for (int i = 0; i < n; i++) {                      /* also the `mask` shorthand: the first image token */
+            if (!strncasecmp(tk[i], "url(", 4) && url_arg(tk[i], url, sizeof url)) { put(p, K_STR, intern(url, strlen(url))); return; }
+            if (strstr(tk[i], "gradient(")) { put(p, K_GRAD, intern(tk[i], strlen(tk[i]))); return; }
+        }
+        put(p, K_NONE, 0);
+        break;
+    }
     case P_GCOLS: case P_GROWS: grid_track(p, val, 0); break;
     case P_GACOLS: case P_GAROWS: grid_track(p, val, 1); break;
     case P_GAREAS: if (!strcasecmp(val, "none")) put(p, K_NONE, 0); else put(p, K_STR, intern(val, strlen(val))); break;
@@ -1079,7 +1092,7 @@ static void special(const struct pdef *d, char *val) {
         static const uint8_t ord[4] = { P_GRS, P_GCS, P_GRE, P_GCE };
         for (int i = 0; i < 4; i++) {
             const char *t = i < n ? pc[i] : "auto";
-            if (i >= n && i >= 2) { const char *src = pc[i - 2]; if (isalpha((unsigned char)*src) && strncasecmp(src, "span", 4) && strcasecmp(src, "auto")) t = src; }
+            if (i >= n && i >= 2 && i - 2 < n) { const char *src = pc[i - 2]; if (isalpha((unsigned char)*src) && strncasecmp(src, "span", 4) && strcasecmp(src, "auto")) t = src; }
             if (grid_line(t, &k, &v)) put(ord[i], k, v);
         }
         put(P_GAREA, K_NONE, 0);
@@ -1134,10 +1147,11 @@ static void decl(char *name, char *val, int imp) {
     }
     if (!strncmp(name, "-webkit-", 8) || !strncmp(name, "-moz-", 5) || !strncmp(name, "-ms-", 4)) {
         const char *b = strchr(name + 1, '-') + 1;
-        if (find_pd(b) || !strcmp(b, "flex") || !strcmp(b, "flex-flow") || !strcmp(b, "box-sizing") || !strcmp(b, "border-radius") || !strcmp(b, "order")) name = (char *)b;
+        if (find_pd(b) || !strcmp(b, "mask") || !strcmp(b, "flex") || !strcmp(b, "flex-flow") || !strcmp(b, "box-sizing") || !strcmp(b, "border-radius") || !strcmp(b, "order")) name = (char *)b;
         else if (!strcmp(name, "-webkit-line-clamp") || !strcmp(name, "-webkit-box-orient")) return;
     }
     for (unsigned i = 0; i < sizeof LOGICAL / sizeof *LOGICAL; i++) if (!strcmp(name, LOGICAL[i][0])) { name = (char *)LOGICAL[i][1]; break; }
+    if (!strcmp(name, "mask")) name = (char *)"mask-image";
     if (has_var(val)) {
         put(P_RAWDECL, K_RAW, intern(val, strlen(val)));
         D[nd - 1].a = intern(name, strlen(name));
@@ -2170,7 +2184,7 @@ void css_initial(struct cprops *o) {
     o->k[P_CONTENT] = K_NONE; o->k[P_GCOLS] = o->k[P_GROWS] = o->k[P_GACOLS] = o->k[P_GAROWS] = o->k[P_GAREAS] = o->k[P_GAREA] = K_NONE;
     o->k[P_GCS] = o->k[P_GCE] = o->k[P_GRS] = o->k[P_GRE] = K_AUTO; o->k[P_ASPECT] = K_AUTO;
     o->k[P_BCT] = o->k[P_BCR] = o->k[P_BCB] = o->k[P_BCL] = K_CUR; o->k[P_OUTC] = K_CUR; o->v[P_OUTW] = 3;
-    o->k[P_SHC] = K_NONE; o->k[P_CRESET] = o->k[P_CINC] = K_NONE; o->k[P_OBJPX] = o->k[P_OBJPY] = K_PCT; o->v[P_OBJPX] = o->v[P_OBJPY] = 5000;
+    o->k[P_SHC] = K_NONE; o->k[P_MASKIMG] = K_NONE; o->k[P_CRESET] = o->k[P_CINC] = K_NONE; o->k[P_OBJPX] = o->k[P_OBJPY] = K_PCT; o->v[P_OBJPX] = o->v[P_OBJPY] = 5000;
     o->v[P_BWT] = o->v[P_BWR] = o->v[P_BWB] = o->v[P_BWL] = 3;
 }
 
