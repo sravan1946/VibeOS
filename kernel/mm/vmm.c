@@ -62,8 +62,9 @@ static uint32_t *pte_for(uint32_t dir, uint32_t va, bool create) {
 int vmm_map(uint32_t dir, uint32_t va, uint32_t pa, uint32_t flags) {
     uint32_t *pte = pte_for(dir, va, true);
     if (!pte) return -1;
+    uint32_t old = *pte;
     *pte = (pa & ~0xFFFu) | flags | PTE_P;
-    if (dir == read_cr3()) invlpg(va);
+    if ((old & PTE_P) && dir == read_cr3()) invlpg(va);      /* not-present entries are never cached in the TLB */
     return 0;
 }
 
