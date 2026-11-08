@@ -49,8 +49,9 @@ struct bx {
     int v[NL]; uint8_t k[NL];
     uint32_t toff; int tlen;      /* IN_TEXT: bytes in the HD pool */
     int ref, iw, ih, bel, cs, rs, mark;   /* img cache index / control index; intrinsic size; baseline below the box; colspan, rowspan; list marker (0 bullet, n number, -1 none) */
-    uint8_t halign, valn, lt, txk, tyk;
-    int aspect, txv, tyv;         /* aspect-ratio (w/h x1000), transform: translate() */         /* table cell: horizontal / vertical alignment */
+    uint8_t halign, valn, lt;
+    int txp, typ;
+    int aspect, txv, tyv, sh[4], outw, outo; color_t shc, outc, markc; uint8_t tt;   /* box-shadow x/y/blur/spread, outline */         /* aspect-ratio (w/h x1000), transform: translate() */         /* table cell: horizontal / vertical alignment */
     int bgi; uint8_t brep, bkx, bky, bkw, bkh, objfit; int bpx, bpy, bsw, bsh;   /* background-image (img index + 1) and its repeat/position/size; object-fit for images */
     int x, y, w, h, base;         /* border box, document coordinates; base: baseline offset from the top (-1 = bottom edge) */
     int m[4], p[4];               /* used margins and paddings (t r b l) */
@@ -191,6 +192,16 @@ struct iw {
     int col;                      /* pre: column, for tabs */
 };
 
+static void xform(const struct bx *tb, char *s, int n) {        /* text-transform on ASCII (the bitmap fonts' case mapping stops there) */
+    if (!tb->tt) return;
+    for (int i = 0; i < n; i++) {
+        unsigned char c = s[i];
+        if (tb->tt == 1 && c >= 'a' && c <= 'z') s[i] = c - 32;
+        else if (tb->tt == 2 && c >= 'A' && c <= 'Z') s[i] = c + 32;
+        else if (tb->tt == 3 && i == 0 && c >= 'a' && c <= 'z') s[i] = c - 32;
+    }
+}
+
 static void inl_text(struct iw *w, struct bx *tb) {
     const char *s = hd_str(tb->toff);
     int n = tb->tlen, mode = tb->ws;
@@ -199,17 +210,17 @@ static void inl_text(struct iw *w, struct bx *tb) {
     for (int i = 0; i < n; i++) {
         unsigned char c = s[i];
         if (mode == 2 || mode == 3) {
-            if (c == '\n') { if (bn) { w->word(w->u, tb, buf, bn); bn = 0; } w->brk(w->u, tb); w->col = 0; continue; }
+            if (c == '\n') { if (bn) { (xform(tb, buf, bn), w->word(w->u, tb, buf, bn)); bn = 0; } w->brk(w->u, tb); w->col = 0; continue; }
             if (c == '\t') { int k = 8 - w->col % 8; while (k-- > 0 && bn < 500) { buf[bn++] = ' '; w->col++; } continue; }
             if (c == 0xC2 && i + 1 < n && (unsigned char)s[i + 1] == 0xA0) { c = ' '; i++; }
-            if (bn >= 480 && (c & 0xC0) != 0x80) { w->word(w->u, tb, buf, bn); bn = 0; }
+            if (bn >= 480 && (c & 0xC0) != 0x80) { (xform(tb, buf, bn), w->word(w->u, tb, buf, bn)); bn = 0; }
             buf[bn++] = c;
             if ((c & 0xC0) != 0x80) w->col++;
             continue;
         }
         if (c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r') {
-            if (c == '\n' && mode == 4) { if (bn) { w->word(w->u, tb, buf, bn); bn = 0; } w->brk(w->u, tb); w->sp = 1; continue; }
-            if (bn) { w->word(w->u, tb, buf, bn); bn = 0; }
+            if (c == '\n' && mode == 4) { if (bn) { (xform(tb, buf, bn), w->word(w->u, tb, buf, bn)); bn = 0; } w->brk(w->u, tb); w->sp = 1; continue; }
+            if (bn) { (xform(tb, buf, bn), w->word(w->u, tb, buf, bn)); bn = 0; }
             if (!w->sp) { w->space(w->u, tb); w->sp = 1; }
             continue;
         }
@@ -218,11 +229,11 @@ static void inl_text(struct iw *w, struct bx *tb) {
         else if (c == 0xC2 && i + 1 < n && (unsigned char)s[i + 1] == 0xAD) { i++; continue; }   /* soft hyphen */
         else if (c == 0xE2 && i + 2 < n && (unsigned char)s[i + 1] == 0x80 && ((unsigned char)s[i + 2] == 0x8E || (unsigned char)s[i + 2] == 0x8F || ((unsigned char)s[i + 2] >= 0xAA && (unsigned char)s[i + 2] <= 0xAE))) { i += 2; continue; }
         else if (c == 0xEF && i + 2 < n && (unsigned char)s[i + 1] == 0xBB && (unsigned char)s[i + 2] == 0xBF) { i += 2; continue; }
-        if (bn >= 480 && (c & 0xC0) != 0x80) { w->word(w->u, tb, buf, bn); bn = 0; }
+        if (bn >= 480 && (c & 0xC0) != 0x80) { (xform(tb, buf, bn), w->word(w->u, tb, buf, bn)); bn = 0; }
         buf[bn++] = c;
         w->sp = 0;
     }
-    if (bn) w->word(w->u, tb, buf, bn);
+    if (bn) (xform(tb, buf, bn), w->word(w->u, tb, buf, bn));
 }
 
 static void inl_walk(struct iw *w, int p) {
@@ -919,6 +930,11 @@ static void lay_flex(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
                 case 5: between = rest / (cnt + 1); lead = between; break;
                 }
             }
+            int maxb = 0;                                       /* align-items: baseline: the deepest first baseline in the line */
+            for (int i = a; i < z; i++) {
+                struct bx *bb = it[i].b;
+                if ((bb->als ? bb->als - 1 : b->ali) == 4) maxb = imax_(maxb, bb->m[0] + (bb->base >= 0 ? bb->base : bb->h));
+            }
             int x = cx + lead;
             for (int j = 0; j < cnt; j++) {
                 int i = rev ? z - 1 - j : a + j;
@@ -928,6 +944,7 @@ static void lay_flex(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
                 if (al == 0 && bb->k[L_H] == K_AUTO && bb->h < avail) { int hh = clamph(bb, avail - vedge(bb), 0) + vedge(bb); bb->h = hh; }
                 else if (al == 2) yy = y + lc - bb->m[2] - bb->h;
                 else if (al == 3) yy = y + bb->m[0] + (avail - bb->h) / 2;
+                else if (al == 4) yy = y + maxb - (bb->base >= 0 ? bb->base : bb->h);
                 shift(bb, x + bb->m[3] - bb->x, yy - bb->y);
                 x += bb->w + bb->m[3] + bb->m[1] + between + mgap;
             }
@@ -1657,6 +1674,15 @@ static int clip_push(int x, int y, int w, int h) {         /* returns the previo
 
 static void paint_bg(struct bx *b, int ox, int oy) {
     int x = b->x + ox, y = b->y + oy, w = b->w, h = b->h;
+    if (b->shc && w > 0 && h > 0) {                       /* box-shadow: a few growing translucent rounded rects stand in for the blur */
+        int bl = b->sh[2] < 0 ? 0 : b->sh[2], n = bl > 12 ? 4 : bl > 4 ? 3 : bl ? 2 : 1;
+        uint32_t a = (b->shc >> 24) * (bl ? 2 : 3) / (n * 3 / 2 + 1);
+        color_t c = (b->shc & 0xFFFFFF) | (a > 255 ? 255u : a) << 24;
+        for (int i = n - 1; i >= 0; i--) {
+            int g = b->sh[3] + (n > 1 ? bl * i / (n - 1) : 0) - (n > 1 ? bl / 4 : 0);
+            emit_decor(x + b->sh[0] - g, y + b->sh[1] - g, w + 2 * g, h + 2 * g, c, b->rad + g, 0);
+        }
+    }
     if (b->bg) emit_decor(x, y, w, h, b->bg, b->rad, 0);
     if (b->bgi && w > 0 && h > 0) {                      /* background-image, placed in the padding box */
         int l = b->bw[3], t = b->bw[0];
@@ -1668,6 +1694,7 @@ static void paint_bg(struct bx *b, int ox, int oy) {
             r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh;
         }
     }
+    if (b->outw && b->outc >> 24) emit_decor(x - b->outo - b->outw, y - b->outo - b->outw, w + 2 * (b->outo + b->outw), h + 2 * (b->outo + b->outw), b->outc, b->rad, b->outw);
     int bt = b->bw[0], br = b->bw[1], bb = b->bw[2], bl = b->bw[3];
     if (!(bt | br | bb | bl)) return;
     if (b->rad > 0 && bt == br && br == bb && bb == bl && b->bc[0] == b->bc[1] && b->bc[1] == b->bc[2] && b->bc[2] == b->bc[3]) {
@@ -1718,7 +1745,7 @@ static void paint_marker(struct bx *b, int ox, int oy) {
     if (!first_text_y(b, &y)) y = b->y + b->bw[0] + b->p[0];
     struct item *it = emit_item();
     it->x = b->x + b->bw[3] + b->p[3] - 8 - w + ox; if (it->x < 2) it->x = 2;
-    it->y = y + oy; it->w = w; it->h = f->height; it->font = b->font; it->col = mix(D->fg, D->bg, 130);
+    it->y = y + oy; it->w = w; it->h = f->height; it->font = b->font; it->col = b->markc ? b->markc : mix(D->fg, D->bg, 130);
     it->len = strlen(m); it->off = arena(m, it->len);
     if (it->h > D->maxh) D->maxh = it->h;
 }
@@ -1800,7 +1827,7 @@ static void paint_box(int bi, int ox, int oy) {
     if (b->opacity == 0 || (b->inner == IN_CTL && b->ref < 0)) return;
     int positioned = b->pos != POS_STATIC && b->pos != POS_STICKY, mark = npe;
     if (b->pos == POS_REL) { int dx, dy; rel_offset(b, &dx, &dy); ox += dx; oy += dy; }
-    if (b->txv || b->tyv) { ox += b->txk ? b->w * b->txv / 10000 : b->txv; oy += b->tyk ? b->h * b->tyv / 10000 : b->tyv; }
+    if (b->txv || b->tyv || b->txp || b->typ) { ox += b->txv + b->w * b->txp / 100; oy += b->tyv + b->h * b->typ / 100; }
     if (b->aname) anchor_add(b->aname, b->y + oy);
     int prev = cur_clip, hidden = b->vis;
     if (!hidden) paint_bg(b, ox, oy);
@@ -1837,7 +1864,7 @@ static void paint_box(int bi, int ox, int oy) {
 static color_t col_em, col_dim;
 static int nord, curform_;
 
-struct inh { uint8_t font, flags, nul, ws, align, nomark, vis, valign; color_t col; int link, lh, node; };
+struct inh { uint8_t tt, font, flags, nul, ws, align, nomark, vis, valign; color_t col; int link, lh, node; };
 struct bctx { int incenter, cb, curform, tpad, tborder, tcollapse, nested, js; int *cnt; uint8_t tva; };
 static struct el E[128];
 static int nel;
@@ -2044,7 +2071,7 @@ static int cd_has_text(int n) { for (int c = DN(n).first; c >= 0; c = DN(c).next
 static const struct css_dom CD = { cd_parent, cd_prev, cd_next, cd_first, cd_tag, cd_attr, cd_state, cd_has_text };
 
 static int map_just(int v) { return v == AL_END ? 1 : v == AL_CENTER ? 2 : v == AL_BETWEEN ? 3 : v == AL_AROUND ? 4 : v == AL_EVENLY ? 5 : 0; }
-static int map_align(int v) { return v == AL_START ? 1 : v == AL_END ? 2 : v == AL_CENTER ? 3 : v == AL_BASELINE ? 1 : 0; }
+static int map_align(int v) { return v == AL_START ? 1 : v == AL_END ? 2 : v == AL_CENTER ? 3 : v == AL_BASELINE ? 4 : 0; }
 
 /* the presentational attributes of the old web, applied only where CSS left the user-agent value (author CSS wins) */
 static void hints(int dn, int tag, struct bx *S, struct inh *ni, struct bctx *cx, struct bctx *cx2) {
@@ -2117,9 +2144,13 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     lenset(S, L_W, cp, P_WIDTH); lenset(S, L_H, cp, P_HEIGHT); lenset(S, L_MINW, cp, P_MINW); lenset(S, L_MAXW, cp, P_MAXW);
     lenset(S, L_MINH, cp, P_MINH); lenset(S, L_MAXH, cp, P_MAXH); lenset(S, L_BASIS, cp, P_FBASIS);
     S->bg = cp->v[P_BG];
+    if (cp->k[P_MASKIMG] != K_NONE) S->bg = 0;                    /* mask-image icons: the colour is shown through a picture we can't apply; better nothing than a black square */
+    if (cp->k[P_SHC] != K_NONE && !cp->v[P_SHI] && (cp->v[P_SHC] >> 24)) { S->shc = cp->v[P_SHC]; S->sh[0] = css_len(cp, P_SHX, 0); S->sh[1] = css_len(cp, P_SHY, 0); S->sh[2] = css_len(cp, P_SHB, 0); S->sh[3] = css_len(cp, P_SHS, 0); }
+    if (cp->v[P_OUTS] != BS_NONE && cp->v[P_OUTW] > 0) { S->outw = cp->v[P_OUTW]; S->outc = cp->v[P_OUTC]; S->outo = css_len(cp, P_OUTO, 0); }
+    ni->tt = cp->v[P_TT];
     S->aspect = cp->k[P_ASPECT] == K_PX ? cp->v[P_ASPECT] : 0;
-    S->txk = cp->k[P_TRX] == K_PCT; S->tyk = cp->k[P_TRY] == K_PCT;
-    S->txv = S->txk ? cp->v[P_TRX] : css_len(cp, P_TRX, 0); S->tyv = S->tyk ? cp->v[P_TRY] : css_len(cp, P_TRY, 0);
+    S->txv = css_len(cp, P_TRX, 0); S->tyv = css_len(cp, P_TRY, 0);                 /* px part, and the % of the box (translate(calc(-100% - 10px)) works) */
+    S->txp = css_len(cp, P_TRX, 100) - S->txv; S->typ = css_len(cp, P_TRY, 100) - S->tyv;
     S->bgi = 0;
     if (cp->k[P_BGIMG] == K_STR) {                       /* url(...) is absolute already (css.c); a gradient or none paints nothing */
         int ix = img_ref_ex(css_str(cp->v[P_BGIMG]), "lazy");
@@ -2309,7 +2340,7 @@ static int mk_text(int pb, uint32_t off, int n, const struct inh *in) {
     struct bx *x = &B[t];
     lens_init(x);
     x->outer = OUT_INLINE; x->inner = IN_TEXT; x->toff = off; x->tlen = n;
-    x->font = in->font; x->flags = in->flags; x->nul = in->nul; x->ws = in->ws; x->col = in->col; x->link = in->link; x->node = in->node;
+    x->tt = in->tt; x->font = in->font; x->flags = in->flags; x->nul = in->nul; x->ws = in->ws; x->col = in->col; x->link = in->link; x->node = in->node;
     x->lh = in->lh; x->vis = in->vis; x->valign = in->valign; x->align = in->align;
     bx_append(pb, t);
     return t;
@@ -2477,7 +2508,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
     if (S.flt || oof(&S)) { S.outer = OUT_BLOCK; if (S.inner == IN_INLINE) S.inner = IN_FLOW; }
     if (!pe && ((v = ATTR(dn, "id")) || (tag == T_A && (v = ATTR(dn, "name")))) && *v) S.aname = astr(v) + 1;
     S.cb = cx->cb; S.dn = pe ? 0 : dn;
-    if (li) { S.li = 1; S.mark = ni.nomark ? -1 : cx->cnt ? ++*cx->cnt : 1; S.lt = cp->v[P_LISTT]; }
+    if (li) { struct cprops mp; if (!pe && css_compute(dn, PE_MARKER, cp, &mp) && mp.v[P_COLOR]) S.markc = mp.v[P_COLOR]; S.li = 1; S.mark = ni.nomark ? -1 : cx->cnt ? ++*cx->cnt : 1; S.lt = cp->v[P_LISTT]; }
 
     if (tag == T_BR) {
         int bi = bx_new();
@@ -2586,8 +2617,8 @@ static void dump(int bi, int depth) {
     struct bx *b = &B[bi];
     const char *nm = b->inner == IN_TEXT ? "#text" : b->dn > 0 ? hd_str(HD.n[b->dn].nm) : b->anon ? "(anon)" : "?";
     const char *id = b->dn > 0 && b->inner != IN_TEXT ? hd_attr(b->dn, "id") : 0, *cl = b->dn > 0 && b->inner != IN_TEXT ? hd_attr(b->dn, "class") : 0;
-    fprintf(stderr, "%*s%s%s%s%s%s o%d i%d p%d f%d [%d,%d %dx%d] %s\n", depth * 2, "", nm, id ? "#" : "", id ? id : "", cl ? "." : "", cl ? cl : "", b->outer, b->inner, b->pos, b->flt, b->x, b->y, b->w, b->h,
-            b->inner == IN_TEXT ? "" : "");
+    fprintf(stderr, "%*s%s%s%s%s%s o%d i%d p%d f%d [%d,%d %dx%d] %s fr%d@%d,%d\n", depth * 2, "", nm, id ? "#" : "", id ? id : "", cl ? "." : "", cl ? cl : "", b->outer, b->inner, b->pos, b->flt, b->x, b->y, b->w, b->h,
+            b->inner == IN_TEXT ? "" : "", b->nfr, b->nfr ? b->fr[0].x : 0, b->nfr ? b->fr[0].y : 0);
     for (int c = b->first; c >= 0; c = B[c].next) if (depth < 14) dump(c, depth + 1);
 }
 #endif

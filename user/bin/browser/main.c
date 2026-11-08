@@ -1016,7 +1016,18 @@ static void bench(struct ui *ui, const char *arg) {
     url_from_input(arg, u, sizeof u);
     uint64_t t = tsc();
     navigate(u, 1, -1);
-    blog("BROWSER %s load+layout %u us, %d items, height %d", arg, us(tsc() - t), doc.nit, doc.height);
+    uint32_t t0 = uptime_ms();                              /* the page, its stylesheets and scripts arrive asynchronously: pump like the main loop until settled */
+    int quiet = 0;
+    while (uptime_ms() - t0 < 60000 && quiet < 8) {
+        struct pollfd pf = { fe.fd, POLLIN, 0 };
+        poll(&pf, loading ? 1 : 0, 40);
+        fetch_reap();
+        if (loading) service_fetch();
+        int ch = pg.have && sheet_pump();
+        if (ch) relayout();
+        quiet = loading || ch || (sheet_busy() && uptime_ms() - t0 < 20000) ? 0 : quiet + 1;
+    }
+    blog("BROWSER %s load (%u ms wall), layout %u us, %d items, height %d", arg, uptime_ms() - t0, us(tsc() - t), doc.nit, doc.height);
     for (int pass = 0; pass < 2; pass++) {
         t = tsc();
         for (int i = 0; i < 8; i++) { ui_clear(ui); doc_draw(ui, &doc, 0, CT, view_w(), view_h(), i * max_scroll() / 8, -1, &mk, -1, 0); }
