@@ -45,6 +45,8 @@ struct fetch {
     int head, ready;               /* HEAD request (no body); buf already holds the whole response (data: URL, cache hit) */
     char *url;                     /* for the cache (malloc'd; NULL = don't cache) */
     struct fr fr; size_t fpos;     /* body framing: fed up to fpos body bytes */
+    uint32_t t0;                   /* uptime at fetch_start (timing log) */
+    unsigned char *stale; size_t stale_len;   /* revalidating: the cached response a 304 turns back into the answer */
     int wk;                        /* index of the pooled keep-alive helper doing this fetch, or -1 (one-shot process / no process) */
 };
 struct response {
@@ -64,6 +66,7 @@ int  fetch_pump(struct fetch *f);                 /* 0 running, 1 finished, -1 f
 void fetch_cancel(struct fetch *f);
 void fetch_reap(void);                            /* collect killed children */
 void fetch_finish(struct fetch *f, struct response *r);   /* consumes f->buf */
+void fetch_preconnect(const char *html, size_t n, const char *base);   /* warm connections to the origins of the head's <link>/<img>/<script> */
 void fetch_set_referer(const char *url);          /* Referer for the requests that follow (the current page) */
 void fetch_cache_drop(const char *url);           /* forget one URL (reload), or everything when url is NULL */
 

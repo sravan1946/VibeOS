@@ -18,7 +18,7 @@
 #include <sys/stat.h>
 #include <syscall.h>
 
-#define NSLOT 4
+#define NSLOT 6
 #define MAXIMG 400
 #define MAXDIM 2048
 #define MAXPX 2500000             /* decoded pixels kept per picture (about 1920x1300) */
