@@ -814,6 +814,7 @@ Object.defineProperties(HTMLFormElement.prototype, {
     elements: { get() { return coll(this.querySelectorAll('input, textarea, select, button, fieldset, output')); } },
     length: { get() { return this.elements.length; } },
 });
+Object.assign(g.HTMLSlotElement.prototype, { assignedNodes() { return []; }, assignedElements() { return []; } });
 Object.assign(HTMLFormElement.prototype, {
     requestSubmit(btn) { const ev = new Event('submit', { bubbles: true, cancelable: true }); if (btn) ev.submitter = btn; if (dispatch(this, ev)) d.submit(this.__id); },
     submit() { d.submit(this.__id); },
@@ -891,6 +892,7 @@ class Document extends Node {
     get doctype() { return { name: 'html', publicId: '', systemId: '', nodeType: 10 }; }
     get designMode() { return 'off'; } set designMode(v) {}
     get dir() { return ''; } set dir(v) {}
+    get implementation() { return impl; }
     get hidden() { return false; }
     get visibilityState() { return 'visible'; }
     get fullscreenElement() { return null; }
@@ -942,6 +944,21 @@ Document.prototype.getElementById = function (id) { return wrap(d.byId(String(id
 g.HTMLDocument = Document;
 g.XMLDocument = Document;
 class DocumentType extends Node {}
+// a detached "document" for createHTMLDocument (jQuery uses it to parse HTML safely): head/body elements under an <html>
+const impl = {
+    createHTMLDocument(title) {
+        const html = document.createElement('html'), head = document.createElement('head'), body = document.createElement('body');
+        html.appendChild(head); html.appendChild(body);
+        if (title !== undefined) { const t = document.createElement('title'); t.textContent = title; head.appendChild(t); }
+        const q = x => html.querySelector(x);
+        return { nodeType: 9, nodeName: '#document', documentElement: html, head, body, defaultView: null, location: null, contentType: 'text/html', get title() { const t = q('title'); return t ? t.textContent : ''; },
+            createElement: t => document.createElement(t), createElementNS: (n, t) => document.createElement(t), createTextNode: t => document.createTextNode(t), createComment: t => document.createComment(t), createDocumentFragment: () => document.createDocumentFragment(),
+            querySelector: q, querySelectorAll: x => html.querySelectorAll(x), getElementById: x => html.getElementById(x), getElementsByTagName: x => html.getElementsByTagName(x), getElementsByClassName: x => html.getElementsByClassName(x),
+            importNode: n => n.cloneNode(true), adoptNode: n => n, addEventListener() {}, removeEventListener() {}, get children() { return html.children; }, get firstChild() { return html; }, get childNodes() { return coll([html]); } };
+    },
+    createDocument() { return impl.createHTMLDocument(''); }, hasFeature() { return true; },
+};
+
 
 // ---------- window ----------
 const document = wrap(1);

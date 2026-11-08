@@ -32,7 +32,7 @@
 struct node {
     uint8_t type;                 /* 1 element, 3 text, 8 comment, 9 document, 11 fragment */
     uint8_t has_val, has_chk, chk, started;   /* started: a <script> that has run (or been taken) */   /* control state set by a script or synced from form.c */
-    char tag[16];                 /* lower case */
+    char tag[48];                 /* lower case */
     char *text;                   /* text node data */
     char **an, **av; int na;      /* attributes */
     char *val; int sel;           /* value / selectedIndex (select: has_val means sel is set) */
@@ -359,10 +359,10 @@ static void parse_html(int root, const char *s, size_t n, int frag) {
             else if (c == '>') break;
             if (!isspace((unsigned char)c)) prev = c;
         }
-        char name[16];
+        char name[48];
         int nl = 0;
         size_t p = k;
-        while (p < j && !isspace((unsigned char)s[p]) && s[p] != '/' && s[p] != '>') { if (nl < 15) name[nl++] = tolower((unsigned char)s[p]); p++; }
+        while (p < j && !isspace((unsigned char)s[p]) && s[p] != '/' && s[p] != '>') { if (nl < 47) name[nl++] = tolower((unsigned char)s[p]); p++; }
         name[nl] = 0;
         i = j < n ? j + 1 : n;
         if (closing) { end_tag(name); continue; }
