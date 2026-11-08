@@ -225,6 +225,7 @@ static int sock_fd(struct sock *s) {
     struct vnode *v = kzalloc(sizeof *v);
     if (!v) { sock_free(s); return -ENOMEM; }
     v->mode = S_IFSOCK | 0600; v->ops = &sock_ops; v->priv = s;
+    poll_keyed_ops(&sock_ops);                  /* every readiness change wakes s (tcp.c, enqueue), so poll() can sleep keyed on it */
     struct file *f = vfs_open_vnode(v, O_RDWR);
     if (!f) { kfree(v); sock_free(s); return -ENOMEM; }
     int fd = fd_alloc(f);
