@@ -25,6 +25,11 @@ const char *sheet_get(const char *url, size_t *len) {
 struct theme ui_th;
 int gui_clip_set(const char *s, int n) { return 0; }
 char *gui_clip_get(int *n) { return 0; }
+int img_pick(const char *s, const char *ss, const char *sz, int vw, char *out, int cap) { return 0; }
+int img_type_ok(const char *m) { return 1; }
+int img_svg_inline(const char *s, size_t n, long c) { return -1; }
+const char *img_url(int i) { return ""; }
+int doc_zoom = 100;
 int sheet_pump(void) { return 0; }
 int sheet_busy(void) { return 0; }
 void sheet_reset(void) {}

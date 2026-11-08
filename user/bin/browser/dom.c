@@ -79,20 +79,7 @@ const char *hd_attr(int n, const char *name) {
 }
 
 /* ---------- entities ---------- */
-static const struct { const char *n; uint32_t cp; } ENT[] = {
-    { "amp", '&' }, { "lt", '<' }, { "gt", '>' }, { "quot", '"' }, { "apos", '\'' }, { "nbsp", 0xA0 },
-    { "copy", 0xA9 }, { "reg", 0xAE }, { "trade", 0x2122 }, { "hellip", 0x2026 }, { "mdash", 0x2014 },
-    { "ndash", 0x2013 }, { "lsquo", 0x2018 }, { "rsquo", 0x2019 }, { "ldquo", 0x201C }, { "rdquo", 0x201D },
-    { "laquo", 0xAB }, { "raquo", 0xBB }, { "bull", 0x2022 }, { "middot", 0xB7 }, { "deg", 0xB0 },
-    { "times", 0xD7 }, { "divide", 0xF7 }, { "plusmn", 0xB1 }, { "sect", 0xA7 }, { "para", 0xB6 },
-    { "larr", 0x2190 }, { "rarr", 0x2192 }, { "uarr", 0x2191 }, { "darr", 0x2193 }, { "harr", 0x2194 },
-    { "euro", 0x20AC }, { "pound", 0xA3 }, { "yen", 0xA5 }, { "cent", 0xA2 }, { "micro", 0xB5 },
-    { "frac12", 0xBD }, { "frac14", 0xBC }, { "frac34", 0xBE }, { "eacute", 0xE9 }, { "egrave", 0xE8 },
-    { "agrave", 0xE0 }, { "uuml", 0xFC }, { "ouml", 0xF6 }, { "auml", 0xE4 }, { "szlig", 0xDF },
-    { "ccedil", 0xE7 }, { "ntilde", 0xF1 }, { "iexcl", 0xA1 }, { "iquest", 0xBF }, { "ne", 0x2260 },
-    { "le", 0x2264 }, { "ge", 0x2265 }, { "infin", 0x221E }, { "ensp", ' ' }, { "emsp", ' ' }, { "thinsp", ' ' },
-    { "zwnj", 0x200C }, { "zwj", 0x200D }, { "shy", 0xAD }, { "minus", 0x2212 }, { "check", 0x2713 },
-};
+uint32_t ent_lookup(const char *s, int n);   /* entities.c: the full HTML table (nbsp comes back as U+00A0) */
 
 static int utf8_put(uint32_t cp, char *o) {
     if (cp < 0x80) { o[0] = cp; return 1; }
@@ -114,17 +101,16 @@ int hd_ent(const char *s, int n, char *o, int *used) {
         if (!dg) return 0;
         if (i < n && s[i] == ';') i++;
         cp = v;
+        static const uint16_t W1252[32] = { 0x20AC, 0xFFFD, 0x201A, 0x192, 0x201E, 0x2026, 0x2020, 0x2021, 0x2C6, 0x2030, 0x160, 0x2039, 0x152, 0xFFFD, 0x17D, 0xFFFD,
+            0xFFFD, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x2DC, 0x2122, 0x161, 0x203A, 0x153, 0xFFFD, 0x17E, 0x178 };
+        if (cp >= 0x80 && cp < 0xA0) cp = W1252[cp - 0x80];     /* numeric references in 0x80..0x9F are Windows-1252, as browsers do */
         if (cp < 32 && cp != 10 && cp != 9) cp = ' ';
-        else if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) || (cp >= 0x80 && cp < 0xA0)) cp = 0xFFFD;
+        else if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD;
     } else {
         int j = i;
-        while (j < n && j - i < 10 && isalnum((unsigned char)s[j])) j++;
+        while (j < n && j - i < 33 && isalnum((unsigned char)s[j])) j++;
         if (j >= n || s[j] != ';' || j == i) return 0;
-        unsigned k;
-        for (k = 0; k < sizeof ENT / sizeof *ENT; k++)
-            if ((int)strlen(ENT[k].n) == j - i && !strncmp(ENT[k].n, s + i, j - i)) break;
-        if (k == sizeof ENT / sizeof *ENT) return 0;
-        cp = ENT[k].cp;
+        if (!(cp = ent_lookup(s + i, j - i))) return 0;
         i = j + 1;
     }
     *used = i;
@@ -402,7 +388,20 @@ int hd_parse(const char *src, size_t n, const char *base, struct doc *d) {
                 continue;
             }
         }
-        if (!strcmp(name, "script") || !strcmp(name, "svg") || !strcmp(name, "template") || !strcmp(name, "style") || !strcmp(name, "title")) {
+        if (!strcmp(name, "svg")) {                           /* inline SVG: the raw markup in a text child, rasterised by layout */
+            int ce, next = skip_raw(src, i, n, name, &ce);
+            int a0, na;
+            a0 = add_attrs(tb, &na);
+            int id = node_new(top(), 1, T_SVG, pool_add("svg", 3), 0);
+            if (id >= 0) {
+                HD.n[id].a0 = a0; HD.n[id].na = na;
+                size_t s0 = k - 1, len = next - s0;
+                node_new(id, 3, 0, pool_add(src + s0, len), len);
+            }
+            i = next;
+            continue;
+        }
+        if (!strcmp(name, "script") || !strcmp(name, "template") || !strcmp(name, "style") || !strcmp(name, "title")) {
             int ce, next = skip_raw(src, i, n, name, &ce);
             if (!strcmp(name, "title")) { if (!d->title[0]) capture_title(d, src + i, ce - i); }
             else if (!strcmp(name, "style")) {

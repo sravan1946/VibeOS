@@ -213,6 +213,8 @@ static void inl_text(struct iw *w, struct bx *tb) {
         if (c == 0xC2 && i + 1 < n && (unsigned char)s[i + 1] == 0xA0) { c = ' '; i++; }
         else if (c == 0xE2 && i + 2 < n && (unsigned char)s[i + 1] == 0x80 && ((unsigned char)s[i + 2] == 0x8B || (unsigned char)s[i + 2] == 0x8C || (unsigned char)s[i + 2] == 0x8D)) { i += 2; continue; }   /* zero-width space/joiners */
         else if (c == 0xC2 && i + 1 < n && (unsigned char)s[i + 1] == 0xAD) { i++; continue; }   /* soft hyphen */
+        else if (c == 0xE2 && i + 2 < n && (unsigned char)s[i + 1] == 0x80 && ((unsigned char)s[i + 2] == 0x8E || (unsigned char)s[i + 2] == 0x8F || ((unsigned char)s[i + 2] >= 0xAA && (unsigned char)s[i + 2] <= 0xAE))) { i += 2; continue; }
+        else if (c == 0xEF && i + 2 < n && (unsigned char)s[i + 1] == 0xBB && (unsigned char)s[i + 2] == 0xBF) { i += 2; continue; }
         if (bn >= 480 && (c & 0xC0) != 0x80) { w->word(w->u, tb, buf, bn); bn = 0; }
         buf[bn++] = c;
         w->sp = 0;
@@ -2063,6 +2065,8 @@ static int build_ctl(int dn, int tag, struct bx *b, const struct bctx *cx, const
         if (c.rows > 30) c.rows = 30;
     } else c.kind = C_SELECT;
     c.name = astr(name);
+    c.ph = astr((v = ATTR(dn, "placeholder")) ? v : "");
+    c.fl = (ATTR(dn, "required") ? CF_REQ : 0) | (ty && !strcasecmp(ty, "email") ? CF_EMAIL : 0) | (ATTR(dn, "autofocus") ? CF_AUTO : 0) | (ATTR(dn, "readonly") || ATTR(dn, "disabled") ? CF_RO : 0);
     if (tag == T_TEXTAREA) {
         char *tv = malloc(1);
         size_t tn = 0;
@@ -2128,7 +2132,14 @@ static int plain_text;
 static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
     const char *src = ATTR(dn, "src"), *alt = ATTR(dn, "alt");
     int idx = -1, iw = 0, ih = 0, st = IMG_FAILED;
-    char u[URL_MAX];
+    char u[URL_MAX], pk[URL_MAX];
+    int par = HD.n[dn].par, picked = 0;
+    if (par > 0 && !strcmp(hd_str(HD.n[par].nm), "picture")) {          /* <picture>: the first usable <source> wins */
+        for (int s = HD.n[par].first; s >= 0 && s != dn && !picked; s = HD.n[s].next)
+            if (HD.n[s].type == 1 && !strcmp(hd_str(HD.n[s].nm), "source") && img_type_ok(ATTR(s, "type")) && (!ATTR(s, "media") || css_media(ATTR(s, "media"))) &&
+                img_pick(0, ATTR(s, "srcset"), ATTR(s, "sizes"), rootw, pk, sizeof pk)) { src = pk; picked = 1; }
+    }
+    if (!picked && ATTR(dn, "srcset") && img_pick(src, ATTR(dn, "srcset"), ATTR(dn, "sizes"), rootw, pk, sizeof pk)) src = pk;
     if (src && *src) {
         if (!strncasecmp(src, "data:", 5)) idx = img_ref(src);
         else { url_resolve(cur_base_url, src, u, sizeof u); idx = img_ref(u); }
@@ -2160,6 +2171,24 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
     if (H && !cssh) { b->k[L_H] = K_PX; b->v[L_H] = H; }
     if (aw && strchr(aw, '%') && !cssw && atoi(aw) > 0) { b->k[L_W] = K_PCT; b->v[L_W] = atoi(aw); }
     if (alt && *alt) { b->toff = (uint32_t)(alt - HD.pool); b->tlen = strlen(alt); }
+    bx_append(pb, bi);
+}
+
+static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
+    int c = HD.n[dn].first;
+    if (c < 0) return;
+    int idx = img_svg_inline(hd_str(HD.n[c].nm), HD.n[c].tn, ni->col & 0xFFFFFF), iw = 0, ih = 0;
+    if (idx < 0 || img_info(idx, &iw, &ih) != IMG_READY || iw <= 0 || ih <= 0) return;
+    const char *aw = ATTR(dn, "width"), *ah = ATTR(dn, "height");
+    int bi = bx_new();
+    if (bi < 0) return;
+    B[bi] = *S;
+    struct bx *b = &B[bi];
+    b->outer = b->flt || oof(b) || S->outer == OUT_BLOCK ? OUT_BLOCK : OUT_INLINE; b->inner = IN_IMG; b->ref = idx;
+    b->link = ni->link; b->node = ni->node; b->vis = ni->vis; b->col = ni->col; b->font = ni->font;
+    b->iw = iw; b->ih = ih;
+    if (b->k[L_W] == K_AUTO && aw && atoi(aw) > 0 && !strchr(aw, '%')) { b->k[L_W] = K_PX; b->v[L_W] = atoi(aw); }
+    if (b->k[L_H] == K_AUTO && ah && atoi(ah) > 0 && !strchr(ah, '%')) { b->k[L_H] = K_PX; b->v[L_H] = atoi(ah); }
     bx_append(pb, bi);
 }
 
@@ -2254,6 +2283,7 @@ static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int 
         return;
     }
     if (tag == T_IMG) { build_img(dn, pb, &S, &ni); return; }
+    if (tag == T_SVG) { build_svg(dn, pb, &S, &ni); return; }
     if (tag == T_INPUT || tag == T_TEXTAREA || tag == T_SELECT || tag == T_BUTTON) {
         int bi = bx_new();
         if (bi >= 0) {
