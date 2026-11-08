@@ -17,11 +17,13 @@ extern void kthread_entry(void);
  * registers). The first x87 instruction after that raises #NM; fpu_nm saves the old owner's registers and loads
  * the current task's. fnsave+frstor were ~450 of the ~800 cycles of a switch. */
 static struct task *fpu_owner;           /* whose registers are live (0: nobody's image is worth saving) */
+static bool ts_set;                      /* CR0.TS as last written: a switch that finds it right skips the cr0 write */
 static uint8_t clean_fpu[108] __attribute__((aligned(16)));
 
 static void fpu_nm(struct regs *r) {
     (void)r;
     __asm__ volatile("clts");
+    ts_set = false;
     if (fpu_owner == current) return;
     if (fpu_owner) __asm__ volatile("fnsave %0" : "=m"(fpu_owner->fpu));
     __asm__ volatile("frstor %0" :: "m"(current->fpu));
@@ -32,6 +34,7 @@ static void fpu_nm(struct regs *r) {
 void fpu_ensure(struct task *t) {
     uint32_t f = irq_save();
     __asm__ volatile("clts");
+    ts_set = false;
     if (fpu_owner != t) {
         if (fpu_owner) __asm__ volatile("fnsave %0" : "=m"(fpu_owner->fpu));
         __asm__ volatile("frstor %0" :: "m"(t->fpu));
@@ -171,8 +174,8 @@ void schedule(void) {
         tss_set_kernel_stack(next->kstack + KSTACK_SIZE);
         if (read_cr3() != next->dir) write_cr3(next->dir);
         if ((e = uerrno_word(next))) *e = next->uerrno_val;
-        if (next == fpu_owner) __asm__ volatile("clts");
-        else __asm__ volatile("mov %%cr0, %%eax; or $8, %%eax; mov %%eax, %%cr0" ::: "eax");
+        if (next == fpu_owner) { if (ts_set) { __asm__ volatile("clts"); ts_set = false; } }
+        else if (!ts_set) { __asm__ volatile("mov %%cr0, %%eax; or $8, %%eax; mov %%eax, %%cr0" ::: "eax"); ts_set = true; }
         context_switch(&prev->kesp, next->kesp);
     }
     irq_restore(f);
@@ -191,12 +194,28 @@ int sleep_on(void *chan, uint32_t timeout_ms) {
     return sig_deliverable(current) ? -EINTR : 0;
 }
 
+static const struct vnode_ops *keyed_ops[8];
+void poll_keyed_ops(const struct vnode_ops *ops) {
+    int i = 0;
+    while (i < 8 && keyed_ops[i] && keyed_ops[i] != ops) i++;
+    if (i < 8) keyed_ops[i] = ops;
+}
+bool poll_keyed(const struct vnode *v) {
+    for (int i = 0; i < 8 && keyed_ops[i]; i++) if (keyed_ops[i] == v->ops) return true;
+    return false;
+}
+
 extern char poll_chan;
 void wakeup(void *chan) {
     uint32_t f = irq_save();
-    /* ponytail: poll() sleepers wake on every event and re-check; fine at this task count */
-    for (struct task *t = tasks; t; t = t->next)
-        if (t->state == PS_BLOCKED && (t->chan == chan || t->chan == &poll_chan)) t->state = PS_READY;
+    for (struct task *t = tasks; t; t = t->next) {
+        if (t->state != PS_BLOCKED) continue;
+        if (t->chan == chan) { t->state = PS_READY; continue; }
+        if (t->chan != &poll_chan) continue;
+        bool hit = t->poll_any;                   /* a poll() sleeper: only if one of its files can have changed */
+        for (int i = 0; !hit && i < t->npoll; i++) hit = t->poll_keys[i] == chan;
+        if (hit) t->state = PS_READY;
+    }
     irq_restore(f);
 }
 

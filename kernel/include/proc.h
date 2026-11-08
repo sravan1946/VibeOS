@@ -35,6 +35,9 @@ struct task {
     /* ---- per task ---- */
     int uerrno_val;               /* this thread's errno while it isn't running */
     void *chan;                   /* sleeping on */
+    void *poll_keys[4];           /* in poll(): the wakeup() channels that can change its answer ... */
+    uint8_t npoll;
+    bool poll_any;                /* ... or any wakeup() (a file whose channel isn't known) */
     uint64_t wake_at;             /* timed sleep deadline (0 = none) */
     int exit_code;                /* leader: the process status; thread: its thread_exit value */
     uint32_t sig_pending, sig_blocked;   /* bit n = signal n; per thread */
@@ -55,6 +58,10 @@ void yield(void);
  * in a loop. Returns -EINTR if a signal is pending, 0 otherwise. Timeout in ms (0 = none). */
 int  sleep_on(void *chan, uint32_t timeout_ms);
 void wakeup(void *chan);
+/* poll() on a file of this type is woken by wakeup(v->priv) only. Types that don't register wake their pollers on
+ * every wakeup(). Register a type only if everything that changes its poll() result calls wakeup(v->priv). */
+void poll_keyed_ops(const struct vnode_ops *ops);
+bool poll_keyed(const struct vnode *v);
 void sleep_ms(uint32_t ms);
 struct task *task_find(int pid);
 struct task *task_list(void);

@@ -324,7 +324,20 @@ static int sys_poll(struct pollfd *ufds, int n, int timeout) {
             if (ticks_ms >= deadline) { irq_restore(f); return 0; }
             left = deadline - ticks_ms;
         }
-        if (sleep_on(&poll_chan, left) < 0) { irq_restore(f); return -EINTR; }
+        /* which wakeups can change the answer: keyed files wake us by their priv; anything else, or threads that
+         * may close an fd under us, or too many files: every wakeup() (the old behaviour) */
+        current->npoll = 0;
+        current->poll_any = current->proc->nthreads > 1 || n > 4;
+        for (int i = 0; i < n && !current->poll_any; i++) {
+            struct file *fl = fd_get(ufds[i].fd);
+            if (!fl) continue;
+            if (poll_keyed(fl->vn)) current->poll_keys[current->npoll++] = fl->vn->priv;
+            else current->poll_any = true;
+        }
+        int r = sleep_on(&poll_chan, left);
+        current->npoll = 0;
+        current->poll_any = false;
+        if (r < 0) { irq_restore(f); return -EINTR; }
     }
 }
 

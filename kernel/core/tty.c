@@ -156,6 +156,7 @@ struct tty *tty_create(void (*out)(void *ctx, const char *s, int n), void *ctx, 
     if (!t) return 0;
     t->vn.mode = S_IFCHR | 0666;
     t->vn.ops = &tty_ops;
+    poll_keyed_ops(&tty_ops);
     t->vn.priv = t;
     t->vn.refs = 1;                /* held by the terminal until hangup */
     t->lflag = ECHO | ICANON | ISIG;

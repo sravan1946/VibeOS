@@ -15,6 +15,7 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <syscall.h>
+#include <poll.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -81,6 +82,21 @@ static void b_clock(void) {         /* monotonic, finer than a tick, in step wit
     rep("  same span by TSC =", "%lu", dc * 1000 / khz, "us");
     struct timeval tv; gettimeofday(&tv, 0);
     rep("  gettimeofday vs time()", "%lu", (unsigned long)(tv.tv_sec - time(0) + 100), "(100 = same second)");
+}
+
+/* ping-pong again with 8 processes asleep in poll() on idle pipes: every wakeup() used to wake all of them */
+static void b_pingpong(void);
+static void b_pollnoise(void) {
+    int w[8], pid[8];
+    for (int i = 0; i < 8; i++) {
+        int p[2]; pipe(p);
+        struct spawn_opts o = { { p[0], 1, 2 }, 0, 0 };
+        char *av[] = { "sysbench", "--poller", 0 };
+        pid[i] = spawnve("/bin/sysbench", av, 0, &o);
+        close(p[0]); w[i] = p[1];
+    }
+    b_pingpong();
+    for (int i = 0; i < 8; i++) { close(w[i]); wait_pid(pid[i]); }
 }
 
 static void b_spawn(void) {
@@ -417,10 +433,11 @@ static void b_work(void) {
 
 int main(int argc, char **argv) {
     static const struct { const char *n; void (*f)(void); } T[] = {
-        { "sys", b_sys }, { "clock", b_clock }, { "spawn", b_spawn }, { "pingpong", b_pingpong }, { "pipe", b_pipe },
+        { "sys", b_sys }, { "clock", b_clock }, { "spawn", b_spawn }, { "pingpong", b_pingpong }, { "pollnoise", b_pollnoise }, { "pipe", b_pipe },
         { "fsmall", b_fsmall }, { "f4m", b_f4m }, { "dir", b_dir }, { "fault", b_fault },
         { "str", b_str }, { "malloc", b_malloc }, { "stdio", b_stdio }, { "kmsg", b_kmsg },
     };
+    if (argc > 1 && !strcmp(argv[1], "--poller")) { struct pollfd pf = { 0, POLLIN, 0 }; poll(&pf, 1, 60000); return 0; }
     int wl = 0, any = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-w")) wl = 1;

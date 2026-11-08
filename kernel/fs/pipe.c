@@ -75,6 +75,7 @@ int pipe_create(struct file **rd, struct file **wr) {
     if (!p) return -ENOMEM;
     p->vn.mode = S_IFIFO | 0600;
     p->vn.ops = &pipe_ops;
+    poll_keyed_ops(&pipe_ops);
     p->vn.priv = p;
     p->readers = p->writers = 1;
     *rd = vfs_open_vnode(&p->vn, O_RDONLY);
