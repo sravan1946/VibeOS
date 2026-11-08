@@ -1,5 +1,5 @@
-/* strtod_diff.c - compare the VibeOS strtod with glibc. Exactly-rounded cases (<= 15 digits, |exp| <= 22,
- * hex floats) must match bit for bit; the long-input path may be 1 ulp off and is only counted. */
+/* strtod_diff.c - compare the VibeOS strtod with glibc: every input must match bit for bit (the bignum path is
+ * correctly rounded: 17-digit round trips, halfway cases, subnormals, very long digit strings, huge exponents). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,7 +46,7 @@ int main(void) {
         double d; memcpy(&d, &u, 8);
         if (isnan(d) || isinf(d)) continue;
         snprintf(b, sizeof b, "%.17g", d);
-        chk(b, 0);
+        chk(b, 1);
     }
     for (int i = 0; i < 50000; i++) {                  /* hex floats from %a */
         uint64_t u = ((uint64_t)rand() << 42) ^ ((uint64_t)rand() << 21) ^ rand();
@@ -54,6 +54,41 @@ int main(void) {
         if (isnan(d) || isinf(d)) continue;
         snprintf(b, sizeof b, "%a", d);
         chk(b, 1);
+    }
+    for (int i = 0; i < 100000; i++) {                 /* random digit strings of 16..60 digits at random exponents */
+        int nd = 16 + rand() % 45, o = 0;
+        b[o++] = '1' + rand() % 9;
+        for (int k = 1; k < nd; k++) b[o++] = '0' + rand() % 10;
+        snprintf(b + o, 20, "e%d", rand() % 700 - 380);
+        chk(b, 1);
+    }
+    for (int i = 0; i < 50000; i++) {                  /* halfway between two doubles (exact decimal expansion of the midpoint), then +/- a hair */
+        uint64_t u = ((uint64_t)rand() << 42) ^ ((uint64_t)rand() << 21) ^ rand();
+        u &= 0x7fefffffffffffffull;
+        if (i % 3 == 0) u &= 0x000fffffffffffffull;     /* subnormals */
+        double d, e; memcpy(&d, &u, 8); u++; memcpy(&e, &u, 8);
+        long double mid = ((long double)d + (long double)e) / 2;   /* exact in x87 (64-bit mantissa) */
+        static char big[1200];
+        snprintf(big, sizeof big, "%.*Le", 25, mid);       /* only a rounded view: the neighbours below still test the rounding step */
+        chk(big, 1);
+        snprintf(big, sizeof big, "%.*Le", 780, mid);
+        chk(big, 1);
+    }
+    {                                                  /* very long inputs: 800+ digits, and the classic hard cases */
+        static char big[2000];
+        int o = 0;
+        for (int k = 0; k < 1500; k++) big[o++] = k ? '0' + rand() % 10 : '4';
+        strcpy(big + o, "e-1500"); chk(big, 1);
+        strcpy(big + o, "e-1450"); chk(big, 1);
+        memset(big, '0', 700); big[700] = '.'; for (int k = 0; k < 700; k++) big[701 + k] = '0' + rand() % 10; big[1401] = 0; chk(big, 1);
+        const char *hard[] = { "2.2250738585072011e-308", "2.2250738585072012e-308", "2.2250738585072013e-308", "2.2250738585072014e-308",
+            "4.9406564584124654e-324", "2.4703282292062327e-324", "2.4703282292062328e-324", "2.4703282292062329e-324",
+            "1.7976931348623157e308", "1.7976931348623158e308", "1.7976931348623159e308", "1.797693134862315807e308",
+            "9007199254740993.0000000000000000001", "9007199254740993.0", "9007199254740995", "1.00000000000000011102230246251565404236316680908203125",
+            "1.00000000000000011102230246251565404236316680908203126", "1.00000000000000011102230246251565404236316680908203124",
+            "0.00000000000000000000000000000000000000000000001", "123456789012345678901234567890e-30", "7.038531e-26", "5.0e-324", "3e-324", "2e-324",
+            "8.41e21", "8.589973e9", "1e23", "9.999999999999999e22", "1.0000000000000001e23" };
+        for (unsigned i = 0; i < sizeof hard / sizeof *hard; i++) chk(hard[i], 1);
     }
     printf("strtod_diff: %d inputs, %d hard mismatches; long path: %d/%d not bit-exact (%d by more than 2 ulp)\n",
            total, bad, slow_off, slow_total, off_by_more);

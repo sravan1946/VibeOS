@@ -225,6 +225,11 @@ static void test_conv(void) {
     NEAR(strtod("1.7976931348623157e308", NULL), 1.7976931348623157e308);
     NEAR(strtod("123456789012345678901234567890", NULL), 1.2345678901234568e29);
     CHECK(strtod("0.1", NULL) == 0.1 && strtod("0.3", NULL) == 0.3 && strtod("2.2250738585072014e-308", NULL) == 2.2250738585072014e-308);
+    /* bit-exact long inputs (the bignum path): a halfway case rounds to even, one more digit rounds up, subnormals */
+    CHECK(strtod("9007199254740993", NULL) == 9007199254740992.0 && strtod("9007199254740993.0000000000000000001", NULL) == 9007199254740994.0);
+    CHECK(strtod("1.00000000000000011102230246251565404236316680908203125", NULL) == 1.0 && strtod("1.00000000000000011102230246251565404236316680908203126", NULL) == 1.0000000000000002);
+    CHECK(strtod("4.9406564584124654e-324", NULL) == 4.9406564584124654e-324 && strtod("2.4703282292062327e-324", NULL) == 0.0 && strtod("2.4703282292062328e-324", NULL) != 0.0);
+    CHECK(strtod("0.30000000000000004", NULL) == 0.1 + 0.2 && strtod("1.0000000000000001e23", NULL) == 1.0000000000000001e23);
     CHECK(strtod("12.5abc", &e) == 12.5 && !strcmp(e, "abc"));
     CHECK(isinf(strtod("-inf", NULL)) && isnan(strtod("nan", NULL)));
     CHECK(atof("2.5") == 2.5);
@@ -570,6 +575,12 @@ static void test_env(void) {
     CHECK(setenv("FOO", "baz", 1) == 0 && !strcmp(getenv("FOO"), "baz"));
     setenv("A", "1", 1); setenv("B", "2", 1);
     unsetenv("FOO"); CHECK(!getenv("FOO") && !strcmp(getenv("A"), "1") && !strcmp(getenv("B"), "2"));
+    static char big[4096];                                   /* overwriting must free the old string (80 MB would not fit) */
+    memset(big, 'x', sizeof big - 1);
+    int ok = 1;
+    for (int i = 0; i < 20000; i++) { big[0] = 'a' + i % 26; ok &= setenv("LEAK", big, 1) == 0; }
+    CHECK(ok && getenv("LEAK")[0] == 'a' + 19999 % 26);
+    unsetenv("LEAK"); CHECK(!getenv("LEAK"));
     CHECK(atexit(at_exit_fn) == 0);
 }
 
