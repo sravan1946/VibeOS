@@ -228,6 +228,7 @@ static void test_vars_media(void) {
     c = compute(div); CHECK(c.v[P_COLOR] == (int)0xFF0000FFu && len(&c, P_MT) == 1); c = compute(p); CHECK(len(&c, P_MT) == 7);
     CHECK(css_media("screen") == 1 && css_media("print") == 0 && css_media("") == 1 && css_media("all and (min-width:1px)") == 1 && css_media("only screen and (max-width: 100px)") == 0);
     CHECK(css_media("(min-width: 100px), print") == 1 && css_media("not print") == 1 && css_media("not screen") == 0);
+    CHECK(css_media("screen and (min-width:calc(500px + 50px))") == 1 && css_media("(max-width:calc(600px - 1px))") == 0);
     /* @supports, @layer, @import, ignored at-rules */
     new_page("@supports (display: grid){div{color:red}} @supports not (display: grid){div{color:blue}} @supports (backdrop-filter: blur(1px)){p{padding-top:9px}}"
              "@supports (display:flex) and (position:sticky){p{margin-top:1px}} @supports selector(:has(a)){p{margin-left:1px}} @supports (not (foo: bar)){p{margin-right:1px}}");

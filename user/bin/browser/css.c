@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <stdio.h>
 
 /* ---------- interned strings ---------- */
 char *SP; static int sp_n, sp_cap;
@@ -65,10 +66,10 @@ const char *css_str(int id) { return SP ? SP + id : ""; }
 struct decl { uint8_t prop, imp, kind; int v, a; };
 #define P_CUSTOM 250                                    /* --name: raw value (a = name, v = value) */
 #define P_RAWDECL 251                                   /* longhand/shorthand whose value has var(): a = property name, v = value text */
-struct rule { int sel, d0, nd, order, next; uint8_t layer, ua; };
+struct rule { int sel, d0, nd, order, next; uint32_t kh; uint8_t layer, ua; };
 static struct rule *R; static int nr, rcap;
 static struct decl *D; static int nd, dcap;
-#define HB 512
+#define HB 4096
 static int hid[HB], hcl[HB], htg[HB], huni;           /* rule index + 1 chains */
 static int vpw = 960, vph = 600;
 static int order_n, cur_layer = 255, cur_ua, any_layers;
@@ -82,6 +83,7 @@ void css_base(const char *b) { strlcpy(page_base, b ? b : "", sizeof page_base);
 int  css_attrs(void) { return attrs_used; }
 int  css_any(void) { return nr > ua_nr; }
 void css_dom_set(const struct css_dom *d) { DOM = d; }
+void css_stats(void);
 
 /* ---------- colours ---------- */
 static const char NAMED[] =
@@ -1262,6 +1264,15 @@ static int mq_value(const char *s, double *v) {     /* number [unit]; "a/b" rati
     double x, y = 1;
     int pc;
     char u[8];
+    while (isspace((unsigned char)*s)) s++;
+    if (!strncmp(s, "calc(", 5) || !strncmp(s, "min(", 4) || !strncmp(s, "max(", 4) || !strncmp(s, "clamp(", 6)) {
+        int mk = ncn, k, kv;
+        int ok = calc_compile(s, 16, 16, &k, &kv) && k == K_PX;
+        ncn = mk;
+        if (ok) *v = kv;
+        return ok;
+    }
+    p = s;
     if (!cnum(&p, &x, &pc, u)) return 0;
     while (isspace((unsigned char)*p)) p++;
     if (*p == '/') { p++; char u2[8]; int pc2; if (!cnum(&p, &y, &pc2, u2) || y == 0) return 0; x /= y; }
@@ -1514,7 +1525,7 @@ static void rebucket(int i) {
     uint32_t h;
     sel_key(&SE[R[i].sel], &kind, &h);
     head = kind == 1 ? &hid[h & (HB - 1)] : kind == 2 ? &hcl[h & (HB - 1)] : kind == 3 ? &htg[h & (HB - 1)] : &huni;
-    R[i].next = *head;
+    R[i].next = *head; R[i].kh = h;
     *head = i + 1;
 }
 
@@ -1527,7 +1538,7 @@ static void add_rule(const struct sel *s, int d0, int ndl) {
     }
     int si = sel_push(s);
     if (si < 0) return;
-    R[nr] = (struct rule){ si, d0, ndl, order_n++, 0, (uint8_t)cur_layer, (uint8_t)cur_ua };
+    R[nr] = (struct rule){ .sel = si, .d0 = d0, .nd = ndl, .order = order_n++, .layer = (uint8_t)cur_layer, .ua = (uint8_t)cur_ua };
     rebucket(nr);
     nr++;
 }
@@ -1809,7 +1820,7 @@ void css_reset(void) {
         order_n = nr;
     }
     nlay = 0; any_layers = 0; attrs_used = 0; ncn = 0; ncv = 1;
-    cur_layer = 255; cur_ua = 0;
+        cur_layer = 255; cur_ua = 0;
     cur_base[0] = 0;
 }
 
@@ -1936,13 +1947,16 @@ static struct hit H[1024];
 
 static uint32_t hash_n(const char *s, int n) { uint32_t h = 2166136261u; for (int i = 0; i < n; i++) h = (h ^ (unsigned char)s[i]) * 16777619u; return h; }
 
-static int try_chain(int head, int node, int pe, const uint32_t *anc, int legacy, int nh) {
+static const uint32_t *self_bloom;
+static int try_chain(int head, uint32_t kh, int node, int pe, const uint32_t *anc, int legacy, int nh) {
     for (int r = head; r && nh < 1024; r = R[r - 1].next) {
         const struct rule *ru = &R[r - 1];
+        if (kh && ru->kh != kh) continue;                 /* bucket collision: a different tag/id/class */
         if (legacy && ru->ua) continue;
         const struct sel *s = &SE[ru->sel];
         if (s->pe != pe) continue;
         if (anc && !bloom_has(anc, s->mask)) continue;
+        if (!bloom_has(self_bloom, s->rmask)) continue;
         if (!sel_match(s, node)) continue;
         H[nh].key = (uint64_t)ru->layer << 52 | (uint64_t)s->spec << 22 | (uint32_t)(ru->order & 0x3FFFFF);
         H[nh++].rule = r - 1;
@@ -1981,14 +1995,27 @@ static void apply(struct cprops *o, uint32_t *m, int prop, int kind, int v) {
 static void cascade(int node, int pe, const uint32_t *anc, int legacy, const char *style, int pvars, struct cprops *sp, uint32_t *m, int *vars_out) {
     const char *tag = DOM->tag(node), *id = DOM->attr(node, "id"), *cls = DOM->attr(node, "class");
     int nh = 0;
-    nh = try_chain(huni, node, pe, anc, legacy, nh);
-    nh = try_chain(htg[hash_str(tag) & (HB - 1)], node, pe, anc, legacy, nh);
-    if (id && *id) nh = try_chain(hid[hash_str(id) & (HB - 1)], node, pe, anc, legacy, nh);
+    static uint32_t sb[BLW];
+    memset(sb, 0, sizeof sb);
+    bloom_add(sb, bloom_key(1, tag));
+    if (id && *id) bloom_add(sb, bloom_key(2, id));
     if (cls) for (const char *p = cls; *p; ) {
         while (isspace((unsigned char)*p)) p++;
         const char *e = p;
         while (*e && !isspace((unsigned char)*e)) e++;
-        if (e > p) nh = try_chain(hcl[hash_n(p, e - p) & (HB - 1)], node, pe, anc, legacy, nh);
+        if (e > p) bloom_add(sb, bloom_keyn(3, p, e - p));
+        p = e;
+    }
+    self_bloom = sb;
+    nh = try_chain(huni, 0, node, pe, anc, legacy, nh);
+    uint32_t th = hash_str(tag);
+    nh = try_chain(htg[th & (HB - 1)], th, node, pe, anc, legacy, nh);
+    if (id && *id) nh = try_chain(hid[hash_str(id) & (HB - 1)], hash_str(id), node, pe, anc, legacy, nh);
+    if (cls) for (const char *p = cls; *p; ) {
+        while (isspace((unsigned char)*p)) p++;
+        const char *e = p;
+        while (*e && !isspace((unsigned char)*e)) e++;
+        if (e > p) { uint32_t ch = hash_n(p, e - p); nh = try_chain(hcl[ch & (HB - 1)], ch, node, pe, anc, legacy, nh); }
         p = e;
     }
     sort_hits(nh);
@@ -2040,7 +2067,8 @@ static void cascade(int node, int pe, const uint32_t *anc, int legacy, const cha
 /* ---------- initial and inherited values ---------- */
 static struct cprops INI; static int ini_ready;
 
-static int inherited(int p) {
+static uint8_t INHT[P_N];
+static int inherited_slow(int p) {
     switch (p) {
     case P_COLOR: case P_FSIZE: case P_FWEIGHT: case P_FAMILY: case P_ITALIC: case P_BOLD: case P_MONO: case P_LH: case P_LS: case P_WSP: case P_TIND:
     case P_ALIGN: case P_TT: case P_WS: case P_WBRK: case P_LISTT: case P_LISTP: case P_LIST: case P_VISIB: case P_CURSOR: case P_DIR:
@@ -2049,6 +2077,8 @@ static int inherited(int p) {
     }
     return 0;
 }
+
+static inline int inherited(int p) { return INHT[p]; }
 
 void css_initial(struct cprops *o) {
     memset(o, 0, sizeof *o);
@@ -2134,11 +2164,11 @@ static int content_text(const char *s, int node, char *o, int cap) {
 }
 
 int css_compute(int node, int pe, const struct cprops *parent, struct cprops *out) {
-    if (!ini_ready) { css_initial(&INI); ini_ready = 1; }
+    if (!ini_ready) { css_initial(&INI); for (int p = 0; p < P_N; p++) INHT[p] = inherited_slow(p); ini_ready = 1; }
     struct cprops sp;
     uint32_t m[4] = { 0, 0, 0, 0 };
     memset(&sp, 0, sizeof sp);
-    static const uint32_t none[2] = { 0, 0 };
+    static const uint32_t none[BLW];
     const uint32_t *anc = pe ? 0 : parent ? parent->bloom : DOM->parent(node) ? 0 : none;
     int vars;
     cascade(node, pe, anc, 0, pe ? 0 : DOM->attr(node, "style"), parent ? parent->vars : 0, &sp, m, &vars);
@@ -2210,7 +2240,7 @@ int css_compute(int node, int pe, const struct cprops *parent, struct cprops *ou
             while (isspace((unsigned char)*p)) p++;
             const char *e = p;
             while (*e && !isspace((unsigned char)*e)) e++;
-            if (e > p) { char b[64]; int l = e - p < 63 ? e - p : 63; memcpy(b, p, l); b[l] = 0; bloom_add(out->bloom, bloom_key(3, b)); }
+            if (e > p) bloom_add(out->bloom, bloom_keyn(3, p, e - p));
             p = e;
         }
     }
@@ -2300,3 +2330,10 @@ int css_match(const char *sel, const struct el *st, int n) {
 }
 
 int css_match_node(const char *sel, int node) { return match_list_str(sel, node); }
+
+void css_stats(void) {          /* bench aid (tools/csstest/wpbench): rule bucket distribution */
+    int u = 0, t = 0, mx = 0;
+    for (int r = huni; r; r = R[r - 1].next) u++;
+    for (int i = 0; i < HB; i++) { int c = 0; for (int r = htg[i]; r; r = R[r - 1].next) c++; t += c; if (c > mx) mx = c; }
+    fprintf(stderr, "rules %d universal %d tag-bucketed %d (longest chain %d)\n", nr, u, t, mx);
+}

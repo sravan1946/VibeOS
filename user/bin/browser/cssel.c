@@ -14,12 +14,21 @@ const struct css_dom *DOM;
 int attrs_used;
 
 uint32_t hash_str(const char *s) { uint32_t h = 2166136261u; for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u; return h; }
+uint32_t bloom_keyn(int kind, const char *s, int n) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < n; i++) h = (h ^ (unsigned char)s[i]) * 16777619u;
+    return h * 2654435761u + (uint32_t)kind * 0x9E3779B1u;
+}
 uint32_t bloom_key(int kind, const char *s) { return hash_str(s) * 2654435761u + (uint32_t)kind * 0x9E3779B1u; }
-void bloom_add(uint32_t b[2], uint32_t h) {
-    unsigned x = (h >> 7) & 63, y = (h >> 19) & 63;
+void bloom_add(uint32_t *b, uint32_t h) {
+    unsigned x = (h >> 7) & (BLW * 32 - 1), y = (h >> 19) & (BLW * 32 - 1);
     b[x >> 5] |= 1u << (x & 31); b[y >> 5] |= 1u << (y & 31);
 }
-int bloom_has(const uint32_t b[2], const uint32_t m[2]) { return !((m[0] & ~b[0]) | (m[1] & ~b[1])); }
+int bloom_has(const uint32_t *b, const uint32_t *m) {
+    uint32_t miss = 0;
+    for (int i = 0; i < BLW; i++) miss |= m[i] & ~b[i];
+    return !miss;
+}
 
 #define GROW(arr, cnt, cap, want) do { if ((cnt) + (want) > (cap)) { int nc_ = (cap) ? (cap) * 2 : 256; while (nc_ < (cnt) + (want)) nc_ *= 2; \
     void *p_ = realloc(arr, nc_ * sizeof *(arr)); if (!p_) return 0; arr = p_; cap = nc_; } } while (0)
@@ -276,16 +285,20 @@ static int parse_compound(const char *s, int n, int *pi, struct simple *t, int *
     return any;
 }
 
-static void sel_finish(struct sel *o) {
+static void sel_finish(struct sel *o) {      /* bloom masks: what the ancestors (descendant/child chain) and the subject itself must have */
     memset(o->mask, 0, sizeof o->mask);
-    for (int c = o->nc - 2; c >= 0; c--) {
-        if (CO[o->c0 + c + 1].comb != ' ' && CO[o->c0 + c + 1].comb != '>') break;
+    memset(o->rmask, 0, sizeof o->rmask);
+    for (int c = 0; c < o->nc; c++) {
         const struct comp *cp = &CO[o->c0 + c];
+        int anc = c < o->nc - 1;
+        if (anc) for (int d = c + 1; d < o->nc; d++) if (CO[o->c0 + d].comb != ' ' && CO[o->c0 + d].comb != '>') { anc = 0; break; }
+        uint32_t *m = anc ? o->mask : c == o->nc - 1 ? o->rmask : 0;
+        if (!m) continue;
         for (int k = 0; k < cp->ns; k++) {
             const struct simple *x = &SI[cp->s0 + k];
-            if (x->t == T_TAG) bloom_add(o->mask, bloom_key(1, STR(x->a)));
-            else if (x->t == T_ID) bloom_add(o->mask, bloom_key(2, STR(x->a)));
-            else if (x->t == T_CLASS) bloom_add(o->mask, bloom_key(3, STR(x->a)));
+            if (x->t == T_TAG) bloom_add(m, bloom_key(1, STR(x->a)));
+            else if (x->t == T_ID) bloom_add(m, bloom_key(2, STR(x->a)));
+            else if (x->t == T_CLASS) bloom_add(m, bloom_key(3, STR(x->a)));
         }
     }
 }
@@ -366,9 +379,7 @@ static int has_class(const char *list, const char *cls) {
     return 0;
 }
 
-static int attr_match(const struct simple *x, int node) {
-    const char *v = DOM->attr(node, STR(x->a));
-    if (!v) return 0;
+static int attr_test(const struct simple *x, const char *v) {
     if (!x->op) return 1;
     const char *w = STR(x->b);
     int vl = strlen(v), cl = strlen(w);
@@ -385,6 +396,11 @@ static int attr_match(const struct simple *x, int node) {
     }
 #undef EQ
     return 0;
+}
+
+static int attr_match(const struct simple *x, int node) {
+    const char *v = DOM->attr(node, STR(x->a));
+    return v && attr_test(x, v);
 }
 
 static struct { int node, idx; uint32_t th; } NC[4];     /* last :nth-* answers: walking siblings in order costs O(1) each */

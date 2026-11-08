@@ -78,7 +78,7 @@ enum { DECO_UNDERLINE = 1, DECO_LINETHROUGH = 2, DECO_OVERLINE = 4 };
 enum { PE_NONE, PE_BEFORE, PE_AFTER };
 enum { CS_HOVER = 1, CS_FOCUS = 2, CS_ACTIVE = 4, CS_CHECKED = 8, CS_DISABLED = 16, CS_LINK = 32, CS_VISITED = 64, CS_FOCUSWITHIN = 128 };
 /* cprops.set (legacy css_cascade only): bit p set = property p declared */
-struct cprops { uint32_t set; int v[P_N]; uint8_t k[P_N]; uint32_t bloom[2]; int vars; };   /* bloom/vars: ancestor filter + custom properties, carried to children */
+struct cprops { uint32_t set; int v[P_N]; uint8_t k[P_N]; uint32_t bloom[8]; int vars; };   /* bloom/vars: ancestor filter + custom properties, carried to children */
 struct el { char name[16], id[32], cls[64]; int tag, js; char at[240]; short nkids; uint8_t first; };   /* legacy: one open element, for selector matching; js: DOM node id;
                                                   at: "\1name\2value" pairs (only filled when css_attrs()); first: no earlier sibling element */
 /* The matcher sees the document through these callbacks; nodes are small ints, 0 = none. Elements only (no text nodes). */
