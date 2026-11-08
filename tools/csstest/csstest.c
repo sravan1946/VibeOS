@@ -228,6 +228,7 @@ static void test_vars_media(void) {
     c = compute(div); CHECK(c.v[P_COLOR] == (int)0xFF0000FFu && len(&c, P_MT) == 1); c = compute(p); CHECK(len(&c, P_MT) == 7);
     CHECK(css_media("screen") == 1 && css_media("print") == 0 && css_media("") == 1 && css_media("all and (min-width:1px)") == 1 && css_media("only screen and (max-width: 100px)") == 0);
     CHECK(css_media("(min-width: 100px), print") == 1 && css_media("not print") == 1 && css_media("not screen") == 0);
+    CHECK(css_media("screen and (min-width:calc(500px + 50px))") == 1 && css_media("(max-width:calc(600px - 1px))") == 0);
     /* @supports, @layer, @import, ignored at-rules */
     new_page("@supports (display: grid){div{color:red}} @supports not (display: grid){div{color:blue}} @supports (backdrop-filter: blur(1px)){p{padding-top:9px}}"
              "@supports (display:flex) and (position:sticky){p{margin-top:1px}} @supports selector(:has(a)){p{margin-left:1px}} @supports (not (foo: bar)){p{margin-right:1px}}");
@@ -293,6 +294,86 @@ static void test_pseudo_ua(void) {
     (void)tbl; (void)td;
 }
 
+static void test_extras(void) {
+    reset_dom();
+    int html = el(0, "html", 0, 0), body = el(html, "body", 0, 0), ol = el(body, "ol", 0, "toc"), li1 = el(ol, "li", 0, 0), li2 = el(ol, "li", 0, 0), sub = el(li2, "ol", 0, 0), s1 = el(sub, "li", 0, 0);
+    int d = el(body, "div", 0, "fx");
+    struct cprops c, pe, own;
+    new_page(".fx{outline:2px dotted red;outline-offset:3px;box-shadow:inset 1px 2px 3px 4px rgba(0,0,0,.5), 0 0 5px red;object-position:left 10px;transform:rotate(3deg) translate(10px, 50%) scale(2);text-overflow:ellipsis}"
+             "ol{counter-reset:item} li{counter-increment:item} li::before{content:counters(item, '.') ' '} li::marker{color:red;font-weight:bold}");
+    c = compute(d);
+    CHECK(len(&c, P_OUTW) == 2 && c.v[P_OUTS] == BS_DOTTED && c.v[P_OUTC] == (int)0xFFFF0000u && len(&c, P_OUTO) == 3);
+    CHECK(c.k[P_SHC] == K_PX && c.v[P_SHC] == (int)0x80000000u && len(&c, P_SHX) == 1 && len(&c, P_SHY) == 2 && len(&c, P_SHB) == 3 && len(&c, P_SHS) == 4 && c.v[P_SHI] == 1);
+    CHECK(c.v[P_OBJPX] == 0 && len(&c, P_OBJPY) == 10 && len(&c, P_TRX) == 10 && css_len(&c, P_TRY, 200) == 100 && c.v[P_TOVF] == 1);
+    c = compute(body); CHECK(len(&c, P_OUTW) == 0 && c.k[P_SHC] == K_NONE && len(&c, P_TRX) == 0);
+    css_cnt_reset_all();
+    c = compute(ol); css_cnt_enter(&c, 1);
+    c = compute(li1); css_cnt_enter(&c, 2); own = c;
+    CHECK(css_compute(li1, PE_BEFORE, &own, &pe) == 1 && !strcmp(css_str(pe.v[P_CONTENT]), "1 "));
+    css_cnt_leave(2);
+    c = compute(li2); css_cnt_enter(&c, 2); own = c;
+    CHECK(css_compute(li2, PE_BEFORE, &own, &pe) == 1 && !strcmp(css_str(pe.v[P_CONTENT]), "2 "));
+    c = compute(sub); css_cnt_enter(&c, 3);
+    c = compute(s1); css_cnt_enter(&c, 4); own = c;
+    CHECK(css_compute(s1, PE_BEFORE, &own, &pe) == 1 && !strcmp(css_str(pe.v[P_CONTENT]), "2.1 "));
+    css_cnt_leave(4); css_cnt_leave(3); css_cnt_leave(2);
+    own = compute(li1);
+    CHECK(css_compute(li1, PE_MARKER, &own, &pe) == 1 && pe.v[P_COLOR] == (int)0xFFFF0000u && pe.v[P_BOLD] == 1 && pe.k[P_CONTENT] == K_NONE);
+    char b[16];
+    css_counter_format(LT_LROMAN, 14, b, sizeof b); CHECK(!strcmp(b, "xiv"));
+    css_counter_format(LT_UALPHA, 28, b, sizeof b); CHECK(!strcmp(b, "AB"));
+    css_counter_format(LT_ZERO, 7, b, sizeof b); CHECK(!strcmp(b, "07"));
+    css_counter_format(LT_DECIMAL, -3, b, sizeof b); CHECK(!strcmp(b, "-3"));
+}
+
+/* odd and broken declarations must not crash or leave state behind (run under ASAN by hand: gcc -fsanitize=address) */
+static void test_garbage(void) {
+    static const char *const props[] = { "grid-area", "grid-column", "grid-row", "grid-template", "font", "background", "border", "border-radius", "margin", "flex", "transform",
+        "box-shadow", "outline", "content", "counter-reset", "background-position", "object-position", "font-family", "aspect-ratio", "mask", "inset", "gap", "list-style", "overflow",
+        "place-items", "text-decoration", "width", "color", "line-height", "vertical-align", "border-spacing", "grid-template-columns", "animation", "transition", "will-change" };
+    static const char *const vals[] = { "", "2", "a/b", "1 / 2 / 3 / 4 / 5", "(", ")", "calc(", "calc()", "calc(1px +)", "var(", "var(--x", "url(", "url(x", "'unterminated", "\\", "/", "///", "1px 2px 3px 4px 5px 6px",
+        "red red red red red", "inherit", "translate(", "translate(1px", "scale(2) translate(1px,2px,3px,4px)", "0 0 0 0 0 0 0 0 0 0 0 0", "a b c d e f g h i j k l m n o p", "repeat(", "minmax(1px", "-", "--", "!important", "1e999px", "999999999999px" };
+    reset_dom();
+    int html = el(0, "html", 0, 0), body = el(html, "body", 0, 0), d = el(body, "div", 0, "g");
+    char css[4096];
+    for (unsigned i = 0; i < sizeof props / sizeof *props; i++) {
+        for (unsigned j = 0; j < sizeof vals / sizeof *vals; j++) {
+            snprintf(css, sizeof css, ".g{%s:%s} .g::before{%s:%s;content:%s} @media (%s){.g{%s:%s}} @supports (%s:%s){.g{color:red}}", props[i], vals[j], props[i], vals[j], vals[j], vals[j], props[i], vals[j], props[i], vals[j]);
+            new_page(css);
+            struct cprops c = compute(d), pe;
+            css_compute(d, PE_BEFORE, &c, &pe);
+            css_match_node(vals[j], d);
+        }
+    }
+    CHECK(1);
+}
+
+static void test_restyle(void) {
+    reset_dom();
+    int html = el(0, "html", 0, 0), body = el(html, "body", 0, 0), ul = el(body, "ul", 0, "menu"), li = el(ul, "li", 0, "item"), a = el(li, "a", 0, 0);
+    int p1 = el(body, "p", 0, 0), p2 = el(body, "p", 0, "note");
+    int deep;
+    new_page("a:hover{color:red} ul.open li{color:blue} .hl + p{margin:0} div:has(.z){color:red} [data-x]{color:red} li[data-y] a{color:red} :focus-within{color:red}");
+    CHECK(css_restyle_for_state(a, CS_HOVER, &deep) == a && deep == 0);
+    CHECK(css_restyle_for_state(a, CS_CHECKED, &deep) == 0);
+    CHECK(css_restyle_for_state(li, CS_FOCUS, &deep) == li && deep == 0 || deep == 1);
+    CHECK(css_restyle_for_class(ul, "menu", "menu open", &deep) == ul && deep == 1);
+    CHECK(css_restyle_for_class(ul, "menu", "menu closed", &deep) == 0);
+    CHECK(css_restyle_for_class(p1, 0, "hl", &deep) == body && deep == 1);
+    CHECK(css_restyle_for_class(p1, "x y", "y x", &deep) == 0);
+    CHECK(css_restyle_for_class(p2, 0, "z", &deep) == html && deep == 1);          /* :has(.z) can restyle any ancestor */
+    CHECK(css_restyle_for_attr(a, "data-x", &deep) == a && deep == 0);
+    CHECK(css_restyle_for_attr(li, "data-y", &deep) == li && deep == 1);
+    CHECK(css_restyle_for_attr(li, "data-nothing", &deep) == 0);
+    CHECK(css_restyle_for_attr(li, "style", &deep) == li && deep == 0);
+    CHECK(css_restyle_for_insert(li, &deep) == ul);                                /* sibling-position selectors (+) exist: the parent restyles */
+    struct cprops x = compute(a), y = x;
+    CHECK(css_inherit_same(&x, &y));
+    y.v[P_COLOR] ^= 1; CHECK(!css_inherit_same(&x, &y));
+    y = x; y.v[P_BG] ^= 1; CHECK(css_inherit_same(&x, &y));
+    (void)p2;
+}
+
 /* timing: a page of `n` elements and a sheet of `rules` rules */
 static void bench(int n, int rules) {
     reset_dom();
@@ -336,6 +417,9 @@ int main(int argc, char **argv) {
     test_cascade();
     test_vars_media();
     test_pseudo_ua();
+    test_garbage();
+    test_extras();
+    test_restyle();
     bench(argc > 1 ? atoi(argv[1]) : 20000, 3000);
     printf("csstest: %d checks, %d failed\n", checks, fails);
     return fails != 0;
