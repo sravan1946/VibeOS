@@ -76,6 +76,7 @@ static int order_n, cur_layer = 255, cur_ua, any_layers;
 static char cur_base[URL_MAX], page_base[URL_MAX];
 static int lay_name[128], nlay;
 static int ua_ready, ua_nr, ua_nd, ua_si, ua_co, ua_se;
+static struct cdep ua_cd;
 
 void css_viewport(int w) { vpw = w; }
 void css_viewport_size(int w, int h) { vpw = w; vph = h; }
@@ -455,6 +456,7 @@ static int len_parse(const char *s, int *k, int *v) {
 }
 
 /* ---------- declarations ---------- */
+static int last_nh;                                      /* rules that matched the element cascade() just styled */
 static int imp_cur;                                     /* !important of the declaration being parsed */
 
 static void put(int prop, int kind, int v) {
@@ -617,6 +619,9 @@ static const struct pdef PD[] = {
     SPEC("grid-template-columns", P_GCOLS), SPEC("grid-template-rows", P_GROWS), SPEC("grid-auto-columns", P_GACOLS), SPEC("grid-auto-rows", P_GAROWS),
     SPEC("grid-template-areas", P_GAREAS), SPEC("grid-column-start", P_GCS), SPEC("grid-column-end", P_GCE), SPEC("grid-row-start", P_GRS),
     SPEC("grid-row-end", P_GRE), SPEC("grid-area", P_GAREA), SPEC("text-decoration-line", P_DECO),
+    SPEC("outline-width", P_OUTW), KW("outline-style", P_OUTS, "none|solid|dashed|dotted|double|groove|ridge|inset|outset|hidden:0|auto:1"), COL("outline-color", P_OUTC),
+    LEN("outline-offset", P_OUTO, F_NEG), SPEC("box-shadow", P_SHX), SPEC("counter-reset", P_CRESET), SPEC("counter-increment", P_CINC),
+    SPEC("object-position", P_OBJPX), SPEC("transform", P_TRX),
 };
 
 /* shorthands (and two-valued longhands): the properties a global keyword (inherit/initial/unset) applies to */
@@ -635,7 +640,8 @@ static const struct grp { const char *n; uint8_t p[14]; } GRP[] = {
     { "overflow", { P_OVX, P_OVY, 255 } }, { "list-style", { P_LISTT, P_LISTP, 255 } },
     { "place-items", { P_ALIGNI, P_JUSTI, 255 } }, { "place-content", { P_ALIGNC, P_JUSTC, 255 } }, { "place-self", { P_ALIGNS, P_JUSTS, 255 } },
     { "text-decoration", { P_DECO, 255 } }, { "grid-column", { P_GCS, P_GCE, 255 } }, { "grid-row", { P_GRS, P_GRE, 255 } },
-    { "grid-area", { P_GAREA, P_GRS, P_GCS, P_GRE, P_GCE, 255 } }, { "border-spacing", { P_SPACING, P_SPACINGY, 255 } },
+    { "grid-area", { P_GAREA, P_GRS, P_GCS, P_GRE, P_GCE, 255 } }, { "outline", { P_OUTW, P_OUTS, P_OUTC, 255 } },
+    { "box-shadow", { P_SHX, P_SHY, P_SHB, P_SHS, P_SHC, P_SHI, 255 } }, { "object-position", { P_OBJPX, P_OBJPY, 255 } }, { "transform", { P_TRX, P_TRY, 255 } }, { "border-spacing", { P_SPACING, P_SPACINGY, 255 } },
     { "grid-template", { P_GROWS, P_GCOLS, P_GAREAS, 255 } }, { "vertical-align", { P_VALIGN, P_VAOFF, 255 } },
 };
 
@@ -1005,6 +1011,62 @@ static void special(const struct pdef *d, char *val) {
         if (a > 0 && b > 0) put(p, K_PX, rnd(a / b * 1000));
         break;
     }
+    case P_OUTW: if (bw_value(val, &k, &v)) put(p, k, v); break;
+    case P_CRESET: case P_CINC: if (!strcasecmp(val, "none")) put(p, K_NONE, 0); else put(p, K_STR, intern(val, strlen(val))); break;
+    case P_OBJPX: {
+        char buf[200], *tk[6];
+        int n = toks(val, buf, sizeof buf, tk, 6), kx, vx, ky, vy;
+        if (pos_parse(tk, n, &kx, &vx, &ky, &vy)) { put(P_OBJPX, kx, vx); put(P_OBJPY, ky, vy); }
+        break;
+    }
+    case P_TRX: {                                          /* only translate() / translateX / translateY / translate3d, as an offset */
+        int kx = K_PX, vx = 0, ky = K_PX, vy = 0, found = 0;
+        for (const char *q = val; *q && !found; q++) {
+            if (strncasecmp(q, "translate", 9) || (q > val && (isalnum((unsigned char)q[-1]) || q[-1] == '-'))) continue;
+            const char *a = q + 9;
+            int axis = 0;                                  /* 0 both, 1 X, 2 Y */
+            if ((*a | 32) == 'x' && a[1] == '(') { axis = 1; a++; } else if ((*a | 32) == 'y' && a[1] == '(') { axis = 2; a++; }
+            else if (!strncasecmp(a, "3d(", 3)) a += 2;
+            else if (*a != '(') continue;
+            const char *e = a + 1;
+            int d = 1;
+            while (*e && d) { if (*e == '(') d++; else if (*e == ')') d--; e++; }
+            char args[200];
+            size_t l = (size_t)(e - 1 - (a + 1)) < sizeof args - 1 ? (size_t)(e - 1 - (a + 1)) : sizeof args - 1;
+            memcpy(args, a + 1, l); args[l] = 0;
+            char *c1 = args, *c2 = 0;
+            int dd = 0;
+            for (char *w = args; *w; w++) { if (*w == '(') dd++; else if (*w == ')') dd--; else if (*w == ',' && !dd) { *w = 0; if (!c2) c2 = w + 1; else break; } }
+            trim(c1);
+            int ak, av;
+            if (axis == 2) { if (lenv(c1, F_PCT | F_NEG, &ak, &av)) { ky = ak; vy = av; found = 1; } }
+            else if (lenv(c1, F_PCT | F_NEG, &ak, &av)) {
+                kx = ak; vx = av; found = 1;
+                if (axis == 0 && c2) { trim(c2); if (lenv(c2, F_PCT | F_NEG, &ak, &av)) { ky = ak; vy = av; } }
+            }
+        }
+        if (!strcasecmp(val, "none") || found || 1) { put(P_TRX, kx, vx); put(P_TRY, ky, vy); }
+        break;
+    }
+    case P_SHX: {                                          /* first shadow layer: [inset] x y [blur [spread]] [colour] */
+        if (!strcasecmp(val, "none")) { put(P_SHC, K_NONE, 0); break; }
+        char first[300], buf[320], *tk[10];
+        int d = 0, k2 = 0;
+        for (const char *w = val; *w && k2 < 299; w++) { if (*w == '(') d++; else if (*w == ')' && d) d--; else if (*w == ',' && !d) break; first[k2++] = *w; }
+        first[k2] = 0;
+        int n = toks(first, buf, sizeof buf, tk, 10), nl = 0, kk[4], vv[4], inset = 0, ck = K_CUR, cv = 0;
+        for (int i = 0; i < n; i++) {
+            int a, b;
+            if (!strcasecmp(tk[i], "inset")) inset = 1;
+            else if (parse_color_val(tk[i], &a, &b)) { ck = a; cv = b; }
+            else if (nl < 4 && lenv(tk[i], F_NEG, &kk[nl], &vv[nl])) nl++;
+            else return;
+        }
+        if (nl < 2) break;
+        put(P_SHX, kk[0], vv[0]); put(P_SHY, kk[1], vv[1]); put(P_SHB, nl > 2 ? kk[2] : K_PX, nl > 2 ? vv[2] : 0);
+        put(P_SHS, nl > 3 ? kk[3] : K_PX, nl > 3 ? vv[3] : 0); put(P_SHC, ck, cv); put(P_SHI, K_PX, inset);
+        break;
+    }
     case P_GCOLS: case P_GROWS: grid_track(p, val, 0); break;
     case P_GACOLS: case P_GAROWS: grid_track(p, val, 1); break;
     case P_GAREAS: if (!strcasecmp(val, "none")) put(p, K_NONE, 0); else put(p, K_STR, intern(val, strlen(val))); break;
@@ -1123,6 +1185,19 @@ static void decl(char *name, char *val, int imp) {
     else if (!strcmp(name, "padding-block")) pair_sides(SIDE_P, val, F_PCT, 0, 2);
     else if (!strcmp(name, "inset-inline")) pair_sides(SIDE_I, val, F_AUTO | F_NEG | F_PCT, 3, 1);
     else if (!strcmp(name, "inset-block")) pair_sides(SIDE_I, val, F_AUTO | F_NEG | F_PCT, 0, 2);
+    else if (!strcmp(name, "outline")) {
+        int n = toks(val, buf, sizeof buf, tk, 5), wk = K_PX, wv = 3, st = BS_NONE, ck = K_CUR, cv = 0;
+        for (int i = 0; i < n; i++) {
+            int k, v;
+            if (!strcasecmp(tk[i], "auto")) st = BS_SOLID;
+            else if (kwi(BSL, tk[i]) >= 0) st = kwi(BSL, tk[i]);
+            else if (bw_value(tk[i], &k, &v)) { wk = k; wv = v; }
+            else if (parse_color_val(tk[i], &k, &v)) { ck = k; cv = v; }
+            else if (!strcasecmp(tk[i], "invert")) ck = K_CUR;
+            else return;
+        }
+        put(P_OUTW, wk, wv); put(P_OUTS, K_PX, st); put(P_OUTC, ck, cv);
+    }
     else if (!strcmp(name, "border")) border_sh(-1, val);
     else if (!strcmp(name, "border-top")) border_sh(0, val);
     else if (!strcmp(name, "border-right")) border_sh(1, val);
@@ -1798,7 +1873,7 @@ static void ua_init(void) {
     css_add_from(UA, sizeof UA - 1, 0);
     cur_ua = 0; cur_layer = 255;
     attrs_used = 0;
-    ua_nr = nr; ua_nd = nd;
+    ua_nr = nr; ua_nd = nd; ua_cd = CD;
     sel_mark(&ua_si, &ua_co, &ua_se);
     ua_ready = 1;
 }
@@ -1811,6 +1886,7 @@ void css_reset(void) {
         ht_n = 0; sp_n = SP ? 1 : 0;
         memset(hid, 0, sizeof hid); memset(hcl, 0, sizeof hcl); memset(htg, 0, sizeof htg); huni = 0;
         order_n = 0;
+        memset(&CD, 0, sizeof CD);
         ua_init();
     } else {
         nr = ua_nr; nd = ua_nd;
@@ -1818,6 +1894,7 @@ void css_reset(void) {
         memset(hid, 0, sizeof hid); memset(hcl, 0, sizeof hcl); memset(htg, 0, sizeof htg); huni = 0;
         for (int i = 0; i < nr; i++) rebucket(i);
         order_n = nr;
+        CD = ua_cd;
     }
     nlay = 0; any_layers = 0; attrs_used = 0; ncn = 0; ncv = 1;
         cur_layer = 255; cur_ua = 0;
@@ -2019,6 +2096,7 @@ static void cascade(int node, int pe, const uint32_t *anc, int legacy, const cha
         p = e;
     }
     sort_hits(nh);
+    last_nh = nh;
     int keep = nd, i0 = 0, i1 = 0;
     if (style && *style && !pe) { i0 = nd; imp_cur = 0; parse_decls(style, strlen(style)); i1 = nd; }
     /* custom properties first: later ones sit in front, so a lookup finds the winner */
@@ -2091,7 +2169,8 @@ void css_initial(struct cprops *o) {
     o->k[P_BGIMG] = K_NONE; o->k[P_BGSW] = o->k[P_BGSH] = K_AUTO; o->k[P_BGPX] = o->k[P_BGPY] = K_PCT;
     o->k[P_CONTENT] = K_NONE; o->k[P_GCOLS] = o->k[P_GROWS] = o->k[P_GACOLS] = o->k[P_GAROWS] = o->k[P_GAREAS] = o->k[P_GAREA] = K_NONE;
     o->k[P_GCS] = o->k[P_GCE] = o->k[P_GRS] = o->k[P_GRE] = K_AUTO; o->k[P_ASPECT] = K_AUTO;
-    o->k[P_BCT] = o->k[P_BCR] = o->k[P_BCB] = o->k[P_BCL] = K_CUR;
+    o->k[P_BCT] = o->k[P_BCR] = o->k[P_BCB] = o->k[P_BCL] = K_CUR; o->k[P_OUTC] = K_CUR; o->v[P_OUTW] = 3;
+    o->k[P_SHC] = K_NONE; o->k[P_CRESET] = o->k[P_CINC] = K_NONE; o->k[P_OBJPX] = o->k[P_OBJPY] = K_PCT; o->v[P_OBJPX] = o->v[P_OBJPY] = 5000;
     o->v[P_BWT] = o->v[P_BWR] = o->v[P_BWB] = o->v[P_BWL] = 3;
 }
 
@@ -2113,6 +2192,82 @@ static int resolve_kind(int *k, int *v, double fs, double rfs, int pct_base_is_f
 }
 
 static double root_fs = 16;
+
+
+/* ---------- counters ---------- */
+static int snprintf_int(char *t, int n, int pad2) {          /* decimal (zero-padded to 2 digits when pad2) */
+    char r[16];
+    int k = 0, q = 0, neg = n < 0;
+    unsigned u = neg ? -(unsigned)n : (unsigned)n;
+    do { r[q++] = '0' + u % 10; u /= 10; } while (u && q < 15);
+    if (pad2 && q < 2) r[q++] = '0';
+    if (neg) t[k++] = '-';
+    while (q) t[k++] = r[--q];
+    t[k] = 0;
+    return k;
+}
+#define MAXCNT 96
+static struct cnt { int name, val, scope; } CNT[MAXCNT];
+static int ncnt;
+void css_cnt_reset_all(void) { ncnt = 0; }
+static struct cnt *cnt_find(int name) { for (int i = ncnt - 1; i >= 0; i--) if (CNT[i].name == name) return &CNT[i]; return 0; }
+static void cnt_list(const char *s, int inc, int depth) {      /* "name [int] name [int]..." */
+    while (*s) {
+        while (isspace((unsigned char)*s)) s++;
+        const char *b = s;
+        while (*s && !isspace((unsigned char)*s)) s++;
+        if (s == b) break;
+        int name = intern(b, s - b), val = inc ? 1 : 0;
+        while (isspace((unsigned char)*s)) s++;
+        if (*s == '-' || isdigit((unsigned char)*s)) { char *e; val = (int)strtol(s, &e, 10); s = e; }
+        struct cnt *c = cnt_find(name);
+        if (inc) {
+            if (!c && ncnt < MAXCNT) { CNT[ncnt] = (struct cnt){ name, 0, depth - 1 }; c = &CNT[ncnt++]; }
+            if (c) c->val += val;
+        } else if (c && c->scope == depth - 1) c->val = val;
+        else if (ncnt < MAXCNT) CNT[ncnt++] = (struct cnt){ name, val, depth - 1 };
+    }
+}
+void css_cnt_enter(const struct cprops *p, int depth) {
+    if (p->k[P_CRESET] == K_STR) cnt_list(STR(p->v[P_CRESET]), 0, depth);
+    if (p->k[P_CINC] == K_STR) cnt_list(STR(p->v[P_CINC]), 1, depth);
+}
+void css_cnt_leave(int depth) { while (ncnt && CNT[ncnt - 1].scope >= depth) ncnt--; }
+
+int css_counter_format(int lt, int n, char *o, int cap) {
+    char t[48];
+    int k = 0;
+    static const char *const grk = "\xCE\xB1\xCE\xB2\xCE\xB3\xCE\xB4\xCE\xB5\xCE\xB6\xCE\xB7\xCE\xB8\xCE\xB9\xCE\xBA\xCE\xBB\xCE\xBC\xCE\xBD\xCE\xBE\xCE\xBF\xCF\x80\xCF\x81\xCF\x83\xCF\x84\xCF\x85\xCF\x86\xCF\x87\xCF\x88\xCF\x89";
+    switch (lt) {
+    case LT_DISC: strcpy(t, "\xE2\x80\xA2"); k = 3; break;
+    case LT_CIRCLE: strcpy(t, "\xE2\x97\xA6"); k = 3; break;
+    case LT_SQUARE: strcpy(t, "\xE2\x96\xAA"); k = 3; break;
+    case LT_NONE: t[0] = 0; break;
+    case LT_ZERO: k = snprintf_int(t, n, n >= 0 && n < 10 ? 2 : 0); break;
+    case LT_LALPHA: case LT_UALPHA:
+        if (n < 1) { k = snprintf_int(t, n, 0); break; }
+        { char r[16]; int q = 0; for (int m = n; m > 0 && q < 15; m = (m - 1) / 26) r[q++] = (lt == LT_LALPHA ? 'a' : 'A') + (m - 1) % 26; while (q) t[k++] = r[--q]; t[k] = 0; }
+        break;
+    case LT_LROMAN: case LT_UROMAN:
+        if (n < 1 || n > 3999) { k = snprintf_int(t, n, 0); break; }
+        {
+            static const int V[] = { 1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1 };
+            static const char *const S[] = { "m", "cm", "d", "cd", "c", "xc", "l", "xl", "x", "ix", "v", "iv", "i" };
+            for (int i = 0; i < 13; i++) while (n >= V[i]) { for (const char *c = S[i]; *c; c++) t[k++] = lt == LT_UROMAN ? *c - 32 : *c; n -= V[i]; }
+            t[k] = 0;
+        }
+        break;
+    case LT_LGREEK:
+        if (n < 1 || n > 24) { k = snprintf_int(t, n, 0); break; }
+        t[0] = grk[(n - 1) * 2]; t[1] = grk[(n - 1) * 2 + 1]; t[2] = 0; k = 2;
+        break;
+    default: k = snprintf_int(t, n, 0); break;
+    }
+    if (k >= cap) k = cap - 1;
+    if (k < 0) k = 0;
+    memcpy(o, t, k); o[k] = 0;
+    return k;
+}
 
 static int content_text(const char *s, int node, char *o, int cap) {
     int k = 0;
@@ -2150,6 +2305,46 @@ static int content_text(const char *s, int node, char *o, int cap) {
             nm[n] = 0;
             const char *v = DOM->attr(node, nm);
             if (v) for (; *v && k < cap - 1; v++) o[k++] = *v;
+            while (*s && *s != ')') s++;
+            if (*s) s++;
+        } else if (!strncasecmp(s, "counter(", 8) || !strncasecmp(s, "counters(", 9)) {
+            int many = s[7] == 's';
+            const char *a = s + (many ? 9 : 8);
+            char nm[64], sep[24] = "", sty[24] = "decimal";
+            int n = 0, si = 0, st = 0;
+            while (isspace((unsigned char)*a)) a++;
+            while (*a && *a != ',' && *a != ')' && !isspace((unsigned char)*a) && n < 63) nm[n++] = *a++;
+            nm[n] = 0;
+            while (isspace((unsigned char)*a)) a++;
+            if (many && *a == ',') {
+                a++;
+                while (isspace((unsigned char)*a)) a++;
+                char q = *a == '"' || *a == '\'' ? *a++ : 0;
+                while (*a && (q ? *a != q : *a != ',' && *a != ')') && si < 23) sep[si++] = *a++;
+                if (q && *a) a++;
+                sep[si] = 0;
+                while (isspace((unsigned char)*a)) a++;
+            }
+            if (*a == ',') { a++; while (isspace((unsigned char)*a)) a++; while (*a && *a != ')' && st < 23) sty[st++] = *a++; sty[st] = 0; while (st && isspace((unsigned char)sty[st - 1])) sty[--st] = 0; }
+            const struct pdef *lt = find_pd("list-style-type");
+            int style = kwi(lt->kw, sty);
+            if (style < 0) style = LT_DECIMAL;
+            int id = intern(nm, strlen(nm));
+            char tmp[32];
+            int first = 1;
+            for (int i = 0; i < ncnt; i++) {
+                if (CNT[i].name != id) continue;
+                if (!many) { /* innermost only: handled below */ continue; }
+                if (!first) for (const char *c = sep; *c && k < cap - 1; c++) o[k++] = *c;
+                first = 0;
+                css_counter_format(style, CNT[i].val, tmp, sizeof tmp);
+                for (const char *c = tmp; *c && k < cap - 1; c++) o[k++] = *c;
+            }
+            if (!many) {
+                struct cnt *c = cnt_find(id);
+                css_counter_format(style, c ? c->val : 0, tmp, sizeof tmp);
+                for (const char *q = tmp; *q && k < cap - 1; q++) o[k++] = *q;
+            }
             while (*s && *s != ')') s++;
             if (*s) s++;
         } else if (!strncasecmp(s, "open-quote", 10)) { if (k < cap - 1) o[k++] = '"'; s += 10; }
@@ -2219,6 +2414,7 @@ int css_compute(int node, int pe, const struct cprops *parent, struct cprops *ou
         static const uint8_t w[4] = { P_BWT, P_BWR, P_BWB, P_BWL }, st[4] = { P_BSTT, P_BSTR, P_BSTB, P_BSTL };
         if (out->v[st[s]] == BS_NONE) out->v[w[s]] = 0;
     }
+    if (out->v[P_OUTS] == BS_NONE) out->v[P_OUTW] = 0;
     int d = out->v[P_DISPLAY];                            /* floated and positioned boxes are blockified */
     if (out->v[P_FLOAT] || out->v[P_POSITION] == POS_ABSOLUTE || out->v[P_POSITION] == POS_FIXED) {
         out->v[P_DISPLAY] = d == D_INLINE || d == D_INLINE_BLOCK || (d >= D_TABLE_ROW && d <= D_TABLE_CAPTION && d != D_TABLE_COL) ? D_BLOCK :
@@ -2244,6 +2440,10 @@ int css_compute(int node, int pe, const struct cprops *parent, struct cprops *ou
             p = e;
         }
     }
+    if (pe == PE_MARKER) {
+        if (out->k[P_CONTENT] == K_RAW) { char t[512]; content_text(STR(out->v[P_CONTENT]), node, t, sizeof t); out->k[P_CONTENT] = K_STR; out->v[P_CONTENT] = intern(t, strlen(t)); }
+        return last_nh > 0;
+    }
     if (pe) {
         if (out->k[P_CONTENT] == K_RAW) {
             char t[512];
@@ -2252,6 +2452,86 @@ int css_compute(int node, int pe, const struct cprops *parent, struct cprops *ou
         }
         return out->k[P_CONTENT] == K_STR && out->v[P_DISPLAY] != D_NONE;
     }
+    return 1;
+}
+
+/* ---------- restyle scoping ---------- */
+static int key_in(const uint32_t *b, uint32_t key) { return bloom_hasw(b, CDW, key); }
+static int doc_top(int n) { while (DOM->parent(n)) n = DOM->parent(n); return n; }
+
+/* flags: which dependency tables mention what changed (1 subject, 2 descendant context, 4 sibling context, 8 :has) -> where to restyle from */
+static int scope_of(int node, int fl, int *deep) {
+    *deep = 0;
+    if (!fl) return 0;
+    if (fl & 8) { *deep = 1; return doc_top(node); }
+    if (fl & 4) { int p = DOM->parent(node); *deep = 1; return p ? p : node; }
+    if (fl & 2) { *deep = 1; return node; }
+    return node;
+}
+static int bloom_flags(uint32_t key) {
+    return (key_in(CD.subj, key) ? 1 : 0) | (key_in(CD.desc, key) ? 2 : 0) | (key_in(CD.sib, key) ? 4 : 0) | (key_in(CD.has, key) ? 8 : 0);
+}
+
+int css_restyle_for_state(int node, int changed, int *deep) {
+    int fl = ((changed & CD.st_subj) ? 1 : 0) | ((changed & CD.st_desc) ? 2 : 0) | ((changed & CD.st_sib) ? 4 : 0) | ((changed & CD.st_has) ? 8 : 0);
+    return scope_of(node, fl, deep);
+}
+
+/* old/new: the class attribute before/after (either may be NULL); only the classes that changed matter */
+int css_restyle_for_class(int node, const char *old, const char *nw, int *deep) {
+    int fl = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        const char *a = pass ? nw : old, *b = pass ? old : nw;
+        for (const char *p = a ? a : ""; *p; ) {
+            while (isspace((unsigned char)*p)) p++;
+            const char *e = p;
+            while (*e && !isspace((unsigned char)*e)) e++;
+            if (e > p) {
+                int in_b = 0;
+                for (const char *q = b ? b : ""; *q && !in_b; ) {
+                    while (isspace((unsigned char)*q)) q++;
+                    const char *f = q;
+                    while (*f && !isspace((unsigned char)*f)) f++;
+                    if (f - q == e - p && !strncmp(p, q, e - p)) in_b = 1;
+                    q = f;
+                }
+                if (!in_b) fl |= bloom_flags(bloom_keyn(3, p, e - p));
+            }
+            p = e;
+        }
+    }
+    return scope_of(node, fl, deep);
+}
+
+int css_restyle_for_id(int node, const char *old, const char *nw, int *deep) {
+    int fl = 0;
+    if (old && *old) fl |= bloom_flags(bloom_key(2, old));
+    if (nw && *nw) fl |= bloom_flags(bloom_key(2, nw));
+    return scope_of(node, fl, deep);
+}
+
+/* some other attribute changed (not class/id): `name` lowercase. "style" only restyles the node itself. */
+int css_restyle_for_attr(int node, const char *name, int *deep) {
+    *deep = 0;
+    if (!strcmp(name, "style")) return node;
+    if (!strcmp(name, "class") || !strcmp(name, "id")) { int fl = 15; return scope_of(node, fl, deep); }
+    int id = intern(name, strlen(name)), fl = 0;
+    if (CD.attr_over) fl = 7;
+    for (int i = 0; i < CD.nattr; i++) if (CD.attr[i] == id) fl |= CD.af[i];
+    return scope_of(node, fl, deep);
+}
+
+/* an element was inserted/removed/moved under `parent`: restyle from the returned node (the parent when sibling-position selectors exist) */
+int css_restyle_for_insert(int node, int *deep) {
+    *deep = 1;
+    if (CD.st_sib & 0x30000) { int p = DOM->parent(node); return p ? p : node; }
+    return node;
+}
+
+/* do two computed styles hand children the same inherited input? If so (and `deep` was 0) the descendants need no restyle */
+int css_inherit_same(const struct cprops *a, const struct cprops *b) {
+    if (a->vars != b->vars) return 0;
+    for (int p = 0; p < P_N; p++) if (INHT[p] && (a->v[p] != b->v[p] || a->k[p] != b->k[p])) return 0;
     return 1;
 }
 

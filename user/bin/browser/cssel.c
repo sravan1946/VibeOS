@@ -12,6 +12,8 @@ int nsi, nco, nse;
 static int csi, cco, cse;
 const struct css_dom *DOM;
 int attrs_used;
+struct cdep CD;
+static int nest, in_has;                                 /* parse depth inside :not()/:is()/:has(), and inside :has() */
 
 uint32_t hash_str(const char *s) { uint32_t h = 2166136261u; for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u; return h; }
 uint32_t bloom_keyn(int kind, const char *s, int n) {
@@ -23,6 +25,14 @@ uint32_t bloom_key(int kind, const char *s) { return hash_str(s) * 2654435761u +
 void bloom_add(uint32_t *b, uint32_t h) {
     unsigned x = (h >> 7) & (BLW * 32 - 1), y = (h >> 19) & (BLW * 32 - 1);
     b[x >> 5] |= 1u << (x & 31); b[y >> 5] |= 1u << (y & 31);
+}
+void bloom_addw(uint32_t *b, int words, uint32_t h) {
+    unsigned x = (h >> 5) % (words * 32), y = (h >> 15 ^ h << 9) % (words * 32);
+    b[x >> 5] |= 1u << (x & 31); b[y >> 5] |= 1u << (y & 31);
+}
+int bloom_hasw(const uint32_t *b, int words, uint32_t h) {
+    unsigned x = (h >> 5) % (words * 32), y = (h >> 15 ^ h << 9) % (words * 32);
+    return (b[x >> 5] >> (x & 31) & 1) && (b[y >> 5] >> (y & 31) & 1);
 }
 int bloom_has(const uint32_t *b, const uint32_t *m) {
     uint32_t miss = 0;
@@ -88,6 +98,7 @@ static int parse_complex(const char *s, int n, int rel, struct sel *out);
  * bad entries; we skip them too (an all-bad list is an error). */
 static int parse_list(const char *s, int n, int rel, int *first) {
     struct sel tmp[24];
+    nest++; in_has += rel;
     int cnt = 0, a = 0;
     while (a <= n) {
         int b = a, d = 0;
@@ -102,6 +113,7 @@ static int parse_list(const char *s, int n, int rel, int *first) {
         if (cnt < 24 && parse_complex(s + a, b - a, rel, &tmp[cnt])) cnt++;
         a = b + 1;
     }
+    nest--; in_has -= rel;
     if (!cnt) return 0;
     if (nse + cnt > cse) {
         int nc = cse ? cse * 2 : 256;
@@ -225,6 +237,7 @@ static int parse_compound(const char *s, int n, int *pi, struct simple *t, int *
             if (dbl || !strcmp(nm, "before") || !strcmp(nm, "after") || !strcmp(nm, "first-line") || !strcmp(nm, "first-letter")) {
                 if (!strcmp(nm, "before")) *pe = PE_BEFORE;
                 else if (!strcmp(nm, "after")) *pe = PE_AFTER;
+                else if (!strcmp(nm, "marker")) *pe = PE_MARKER;
                 else return 0;                              /* ::marker, ::selection, ::placeholder, ::-webkit-*: not rendered */
                 sp->c++;
                 i = j; any = 1;
@@ -285,21 +298,60 @@ static int parse_compound(const char *s, int n, int *pi, struct simple *t, int *
     return any;
 }
 
-static void sel_finish(struct sel *o) {      /* bloom masks: what the ancestors (descendant/child chain) and the subject itself must have */
+static void dep_attr(int name, int fl) {
+    for (int i = 0; i < CD.nattr; i++) if (CD.attr[i] == name) { CD.af[i] |= fl; return; }
+    if (CD.nattr < CD_ATTRS) { CD.attr[CD.nattr] = name; CD.af[CD.nattr++] = fl; } else CD.attr_over = 1;
+}
+static int pc_state(int pc) {
+    switch (pc) {
+    case PC_HOVER: return CS_HOVER;
+    case PC_FOCUS: return CS_FOCUS;
+    case PC_ACTIVE: return CS_ACTIVE;
+    case PC_FOCUSWITHIN: return CS_FOCUS | CS_FOCUSWITHIN;
+    case PC_CHECKED: return CS_CHECKED;
+    case PC_DISABLED: case PC_ENABLED: return CS_DISABLED;
+    case PC_LINK: return CS_LINK;
+    }
+    return 0;
+}
+
+static void sel_finish(struct sel *o) {      /* bloom masks: what the ancestors (descendant/child chain) and the subject itself must have; plus restyle dependencies */
     memset(o->mask, 0, sizeof o->mask);
     memset(o->rmask, 0, sizeof o->rmask);
     for (int c = 0; c < o->nc; c++) {
         const struct comp *cp = &CO[o->c0 + c];
         int anc = c < o->nc - 1;
         if (anc) for (int d = c + 1; d < o->nc; d++) if (CO[o->c0 + d].comb != ' ' && CO[o->c0 + d].comb != '>') { anc = 0; break; }
-        uint32_t *m = anc ? o->mask : c == o->nc - 1 ? o->rmask : 0;
-        if (!m) continue;
+        int subj = c == o->nc - 1;
+        uint32_t *m = anc ? o->mask : subj ? o->rmask : 0;
+        uint32_t *dep = nest ? 0 : subj ? CD.subj : anc ? CD.desc : CD.sib;
+        int fl = nest ? 3 : subj ? 1 : anc ? 2 : 4;
         for (int k = 0; k < cp->ns; k++) {
             const struct simple *x = &SI[cp->s0 + k];
-            if (x->t == T_TAG) bloom_add(m, bloom_key(1, STR(x->a)));
-            else if (x->t == T_ID) bloom_add(m, bloom_key(2, STR(x->a)));
-            else if (x->t == T_CLASS) bloom_add(m, bloom_key(3, STR(x->a)));
+            uint32_t key = 0;
+            if (x->t == T_TAG) key = bloom_key(1, STR(x->a));
+            else if (x->t == T_ID) key = bloom_key(2, STR(x->a));
+            else if (x->t == T_CLASS) key = bloom_key(3, STR(x->a));
+            if (key) {
+                if (m) bloom_add(m, key);
+                if (nest) { bloom_addw(CD.subj, CDW, key); bloom_addw(CD.desc, CDW, key); bloom_addw(CD.sib, CDW, key); if (in_has) bloom_addw(CD.has, CDW, key); }
+                else bloom_addw(dep, CDW, key);
+            }
+            if (x->t == T_ATTR) dep_attr(x->a, fl);
+            if (x->t == T_PC) {
+                int st = pc_state(x->a);
+                if (nest) { CD.st_subj |= st; CD.st_desc |= st; CD.st_sib |= st; }
+                else if (subj) CD.st_subj |= st; else if (anc) CD.st_desc |= st; else CD.st_sib |= st;
+                if (x->a == PC_LINK) dep_attr(intern("href", 4), fl);
+                if (x->a == PC_CHECKED) dep_attr(intern("checked", 7), fl);
+                if (x->a == PC_DISABLED || x->a == PC_ENABLED) dep_attr(intern("disabled", 8), fl);
+                if (x->a == PC_REQUIRED || x->a == PC_OPTIONAL) dep_attr(intern("required", 8), fl);
+                if (x->a == PC_READONLY || x->a == PC_READWRITE) dep_attr(intern("readonly", 8), fl);
+                if (x->a == PC_FIRSTC || x->a == PC_LASTC || x->a == PC_ONLYC || x->a == PC_EMPTY || x->a == PC_FIRSTT || x->a == PC_LASTT || x->a == PC_ONLYT) CD.st_sib |= 0x10000;   /* structure: DOM edits restyle siblings (callers do that anyway) */
+            }
+            if (x->t == T_NTH) CD.st_sib |= 0x10000;
         }
+        if (c && (cp->comb == '+' || cp->comb == '~')) CD.st_sib |= 0x20000;
     }
 }
 

@@ -55,6 +55,10 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
        P_GCOLS, P_GROWS, P_GFLOW, P_GACOLS, P_GAROWS, P_GCS, P_GCE, P_GRS, P_GRE, P_GAREAS, P_GAREA,
        P_WS, P_TT, P_LH, P_LS, P_WSP, P_TIND, P_TOVF, P_WBRK, P_FWEIGHT, P_FAMILY, P_VAOFF, P_SPACINGY,
        P_LISTT, P_LISTP, P_TBLAY, P_CURSOR, P_PEV, P_CONTENT, P_OBJFIT, P_ASPECT,
+       P_OUTW, P_OUTS, P_OUTC, P_OUTO,                                 /* outline width/style (BS_*)/colour/offset */
+       P_SHX, P_SHY, P_SHB, P_SHS, P_SHC, P_SHI,                       /* box-shadow, first layer: offset x/y, blur, spread, colour (K_NONE = no shadow), inset 0/1 */
+       P_CRESET, P_CINC,                                               /* counter-reset / counter-increment: K_STR "name N name N" (K_NONE = none); see css_cnt_* */
+       P_OBJPX, P_OBJPY, P_TRX, P_TRY,                                 /* object-position (px/%), transform: translate() offset (px/%) */
        P_N };
 /* value kinds. K_PX also carries every keyword/enum/colour (value in v). Lengths: K_PX px, K_PCT percent*100, K_CALC compiled
  * calc()/min()/max()/clamp() with a percentage inside (resolve with css_len()). Never read p->v of a length directly: css_len(). */
@@ -75,7 +79,7 @@ enum { FAM_SANS, FAM_SERIF, FAM_MONO };
 enum { LT_DISC, LT_CIRCLE, LT_SQUARE, LT_DECIMAL, LT_ZERO, LT_LALPHA, LT_UALPHA, LT_LROMAN, LT_UROMAN, LT_LGREEK, LT_NONE };
 enum { REP_REPEAT, REP_X, REP_Y, REP_NONE };
 enum { DECO_UNDERLINE = 1, DECO_LINETHROUGH = 2, DECO_OVERLINE = 4 };
-enum { PE_NONE, PE_BEFORE, PE_AFTER };
+enum { PE_NONE, PE_BEFORE, PE_AFTER, PE_MARKER };   /* PE_MARKER: ::marker style only (returns 1 if a rule matched; content K_NONE = the default marker) */
 enum { CS_HOVER = 1, CS_FOCUS = 2, CS_ACTIVE = 4, CS_CHECKED = 8, CS_DISABLED = 16, CS_LINK = 32, CS_VISITED = 64, CS_FOCUSWITHIN = 128 };
 /* cprops.set (legacy css_cascade only): bit p set = property p declared */
 struct cprops { uint32_t set; int v[P_N]; uint8_t k[P_N]; uint32_t bloom[8]; int vars; };   /* bloom/vars: ancestor filter + custom properties, carried to children */
@@ -96,9 +100,25 @@ void css_initial(struct cprops *out);             /* the initial values (root's 
 /* node's computed style in *out. parent = the parent element's computed style (NULL for <html>). pe = PE_BEFORE/PE_AFTER computes the pseudo-element
  * (parent = the element's own style); returns 1 if it generates a box (content other than none; out->v[P_CONTENT] is css_str() text). */
 int  css_compute(int node, int pe, const struct cprops *parent, struct cprops *out);
+/* CSS counters. Call css_cnt_reset_all() when a layout starts, css_cnt_enter(style, depth) when entering an element (depth = nesting depth, root 0) BEFORE
+ * computing its ::before/::after, css_cnt_leave(depth) when leaving it. counter()/counters() in `content` then resolve. */
+void css_cnt_reset_all(void);
+void css_cnt_enter(const struct cprops *style, int depth);
+void css_cnt_leave(int depth);
+int  css_counter_format(int lt, int n, char *out, int cap);    /* n in a list-style-type LT_*: "iv", "c", "07", a bullet...; returns length */
 int  css_len(const struct cprops *p, int prop, int base);      /* a length property in px: px, % of base, calc(); auto/none -> 0 */
 const char *css_str(int id);                      /* text of a K_STR value (grid track lists, content, url of background-image) */
-int  css_match_node(const char *sel, int node);   /* matches()/closest()/querySelector for the css_dom tree: 1/0, -1 = unparsable */
+int  css_match_node(const char *sel, int node);
+/* Restyle scoping (after a change, which part of the tree needs css_compute again; hover must not restyle the page).
+ * Each returns the node to restyle from (0 = no rule can be affected). *deep = 1: every descendant too (a selector looks at this as an
+ * ancestor); *deep = 0: just that node, and its children only if !css_inherit_same(old_style, new_style). A returned node may be an
+ * ancestor of the changed one (sibling combinators, :has). Recompute in document order, parent first. */
+int  css_restyle_for_state(int node, int changed_cs_bits, int *deep);          /* CS_* bits that flipped */
+int  css_restyle_for_class(int node, const char *old_cls, const char *new_cls, int *deep);
+int  css_restyle_for_id(int node, const char *old_id, const char *new_id, int *deep);
+int  css_restyle_for_attr(int node, const char *name, int *deep);              /* any other attribute, incl. "style" */
+int  css_restyle_for_insert(int node, int *deep);                              /* element added/removed/moved */
+int  css_inherit_same(const struct cprops *old_style, const struct cprops *new_style);   /* matches()/closest()/querySelector for the css_dom tree: 1/0, -1 = unparsable */
 void css_base(const char *base);                  /* base URL for url() in style="" attributes */
 void css_viewport(int w);                         /* window width for @media and vw units */
 void css_viewport_size(int w, int h);             /* ... and height */

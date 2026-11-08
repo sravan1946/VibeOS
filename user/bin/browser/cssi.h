@@ -28,7 +28,15 @@ int  sel_match(const struct sel *s, int node);
 
 void sel_key(const struct sel *s, int *kind, uint32_t *h);   /* bucket: kind 1 id, 2 class, 3 tag, 0 any */
 void bloom_add(uint32_t *b, uint32_t h);
+void bloom_addw(uint32_t *b, int words, uint32_t h);
+int  bloom_hasw(const uint32_t *b, int words, uint32_t h);
 int  bloom_has(const uint32_t *b, const uint32_t *m);
 uint32_t bloom_keyn(int kind, const char *s, int n);
 uint32_t bloom_key(int kind, const char *s);   /* kind: 1 tag, 2 id, 3 class */
 extern int attrs_used;
+/* what the selectors depend on, for restyle scoping (css_restyle_*): keys (bloom) of tags/ids/classes seen in the subject compound, in descendant/child context,
+ * across sibling combinators, inside :has(); CS_* state bits and attribute names the same way */
+#define CD_ATTRS 32
+#define CDW 32                                      /* 1024-bit tables: the UA sheet alone puts ~100 keys in each */
+struct cdep { uint32_t subj[CDW], desc[CDW], sib[CDW], has[CDW]; int st_subj, st_desc, st_sib, st_has, nattr; int attr[CD_ATTRS]; uint8_t af[CD_ATTRS]; int attr_over; };   /* af: 1 subject, 2 desc ctx, 4 sibling ctx, 8 :has */
+extern struct cdep CD;
