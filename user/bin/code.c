@@ -1160,7 +1160,7 @@ int main(int argc, char **argv) {
         if (!proc_pid && now - tree_stamp > 3000 && mode == M_NONE) tree_refresh();
         int W = w->w, H = w->h;
         bool modal = mode != M_NONE;
-        int sbw = sidebar ? SIDE_W : 0;
+        int sbw = sidebar && W >= 640 ? SIDE_W : 0;       /* too narrow for tree + editor: the tree folds away until the window is wider */
         int mx0 = sbw, mw = W - sbw;
         int oh = out_open ? out_h : 0;                                     /* output pane incl. header */
         int ey = TB_H + TABS_H, eh = H - SB_H - ey - (out_open ? oh + 1 : 0);
@@ -1308,7 +1308,7 @@ int main(int argc, char **argv) {
         }
 
         /* sidebar: project name and file tools, then the tree */
-        if (sidebar) {
+        if (sbw) {
             ui_sidebar(&ui, 0, TB_H, sbw, H - TB_H - SB_H);
             const char *rb = root[1] ? base(root) : "/";
             int hy = TB_H + SP_3, ix = sbw - SP_3 - 3 * H_CTL - 2 * SP_2;
@@ -1509,7 +1509,7 @@ int main(int argc, char **argv) {
                     if (ui.pressed) { jump_to(lp, ln, vis); ui.pressed = false; }
                 }
             }
-            if (!outlen) gfx_text(c, T_BODY, px + SP_4, ty + SP_2, "Build and run output appears here. Click an error to jump to it.", UI_TEXT2);
+            if (!outlen) ui_text_fit(&ui, T_BODY, px + SP_4, ty + SP_2, pw2 - 2 * SP_4, "Build and run output appears here. Click an error to jump to it.", UI_TEXT2);
             ui_vscroll(&ui, px + pw2 - 12, ty, th, nolines, ovis, &out_top);
             if (in_h) {
                 int iy = oy + oh - in_h + SP_3, lw = gfx_text_width(T_BODY, "Input");
