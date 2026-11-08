@@ -65,6 +65,73 @@ static void test_string(void) {
     CHECK(toupper('a') == 'A' && tolower('Z') == 'z' && toupper('1') == '1');
 }
 
+/* the word-at-a-time/overlapping-move fast paths in string.c against byte-by-byte references, every size and alignment */
+static unsigned char ref_a[700], buf_a[700], buf_b[700];
+typedef struct { void *(*cpy)(void *, const void *, size_t); void *(*set)(void *, int, size_t); void *(*mov)(void *, const void *, size_t);
+                 int (*cmp)(const void *, const void *, size_t); size_t (*len)(const char *); } strfns;
+static void string_fast(const strfns *f) {
+    for (int i = 0; i < 700; i++) ref_a[i] = (unsigned char)(i * 37 + 11);
+    for (unsigned n = 0; n < 300; n += (n < 80 ? 1 : 7))
+        for (int sa = 0; sa < 4; sa++)
+            for (int da = 0; da < 4; da++) {
+                f->set(buf_b, 0xEE, sizeof buf_b);
+                f->cpy(buf_a, ref_a, sizeof buf_a);
+                void *r = f->cpy(buf_b + 16 + da, buf_a + 8 + sa, n);
+                int ok = r == buf_b + 16 + da && !f->cmp(buf_a, ref_a, sizeof buf_a);
+                for (unsigned i = 0; i < n && ok; i++) ok = buf_b[16 + da + i] == ref_a[8 + sa + i];
+                for (int i = 0; i < 16 + da && ok; i++) ok = buf_b[i] == 0xEE;
+                for (unsigned i = 16 + da + n; i < 700 && ok; i++) ok = buf_b[i] == 0xEE;
+                CHECK(ok);
+                f->set(buf_b, 0xEE, sizeof buf_b);
+                r = f->set(buf_b + 16 + da, 0x5A, n);
+                ok = r == buf_b + 16 + da;
+                for (int i = 0; i < 700 && ok; i++) ok = buf_b[i] == (i >= 16 + da && i < (int)(16 + da + n) ? 0x5A : 0xEE);
+                CHECK(ok);
+            }
+    /* memmove, overlapping both ways at every distance */
+    for (unsigned n = 0; n < 200; n += (n < 40 ? 1 : 9))
+        for (int dist = -9; dist <= 9; dist++) {
+            f->cpy(buf_a, ref_a, sizeof buf_a);
+            f->cpy(buf_b, ref_a, sizeof buf_b);
+            unsigned char *src = buf_a + 64, *dst = buf_a + 64 + dist;
+            for (int i = 0; i < 700; i++) buf_b[i] = ref_a[i];
+            unsigned char tmp[300];
+            for (unsigned i = 0; i < n; i++) tmp[i] = src[i];
+            for (unsigned i = 0; i < n; i++) buf_b[64 + dist + i] = tmp[i];
+            void *r = f->mov(dst, src, n);
+            CHECK(r == dst && !f->cmp(buf_a, buf_b, 700));
+        }
+    /* memcmp: sign and position of the first difference, at every offset */
+    for (unsigned n = 0; n < 40; n++)
+        for (unsigned at = 0; at < n; at++) {
+            f->cpy(buf_a, ref_a, 64); f->cpy(buf_b, ref_a, 64);
+            CHECK(f->cmp(buf_a + 1, buf_b + 2 - 1, n) == 0);
+            buf_b[1 + at] += 3;
+            CHECK(f->cmp(buf_a + 1, buf_b + 1, n) < 0 && f->cmp(buf_b + 1, buf_a + 1, n) > 0);
+            buf_b[1 + at] -= 3;
+            buf_b[1 + at] ^= 0x80;                         /* high bit: compares as unsigned */
+            CHECK((f->cmp(buf_a + 1, buf_b + 1, n) < 0) == (buf_a[1 + at] < buf_b[1 + at]));
+        }
+    /* strlen: every length, every start alignment, NUL right before a page-like boundary */
+    for (int al = 0; al < 8; al++)
+        for (int len = 0; len < 100; len++) {
+            f->set(buf_a, 'x', sizeof buf_a);
+            buf_a[al + len] = 0;
+            CHECK(f->len((char *)buf_a + al) == (size_t)len);
+        }
+    char hi[8] = { (char)0x80, (char)0xFF, 1, 0x7F, 0, 0, 0, 0 };
+    CHECK(f->len(hi) == 4);
+}
+
+/* libc's string.c, and the kernel's (built here with k_ names) */
+size_t k_strlen(const char *); void *k_memcpy(void *, const void *, size_t), *k_memset(void *, int, size_t), *k_memmove(void *, const void *, size_t);
+int k_memcmp(const void *, const void *, size_t);
+static void test_string_fast(void) {
+    strfns lib = { memcpy, memset, memmove, memcmp, strlen }, ker = { k_memcpy, k_memset, k_memmove, k_memcmp, k_strlen };
+    string_fast(&lib);
+    string_fast(&ker);
+}
+
 static void test_printf(void) {
     FMT("42", "%d", 42);
     FMT("-42", "%i", -42);
@@ -527,7 +594,7 @@ static void test_regex(void) {
 }
 
 int tmain(void) {
-    test_string(); test_printf(); test_conv(); test_sort_rand(); test_malloc();
+    test_string(); test_string_fast(); test_printf(); test_conv(); test_sort_rand(); test_malloc();
     test_new(); test_malloc_stress(); test_time(); test_scanf(); test_math(); test_setjmp(); test_stdio(); test_env(); test_regex();
     char b[64];
     snprintf(b, sizeof b, "%d checks, %d failed\n", checks, fails);

@@ -25,11 +25,8 @@ isr_common:
     push es
     push fs
     push gs
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
+    ; no reload of ds/es/fs/gs: the user data selector is a flat 4 GiB segment too, so ring 0 can use it as is,
+    ; and the pops at isr_return put back whatever the frame says (a new task's frame carries the user ones)
     cld
     push esp
     call isr_dispatch

@@ -69,7 +69,10 @@ and two font files that are baked into C arrays at build time.
 
 * xv6-style: each task has a kernel stack; `context_switch` saves callee-saved registers and
   flips stacks. The kernel itself is non-preemptive; user mode is preempted on a 10 ms quantum,
-  checked when an interrupt returns to ring 3. FPU state is saved per task with `fnsave`.
+  checked when an interrupt returns to ring 3. FPU state is switched lazily: a switch only sets `CR0.TS` (unless the
+  next task already owns the registers), and the `#NM` handler `fnsave`s the old owner and `frstor`s the new one
+  (`fpu_ensure` does the same for the kernel's own `fnsave`/`fninit` on a task's behalf: signals, exec). The kernel
+  identity map is global (`CR4.PGE`), so a process switch keeps those TLB entries.
 * Blocking is `sleep_on(chan, timeout)` / `wakeup(chan)`; `poll()` sleeps on a global channel
   that every wakeup pokes.
 * There's no `fork`: new processes are created with `spawn(path, argv, envp, opts)` where `opts`
@@ -121,7 +124,14 @@ header shared by the kernel and libc: `common/abi.h`.
   matching mount. Vnodes are refcounted and carry a `vnode_ops` table; open files hold an
   offset and flags and are shared between fds via refcounts.
 * **ext2** (`kernel/fs/ext2.c`): read/write, 1/2/4 KiB blocks, indirect blocks, create/unlink/
-  rename/mkdir/truncate; tested on the host against `e2fsck` (`tools/ext2test`).
+  rename/mkdir/truncate; tested on the host against `e2fsck` (`tools/ext2test`, with the full 8 MiB cache and with a
+  256 KiB one that forces eviction). Block cache: hashed LRU of up to 8 MiB (a quarter of the kernel heap at most).
+  Writes only dirty cached blocks; `flush_fs` sorts them and writes adjacent ones as one ATA command (superblock and
+  group descriptors last). It runs when 256 blocks are dirty or the oldest has waited 1 s (checked at the end of every
+  operation), from the idle loop (`ext2_flush_dirty`, so a quiet system is on disk within about a millisecond), and
+  on `fsync`/`SYS_fsync`, `sync`-style shutdown and reboot. Every run of a read that misses loads up to 64 KiB of
+  physically contiguous file blocks in one command; new files are allocated at a moving frontier so they come out
+  contiguous. `/proc/diskstats` counts the commands.
 * **devfs** at `/dev`: `null zero random urandom tty kmsg clipboard screen notify display theme wallpaper` (+ `dsp mixer` with an AC'97 card; `screen` reads as `u32 w, u32 h` then the composed
   screen as ARGB rows, taken from the compositor's back buffer). **procfs** at `/proc`:
   `meminfo uptime cpuinfo version processes`.
@@ -130,7 +140,7 @@ header shared by the kernel and libc: `common/abi.h`.
   `alloc_block`/`free_blk`/`alloc_inode`/`free_inode` keep current (`f_bavail` leaves out the root reserve);
   devfs, procfs and pipes report zero blocks and inodes with their own magic. `df`, Python's `os.statvfs` and
   the Files status bar use it. There is no mount-table syscall, so `df` knows the three mounts by name.
-* **Pipes**: 8 KiB ring buffers with blocking read/write and EOF/EPIPE.
+* **Pipes**: 8 KiB ring buffers with blocking read/write and EOF/EPIPE; data moves in `memcpy`s up to the wrap point.
 
 ## Audio
 
@@ -314,8 +324,9 @@ coordinates, so the pointer isn't grabbed in a VM.
 `user/lib` is a small libc: string/ctype, `printf` family, `scanf`, stdio buffering, `malloc`,
 `stdlib`, `math`, `time`, `setjmp`, termios, dirents and the spawn API. Every
 `user/bin/NAME.c` or `user/bin/NAME/*.c` becomes `/bin/NAME`. `malloc` is a boundary-tag
-allocator with segregated free lists over sbrk; requests of 128 KiB or more get their own `mmap` and `free` unmaps
-them, so big buffers go back to the system. `/bin/lua` builds the unmodified Lua 5.4 from
+allocator with segregated free lists (a bitmap finds the next non-empty bin) over sbrk; freed blocks up to 128 bytes wait
+on per-size stacks for the next `malloc` of that size and merge back when the heap would grow; requests of 128 KiB or more
+get their own `mmap` and `free` unmaps them, so big buffers go back to the system. `/bin/lua` builds the unmodified Lua 5.4 from
 `third_party/lua` plus `user/bin/lua/` (REPL line editor, the `vibe` and `gui` modules); see
 `third_party/lua/README.vibeos`.
 `/bin/tcc` is the unmodified TinyCC 0.9.27 (`third_party/tcc`, config in `user/bin/tcc/config.h`). The

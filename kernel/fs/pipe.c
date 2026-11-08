@@ -17,7 +17,11 @@ static int pipe_read(struct vnode *v, uint32_t off, void *buf, uint32_t n) {
         if (sleep_on(p, 0) < 0) { irq_restore(f); return -EINTR; }
     }
     uint32_t got = 0;
-    while (got < n && p->head != p->tail) ((uint8_t *)buf)[got++] = p->buf[p->tail++ % PIPE_BUF_SIZE];
+    while (got < n && p->head != p->tail) {               /* up to the wrap point or the end of the data, in one copy */
+        uint32_t o = p->tail % PIPE_BUF_SIZE, k = MIN(MIN(n - got, p->head - p->tail), PIPE_BUF_SIZE - o);
+        memcpy((uint8_t *)buf + got, p->buf + o, k);
+        p->tail += k; got += k;
+    }
     wakeup(p);
     irq_restore(f);
     return got;
@@ -33,7 +37,9 @@ static int pipe_write(struct vnode *v, uint32_t off, const void *buf, uint32_t n
             if (sleep_on(p, 0) < 0) { irq_restore(f); return put ? (int)put : -EINTR; }
             continue;
         }
-        p->buf[p->head++ % PIPE_BUF_SIZE] = ((const uint8_t *)buf)[put++];
+        uint32_t o = p->head % PIPE_BUF_SIZE, k = MIN(MIN(n - put, PIPE_BUF_SIZE - (p->head - p->tail)), PIPE_BUF_SIZE - o);
+        memcpy(p->buf + o, (const uint8_t *)buf + put, k);
+        p->head += k; put += k;
     }
     wakeup(p);
     irq_restore(f);

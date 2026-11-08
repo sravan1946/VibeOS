@@ -12,4 +12,5 @@ r sh /home/maketest.sh
 r python /home/projects/pytest.py
 r lua /home/projects/luatest.lua
 r qjs /home/projects/test.js
+r fasttest
 o ALL-SUITES-DONE

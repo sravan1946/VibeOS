@@ -64,7 +64,7 @@ int pthread_once(pthread_once_t *o, void (*fn)(void)) {
 
 /* ---- the libc lock: recursive, only taken once a second thread exists ---- */
 
-static int threaded;
+static int threaded, nthr;                               /* nthr: created and not yet joined; threaded drops back to 0 with the last one */
 static pthread_mutex_t libc_mx = PTHREAD_MUTEX_INITIALIZER;
 static volatile int libc_owner, libc_depth;
 
@@ -121,6 +121,7 @@ int pthread_create(pthread_t *tid, const pthread_attr_t *attr, void *(*fn)(void 
     t->tid = r;
     t->next = thrs;
     thrs = t;
+    nthr++;
     __libc_unlock();
     *tid = r;
     return 0;
@@ -138,8 +139,15 @@ int pthread_join(pthread_t tid, void **ret) {
             *pp = t->next;
             munmap(t->stack, t->len);
             free(t);
+            nthr--;
             break;
         }
+    if (!nthr && libc_depth == 1) {                      /* single-threaded again: malloc/stdio skip the lock (and its gettid) */
+        libc_owner = 0; libc_depth = 0;
+        pthread_mutex_unlock(&libc_mx);
+        threaded = 0;
+        return 0;
+    }
     __libc_unlock();
     return 0;
 }

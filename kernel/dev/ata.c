@@ -15,6 +15,7 @@
 #define MAXRUN 128          /* sectors per command */
 
 struct ata { uint16_t io, ctl, bm; uint8_t slave; bool unflushed; uint64_t last_flush; };
+static uint8_t chan_sel[2];                             /* last value written to each channel's drive/head register (0 = unknown) */
 static struct { struct blockdev bd; struct ata a; } disks[4];
 static int ndisks, inited;
 
@@ -25,8 +26,14 @@ static inline void outsw(uint16_t p, const void *s, uint32_t n) {
     __asm__ volatile("rep outsw" : "+S"(s), "+c"(n) : "d"(p) : "memory");
 }
 
+static uint32_t st_cmds[2], st_sectors[2];                /* read/write commands and sectors since boot (/proc/diskstats) */
+int ata_stats(char *b, int n) {
+    return snprintf(b, n, "reads %u sectors %u\nwrites %u sectors %u\n", st_cmds[0], st_sectors[0], st_cmds[1], st_sectors[1]);
+}
+
 static bool irqs_on;
-static void ata_irq(struct regs *r) { (void)r; inb(0x1F7); inb(0x177); }   /* reading status acks */
+static void ata_irq14(struct regs *r) { (void)r; inb(0x1F7); }   /* reading status acks */
+static void ata_irq15(struct regs *r) { (void)r; inb(0x177); }
 
 /* wait a little: until the next interrupt if we may (IF set, IRQs wired), else spin */
 static void idle(void) {
@@ -35,7 +42,8 @@ static void idle(void) {
     if (irqs_on && (f & 0x200)) hlt(); else __builtin_ia32_pause();
 }
 
-static void delay400(struct ata *a) { for (int i = 0; i < 4; i++) inb(a->ctl); }
+/* every register read is a VM exit or a ~1 us ISA-speed cycle, so one is already past the 400 ns the drive needs */
+static void delay400(struct ata *a) { inb(a->ctl); }
 
 /* wait for BSY to clear; returns status or -EIO on timeout */
 static int wait_bsy(struct ata *a) {
@@ -102,7 +110,11 @@ static uint16_t find_busmaster(void) {
 }
 
 static void select_drive(struct ata *a, uint32_t lba) {
-    outb(a->io + 6, 0xE0 | (a->slave << 4) | ((lba >> 24) & 0xF));
+    uint8_t v = 0xE0 | (a->slave << 4) | ((lba >> 24) & 0xF);
+    uint8_t *cur = &chan_sel[a->io != 0x1F0];
+    if (*cur == v) return;                              /* already selected: nothing to settle */
+    outb(a->io + 6, v);
+    *cur = v;
     delay400(a);
 }
 
@@ -120,6 +132,7 @@ static int ata_rw(struct blockdev *d, int wr, uint32_t lba, uint32_t cnt, void *
     if (lba >= d->sectors || cnt > d->sectors - lba) return cnt ? -EIO : 0;
     while (cnt) {
         uint32_t n = MIN(cnt, MAXRUN);
+        st_cmds[wr]++; st_sectors[wr] += n;
         select_drive(a, lba);
         if (wait_bsy(a) < 0) return -EIO;
         outb(a->io + 2, n);
@@ -198,8 +211,8 @@ int ata_init(void) {
     probe(0x1F0, 0x3F6, 1, 'b');
     probe(0x170, 0x376, 0, 'c');
     probe(0x170, 0x376, 1, 'd');
-    irq_register(14, ata_irq);
-    irq_register(15, ata_irq);
+    irq_register(14, ata_irq14);
+    irq_register(15, ata_irq15);
     outb(0x3F6, 0);                                     /* IRQs on */
     outb(0x376, 0);
     irqs_on = true;

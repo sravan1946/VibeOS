@@ -13,11 +13,39 @@ static int quantum;
 extern void context_switch(uint32_t *save, uint32_t next);
 extern void kthread_entry(void);
 
+/* Lazy FPU: a switch doesn't touch the x87 state, it only sets CR0.TS (unless the next task already owns the
+ * registers). The first x87 instruction after that raises #NM; fpu_nm saves the old owner's registers and loads
+ * the current task's. fnsave+frstor were ~450 of the ~800 cycles of a switch. */
+static struct task *fpu_owner;           /* whose registers are live (0: nobody's image is worth saving) */
+static uint8_t clean_fpu[108] __attribute__((aligned(16)));
+
+static void fpu_nm(struct regs *r) {
+    (void)r;
+    __asm__ volatile("clts");
+    if (fpu_owner == current) return;
+    if (fpu_owner) __asm__ volatile("fnsave %0" : "=m"(fpu_owner->fpu));
+    __asm__ volatile("frstor %0" :: "m"(current->fpu));
+    fpu_owner = current;
+}
+
+/* make t's x87 state the live one (before the kernel fnsave/frstor/fninit's it on t's behalf) */
+void fpu_ensure(struct task *t) {
+    uint32_t f = irq_save();
+    __asm__ volatile("clts");
+    if (fpu_owner != t) {
+        if (fpu_owner) __asm__ volatile("fnsave %0" : "=m"(fpu_owner->fpu));
+        __asm__ volatile("frstor %0" :: "m"(t->fpu));
+        fpu_owner = t;
+    }
+    irq_restore(f);
+}
+
 static void fpu_init(void) {
     uint32_t cr0 = read_cr0();
     cr0 &= ~0x4u;                 /* EM */
     cr0 |= 0x22u;                 /* MP | NE */
-    __asm__ volatile("mov %0, %%cr0; fninit" :: "r"(cr0));
+    __asm__ volatile("mov %1, %%cr0; fninit; fnsave %0; frstor %0" : "+m"(clean_fpu) : "r"(cr0));
+    isr_register(7, fpu_nm);
 }
 
 void sched_init(void) {
@@ -30,8 +58,8 @@ void sched_init(void) {
     strlcpy(idle_task->name, "idle", sizeof idle_task->name);
     idle_task->dir = vmm_kernel_dir();
     strcpy(idle_task->cwd, "/");
-    __asm__ volatile("fnsave %0; frstor %0" : "+m"(idle_task->fpu));
     tasks = current = idle_task;
+    fpu_owner = idle_task;
 }
 
 static struct task *task_alloc(const char *name) {
@@ -46,13 +74,7 @@ static struct task *task_alloc(const char *name) {
     strlcpy(t->name, name, sizeof t->name);
     t->dir = vmm_kernel_dir();
     strcpy(t->cwd, "/");
-    /* a clean FPU image: fninit then save it */
-    uint32_t f = irq_save();
-    uint8_t tmp[108] __attribute__((aligned(16)));
-    __asm__ volatile("fnsave %0" : "=m"(tmp));
-    __asm__ volatile("fninit; fnsave %0" : "=m"(t->fpu));
-    __asm__ volatile("frstor %0" :: "m"(tmp));
-    irq_restore(f);
+    memcpy(t->fpu, clean_fpu, sizeof clean_fpu);
     return t;
 }
 
@@ -105,6 +127,7 @@ void task_unlink_free(struct task *t) {
     uint32_t f = irq_save();
     for (struct task **pp = &tasks; *pp; pp = &(*pp)->next)
         if (*pp == t) { *pp = t->next; break; }
+    if (fpu_owner == t) fpu_owner = 0;
     irq_restore(f);
     kfree((void *)t->kstack);
     kfree(t);
@@ -148,8 +171,8 @@ void schedule(void) {
         tss_set_kernel_stack(next->kstack + KSTACK_SIZE);
         if (read_cr3() != next->dir) write_cr3(next->dir);
         if ((e = uerrno_word(next))) *e = next->uerrno_val;
-        __asm__ volatile("fnsave %0" : "=m"(prev->fpu));
-        __asm__ volatile("frstor %0" :: "m"(next->fpu));
+        if (next == fpu_owner) __asm__ volatile("clts");
+        else __asm__ volatile("mov %%cr0, %%eax; or $8, %%eax; mov %%eax, %%cr0" ::: "eax");
         context_switch(&prev->kesp, next->kesp);
     }
     irq_restore(f);
@@ -205,6 +228,7 @@ NORETURN void sched_idle(void) {
     for (;;) {
         proc_reap_orphans();
         sti();
+        ext2_flush_dirty();
         hlt();
         schedule();
     }

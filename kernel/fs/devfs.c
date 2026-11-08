@@ -69,6 +69,7 @@ static int random_read(struct vnode *v, uint32_t off, void *b, uint32_t n) {
 }
 static int kmsg_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { return klog_read(b, off, n); }
 static int kmsg_write(struct vnode *v, uint32_t off, const void *b, uint32_t n) {   /* userland -> kernel log + serial */
+    ext2_flush_dirty();      /* a line on the serial log is how tests report; whoever reads it may stop the VM at once, so the disk is current first */
     char t[256];
     for (uint32_t i = 0; i < n; ) { uint32_t k = n - i < sizeof t - 1 ? n - i : sizeof t - 1; memcpy(t, (const char *)b + i, k); t[k] = 0; kprintf("%s", t); i += k; }
     return n;
@@ -154,6 +155,7 @@ static int gen_procs(char *b, int n) {
     return o;
 }
 
+int ata_stats(char *b, int n);
 static int gen_read(struct vnode *v, uint32_t off, void *buf, uint32_t n) {
     int (*gen)(char *, int) = v->fs;
     char *tmp = kmalloc(8192);
@@ -170,7 +172,7 @@ static const struct vnode_ops gen_ops = { .read = gen_read, .statfs = sdir_statf
 #define GEN(nm, fn, i) { nm, { .mode = S_IFREG | 0444, .ino = i, .refs = 1, .ops = &gen_ops, .fs = fn, .size = 0 } }
 static struct snode proc_nodes[] = {
     GEN("meminfo", gen_meminfo, 102), GEN("uptime", gen_uptime, 103), GEN("cpuinfo", gen_cpuinfo, 104),
-    GEN("version", gen_version, 105), GEN("processes", gen_procs, 106),
+    GEN("version", gen_version, 105), GEN("diskstats", ata_stats, 108), GEN("processes", gen_procs, 106),
 };
 static struct sdir procdir = { { .mode = S_IFDIR | 0555, .ino = 101, .refs = 1, .ops = &sdir_ops }, proc_nodes, ARRAY_LEN(proc_nodes) };
 

@@ -211,6 +211,7 @@ int proc_exec(const char *path, char *const argv[], char *const envp[], struct r
     for (int i = 1; i < NSIG; i++)                       /* handlers lived in the old image; ignored stays ignored */
         if (p->sig_handler[i] > 1) p->sig_handler[i] = 0;
     p->sig_restorer = 0;
+    fpu_ensure(current);
     __asm__ volatile("fninit");
     user_frame(r, im.entry, im.esp);
     return 0;
@@ -419,6 +420,7 @@ void proc_deliver_signals(struct regs *r) {
         struct sigframe f = { t->proc->sig_restorer, sig, r->eax, r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp,
                               r->useresp, r->eip, r->eflags, t->sig_blocked };
         uint8_t fpu[108] __attribute__((aligned(16)));
+        fpu_ensure(t);
         __asm__ volatile("fnsave %0" : "=m"(fpu));       /* also resets the FPU for the handler */
         memcpy(f.fpu, fpu, sizeof fpu);
         uint32_t sp = ((r->useresp - sizeof f) & ~15u) - 4;   /* &f.sig 16-aligned, like after a call */
@@ -442,6 +444,7 @@ void proc_sigreturn(struct regs *r) {
     current->sig_blocked = f.mask & ~(1u << SIGKILL);
     uint8_t fpu[108] __attribute__((aligned(16)));
     memcpy(fpu, f.fpu, sizeof fpu);
+    fpu_ensure(current);
     __asm__ volatile("frstor %0" :: "m"(fpu));
 }
 

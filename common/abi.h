@@ -71,6 +71,7 @@ enum {
     SYS_mprotect,     /* (uintptr addr, uint32 len, int prot) */
     SYS_statfs,       /* (const char *path, struct statfs *sf) */
     SYS_fstatfs,      /* (int fd, struct statfs *sf) */
+    SYS_fsync,        /* (int fd): push the file's filesystem's dirty blocks to disk (ext2 delays them until idle) */
     SYS_MAX
 };
 

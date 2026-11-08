@@ -76,6 +76,7 @@ struct blockdev *blockdev_root_partition(void);      /* first type-0x83 partitio
 /* filesystems */
 int ext2_mount(struct blockdev *dev, struct vnode **root);   /* fs/ext2.c */
 int ext2_sync_all(void);
+void ext2_flush_dirty(void);                                 /* idle loop: write out what write() left dirty */
 int vfs_mount(const char *path, struct vnode *root);         /* path must be canonical, e.g. "/dev" */
 
 /* path API (fs/vfs.c), `cwd` is a canonical absolute path */

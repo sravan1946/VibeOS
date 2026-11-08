@@ -129,6 +129,7 @@ build/user/obj/%.o: user/%.asm
 
 # string.c must not let gcc turn its loops back into calls to memset/memcpy
 build/user/obj/lib/string.o: UCFLAGS += -fno-tree-loop-distribute-patterns
+build/kernel/lib/string.o: KCFLAGS += -fno-tree-loop-distribute-patterns
 
 build/user/libc.a: $(ULIBC_OBJ)
 	rm -f $@ && ar rcs $@ $^

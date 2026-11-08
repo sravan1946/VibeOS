@@ -65,3 +65,4 @@ sighandler_t signal(int sig, sighandler_t h) {
     tab[sig & 31] = h;
     return p;
 }
+void *kmalloc(unsigned n) { extern void *malloc(unsigned long); return malloc(n); }

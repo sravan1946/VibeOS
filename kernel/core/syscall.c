@@ -376,6 +376,7 @@ static void syscall_handler(struct regs *r) {
     case SYS_fstat:    ret = sys_fstat(a, (struct stat *)b); break;
     case SYS_statfs:   ret = sys_statfs((const char *)a, (struct statfs *)b); break;
     case SYS_fstatfs:  ret = sys_fstatfs(a, (struct statfs *)b); break;
+    case SYS_fsync:    { struct file *f = fd_get(a); ret = !f ? -EBADF : f->vn->ops->sync ? f->vn->ops->sync(f->vn) : 0; break; }
     case SYS_readdir:  ret = sys_readdir(a, (struct dirent *)b); break;
     case SYS_mkdir: case SYS_unlink: case SYS_rmdir:
                        ret = sys_path1(r->eax, (const char *)a); break;

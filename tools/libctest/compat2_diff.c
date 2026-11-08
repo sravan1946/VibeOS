@@ -1,5 +1,5 @@
 /* compat2_diff.c - user/lib/compat2.c (copysign nearbyint expm1 log1p asinh acosh atanh erf erfc tgamma lgamma
- * fsync nan) against glibc over random inputs. Built 64-bit with the functions renamed to vibe_* (x87 asm runs on x86-64). */
+ * nan) against glibc over random inputs. Built 64-bit with the functions renamed to vibe_* (x87 asm runs on x86-64). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>

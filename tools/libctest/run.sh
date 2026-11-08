@@ -17,6 +17,12 @@ for f in string errno ctype malloc stdlib strtod locale printf stdio scanf math 
     OBJS="$OBJS $T/$f.o"
 done
 nasm -f elf32 user/lib/setjmp.asm -o $T/setjmp.o
+# the kernel's string.c under k_ names, for the same fast-path checks as libc's
+gcc -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables -nostdinc -isystem $GCCINC \
+    -Ikernel/include -Icommon -O2 -g -fno-tree-loop-distribute-patterns -w -mgeneral-regs-only \
+    -Dmemcpy=k_memcpy -Dmemset=k_memset -Dmemmove=k_memmove -Dmemcmp=k_memcmp -Dstrlen=k_strlen -Dstrcmp=k_strcmp -Dstrncmp=k_strncmp \
+    -Dstrcpy=k_strcpy -Dstrlcpy=k_strlcpy -Dstrchr=k_strchr -Dstrrchr=k_strrchr -Dstrdup=k_strdup -c kernel/lib/string.c -o $T/kstring.o
+OBJS="$OBJS $T/kstring.o"
 gcc $FLAGS -c tools/libctest/stubs.c -o $T/stubs.o
 gcc $FLAGS -c tools/libctest/libctest.c -o $T/libctest.o
 ld -m elf_i386 --no-warn-rwx-segments -e _start -o $T/libctest $T/libctest.o $T/stubs.o $OBJS $T/setjmp.o $LIBGCC
@@ -51,7 +57,7 @@ gcc -O2 -Wall tools/libctest/regex_diff.c $T/regex64.o -o $T/regex_diff
 $T/regex_diff
 echo "== compat2 libm differential test vs glibc (64-bit build of user/lib/compat2.c)"
 R=""
-for n in copysign nearbyint expm1 log1p asinh acosh atanh erf erfc tgamma lgamma nan fsync; do R="$R -D$n=vibe_$n"; done
+for n in copysign nearbyint expm1 log1p asinh acosh atanh erf erfc tgamma lgamma nan; do R="$R -D$n=vibe_$n"; done
 gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -Icommon $R -w -c user/lib/compat2.c -o $T/compat2_64.o
 gcc -O2 -Wall tools/libctest/compat2_diff.c $T/compat2_64.o -o $T/compat2_diff -lm
 $T/compat2_diff

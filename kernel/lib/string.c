@@ -1,33 +1,68 @@
 #include "kernel.h"
 
+typedef uint32_t __attribute__((may_alias, aligned(1))) u32u;
+
 void *memset(void *d, int c, size_t n) {
-    void *r = d;
-    __asm__ volatile("rep stosb" : "+D"(d), "+c"(n) : "a"(c) : "memory");
-    return r;
+    char *dp = d;
+    uint32_t v = (uint8_t)c * 0x01010101u;
+    if (n < 32) {
+        if (n >= 16) { *(u32u *)dp = v; *(u32u *)(dp + 4) = v; *(u32u *)(dp + 8) = v; *(u32u *)(dp + 12) = v;
+                       dp += n - 16; *(u32u *)dp = v; *(u32u *)(dp + 4) = v; *(u32u *)(dp + 8) = v; *(u32u *)(dp + 12) = v; }
+        else if (n >= 8) { *(u32u *)dp = v; *(u32u *)(dp + 4) = v; *(u32u *)(dp + n - 8) = v; *(u32u *)(dp + n - 4) = v; }
+        else if (n >= 4) { *(u32u *)dp = v; *(u32u *)(dp + n - 4) = v; }
+        else if (n) { dp[0] = c; dp[n >> 1] = c; dp[n - 1] = c; }
+        return d;
+    }
+    __asm__ volatile("rep stosb" : "+D"(dp), "+c"(n) : "a"(c) : "memory");
+    return d;
 }
 
+/* short copies: a few overlapping word moves (memcpy only, never memmove); from 32 bytes up rep movsb */
 void *memcpy(void *d, const void *s, size_t n) {
-    void *r = d;
-    size_t dw = n >> 2, b = n & 3;
-    __asm__ volatile("rep movsl" : "+D"(d), "+S"(s), "+c"(dw) :: "memory");
-    __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(b) :: "memory");
-    return r;
+    char *dp = d;
+    const char *sp = s;
+    if (n < 32) {
+        if (n >= 16) { __builtin_memcpy(dp, sp, 16); __builtin_memcpy(dp + n - 16, sp + n - 16, 16); }
+        else if (n >= 8) { __builtin_memcpy(dp, sp, 8); __builtin_memcpy(dp + n - 8, sp + n - 8, 8); }
+        else if (n >= 4) { __builtin_memcpy(dp, sp, 4); __builtin_memcpy(dp + n - 4, sp + n - 4, 4); }
+        else if (n) { dp[0] = sp[0]; dp[n >> 1] = sp[n >> 1]; dp[n - 1] = sp[n - 1]; }
+        return d;
+    }
+    __asm__ volatile("rep movsb" : "+D"(dp), "+S"(sp), "+c"(n) :: "memory");
+    return d;
 }
 
 void *memmove(void *d, const void *s, size_t n) {
-    if (d <= s || (const char *)s + n <= (char *)d) return memcpy(d, s, n);
-    char *dp = (char *)d + n; const char *sp = (const char *)s + n;
+    char *dp = d;
+    const char *sp = s;
+    if (d == s || !n) return d;
+    if (d < s || dp >= sp + n) {
+        if (n >= 32) { __asm__ volatile("rep movsb" : "+D"(dp), "+S"(sp), "+c"(n) :: "memory"); return d; }
+        while (n--) *dp++ = *sp++;
+        return d;
+    }
+    dp += n; sp += n;
+    while (n >= 4) { dp -= 4; sp -= 4; n -= 4; *(u32u *)dp = *(const u32u *)sp; }
     while (n--) *--dp = *--sp;
     return d;
 }
 
 int memcmp(const void *a, const void *b, size_t n) {
     const uint8_t *x = a, *y = b;
+    for (; n >= 4 && *(const u32u *)x == *(const u32u *)y; n -= 4, x += 4, y += 4) {}
     for (; n; n--, x++, y++) if (*x != *y) return *x - *y;
     return 0;
 }
 
-size_t strlen(const char *s) { size_t n = 0; while (s[n]) n++; return n; }
+/* word at a time: an aligned word never crosses a page */
+size_t strlen(const char *s) {
+    const char *p = s;
+    while ((uintptr_t)p & 3) { if (!*p) return p - s; p++; }
+    const uint32_t *w = (const uint32_t *)p;
+    while (!((*w - 0x01010101u) & ~*w & 0x80808080u)) w++;
+    for (p = (const char *)w; *p; p++) {}
+    return p - s;
+}
 
 int strcmp(const char *a, const char *b) {
     while (*a && *a == *b) a++, b++;

@@ -9,9 +9,11 @@ volatile uint64_t ticks_ms;
 void *kmalloc(size_t n) { return malloc(n); }
 void *kzalloc(size_t n) { return calloc(1, n); }
 void kfree(void *p) { free(p); }
+void ext2_flush_dirty(void);
 void kprintf(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); }
 NORETURN void panic(const char *fmt, ...) { va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); abort(); }
 void vnode_put(struct vnode *v) { if (--v->refs == 0) v->ops->release(v); }
+size_t heap_size(void) { return 32u << 20; }
 uint32_t ext2_now(void) { return 1700000000; }
 
 static int bd_rw(struct blockdev *d, int wr, uint32_t lba, uint32_t n, void *buf) {

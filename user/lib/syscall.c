@@ -28,6 +28,7 @@ int stat(const char *path, struct stat *st) { return __sysret(__syscall2(SYS_sta
 int fstat(int fd, struct stat *st) { return __sysret(__syscall2(SYS_fstat, fd, P(st))); }
 int statfs(const char *path, struct statfs *sf) { return __sysret(__syscall2(SYS_statfs, P(path), P(sf))); }
 int fstatfs(int fd, struct statfs *sf) { return __sysret(__syscall2(SYS_fstatfs, fd, P(sf))); }
+int fsync(int fd) { return __sysret(__syscall1(SYS_fsync, fd)); }
 static void tovfs(const struct statfs *f, struct statvfs *v) {
     v->f_bsize = v->f_frsize = f->f_bsize;
     v->f_blocks = f->f_blocks; v->f_bfree = f->f_bfree; v->f_bavail = f->f_bavail;

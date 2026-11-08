@@ -1,14 +1,23 @@
 /* ext2.c - ext2 filesystem, read/write.
  *
- * Block cache is a small write-through LRU (copy in/out); inodes are written
- * back eagerly; superblock + group descriptors are flushed at the end of every
- * operation that changed them.  Vnodes are cached per inode in fs->nodes. */
+ * Block cache: hashed LRU, up to 8 MiB.  Writes only dirty a cached block; flush_fs() sorts the dirty
+ * blocks and writes physically adjacent ones as one disk command (superblock + group descriptors last).
+ * settle() runs at the end of every operation and flushes once 256 blocks are dirty or the oldest has
+ * waited a second; the idle loop flushes the rest (ext2_flush_dirty), so a quiet system is on disk within
+ * about a millisecond of its last write and sync/shutdown flush explicitly.  Many small writes, creates and
+ * unlinks therefore cost a few disk commands instead of several each.  Reads load up to 64 KiB of
+ * physically contiguous file blocks per command.  Vnodes are cached per inode in fs->nodes. */
 #include "vfs.h"
 
 #define EXT2_MAGIC   0xEF53
 #define ROOT_INO     2
 #define NDIR         12
-#define CACHE_N      1024    /* ponytail: linear LRU scan; hash it if this grows much more */
+#ifndef CACHE_MAX
+#define CACHE_MAX    (8u << 20)   /* bytes; at most a quarter of the kernel heap (the host test shrinks it to force eviction) */
+#endif
+#define RUN_BYTES    65536        /* one disk command: read-ahead and write coalescing */
+#define MAX_DIRTY    256          /* settle() flushes once this many blocks are dirty ... */
+#define MAX_AGE_MS   1000         /* ... or the oldest has waited this long */
 #define INDEX_FL     0x1000
 #define INCOMPAT_FILETYPE 0x2
 #define RO_OK        (0x1 | 0x2 | 0x4 | 0x20 | 0x40)  /* sparse_super large_file btree_dir dir_nlink extra_isize */
@@ -48,7 +57,7 @@ struct e2_de {
     char name[];
 } PACKED;
 
-struct cbuf { uint32_t blk, stamp; uint8_t *data; };
+struct cbuf { uint32_t blk; uint8_t dirty; uint8_t *data; struct cbuf *hnext, *lprev, *lnext; };
 
 struct e2node;
 struct e2fs {
@@ -60,9 +69,11 @@ struct e2fs {
     uint32_t bs, spb, ppb, ngroups, ipg, bpg, isize, first_ino;
     int ft, dirty;
     struct e2node *nodes;
-    struct cbuf cache[CACHE_N];
-    uint32_t clock;
-    uint8_t *t1, *t2, *ib, *bm, *db, *zero;   /* scratch: indirect, data, inode, bitmap, dir, zeros */
+    struct cbuf *cache, **hash, **dl, *mru, *lru;   /* dl: the dirty buffers */
+    uint32_t cache_n, hmask, ndirty;
+    uint32_t frontier;                        /* block after the last allocation: where new files start, so they come out contiguous */
+    uint64_t dirty_since;                     /* ticks_ms when ndirty went 0 -> 1 */
+    uint8_t *db, *stage, *rstage;             /* scratch: one directory block; RUN_BYTES to gather writes, RUN_BYTES for read-ahead */
     struct e2fs *next;
 };
 
@@ -70,7 +81,7 @@ struct e2node {
     struct vnode v;
     struct e2_inode di;
     struct e2fs *fs;
-    uint32_t goal;                     /* allocation hint */
+    uint32_t goal;                     /* allocation hint; 0 = none yet (new file: the fs frontier; existing file: after its last block) */
     struct e2node *next;
 };
 
@@ -83,55 +94,160 @@ __attribute__((weak)) uint32_t ext2_now(void) { return 0; }
 
 /* ---- block cache ---- */
 
-static int bio(struct e2fs *fs, uint32_t blk, void *buf, int wr) {
-    struct cbuf *c = NULL, *v = fs->cache;
-    if (blk < fs->sb->first_data_block || blk == 0 || blk >= fs->sb->blocks_count) return -EIO;
-    for (int i = 0; i < CACHE_N; i++) {
-        if (fs->cache[i].blk == blk) { c = &fs->cache[i]; break; }
-        if (fs->cache[i].stamp < v->stamp) v = &fs->cache[i];
+static bool blk_ok(struct e2fs *fs, uint32_t blk) {
+    return blk >= fs->sb->first_data_block && blk != 0 && blk < fs->sb->blocks_count;
+}
+
+static struct cbuf *cfind(struct e2fs *fs, uint32_t blk) {
+    for (struct cbuf *c = fs->hash[blk & fs->hmask]; c; c = c->hnext) if (c->blk == blk) return c;
+    return NULL;
+}
+
+static void lru_front(struct e2fs *fs, struct cbuf *c) {
+    if (fs->mru == c) return;
+    if (c->lprev) c->lprev->lnext = c->lnext;
+    if (c->lnext) c->lnext->lprev = c->lprev; else fs->lru = c->lprev;
+    c->lprev = NULL; c->lnext = fs->mru;
+    fs->mru->lprev = c;
+    fs->mru = c;
+}
+
+static void unhash(struct e2fs *fs, struct cbuf *c) {
+    for (struct cbuf **pp = &fs->hash[c->blk & fs->hmask]; *pp; pp = &(*pp)->hnext)
+        if (*pp == c) { *pp = c->hnext; break; }
+    c->blk = 0;
+}
+
+/* write every dirty buffer: sorted by block, adjacent ones as one command */
+static int cflush(struct e2fs *fs) {
+    uint32_t n = fs->ndirty, maxrun = RUN_BYTES / fs->bs;
+    int r = 0;
+    if (!n) return 0;
+    struct cbuf **d = fs->dl;
+    for (uint32_t gap = n / 2; gap; gap /= 2)                   /* shell sort by blk */
+        for (uint32_t i = gap; i < n; i++) {
+            struct cbuf *t = d[i]; uint32_t j = i;
+            for (; j >= gap && d[j - gap]->blk > t->blk; j -= gap) d[j] = d[j - gap];
+            d[j] = t;
+        }
+    for (uint32_t i = 0, j; i < n; i = j + 1) {
+        for (j = i; j + 1 < n && j - i + 1 < maxrun && d[j + 1]->blk == d[j]->blk + 1; j++) {}
+        const void *src = d[i]->data;
+        if (j > i) {
+            for (uint32_t k = i; k <= j; k++) memcpy(fs->stage + (k - i) * fs->bs, d[k]->data, fs->bs);
+            src = fs->stage;
+        }
+        if (fs->dev->write(fs->dev, d[i]->blk * fs->spb, (j - i + 1) * fs->spb, src) < 0) r = -EIO;
     }
-    if (!c) {
-        c = v;
-        c->blk = 0;
-        if (!wr && fs->dev->read(fs->dev, blk * fs->spb, fs->spb, c->data) < 0) return -EIO;
-    }
-    if (wr) {
-        memcpy(c->data, buf, fs->bs);
-        c->blk = 0;
-        if (fs->dev->write(fs->dev, blk * fs->spb, fs->spb, c->data) < 0) return -EIO;
-    } else
-        memcpy(buf, c->data, fs->bs);
+    for (uint32_t i = 0; i < n; i++) d[i]->dirty = 0;
+    fs->ndirty = 0;
+    return r;
+}
+
+/* the buffer for blk, now the most recently used; load = read it from disk if it isn't cached.
+ * The pointer stays valid until the next cget() (which may evict it). */
+static struct cbuf *cget(struct e2fs *fs, uint32_t blk, bool load) {
+    if (!blk_ok(fs, blk)) return NULL;
+    struct cbuf *c = cfind(fs, blk);
+    if (c) { lru_front(fs, c); return c; }
+    c = fs->lru;
+    if (c->dirty) { cflush(fs); }
+    if (c->blk) unhash(fs, c);
+    if (load && fs->dev->read(fs->dev, blk * fs->spb, fs->spb, c->data) < 0) return NULL;
     c->blk = blk;
-    c->stamp = ++fs->clock;
+    c->hnext = fs->hash[blk & fs->hmask]; fs->hash[blk & fs->hmask] = c;
+    lru_front(fs, c);
+    return c;
+}
+
+static void cdirty(struct e2fs *fs, struct cbuf *c) {
+    if (!c->dirty) {
+        if (!fs->ndirty) fs->dirty_since = ticks_ms;
+        c->dirty = 1; fs->dl[fs->ndirty++] = c;
+    }
+}
+
+/* read-ahead: n physically contiguous blocks from pb into the cache, the uncached stretch in as few commands as possible */
+static int cload_run(struct e2fs *fs, uint32_t pb, uint32_t n) {
+    uint32_t a = pb, e = pb + n, per = RUN_BYTES / fs->bs;
+    while (a < e && cfind(fs, a)) a++;
+    while (e > a && cfind(fs, e - 1)) e--;
+    for (uint32_t b = a; b < e; b += per) {
+        uint32_t k = MIN(per, e - b);
+        if (!blk_ok(fs, b) || !blk_ok(fs, b + k - 1)) return -EIO;
+        if (fs->dev->read(fs->dev, b * fs->spb, k * fs->spb, fs->rstage) < 0) return -EIO;
+        for (uint32_t i = 0; i < k; i++) {
+            if (cfind(fs, b + i)) continue;                      /* a cached copy may be newer */
+            struct cbuf *c = cget(fs, b + i, false);
+            if (!c) return -EIO;
+            memcpy(c->data, fs->rstage + i * fs->bs, fs->bs);
+        }
+    }
     return 0;
 }
-static int bread(struct e2fs *fs, uint32_t blk, void *buf) { return bio(fs, blk, buf, 0); }
-static int bwrite(struct e2fs *fs, uint32_t blk, const void *buf) { return bio(fs, blk, (void *)buf, 1); }
+
+static int bread(struct e2fs *fs, uint32_t blk, void *buf) {
+    struct cbuf *c = cget(fs, blk, true);
+    if (!c) return -EIO;
+    memcpy(buf, c->data, fs->bs);
+    return 0;
+}
+static int bwrite(struct e2fs *fs, uint32_t blk, const void *buf) {
+    struct cbuf *c = cget(fs, blk, false);
+    if (!c) return -EIO;
+    memcpy(c->data, buf, fs->bs);
+    cdirty(fs, c);
+    return 0;
+}
+/* in-place access: modify through the returned pointer, then bdone() (before the next cget) */
+static uint8_t *bptr(struct e2fs *fs, uint32_t blk, struct cbuf **cp) {
+    struct cbuf *c = cget(fs, blk, true);
+    if (cp) *cp = c;
+    return c ? c->data : NULL;
+}
 
 /* superblock + group descriptors */
-static void flush_fs(struct e2fs *fs) {
-    if (!fs->dirty) return;
-    fs->dirty = 0;
-    for (uint32_t i = 0; i < fs->gd_nblk; i++)
-        bwrite(fs, fs->gd_blk + i, (uint8_t *)fs->gd + i * fs->bs);
-    fs->sb->wtime = ext2_now();
-    fs->dev->write(fs->dev, 2, 2, fs->sbraw);
+static int flush_fs(struct e2fs *fs) {
+    int r = 0;
+    if (fs->dirty) {
+        fs->dirty = 0;
+        for (uint32_t i = 0; i < fs->gd_nblk; i++)
+            bwrite(fs, fs->gd_blk + i, (uint8_t *)fs->gd + i * fs->bs);
+        fs->sb->wtime = ext2_now();
+        r = cflush(fs);
+        if (fs->dev->write(fs->dev, 2, 2, fs->sbraw) < 0) r = -EIO;
+        return r;
+    }
+    return cflush(fs);
+}
+
+/* end of an operation: flush only when the dirty set is big or old; the idle loop does the rest */
+static int settle(struct e2fs *fs) {
+    if (fs->ndirty >= MAX_DIRTY || (fs->ndirty && ticks_ms - fs->dirty_since >= MAX_AGE_MS)) return flush_fs(fs);
+    return 0;
 }
 
 /* ---- bitmaps ---- */
 
-static int find_zero(const uint8_t *bm, uint32_t from, uint32_t nbits) {
-    for (uint32_t i = 0; i < nbits; i++) {
-        uint32_t b = (from + i) % nbits;
+/* first clear bit in [lo, hi), skipping full bytes; -1 if none */
+static int find_zero_in(const uint8_t *bm, uint32_t lo, uint32_t hi) {
+    for (uint32_t b = lo; b < hi; ) {
+        if (!(b & 7) && b + 8 <= hi && bm[b >> 3] == 0xFF) { b += 8; continue; }
         if (!(bm[b >> 3] & (1 << (b & 7)))) return b;
+        b++;
     }
     return -1;
+}
+static int find_zero(const uint8_t *bm, uint32_t from, uint32_t nbits) {
+    int b = find_zero_in(bm, from, nbits);
+    return b >= 0 || !from ? b : find_zero_in(bm, 0, from);
 }
 
 /* allocate a zeroed block near goal */
 static int alloc_block(struct e2fs *fs, uint32_t goal, uint32_t *out) {
     struct e2_sb *sb = fs->sb;
     if (!sb->free_blocks) return -ENOSPC;
+    if (!goal) goal = fs->frontier;
     if (goal < sb->first_data_block || goal >= sb->blocks_count) goal = sb->first_data_block;
     uint32_t g0 = (goal - sb->first_data_block) / fs->bpg;
     for (uint32_t k = 0; k < fs->ngroups; k++) {
@@ -140,15 +256,20 @@ static int alloc_block(struct e2fs *fs, uint32_t goal, uint32_t *out) {
         if (!gd->free_blocks) continue;
         uint32_t gstart = sb->first_data_block + g * fs->bpg;
         uint32_t nbits = MIN(fs->bpg, sb->blocks_count - gstart);
-        int r = bread(fs, gd->block_bitmap, fs->bm);
-        if (r < 0) return r;
-        int b = find_zero(fs->bm, k ? 0 : goal - gstart, nbits);
+        struct cbuf *c;
+        uint8_t *bm = bptr(fs, gd->block_bitmap, &c);
+        if (!bm) return -EIO;
+        int b = find_zero(bm, k ? 0 : goal - gstart, nbits);
         if (b < 0) continue;
-        fs->bm[b >> 3] |= 1 << (b & 7);
-        if ((r = bwrite(fs, gd->block_bitmap, fs->bm)) < 0) return r;
-        if ((r = bwrite(fs, gstart + b, fs->zero)) < 0) return r;
+        bm[b >> 3] |= 1 << (b & 7);
+        cdirty(fs, c);
+        struct cbuf *z = cget(fs, gstart + b, false);
+        if (!z) return -EIO;
+        memset(z->data, 0, fs->bs);
+        cdirty(fs, z);
         gd->free_blocks--; sb->free_blocks--; fs->dirty = 1;
         *out = gstart + b;
+        fs->frontier = *out + 1;
         return 0;
     }
     return -ENOSPC;
@@ -159,9 +280,11 @@ static void free_blk(struct e2fs *fs, uint32_t blk) {
     if (blk < sb->first_data_block || blk >= sb->blocks_count) return;
     uint32_t g = (blk - sb->first_data_block) / fs->bpg, b = (blk - sb->first_data_block) % fs->bpg;
     struct e2_gd *gd = &fs->gd[g];
-    if (bread(fs, gd->block_bitmap, fs->bm) < 0 || !(fs->bm[b >> 3] & (1 << (b & 7)))) return;
-    fs->bm[b >> 3] &= ~(1 << (b & 7));
-    if (bwrite(fs, gd->block_bitmap, fs->bm) < 0) return;
+    struct cbuf *c;
+    uint8_t *bm = bptr(fs, gd->block_bitmap, &c);
+    if (!bm || !(bm[b >> 3] & (1 << (b & 7)))) return;
+    bm[b >> 3] &= ~(1 << (b & 7));
+    cdirty(fs, c);
     gd->free_blocks++; sb->free_blocks++; fs->dirty = 1;
 }
 
@@ -171,20 +294,18 @@ static int alloc_inode(struct e2fs *fs, uint32_t g0, int isdir, uint32_t *out) {
         uint32_t g = (g0 + k) % fs->ngroups;
         struct e2_gd *gd = &fs->gd[g];
         if (!gd->free_inodes) continue;
-        int r = bread(fs, gd->inode_bitmap, fs->bm);
-        if (r < 0) return r;
-        for (uint32_t b = 0; b < fs->ipg; b++) {
-            if (fs->bm[b >> 3] & (1 << (b & 7))) continue;
-            uint32_t ino = g * fs->ipg + b + 1;
-            if (ino < fs->first_ino) continue;
-            fs->bm[b >> 3] |= 1 << (b & 7);
-            if ((r = bwrite(fs, gd->inode_bitmap, fs->bm)) < 0) return r;
-            gd->free_inodes--; fs->sb->free_inodes--;
-            if (isdir) gd->used_dirs++;
-            fs->dirty = 1;
-            *out = ino;
-            return 0;
-        }
+        struct cbuf *c;
+        uint8_t *bm = bptr(fs, gd->inode_bitmap, &c);
+        if (!bm) return -EIO;
+        int b = find_zero_in(bm, g ? 0 : fs->first_ino - 1, fs->ipg);
+        if (b < 0) continue;
+        bm[b >> 3] |= 1 << (b & 7);
+        cdirty(fs, c);
+        gd->free_inodes--; fs->sb->free_inodes--;
+        if (isdir) gd->used_dirs++;
+        fs->dirty = 1;
+        *out = g * fs->ipg + b + 1;
+        return 0;
     }
     return -ENOSPC;
 }
@@ -192,9 +313,11 @@ static int alloc_inode(struct e2fs *fs, uint32_t g0, int isdir, uint32_t *out) {
 static void free_inode(struct e2fs *fs, uint32_t ino, int isdir) {
     uint32_t g = (ino - 1) / fs->ipg, b = (ino - 1) % fs->ipg;
     struct e2_gd *gd = &fs->gd[g];
-    if (bread(fs, gd->inode_bitmap, fs->bm) < 0 || !(fs->bm[b >> 3] & (1 << (b & 7)))) return;
-    fs->bm[b >> 3] &= ~(1 << (b & 7));
-    if (bwrite(fs, gd->inode_bitmap, fs->bm) < 0) return;
+    struct cbuf *c;
+    uint8_t *bm = bptr(fs, gd->inode_bitmap, &c);
+    if (!bm || !(bm[b >> 3] & (1 << (b & 7)))) return;
+    bm[b >> 3] &= ~(1 << (b & 7));
+    cdirty(fs, c);
     gd->free_inodes++; fs->sb->free_inodes++;
     if (isdir && gd->used_dirs) gd->used_dirs--;
     fs->dirty = 1;
@@ -213,17 +336,22 @@ static int inode_loc(struct e2fs *fs, uint32_t ino, uint32_t *blk, uint32_t *off
 static int read_inode(struct e2fs *fs, uint32_t ino, struct e2_inode *di) {
     uint32_t blk, off;
     int r = inode_loc(fs, ino, &blk, &off);
-    if (r < 0 || (r = bread(fs, blk, fs->ib)) < 0) return r;
-    memcpy(di, fs->ib + off, sizeof *di);
+    if (r < 0) return r;
+    struct cbuf *c = cget(fs, blk, true);
+    if (!c) return -EIO;
+    memcpy(di, c->data + off, sizeof *di);
     return 0;
 }
 
 static int write_inode(struct e2fs *fs, uint32_t ino, const struct e2_inode *di) {
     uint32_t blk, off;
     int r = inode_loc(fs, ino, &blk, &off);
-    if (r < 0 || (r = bread(fs, blk, fs->ib)) < 0) return r;
-    memcpy(fs->ib + off, di, sizeof *di);
-    return bwrite(fs, blk, fs->ib);
+    if (r < 0) return r;
+    struct cbuf *c = cget(fs, blk, true);
+    if (!c) return -EIO;
+    memcpy(c->data + off, di, sizeof *di);
+    cdirty(fs, c);
+    return 0;
 }
 
 static void v_sync(struct e2node *n) {
@@ -247,7 +375,6 @@ static int iget(struct e2fs *fs, uint32_t ino, struct e2node **out) {
     int r = read_inode(fs, ino, &n->di);
     if (r < 0 || !n->di.mode) { kfree(n); return r < 0 ? r : -EIO; }
     n->fs = fs;
-    n->goal = fs->sb->first_data_block + ((ino - 1) / fs->ipg) * fs->bpg;
     n->v.ino = ino; n->v.refs = 1; n->v.ops = &e2_ops; n->v.fs = fs; n->v.priv = n;
     v_sync(n);
     n->next = fs->nodes; fs->nodes = n;
@@ -263,19 +390,22 @@ static void put(struct e2node *n) { if (--n->v.refs == 0) e2_release(&n->v); }
 /* entry idx of the inode's i_block (tb == 0) or of indirect block tb */
 static int slot(struct e2node *n, uint32_t tb, uint32_t idx, int alloc, uint32_t *out) {
     struct e2fs *fs = n->fs;
-    uint32_t *tab = NULL, v, nb;
+    uint32_t v, nb;
     int r;
     if (!tb) v = n->di.block[idx];
     else {
-        if ((r = bread(fs, tb, fs->t1)) < 0) return r;
-        tab = (uint32_t *)fs->t1;
+        uint32_t *tab = (uint32_t *)bptr(fs, tb, NULL);
+        if (!tab) return -EIO;
         v = tab[idx];
     }
     if (!v && alloc) {
         if ((r = alloc_block(fs, n->goal, &nb)) < 0) return r;
-        if (tab) {
+        if (tb) {
+            struct cbuf *c;
+            uint32_t *tab = (uint32_t *)bptr(fs, tb, &c);     /* alloc_block may have moved it out */
+            if (!tab) { free_blk(fs, nb); return -EIO; }
             tab[idx] = nb;
-            if ((r = bwrite(fs, tb, tab)) < 0) { free_blk(fs, nb); return r; }
+            cdirty(fs, c);
         } else
             n->di.block[idx] = nb;
         n->di.blocks += fs->spb;
@@ -345,6 +475,14 @@ static void trunc_from(struct e2node *n, uint32_t first) {
 
 /* ---- file data ---- */
 
+/* the block at logical lb (physical pb) isn't cached: load it and the contiguous blocks after it, up to 64 KiB or EOF */
+static int read_ahead(struct e2node *n, uint32_t lb, uint32_t pb) {
+    struct e2fs *fs = n->fs;
+    uint32_t k = 1, last = (n->di.size + fs->bs - 1) / fs->bs, maxk = MIN(RUN_BYTES / fs->bs, last - lb), nb;
+    while (k < maxk && bmap(n, lb + k, 0, &nb) >= 0 && nb == pb + k) k++;
+    return cload_run(fs, pb, k);
+}
+
 static int e2_read(struct vnode *v, uint32_t off, void *buf, uint32_t len) {
     struct e2node *n = NODE(v);
     struct e2fs *fs = n->fs;
@@ -358,8 +496,11 @@ static int e2_read(struct vnode *v, uint32_t off, void *buf, uint32_t len) {
         int r = bmap(n, pos / fs->bs, 0, &pb);
         if (r >= 0) {
             if (!pb) memset(dst + done, 0, chunk);
-            else if (chunk == fs->bs) r = bread(fs, pb, dst + done);
-            else if ((r = bread(fs, pb, fs->t2)) >= 0) memcpy(dst + done, fs->t2 + bo, chunk);
+            else {
+                if (blk_ok(fs, pb) && !cfind(fs, pb)) read_ahead(n, pos / fs->bs, pb);
+                struct cbuf *c = cget(fs, pb, true);
+                if (c) memcpy(dst + done, c->data + bo, chunk); else r = -EIO;
+            }
         }
         if (r < 0) return done ? (int)done : r;
         done += chunk;
@@ -377,15 +518,17 @@ static int e2_write(struct vnode *v, uint32_t off, const void *buf, uint32_t len
     if (!len) return 0;
     if (off == 0xFFFFFFFF) return -EFBIG;
     len = MIN(len, 0xFFFFFFFF - off);               /* sizes are 32-bit */
+    if (!n->goal && n->di.size) {                   /* appending to a file from an earlier open: continue after its last block */
+        uint32_t last;
+        if (bmap(n, (n->di.size - 1) / fs->bs, 0, &last) >= 0 && last) n->goal = last + 1;
+    }
     while (done < len) {
         uint32_t pos = off + done, bo = pos % fs->bs, chunk = MIN(fs->bs - bo, len - done), pb;
         int r = bmap(n, pos / fs->bs, 1, &pb);
         if (r >= 0) {
-            if (chunk == fs->bs) r = bwrite(fs, pb, src + done);
-            else if ((r = bread(fs, pb, fs->t2)) >= 0) {
-                memcpy(fs->t2 + bo, src + done, chunk);
-                r = bwrite(fs, pb, fs->t2);
-            }
+            struct cbuf *c = cget(fs, pb, chunk != fs->bs);
+            if (!c) r = -EIO;
+            else { memcpy(c->data + bo, src + done, chunk); cdirty(fs, c); }
         }
         if (r < 0) { err = r; break; }
         done += chunk;
@@ -393,9 +536,9 @@ static int e2_write(struct vnode *v, uint32_t off, const void *buf, uint32_t len
     if (done && off + done > n->di.size) n->di.size = off + done;
     if (done) touch(n);
     int r = node_flush(n);
-    flush_fs(fs);
-    if (!done) return err ? err : r;
-    return done;
+    int fr = settle(fs);
+    if (!done) return err ? err : r < 0 ? r : fr;
+    return fr < 0 ? fr : (int)done;
 }
 
 static int e2_truncate(struct vnode *v, uint32_t size) {
@@ -405,17 +548,17 @@ static int e2_truncate(struct vnode *v, uint32_t size) {
     if (!S_ISREG(n->di.mode)) return -EINVAL;
     if (size < n->di.size) {
         uint32_t bo = size % fs->bs, pb;
-        if (bo && bmap(n, size / fs->bs, 0, &pb) >= 0 && pb && bread(fs, pb, fs->t2) >= 0) {
-            memset(fs->t2 + bo, 0, fs->bs - bo);    /* regrowing must read zeros */
-            bwrite(fs, pb, fs->t2);
+        if (bo && bmap(n, size / fs->bs, 0, &pb) >= 0 && pb) {
+            struct cbuf *c = cget(fs, pb, true);
+            if (c) { memset(c->data + bo, 0, fs->bs - bo); cdirty(fs, c); }   /* regrowing must read zeros */
         }
         trunc_from(n, size / fs->bs + (bo ? 1 : 0));
     }
     n->di.size = size;
     touch(n);
     int r = node_flush(n);
-    flush_fs(fs);
-    return r;
+    int fr = settle(fs);
+    return r < 0 ? r : fr;
 }
 
 /* ---- directories ---- */
@@ -645,12 +788,12 @@ static int e2_create(struct vnode *dv, const char *name, uint32_t mode, struct v
     touch(d);
     node_flush(d);
     if ((r = iget(fs, ino, &n)) >= 0) *out = &n->v;
-    flush_fs(fs);
+    settle(fs);
     return r;
 fail:
     if (blk) free_blk(fs, blk);
     free_inode(fs, ino, isdir);
-    flush_fs(fs);
+    settle(fs);
     return r;
 }
 
@@ -677,7 +820,7 @@ static int e2_unlink(struct vnode *dv, const char *name, bool is_dir) {
     node_flush(d);
     node_flush(t);
     put(t);                                         /* last ref frees blocks + inode */
-    flush_fs(fs);
+    settle(fs);
     return 0;
 }
 
@@ -748,7 +891,7 @@ static int e2_rename(struct vnode *odv, const char *oname, struct vnode *ndv, co
     node_flush(od); if (nd != od) node_flush(nd);
     node_flush(sn);
     put(sn);
-    flush_fs(fs);
+    settle(fs);
     return r < 0 ? r : 0;
 }
 
@@ -775,7 +918,7 @@ static void e2_release(struct vnode *v) {
         free_inode(fs, v->ino, t == S_IFDIR);
     }
     kfree(n);
-    flush_fs(fs);
+    settle(fs);
 }
 
 static int e2_statfs(struct vnode *v, struct statfs *sf) {
@@ -828,14 +971,27 @@ int ext2_mount(struct blockdev *dev, struct vnode **root) {
     fs->gd_nblk = (fs->ngroups * sizeof(struct e2_gd) + fs->bs - 1) / fs->bs;
 
     r = -ENOMEM;
-    uint8_t *mem = kmalloc((CACHE_N + 6) * fs->bs);
+    uint32_t cn = MIN((uint32_t)CACHE_MAX, MAX(heap_size() / 4, 256u << 10)) / fs->bs, hn = 1;
+    uint8_t *mem = NULL;
+    while (cn >= 64 && !(mem = kmalloc(cn * fs->bs + 2 * RUN_BYTES + fs->bs))) cn /= 2;
     fs->gd = kmalloc(fs->gd_nblk * fs->bs);
-    if (!mem || !fs->gd) { kfree(mem); goto fail; }
-    for (int i = 0; i < CACHE_N; i++) fs->cache[i].data = mem + i * fs->bs;
-    fs->t1 = mem + CACHE_N * fs->bs;
-    fs->t2 = fs->t1 + fs->bs; fs->ib = fs->t2 + fs->bs; fs->bm = fs->ib + fs->bs;
-    fs->db = fs->bm + fs->bs; fs->zero = fs->db + fs->bs;
-    memset(fs->zero, 0, fs->bs);
+    while (hn < cn) hn *= 2;
+    fs->cache = kzalloc(cn * sizeof *fs->cache);
+    fs->hash = kzalloc(hn * sizeof *fs->hash);
+    fs->dl = kmalloc(cn * sizeof *fs->dl);
+    if (!mem || !fs->gd || !fs->cache || !fs->hash || !fs->dl) {
+        kfree(mem); kfree(fs->gd); kfree(fs->cache); kfree(fs->hash); kfree(fs->dl);
+        kfree(fs);
+        return -ENOMEM;
+    }
+    fs->cache_n = cn; fs->hmask = hn - 1;
+    for (uint32_t i = 0; i < cn; i++) {          /* all free, LRU order = index order */
+        fs->cache[i].data = mem + i * fs->bs;
+        fs->cache[i].lprev = i ? &fs->cache[i - 1] : NULL;
+        fs->cache[i].lnext = i + 1 < cn ? &fs->cache[i + 1] : NULL;
+    }
+    fs->mru = &fs->cache[0]; fs->lru = &fs->cache[cn - 1];
+    fs->stage = mem + cn * fs->bs; fs->rstage = fs->stage + RUN_BYTES; fs->db = fs->rstage + RUN_BYTES;
 
     for (uint32_t i = 0; i < fs->gd_nblk; i++)
         if ((r = bread(fs, fs->gd_blk + i, (uint8_t *)fs->gd + i * fs->bs)) < 0) goto fail2;
@@ -855,10 +1011,16 @@ int ext2_mount(struct blockdev *dev, struct vnode **root) {
     return 0;
 fail2:
     kfree(fs->cache[0].data);
-    kfree(fs->gd);
+    kfree(fs->gd); kfree(fs->cache); kfree(fs->hash); kfree(fs->dl);
 fail:
     kfree(fs);
     return r;
+}
+
+/* idle loop: push out whatever write() left dirty */
+void ext2_flush_dirty(void) {
+    for (struct e2fs *fs = mounts; fs; fs = fs->next)
+        if (fs->ndirty || fs->dirty) flush_fs(fs);
 }
 
 int ext2_sync_all(void) {

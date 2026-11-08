@@ -49,6 +49,7 @@ extern struct task *current;
 void sched_init(void);
 struct task *kthread_create(const char *name, int (*fn)(void *), void *arg);
 void schedule(void);
+void fpu_ensure(struct task *t);             /* t's x87 registers live (lazy switching), before the kernel touches them for t */
 void yield(void);
 /* Block on chan; caller must have interrupts disabled and re-check its condition
  * in a loop. Returns -EINTR if a signal is pending, 0 otherwise. Timeout in ms (0 = none). */

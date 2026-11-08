@@ -7,10 +7,10 @@ uint32_t vmm_kernel_dir(void) { return (uint32_t)kdir; }
 
 void vmm_init(void) {
     kdir = (uint32_t *)pmm_alloc();
-    for (uint32_t i = 0; i < 256; i++) kdir[i] = (i << 22) | PTE_P | PTE_W | PTE_PS;
+    for (uint32_t i = 0; i < 256; i++) kdir[i] = (i << 22) | PTE_P | PTE_W | PTE_PS | PTE_G;
     uint32_t cr4;
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
-    cr4 |= 0x10;                                           /* PSE */
+    cr4 |= 0x10 | 0x80;                                    /* PSE, PGE: the kernel's 4 MiB pages stay in the TLB across process switches */
     __asm__ volatile("mov %0, %%cr4" :: "r"(cr4));
     write_cr3((uint32_t)kdir);
     __asm__ volatile("mov %%cr0, %%eax; or $0x80000000, %%eax; mov %%eax, %%cr0" ::: "eax");

@@ -1,5 +1,5 @@
 /* compat2.c - libm functions MicroPython's math module needs beyond math.c: copysign nearbyint expm1 log1p
- * acosh asinh atanh erf erfc tgamma lgamma nan, and fsync. Worked in x87 long double so the double results are close to exact. */
+ * acosh asinh atanh erf erfc tgamma lgamma nan. Worked in x87 long double so the double results are close to exact. */
 #include <math.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -164,4 +164,3 @@ double lgamma(double x) {
     return lg - l_log(p);
 }
 
-int fsync(int fd) { return 0; }            /* ext2 writes go to the disk as they happen */

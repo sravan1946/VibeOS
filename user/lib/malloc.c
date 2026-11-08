@@ -5,7 +5,12 @@
  * physical neighbours in O(1). Free blocks live in bins: one per 8-byte size up to 504 bytes, then
  * one per power of two. Heap memory is never returned to the kernel, but blocks of BIG bytes or more
  * get their own mmap (header { mapping size, MAGIC_MMAP }) and free() unmaps them.
- * The heap ends in a zero-size "used" sentinel so merging never runs off the end. */
+ * The heap ends in a zero-size "used" sentinel so merging never runs off the end.
+ *
+ * Fast path: a small block (<= FAST_MAX) that is freed goes on a per-size stack without merging (it still
+ * counts as used: neighbours don't see a free block), and the next malloc of that size pops it. The stacks are
+ * merged back into the bins when the heap would otherwise grow or they hold more than FAST_KEEP bytes.
+ * `binmap` has a bit per non-empty bin so a miss in the exact bin doesn't walk ~90 empty ones. */
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -22,6 +27,9 @@
 #define BIG (128 * 1024)
 #define CHUNK 65536
 #define NBINS 96
+#define FAST_MAX 128                    /* block sizes up to this are cached by exact size */
+#define FAST_KEEP (64 * 1024)
+#define MAGIC_FAST 0xFA57B10Cu
 
 struct blk {
     uint32_t size;                      /* multiple of 8; bit 0 = the block before this one is free */
@@ -30,6 +38,9 @@ struct blk {
 };
 
 static struct blk *bins[NBINS];
+static uint32_t binmap[NBINS / 32];
+static struct blk *fast[FAST_MAX / 8 + 1];     /* by block size / 8 */
+static size_t fast_bytes;
 static char *heap_end;                  /* just past the sentinel's header */
 
 #define SZ(b) ((b)->size & ~7u)
@@ -43,7 +54,12 @@ static int bin_of(size_t sz) {
 }
 
 static void unlink_free(struct blk *b) {
-    if (b->prev) b->prev->next = b->next; else bins[bin_of(SZ(b))] = b->next;
+    if (b->prev) b->prev->next = b->next;
+    else {
+        int i = bin_of(SZ(b));
+        bins[i] = b->next;
+        if (!b->next) binmap[i >> 5] &= ~(1u << (i & 31));
+    }
     if (b->next) b->next->prev = b->prev;
 }
 
@@ -57,6 +73,7 @@ static void put_free(struct blk *b) {
     b->next = bins[i];
     if (b->next) b->next->prev = b;
     bins[i] = b;
+    binmap[i >> 5] |= 1u << (i & 31);
 }
 
 /* turn [b, b+size) into a free block, merging with free neighbours */
@@ -102,6 +119,18 @@ static int grow(size_t need) {
     return 0;
 }
 
+/* merge every cached small block back into the bins */
+static void flush_fast(void) {
+    for (size_t i = 0; i < sizeof fast / sizeof *fast; i++)
+        for (struct blk *b = fast[i], *n; b; b = n) {
+            n = b->next;
+            b->magic = MAGIC_USED;                            /* release() expects a used block */
+            release(b, SZ(b));
+        }
+    memset(fast, 0, sizeof fast);
+    fast_bytes = 0;
+}
+
 /* carve `need` bytes off the front of free block b (already unlinked); the tail goes back to its bin */
 static void *take(struct blk *b, size_t need) {
     size_t have = SZ(b);
@@ -127,13 +156,25 @@ static void *heap_alloc(size_t n) {
     }
     size_t need = ((n + 7) & ~(size_t)7) + HDR;
     if (need < MINBLK) need = MINBLK;
-    for (int tries = 0; tries < 2; tries++) {
-        for (int i = bin_of(need); i < NBINS; i++)
+    if (need <= FAST_MAX && fast[need >> 3]) {
+        struct blk *b = fast[need >> 3];
+        fast[need >> 3] = b->next;
+        fast_bytes -= need;
+        b->magic = MAGIC_USED;
+        return (char *)b + HDR;
+    }
+    for (int tries = 0; tries < 3; tries++) {
+        for (int i = bin_of(need); i < NBINS; i++) {
+            uint32_t m = binmap[i >> 5] >> (i & 31);       /* next non-empty bin at or above i */
+            if (!m) { i |= 31; continue; }
+            i += __builtin_ctz(m);
             for (struct blk *b = bins[i]; b; b = b->next)
                 if (SZ(b) >= need) {                      /* exact bins fit on the first look; others first-fit */
                     unlink_free(b);
                     return take(b, need);
                 }
+        }
+        if (tries == 0 && fast_bytes) { flush_fast(); continue; }   /* merging may be all it takes */
         if (grow(need) < 0) break;
     }
     errno = ENOMEM;
@@ -145,7 +186,15 @@ static void heap_free(void *p) {
     struct blk *b = (struct blk *)((char *)p - HDR);
     if (b->magic == MAGIC_MMAP) { b->magic = 0; munmap(b, b->size); return; }
     if (b->magic != MAGIC_USED) abort();                  /* double free / wild pointer */
-    release(b, SZ(b));
+    size_t sz = SZ(b);
+    if (sz <= FAST_MAX) {
+        b->magic = MAGIC_FAST;
+        b->next = fast[sz >> 3];
+        fast[sz >> 3] = b;
+        if ((fast_bytes += sz) > FAST_KEEP) flush_fast();
+        return;
+    }
+    release(b, sz);
 }
 
 size_t malloc_usable_size(void *p) { return p ? SZ((struct blk *)((char *)p - HDR)) - HDR : 0; }
