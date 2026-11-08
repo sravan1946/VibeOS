@@ -120,7 +120,7 @@ static bool thumb_make(void) {
     snprintf(t->path, sizeof t->path, "%s", want);
     t->mtime = want_mtime; t->size = want_size; t->use = tick_ms;
     struct image im;
-    if (image_load_fit(want, &im, TH) == 0) {          /* big JPEGs come back shrunk by 8 (block means): the thumbnail is a box average anyway */
+    if (image_load_fit(want, &im, TH) == 0) {          /* a big JPEG comes back shrunk by 8 (block means): the thumbnail is a box average anyway */
         float sc = (float)TH / (im.w > im.h ? im.w : im.h);
         if (sc > 1) sc = 1;
         int tw = (int)(im.w * sc), th = (int)(im.h * sc);

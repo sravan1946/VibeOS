@@ -1,5 +1,5 @@
 /* img.c - per-page image cache. <img> elements ask for a URL (img_ref); downloads run in helper
- * processes (NSLOT at a time, each one a `browser --fetch`), file:// images are read directly. A finished
+ * processes (NSLOT at a time, each one a `vfetch`), file:// images are read directly. A finished
  * body is decoded with the image library; anything wider than MAXDIM is shrunk right away to keep memory sane.
  * img_pixels() hands out one scaled copy per image, already composited over the page colour, so drawing
  * is a row copy. ponytail: decode runs in the UI process (one image per pump call); GIFs show their first frame. */

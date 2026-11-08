@@ -635,7 +635,6 @@ static void bench(struct ui *ui, const char *arg) {
 static void drop_key(struct ui *ui, int i) { memmove(ui->keys + i, ui->keys + i + 1, (--ui->nkeys - i) * sizeof ui->keys[0]); }
 
 int main(int argc, char **argv) {
-    if (argc >= 3 && !strcmp(argv[1], "--fetch")) return fetch_main(argv[2], argc > 3 ? argv[3] : 0);
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;

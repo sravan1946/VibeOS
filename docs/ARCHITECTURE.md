@@ -348,7 +348,7 @@ into an arena-allocated AST; "incomplete" results drive the `> ` continuation pr
 that is sent the exported environment, plain variables, function definitions, positionals and `-e/-x`.
 The kernel runs `#!interp [arg]` scripts itself (`proc_spawn_ex`, one level, 128-byte line).
 
-`/bin/browser` (`user/bin/browser/`) is the Vibe Browser. `fetch.c` runs HTTP in a helper process (`browser --fetch URL [POST-BODY]`)
+`/bin/browser` (`user/bin/browser/`) is the Vibe Browser. `fetch.c` runs HTTP in a helper process (`/bin/vfetch URL [POST-BODY]`, a small binary of its own: a fetch doesn't load the whole browser image)
 so DNS/connect never block the UI; `url.c` resolves URLs; `html.c` is a tolerant tokenizer plus a one-pass block/inline layout
 into a flat display list in reading order (drawing and hit tests binary-search it through a prefix-max/suffix-min of y, because table cells
 break monotonic y; layout reruns only on a new page, a resize, or when an image's size or a stylesheet arrives). Tables are a grid: the source

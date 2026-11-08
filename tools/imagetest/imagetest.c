@@ -76,7 +76,7 @@ int main(int argc, char **argv) {
         int shrunk = sm.w != full.w || sm.h != full.h;
         if (shrunk && (sm.w != (full.w + 7) / 8 || sm.h != (full.h + 7) / 8)) { printf("fit size %dx%d from %dx%d\n", sm.w, sm.h, full.w, full.h); return 1; }
         if (!shrunk && memcmp(sm.px, full.px, (size_t)sm.w * sm.h * 4)) { printf("unshrunk differs\n"); return 1; }
-        if ((full.w > full.h ? full.w : full.h) >> 3 >= want && !shrunk) { printf("should have shrunk\n"); return 1; }
+        if ((full.w < full.h ? full.w : full.h) >> 3 >= want && !shrunk) { printf("should have shrunk\n"); return 1; }
         if (shrunk && argc == 6) {
             size_t rn;
             uint8_t *ref = slurp(argv[5], &rn);

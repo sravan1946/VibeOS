@@ -34,7 +34,7 @@ struct jd {
     uint16_t qt[4][64];
     struct jhuff dc[4], ac[4];
     int w, h, nc, prog, hmax, vmax, mcux, mcuy, ri, eobrun, adobe, orient, err, sof;
-    int want, dc8;                      /* dc8: decode 1/8 size (blocks -> DC mean) because the picture is >= 8 * want on its long side */
+    int want, dc8;                      /* dc8: decode 1/8 size (blocks -> DC mean) because the picture is >= 8 * want on its short side */
     struct jcomp c[3];
 };
 
@@ -296,7 +296,7 @@ static int do_sof(struct jd *j, const uint8_t *p, int n, int prog) {
         if (c->h > j->hmax) j->hmax = c->h;
         if (c->v > j->vmax) j->vmax = c->v;
     }
-    if (j->want && (j->w > j->h ? j->w : j->h) >> 3 >= j->want) j->dc8 = 1;
+    if (j->want && (j->w < j->h ? j->w : j->h) >> 3 >= j->want) j->dc8 = 1;
     j->mcux = (j->w + 8 * j->hmax - 1) / (8 * j->hmax);
     j->mcuy = (j->h + 8 * j->vmax - 1) / (8 * j->vmax);
     for (int i = 0; i < j->nc; i++) {
