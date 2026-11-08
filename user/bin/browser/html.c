@@ -11,6 +11,7 @@
 #include <ctype.h>
 
 enum { F_UI, F_UIB, F_TITLE, F_MONO, F_MONOB };
+static char pic_src[URL_MAX];                              /* URL picked from a <picture>'s <source>, for the <img> that follows */
 static const struct font *const FT[] = { &font_ui, &font_ui_bold, &font_title, &font_mono, &font_mono_bold };
 #define LEAD 3
 #define LN_MAX 256
@@ -280,6 +281,11 @@ static void text_ws(int c) {
 }
 
 static void text_char(const char *u, int ul) {
+    if (ul > 1) {                                           /* invisible format characters take no room */
+        uint32_t cp;
+        utf8_decode(u, ul, &cp);
+        if (cp == 0xAD || (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) || cp == 0x2060 || cp == 0xFEFF) return;
+    }
     if (S.pre) { L.skip_nl = 0; pre_char(u, ul); return; }
     if (L.wn + ul >= (int)sizeof L.wb) flush_word();
     memcpy(L.wb + L.wn, u, ul);
@@ -287,19 +293,7 @@ static void text_char(const char *u, int ul) {
 }
 
 /* ---------- entities ---------- */
-static const struct { const char *n; uint32_t cp; } ENT[] = {
-    { "amp", '&' }, { "lt", '<' }, { "gt", '>' }, { "quot", '"' }, { "apos", '\'' }, { "nbsp", ' ' },
-    { "copy", 0xA9 }, { "reg", 0xAE }, { "trade", 0x2122 }, { "hellip", 0x2026 }, { "mdash", 0x2014 },
-    { "ndash", 0x2013 }, { "lsquo", 0x2018 }, { "rsquo", 0x2019 }, { "ldquo", 0x201C }, { "rdquo", 0x201D },
-    { "laquo", 0xAB }, { "raquo", 0xBB }, { "bull", 0x2022 }, { "middot", 0xB7 }, { "deg", 0xB0 },
-    { "times", 0xD7 }, { "divide", 0xF7 }, { "plusmn", 0xB1 }, { "sect", 0xA7 }, { "para", 0xB6 },
-    { "larr", 0x2190 }, { "rarr", 0x2192 }, { "uarr", 0x2191 }, { "darr", 0x2193 }, { "harr", 0x2194 },
-    { "euro", 0x20AC }, { "pound", 0xA3 }, { "yen", 0xA5 }, { "cent", 0xA2 }, { "micro", 0xB5 },
-    { "frac12", 0xBD }, { "frac14", 0xBC }, { "frac34", 0xBE }, { "eacute", 0xE9 }, { "egrave", 0xE8 },
-    { "agrave", 0xE0 }, { "uuml", 0xFC }, { "ouml", 0xF6 }, { "auml", 0xE4 }, { "szlig", 0xDF },
-    { "ccedil", 0xE7 }, { "ntilde", 0xF1 }, { "iexcl", 0xA1 }, { "iquest", 0xBF }, { "ne", 0x2260 },
-    { "le", 0x2264 }, { "ge", 0x2265 }, { "infin", 0x221E },
-};
+uint32_t ent_lookup(const char *s, int n);   /* entities.c: the full HTML table */
 
 static int utf8_put(uint32_t cp, char *o) {
     if (cp < 0x80) { o[0] = cp; return 1; }
@@ -321,18 +315,17 @@ static int ent_decode(const char *s, int n, char *o, int *used) {
             v = v * (hex ? 16 : 10) + (isdigit((unsigned char)s[i]) ? s[i] - '0' : (s[i] | 32) - 'a' + 10);
         if (!dg) return 0;
         if (i < n && s[i] == ';') i++;
+        static const uint16_t W1252[32] = { 0x20AC, 0xFFFD, 0x201A, 0x192, 0x201E, 0x2026, 0x2020, 0x2021, 0x2C6, 0x2030, 0x160, 0x2039, 0x152, 0xFFFD, 0x17D, 0xFFFD,
+            0xFFFD, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x2DC, 0x2122, 0x161, 0x203A, 0x153, 0xFFFD, 0x17E, 0x178 };
         cp = v;
+        if (cp >= 0x80 && cp < 0xA0) cp = W1252[cp - 0x80];     /* numeric references in 0x80..0x9F are Windows-1252, as browsers do */
         if (cp == 0xA0 || cp < 32) cp = ' ';
-        else if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) || (cp >= 0x80 && cp < 0xA0)) cp = 0xFFFD;
+        else if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD;
     } else {
         int j = i;
-        while (j < n && j - i < 10 && isalnum((unsigned char)s[j])) j++;
+        while (j < n && j - i < 33 && isalnum((unsigned char)s[j])) j++;
         if (j >= n || s[j] != ';' || j == i) return 0;
-        unsigned k;
-        for (k = 0; k < sizeof ENT / sizeof *ENT; k++)
-            if ((int)strlen(ENT[k].n) == j - i && !strncmp(ENT[k].n, s + i, j - i)) break;
-        if (k == sizeof ENT / sizeof *ENT) return 0;
-        cp = ENT[k].cp;
+        if (!(cp = ent_lookup(s + i, j - i))) return 0;
         i = j + 1;
     }
     *used = i;
@@ -584,6 +577,8 @@ static void open_ctl(int t) {
         if (c.rows > 30) c.rows = 30;
     } else c.kind = C_SELECT;
     c.name = astr(name);
+    c.ph = astr((v = A("placeholder")) ? v : "");
+    c.fl = (A("required") ? CF_REQ : 0) | (ty && !strcasecmp(ty, "email") ? CF_EMAIL : 0) | (A("autofocus") ? CF_AUTO : 0) | (A("readonly") || A("disabled") ? CF_RO : 0);
     if (t == T_TEXTAREA) {
         char *tv = malloc(L.clen + 1);                      /* initial text: raw body, entities decoded, first newline dropped */
         if (tv) {
@@ -709,11 +704,13 @@ static void open_tag(int t) {
         break;
     case T_IMG: {
         const char *src = A("src"), *alt = A("alt");
-        char u[URL_MAX];
+        char u[URL_MAX], pk[URL_MAX];
+        if (pic_src[0]) { src = pic_src; pic_src[0] = 0; }
+        else if (A("srcset") && img_pick(src, A("srcset"), A("sizes"), right(), pk, sizeof pk)) src = pk;
         int idx = -1, iw = 0, ih = 0, st = IMG_FAILED;
-        if (src && *src && strncasecmp(src, "data:", 5)) {
-            url_resolve(L.base, src, u, sizeof u);
-            idx = img_ref(u);
+        if (src && *src) {
+            if (!strncasecmp(src, "data:", 5)) idx = img_ref_ex(src, A("loading"));        /* data: URLs can be long and are already absolute */
+            else { url_resolve(L.base, src, u, sizeof u); idx = img_ref_ex(u, A("loading")); }
             st = img_info(idx, &iw, &ih);
         }
         int avail = right() - left(), W = 0, H = 0;
@@ -1120,6 +1117,16 @@ static void parse_range(const char *src, size_t i, size_t n) {
             continue;
         }
         parse_attrs(tb);
+        if (t == T_RAW && !strcmp(name, "svg") && nat < 15) {     /* inline SVG: rasterised (svg.c) and placed like an <img> */
+            int ce, next = skip_raw(src, i, n, name, &ce), idx = img_svg_inline(src + k - 1, next - (k - 1), S.col & 0xFFFFFF);
+            if (idx >= 0) {
+                at[nat].n = "src"; at[nat].v = (char *)img_url(idx); nat++;
+                L.src = src; L.srcn = n; L.tpos = next;
+                start_el(T_IMG, "img", 0, 0);
+            }
+            i = next;
+            continue;
+        }
         if (t == T_RAW || t == T_TITLE) {
             int ce;
             int next = skip_raw(src, i, n, name, &ce);
@@ -1128,6 +1135,9 @@ static void parse_range(const char *src, size_t i, size_t n) {
             i = next;
             continue;
         }
+        if (!strcmp(name, "picture")) pic_src[0] = 0;               /* <picture>: the first <source> we can use wins over the <img> */
+        else if (!strcmp(name, "source") && !pic_src[0] && img_type_ok(A("type")) && (!A("media") || css_media(A("media"))))
+            img_pick(0, A("srcset"), A("sizes"), right(), pic_src, sizeof pic_src);
         if (!strcmp(name, "link")) link_sheet();
         const char *content = 0;
         int clen = 0;

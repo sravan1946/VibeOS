@@ -5,6 +5,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* the browser's faces have wide glyph coverage and a box for what is still missing (common/fontsw.c) */
+#define font_ui bfont_ui
+#define font_ui_bold bfont_ui_bold
+#define font_title bfont_title
+#define font_mono bfont_mono
+#define font_mono_bold bfont_mono_bold
+
 #define MAX_PAGE (2u << 20)      /* body bytes kept per page */
 #define URL_MAX  1024
 /* what we call ourselves everywhere (HTTP User-Agent; JS navigator.userAgent should say the same): Firefox-shaped so sites
@@ -139,21 +146,37 @@ const char *sheet_get(const char *url, size_t *len);   /* the text once loaded; 
 int  sheet_pump(void);                           /* advance downloads; nonzero when a sheet arrived or failed */
 int  sheet_busy(void);
 void sheet_reset(void);                          /* new page */
+void *sheet_save(void);                          /* same trio as img_save, for a background tab */
+void sheet_restore(void *h);
+void sheet_drop(void *h);
 
 /* ---- img.c: per-page image cache. Images are fetched by helper processes (two at a time), decoded
  * in-process and kept (plus one scaled copy) until the next page. ---- */
 enum { IMG_QUEUED, IMG_LOADING, IMG_READY, IMG_FAILED };
+int  img_ref_ex(const char *url, const char *loading);   /* same, with the <img loading=lazy|eager> attribute (or NULL): lazy = only fetched once drawn, eager = at once */
 int  img_ref(const char *url);                   /* index; queues the download on first use */
 int  img_info(int i, int *w, int *h);            /* IMG_*; size when ready */
 const uint32_t *img_pixels(int i, int w, int h, color_t bg);   /* w*h opaque pixels (scaled, over bg), or NULL */
 int  img_pump(void);                             /* advance downloads; nonzero when an image became ready/failed */
+void img_hold(int h);                            /* 1 while scrolling fast: img_pump decodes nothing (a decode is tens of ms) */
 int  img_busy(void);                             /* images still queued or downloading */
 void img_reset(void);                            /* new page */
+void *img_save(void);                            /* background tab: take the cache (empties it); img_restore(h) puts it back and frees h, img_drop(h) frees it */
+void img_restore(void *h);
+void img_drop(void *h);
 int  img_add_data(const char *url, const uint8_t *d, size_t n);   /* decode a body we already have */
+int  img_svg_inline(const char *svg, size_t n, long color);       /* an inline <svg> element's markup as an image (index, or -1); color = currentColor 0xRRGGBB or -1 */
+const char *img_url(int i);                      /* the cache key / URL of image i */
+int  img_anim_due(void);                         /* ms until an animated GIF on screen wants its next frame, -1 = none (wake the loop then; no relayout needed) */
+/* srcset/sizes: the URL to load for an <img> or <source> (src may be NULL), vw = viewport width. 1 = out filled (unresolved URL) */
+int  img_pick(const char *src, const char *srcset, const char *sizes, int vw, char *out, int cap);
+int  img_type_ok(const char *mime);              /* a <source type=...> the decoders handle (png/jpeg/gif/svg/bmp; not webp/avif) */
 
 /* ---- html.c ---- */
+extern int doc_zoom;                             /* main.c: page zoom in percent (100 = normal); layout scales fonts, lengths and images by it */
 enum { C_TEXT, C_PASS, C_AREA, C_BTN, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT };
-struct ctl { uint8_t kind, sub, chk; int form, ord, item, node; uint32_t name, val; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits */
+struct ctl { uint8_t kind, sub, chk, fl; int form, ord, item, node; uint32_t name, val, ph; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits; ph: placeholder (txt offset, "" = none); fl: CF_* */
+enum { CF_REQ = 1, CF_EMAIL = 2, CF_AUTO = 4, CF_RO = 8 };   /* required, type=email, autofocus, readonly/disabled */
 struct opt { uint32_t lab, val; };
 struct form { uint32_t action; uint8_t post; int node; };
 #define FL_UL 1
@@ -195,14 +218,18 @@ int  doc_find(const struct doc *d, const char *needle, int from_it, int from_off
 int  doc_count(const struct doc *d, const char *needle);
 
 /* ---- form.c: control state (survives re-layout), drawing, editing, submit URLs ---- */
-struct fstate { char *val; int cap, on, sel, init, sx, sy; };   /* sx/sy: text scroll */
+struct fstate { char *val; int cap, on, sel, init, sx, sy, anc1; };   /* sx/sy: text scroll; anc1: selection anchor byte + 1 (0 = none) */
 struct fstate *fs_get(const struct doc *d, int ci);      /* state of control ci (lazily initialised) */
 struct fstate *fs_ord(int ord);                          /* by ordinal, or NULL */
 void fs_set(struct fstate *s, const char *v);
 void fs_reset(void);
+void *fs_save(void);                                     /* same trio as img_save: field values of a background tab */
+void fs_restore(void *h);
+void fs_drop(void *h);
 void ctl_draw(struct canvas *c, const struct doc *d, const struct ctl *t, int x, int y, int w, int h, int focused, int caret);
 int  ctl_key(const struct doc *d, int ci, const struct gui_event *k, int *caret);   /* 1 = Enter pressed */
 int  ctl_caret_at(const struct doc *d, int ci, int rx, int ry);
+int  form_check(const struct doc *d, int form, char *msg, int cap);   /* first control failing required / type=email: its index + a message, else -1 */
 void ctl_toggle(const struct doc *d, int ci);            /* click on a checkbox / radio */
 void form_reset(const struct doc *d, int form);
 /* URL (GET) or body (POST) for submitting `form`, pressed by control `btn` (or -1): returns 1 for POST, 0 for GET */
