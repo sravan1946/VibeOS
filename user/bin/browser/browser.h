@@ -100,7 +100,7 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
        P_OUTW, P_OUTS, P_OUTC, P_OUTO,                                 /* outline width/style (BS_*)/colour/offset */
        P_SHX, P_SHY, P_SHB, P_SHS, P_SHC, P_SHI,                       /* box-shadow, first layer: offset x/y, blur, spread, colour (K_NONE = no shadow), inset 0/1 */
        P_CRESET, P_CINC,                                               /* counter-reset / counter-increment: K_STR "name N name N" (K_NONE = none); see css_cnt_* */
-       P_OBJPX, P_OBJPY, P_TRX, P_TRY,                                 /* object-position (px/%), transform: translate() offset (px/%) */
+       P_OBJPX, P_OBJPY, P_TRX, P_TRY, P_MASKIMG,                      /* object-position (px/%), transform: translate() offset (px/%), mask-image (K_STR url or K_NONE; draw the background colour through it) */
        P_N };
 /* value kinds. K_PX also carries every keyword/enum/colour (value in v). Lengths: K_PX px, K_PCT percent*100, K_CALC compiled
  * calc()/min()/max()/clamp() with a percentage inside (resolve with css_len()). Never read p->v of a length directly: css_len(). */
@@ -289,5 +289,17 @@ int  js_focus_req(void);                          /* element.focus() target (con
 char *js_alert(void);                             /* pending alert() text (malloc'd, consumed), or NULL */
 int  js_log_count(void);                          /* console lines (oldest first) */
 const char *js_log_line(int i, int *kind);        /* kind: 0 log, 1 warn, 2 error */
-extern const char js_prelude[];                   /* dom_js.c: the DOM classes over the natives */
+void js_viewport(int scroll, int w, int h);       /* the window's scroll offset and viewport size (window.scrollY, innerWidth, rects) */
+int  js_scroll_req(void);                         /* window.scrollTo target (document y), consumed, or -1 */
+const char *js_anchor_req(void);                  /* location.hash was set: scroll to this anchor name (consumed), or NULL */
+const char *js_url_change(void);                  /* pushState/replaceState/hash changed the URL without a load (consumed), or NULL */
+void js_set_rect(int node, int x, int y, int w, int h);   /* layout -> JS: border box of a data-vjs element, document coords (getBoundingClientRect, offset*) */
+/* the JS node tree for layout (ids = data-vjs ids; 1 = document, 2 = <html>; types 1 element, 3 text, 8 comment, 9 document, 11 fragment) */
+int  dom_first(int n), dom_next(int n), dom_parent(int n), dom_type(int n);
+const char *dom_tag(int n), *dom_text(int n), *dom_attr(int n, const char *name);   /* attr: NULL if absent */
+uint32_t dom_gen(void);                           /* bumped by every change to the connected tree */
+int  dom_dirty(int *ids, int max);                /* ids whose attributes/text/children changed since the last call (each also marks its parent); -1 = overflow, assume all */
+int  js_submit_req(void);                         /* form.submit() was called: the form's node (consumed), or 0 */
+extern const char js_prelude[];
+extern const char js_prelude2[];                  /* web_js.c: URL, fetch, XHR, storage, observers, Intl ... (runs after js_prelude) */                   /* dom_js.c: the DOM classes over the natives */
 void browser_status(int bad, const char *fmt, ...);   /* main.c: the status bar */
