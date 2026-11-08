@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compositor benchmark: boots VibeOS (visible QEMU, absolute pointer), runs UI scenarios and prints the
+"""Compositor benchmark: boots VibeOS (QEMU; --headless or VIBE_HEADLESS=1 for no window, absolute pointer), runs UI scenarios and prints the
 GFXSTAT lines the kernel writes to serial. Needs a kernel built with `make KEXTRA=-DGFXSTAT`.
 
   tools/gfxbench.py [--mode WxH] [--shots DIR] [scenario ...]     (default: all)
@@ -40,8 +40,8 @@ def sc_resize(vm, W, H):                     # grow/shrink from the bottom-right
         drag(vm, 912, 600, 1100, 720); drag(vm, 1100, 720, 912, 600)
 def sc_maximize(vm, W, H):                   # maximise / restore: full-screen repaints
     for _ in range(4):
-        vm.moveto(500, 32); vm.m.sendall(b"mouse_button 1\n"); time.sleep(0.04); vm.m.sendall(b"mouse_button 0\n"); time.sleep(0.04)
-        vm.m.sendall(b"mouse_button 1\n"); time.sleep(0.04); vm.m.sendall(b"mouse_button 0\n"); time.sleep(0.8)
+        vm.moveto(500, 32); vm.hmp("mouse_button 1"); time.sleep(0.04); vm.hmp("mouse_button 0"); time.sleep(0.04)
+        vm.hmp("mouse_button 1"); time.sleep(0.04); vm.hmp("mouse_button 0"); time.sleep(0.8)
 def sc_launcher(vm, W, H):
     for _ in range(6):
         vm.keyev("meta_l", True); vm.keyev("meta_l", False); time.sleep(0.6)
@@ -68,13 +68,14 @@ SCEN = [(k[3:], v) for k, v in list(globals().items()) if k.startswith("sc_")]
 
 def main(argv):
     mode, shots, names = None, None, []
+    headless = os.environ.get("VIBE_HEADLESS") == "1"
     it = iter(argv)
     for a in it:
         if a == "--mode": mode = next(it)
+        elif a == "--headless": headless = True
         elif a == "--shots": shots = next(it); os.makedirs(shots, exist_ok=True)
         else: names.append(a)
-    vm = VM(absolute=True)
-    vm.m.settimeout(0.02)                   # the stock 0.2 s drain makes typing 5x slower
+    vm = VM(headless=headless, absolute=True)
     try:
         if not vm.wait("[desktop] ready", 60): print("no desktop"); return 1
         time.sleep(1)

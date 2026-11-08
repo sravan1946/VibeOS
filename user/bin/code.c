@@ -1130,6 +1130,7 @@ int main(int argc, char **argv) {
     struct gui_window *w = gui_window_create("Code", dw, dh, 0);
     const struct font *mf = T_MONO;
     if (!w) return 1;
+    gui_set_minsize(w, 640, 480);
     CW = T_MONO->g['M' - 32].adv;
     LH = T_MONO->height + SP_1;
     ui_init(&ui, w); ui.own_w = true;

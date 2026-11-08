@@ -289,7 +289,7 @@ struct win_info {
 };
 
 enum { WIN_SET_TITLE = 1, WIN_SET_SIZE, WIN_SET_POS, WIN_SET_VISIBLE,
-       WIN_SET_PREFS };   /* PREFS: desktop re-reads /etc/wallpaper (name or image path) and /etc/tz */
+       WIN_SET_PREFS, WIN_SET_MINSIZE };   /* MINSIZE: arg = struct win_rect* (w, h), the floor for interactive resize (default 160x80); PREFS: desktop re-reads /etc/wallpaper (name or image path) and /etc/tz */
 
 /* reading a window fd yields struct gui_event records */
 enum {

@@ -390,6 +390,7 @@ int main(int argc, char **argv) {
     buf[0] = 0;
     struct gui_window *w = gui_window_create("Untitled \u2014 Text Editor", 760, 520, 0);
     if (!w) { perror("notepad"); return 1; }
+    gui_set_minsize(w, 440, 220);
     const struct font *mf = T_MONO;
     CW = mf->g['M' - 32].adv;
     LH = mf->height + SP_1;
