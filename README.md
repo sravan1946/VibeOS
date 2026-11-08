@@ -21,8 +21,8 @@ emulator, and a set of desktop apps and games.
   demand paging (lazy brk, stacks and `mmap`), `mmap`/`munmap`/`mprotect`.
 - Preemptive scheduling of user programs, ring 3, ELF loading, `spawn`/`exec`/`waitpid`/signals, threads (`<pthread.h>`: mutexes, condvars),
   per-task FPU state, POSIX-style signal handlers (masks, `sigreturn`, SIGCHLD/SIGWINCH),
-  ~50 syscalls (`common/abi.h`).
-- VFS with mounts: read/write **ext2** root filesystem on ATA, `/dev` (null zero random tty
+  64 syscalls (`common/abi.h`).
+- VFS with mounts: read/write **ext2** root filesystem on ATA (8 MiB hashed block cache, read-ahead, delayed write-back with `fsync`; `statfs` for free space, `df`), `/dev` (null zero random tty
   kmsg clipboard notify display theme wallpaper dsp), `/proc` (meminfo uptime cpuinfo version processes), pipes, `poll()`.
 - TTY line discipline (canonical and raw modes, job control signals, window size).
 - **Networking**: PCI, Intel e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP, DHCP, DNS, TLS (BearSSL), and TCP
@@ -32,7 +32,10 @@ emulator, and a set of desktop apps and games.
 
 **Desktop**
 - In-kernel compositor with damage tracking, soft shadows, rounded anti-aliased windows,
-  window open animations, a procedural aurora wallpaper (5 styles) or any PNG/JPEG picture.
+  open/close/minimise motion, a procedural "Dunes" wallpaper (plus four calm blob styles) or any PNG/JPEG picture.
+- **Graphite & Signal design** (`docs/DESIGN.md`): one amber accent, a 2px signal line, Inter and Lucide icons across the compositor chrome
+  (32px title bars, the 40px panel, launcher, menus, toasts, Alt+Tab) and a toolkit every app is built on (buttons, inputs with
+  selection, switches, sliders, dropdowns, tab strips, lists, dialogs, toasts, progress cards, keyboard focus rings).
 - **Themes**: Graphite dark (the default), Graphite light and High contrast (spec: `docs/DESIGN.md`), plus nine accent colours (amber by default) and a window-animations switch;
   one colour definition (`common/theme.h`) drives the compositor, the terminals and every libgui app, and a switch repaints all open windows
   at once. Settings > Appearance / Wallpaper, or `theme light`, `theme -s accent blue` in the shell (`-s` saves to `/etc/theme`).
@@ -47,12 +50,12 @@ emulator, and a set of desktop apps and games.
   Display with a "Keep this resolution?" revert, or `display 1920x1080` in the shell; saved in `/etc/display`.
 - 4 virtual workspaces (Super+1..4, Super+Shift+1..4 to move a window), an Alt+Tab switcher with
   live thumbnails, toast notifications and a notification center (Super+N; `notify TITLE BODY`,
-  `/dev/notify`), a taskbar with launcher, workspace dots, volume and network tray, CPU meter and clock.
+  `/dev/notify`), a panel with a searchable launcher, workspace pills, task buttons, network/volume/notification tray and clock.
 - An xterm-compatible terminal emulator (256 colours and truecolor, bold/dim/italic/underline/strike,
   alternate screen, scroll regions, scrollback, UTF-8) with mouse selection; a system clipboard shared by
   every app. Terminal windows have tabs (Ctrl+Shift+T/W, Ctrl+PgUp/PgDn), scrollback search (Ctrl+Shift+F),
   zoom (Ctrl+= / Ctrl+- / Ctrl+0), Ctrl+Shift+C/V and Ctrl+click on a URL to open it in the browser.
-- **Files and desktop icons**: Files has icon-grid (with image thumbnails) and list views, a sidebar, history, a typeable path bar, search, multi-select (Ctrl/Shift/rubber band), copy/cut/paste, rename, a Trash with restore, a Properties dialog, right-click menus and drag and drop; `/home/Desktop` shows as icons on the wallpaper (drag them, double-click to open, drop files on them). Double-clicks go through `/etc/open.conf` (extension -> program), also reachable as `open FILE`; `trash FILE` is the shell side of the Trash.
+- **Files and desktop icons**: Files has icon-grid (with image thumbnails) and list views, a sidebar, history, a typeable path bar, search, multi-select (Ctrl/Shift/rubber band), copy/cut/paste, rename, a Trash with restore, a Properties dialog, right-click menus and drag and drop; copies, moves and deletes run in the background with a progress card and Skip / Replace / Keep both on name clashes, Ctrl+Z undoes trash/restore/rename/new, and the status bar shows free space; `/home/Desktop` shows as icons on the wallpaper (drag them, double-click to open, drop files on them). Double-clicks go through `/etc/open.conf` (extension -> program), also reachable as `open FILE`; `trash FILE` is the shell side of the Trash.
 - Fonts (Inter with tabular digits for the UI type ramp, JetBrains Mono for terminals; OFL, `third_party/fonts`)
   baked into the build with Latin-1, arrows, symbols and box/block glyphs; Lucide icons (ISC) and the app/file-type
   icon set rasterised with nanosvg at build time (`common/icons.h`).
@@ -76,7 +79,7 @@ emulator, and a set of desktop apps and games.
 - `/bin/tcc`: TinyCC 0.9.27 compiles C inside VibeOS against its own libc (`tcc hello.c -o hello`, `tcc -run`, `-lgui` for windows); see `~/projects/README.txt`.
 - Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc` (`nc -l` listens; `wget` does https:// with certificate checks), and `httpd` — run it inside `make run` and open http://localhost:8080 on the host. Audio: `play` (WAV files), `midi` (Standard MIDI Files through an OPL3 FM synth; needs the Freedoom WAD for its instruments), `tone`.
-- GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + basic CSS, PNG/JPEG/GIF images, forms, find-in-page, JavaScript with a DOM, events, timers and `fetch`), Paint (saves/opens PNG), **Code** (a small IDE: project sidebar, tabs, C and Lua highlighting, find/replace, Build with tcc and Run with an output pane, click an error to jump to it), Image
+- GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + CSS (`<style>`, `<link>` stylesheets, `@import`, `@media`), real tables (colspan/rowspan, CSS widths and borders), PNG/JPEG/GIF images, forms, find-in-page, JavaScript with a DOM, events, timers and `fetch`), Paint (saves/opens PNG), **Code** (a small IDE: project sidebar, tabs, C and Lua highlighting, find/replace, Build with tcc and Run with an output pane, click an error to jump to it), Image
   viewer (PNG/JPEG/GIF/BMP/PPM, animated GIFs, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
   Monitor, Settings, About, Piano (a polyphonic synth keyboard), Music (library, playlist, shuffle/repeat, seek, album art; MP3/Ogg/WAV). PrtSc saves a PNG screenshot
   to `~/Pictures`.
@@ -98,16 +101,28 @@ terminal; press Super for the launcher; right-click the desktop to change the wa
 
 ### Testing
 
-`tools/vmtest.py` boots the image in QEMU and drives it from a script: type text, press keys,
-move and click the mouse, wait for serial output, take screenshots. For example:
+`tools/vmtest.py` boots the image in a QEMU window and drives it from a script. Commands go in over a serial
+channel instead of being typed (`run:CMD` runs one and waits for its exit code, about 2 ms each), and there are
+steps for keys, the mouse, waiting for serial output and screenshots:
 
 ```sh
-python3 tools/vmtest.py smoke 'type:ls -l /bin\n' sleep:1 shot:build/ls.png
+python3 tools/vmtest.py --abs suites                       # every in-VM test suite, ~6 s
+python3 tools/vmtest.py --abs run:'ls -l /bin' term:top shot:build/top.png
+python3 tools/vmtest.py --abs --autostart 'term /bin/sysbench -k' wait:BENCH-DONE
 ```
 
-`/etc/autostart` (in `root/etc/`, not committed) picks what the desktop opens at boot:
-`shell`, `term ARGV…` or `run ARGV…`. There are host-side tests for the ext2 driver
-(`tools/ext2test`, checked against `e2fsck`), the terminal emulator (`tools/termtest`), libc (`tools/libctest`) and the image codecs against Pillow (`tools/imagetest`) and the chess move generator (`tools/chesstest`, perft; both in `make test-host`).
+`term:CMD` opens a visible terminal, `type:TEXT` feeds text to the focused window, `keys:TEXT` sends real key
+presses; the top of `tools/vmtest.py` lists every step. `make test-host` runs the host-side tests: the ext2 driver
+(`tools/ext2test`, checked against `e2fsck`), the terminal emulator (`tools/termtest`), libc (`tools/libctest`),
+the image codecs against Pillow (`tools/imagetest`), the renderer (`tools/gfxtest`), theme contrast, Files'
+helpers and the chess move generator (`tools/chesstest`, perft).
+
+### Performance
+
+Boot to the desktop takes about 210 ms of kernel time. Cold disk reads run at ~280 MB/s and writes at ~150 MB/s,
+`spawn` takes ~18 µs, and Python, QuickJS and Lua start cold in 5-12 ms. `sysbench` (kernel, filesystem,
+libc), `bench` (apps) and `tools/gfxbench.py` (compositor frame cost) measure it; the numbers and what changed
+are in [CHANGELOG.md](CHANGELOG.md#performance).
 
 ## Layout
 
