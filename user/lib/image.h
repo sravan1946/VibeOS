@@ -41,6 +41,10 @@ void image_sample(const struct image *im, uint32_t *dst, int dw, int dh, int str
                   float ox, float oy, float scale, int smooth);
 
 /* zlib (RFC 1950/1951) building blocks, exposed for tests and other formats */
+int  deflate_inflate(const uint8_t *in, size_t n, size_t start, uint8_t **out, size_t *olen, size_t hint);   /* raw deflate from in[start] */
+uint8_t *deflate_buf(const uint8_t *in, size_t n, size_t *len);   /* raw deflate (LZ77 + fixed Huffman), malloc'd; NULL on OOM */
+uint8_t *gzip_buf(const uint8_t *in, size_t n, size_t *len);        /* .gz member, malloc'd; NULL on OOM */
+int  gunzip_buf(const uint8_t *in, size_t n, uint8_t **out, size_t *olen);   /* 0 / -1; CRC checked; malloc'd */
 int  zlib_inflate(const uint8_t *in, size_t n, uint8_t **out, size_t *olen, size_t hint);   /* 0 / -1; malloc'd */
 uint32_t crc32_update(uint32_t crc, const uint8_t *p, size_t n);   /* start with 0 */
 uint32_t adler32(const uint8_t *p, size_t n);
