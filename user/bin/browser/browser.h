@@ -85,12 +85,14 @@ struct form { uint32_t action; uint8_t post; int node; };
 #define FL_STRIKE 2
 #define FL_IMG 4
 #define FL_CTL 8
-struct item { int x, y; short w, h, bel; uint8_t font, flags; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
-struct decor { int x, y, w, h; color_t col; };
+struct item { int x, y; short w, h, clip; uint8_t font, flags; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
+struct decor { int x, y, w, h; color_t col; int it; short clip; uint8_t rad, ring; };   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */
+struct cliprect { int x, y, w, h; };
 struct anchor { char name[40]; int y; };
 struct doc {
     struct item *it; int nit, itcap;
     struct decor *dc; int ndc, dccap;
+    struct cliprect *cl; int ncl, clcap;   /* overflow clips; index 0 = none */
     char *txt; size_t ntxt, txtcap;
     char **link; int nlink, linkcap;
     struct anchor *an; int nan;
