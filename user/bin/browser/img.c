@@ -17,11 +17,13 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <syscall.h>
+#include "../benchutil.h"
 
 #define NSLOT 6
 #define MAXIMG 400
 #define MAXDIM 2048
-#define MAXPX 2500000             /* decoded pixels kept per picture (about 1920x1300) */
+#define MAXPX 1800000             /* decoded pixels kept per picture (about 1600x1100) */
+#define BUDGET (40L << 20)        /* bytes of decoded pictures kept; the least recently drawn are dropped and decoded again when drawn */
 #define FIRST 8
 #define LOOKAHEAD 8
 #define MAX_HOPS 4
@@ -38,6 +40,8 @@ struct pimg {
     uint32_t want;                      /* uptime_ms | 1 when last drawn, 0 = never */
     struct image_anim an; int nf, fr, plays; uint32_t t_next;
     long cur;                           /* currentColor for an inline SVG (-1 = black) */
+    uint8_t mode;                       /* loading="": 0 auto (look-ahead window), 1 lazy (only once drawn), 2 eager (now) */
+    uint8_t reload;                     /* pixels were dropped (state QUEUED again, size still known): fetched again when drawn, no relayout */
 };
 static struct pimg *P;
 static int np, pcap, want_hi = -1;
@@ -48,6 +52,12 @@ static void init(void) {
     if (slots_init) return;
     slots_init = 1;
     for (int i = 0; i < NSLOT; i++) sl[i].idx = -1;
+}
+
+int img_ref_ex(const char *url, const char *loading) {
+    int i = img_ref(url);
+    if (i >= 0 && loading) P[i].mode = !strcasecmp(loading, "lazy") ? 1 : !strcasecmp(loading, "eager") ? 2 : 0;
+    return i;
 }
 
 int img_ref(const char *url) {
@@ -70,10 +80,12 @@ const char *img_url(int i) { return i >= 0 && i < np ? P[i].url : ""; }
 
 int img_info(int i, int *w, int *h) {
     if (i < 0 || i >= np) return IMG_FAILED;
-    if (P[i].state == IMG_READY) { *w = P[i].nw; *h = P[i].nh; }
+    if (P[i].state == IMG_READY || P[i].reload) { *w = P[i].nw; *h = P[i].nh; return IMG_READY; }   /* (a dropped picture still has its size) */
     return P[i].state;
 }
 
+static void trim(void);
+static long ub = -1;                    /* decoded bytes held, -1 = recompute (see used_bytes) */
 /* take a decoded picture; nw x nh is its natural size. Pictures over the pixel budget are shrunk now. */
 static void adopt(struct pimg *p, struct image im, int nw, int nh) {
     float s = 1;
@@ -89,9 +101,17 @@ static void adopt(struct pimg *p, struct image im, int nw, int nh) {
     p->im = im;
     p->nw = nw; p->nh = nh;
     p->state = IMG_READY;
+    ub = -1;
+    trim();
 }
 
+static void decode1(struct pimg *p, const uint8_t *d, size_t n);
 static void decode(struct pimg *p, const uint8_t *d, size_t n) {
+    uint32_t t0 = uptime_ms();
+    decode1(p, d, n);
+    if (uptime_ms() - t0 > 30) blog("BROWSER img %s decode %d bytes -> %dx%d took %u ms", p->url, (int)n, p->im.w, p->im.h, (unsigned)(uptime_ms() - t0));
+}
+static void decode1(struct pimg *p, const uint8_t *d, size_t n) {
     struct image im;
     int nw = 0, nh = 0;
     if (svg_is(d, n)) {
@@ -136,6 +156,39 @@ int img_svg_inline(const char *svg, size_t n, long color) {
     return i;
 }
 
+static long img_bytes(const struct pimg *p) {
+    if (p->state != IMG_READY || !p->im.px) return 0;
+    return (long)p->im.w * p->im.h * 4 * (p->nf > 1 ? p->nf : 1) + (p->sc ? (long)p->scw * p->sch * 4 : 0);
+}
+static void evict(struct pimg *p) {
+    ub = -1;                                                 /* drop the pixels, keep the size: it is fetched and decoded again if drawn */
+    free(p->im.px); free(p->sc);
+    p->im.px = 0; p->sc = 0;
+    p->state = IMG_QUEUED; p->hops = 0; p->reload = 1;
+}
+/* over budget: drop the pictures drawn longest ago (never one drawn in the last 2 s, or an animation) */
+static void trim(void) {
+    uint32_t now = uptime_ms();
+    for (;;) {
+        long tot = 0;
+        struct pimg *v = 0;
+        for (int i = 0; i < np; i++) {
+            struct pimg *p = &P[i];
+            long b = img_bytes(p);
+            tot += b;
+            if (!b || p->nf > 1 || (p->want && now - p->want < 2000)) continue;
+            if (!v || (int32_t)(p->want - v->want) < 0) v = p;
+        }
+        if (tot <= BUDGET || !v) return;
+        evict(v);
+    }
+}
+
+static long used_bytes(void) {
+    if (ub < 0) { ub = 0; for (int i = 0; i < np; i++) ub += img_bytes(&P[i]); }
+    return ub;
+}
+
 static void slot_free(struct slot *s) { fetch_cancel(&s->f); s->idx = -1; }
 
 static void fail(struct slot *s) { P[s->idx].state = IMG_FAILED; slot_free(s); }
@@ -164,17 +217,29 @@ static int pump_slot(struct slot *s) {
         begin(s, next);
         return 0;
     }
+    int re = p->reload;
     decode(p, (uint8_t *)rs.body, rs.blen);
     free(rs.body);
     s->idx = -1;
+    if (re && p->state == IMG_READY) { p->reload = 0; return 0; }      /* same picture, same size: nothing to lay out again */
+    p->reload = 0;
     return 1;
 }
 
-static int eligible(int q) { return P[q].want || q < FIRST || q <= want_hi + LOOKAHEAD; }
+static int eligible(int q) {
+    if (P[q].reload) return P[q].want && uptime_ms() - P[q].want < 1000;     /* dropped: only while it is on screen */
+    if (P[q].want || P[q].mode == 2) return 1;
+    if (P[q].mode == 1) return 0;
+    return (q < FIRST || q <= want_hi + LOOKAHEAD) && used_bytes() < BUDGET * 3 / 4;   /* prefetch only while there is room: it would just be dropped again */
+}
+
+static int hold;
+void img_hold(int h) { hold = h; }          /* main.c: the page is scrolling fast; no decoding until it settles */
 
 int img_pump(void) {
     init();
     int changed = 0;
+    if (hold) return 0;
     for (int i = 0; i < NSLOT; i++) if (sl[i].idx >= 0) changed |= pump_slot(&sl[i]);
     int files = 0;
     for (int pass = 0; pass < 2; pass++)                     /* drawn images first, then the look-ahead window */
@@ -191,9 +256,11 @@ int img_pump(void) {
                 long got = 0, sz = st.st_size, r;
                 while (buf && got < sz && (r = read(fd, buf + got, sz - got)) > 0) got += r;
                 if (fd >= 0) close(fd);
+                int re = P[q].reload;
                 if (buf && got == sz) { P[q].state = IMG_LOADING; decode(&P[q], buf, got); } else P[q].state = IMG_FAILED;
                 free(buf);
-                changed = 1;
+                P[q].reload = 0;
+                changed |= !(re && P[q].state == IMG_READY);
                 continue;
             }
             if (!url_is_web(u)) { P[q].state = IMG_FAILED; changed = 1; continue; }
@@ -254,7 +321,7 @@ void img_reset(void) {
         free(P[i].url); free(P[i].sc);
         if (P[i].nf > 1) image_anim_free(&P[i].an); else free(P[i].im.px);
     }
-    np = 0; want_hi = -1;
+    np = 0; want_hi = -1; ub = -1;
 }
 
 /* a background tab keeps its decoded pictures: img_save() takes the cache (downloads in flight go back to the queue), img_restore() puts it back */
@@ -263,14 +330,15 @@ void *img_save(void) {
     struct img_saved *h = malloc(sizeof *h);
     if (!h) return 0;
     for (int i = 0; i < NSLOT; i++) if (sl[i].idx >= 0) { P[sl[i].idx].state = IMG_QUEUED; P[sl[i].idx].hops = 0; slot_free(&sl[i]); }
+    for (int i = 0; i < np; i++) if (img_bytes(&P[i]) > (256 << 10) && P[i].nf < 2) evict(&P[i]);   /* a parked tab keeps small pictures only */
     *h = (struct img_saved){ P, np, pcap, want_hi };
-    P = 0; np = pcap = 0; want_hi = -1;
+    P = 0; np = pcap = 0; want_hi = -1; ub = -1;
     return h;
 }
 void img_restore(void *v) {
     struct img_saved *h = v;
     img_reset(); free(P);
-    P = h->P; np = h->np; pcap = h->pcap; want_hi = h->want_hi;
+    P = h->P; np = h->np; pcap = h->pcap; want_hi = h->want_hi; ub = -1;
     free(h);
 }
 void img_drop(void *v) { struct img_saved *h = v; if (h) { free_set(h->P, h->np); free(h); } }
@@ -282,7 +350,7 @@ const uint32_t *img_pixels(int i, int w, int h, color_t bg) {
     if (i > want_hi) want_hi = i;
     if (p->state != IMG_READY) return 0;
     if (p->sc && p->scw == w && p->sch == h && p->scbg == bg) return p->sc;
-    free(p->sc);
+    free(p->sc); ub = -1;
     p->sc = malloc((size_t)w * h * 4);
     if (!p->sc) return 0;
     p->scw = w; p->sch = h; p->scbg = bg;

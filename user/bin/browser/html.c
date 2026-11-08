@@ -141,6 +141,25 @@ int doc_count(const struct doc *d, const char *nd) {
 
 /* ---------- drawing ---------- */
 static void draw_box(struct canvas *cc, const struct doc *d, const struct item *it, int x, int y) {
+    int nw, nh;
+    if (it->fit && img_info(it->ref, &nw, &nh) == IMG_READY && nw > 0 && nh > 0) {   /* object-fit: contain, cover, none, scale-down (fill = the plain path) */
+        long W = it->w, H = it->h, tw = nw, th = nh;
+        int wide = W * nh > H * nw;                      /* the box is wider than the picture */
+        int contain = it->fit == 1 || (it->fit == 4 && (nw > W || nh > H));
+        if (contain || it->fit == 2) {
+            int by_h = it->fit == 2 ? !wide : wide;
+            tw = by_h ? H * nw / nh : W; th = by_h ? H : W * nh / nw;
+        }
+        if (tw < 1) tw = 1;
+        if (th < 1) th = 1;
+        const uint32_t *p2 = img_pixels(it->ref, tw, th, d->bg);
+        if (p2) {
+            struct canvas c2 = *cc;
+            canvas_clip(&c2, x, y, it->w, it->h);
+            gfx_blit(&c2, x + (it->w - tw) / 2, y + (it->h - th) / 2, p2, tw, th, tw);
+            return;
+        }
+    }
     const uint32_t *px = img_pixels(it->ref, it->w, it->h, d->bg);
     if (px) { gfx_blit(cc, x, y, px, it->w, it->h, it->w); return; }
     int w, h, st = img_info(it->ref, &w, &h);           /* not ready: an outline with the alt text */
@@ -162,6 +181,41 @@ static void draw_decor(struct canvas *cc, const struct doc *d, const struct deco
     if (y >= vy + vh || y + r->h <= vy) return;
     struct canvas c2 = *cc, *c = cc;
     if (r->clip) { const struct cliprect *k = &d->cl[r->clip]; c2 = *cc; canvas_clip(&c2, vx + k->x, vy + k->y - scroll, k->w, k->h); c = &c2; }
+    if (r->img) {                                        /* background-image: sized, positioned, tiled, clipped to the box */
+        int iw, ih;
+        struct canvas c3 = *c;
+        canvas_clip(&c3, vx + r->x, y, r->w, r->h);
+        if (img_info(r->img - 1, &iw, &ih) != IMG_READY || iw <= 0 || ih <= 0) { img_pixels(r->img - 1, 1, 1, d->bg); return; }   /* (the call marks it visible so it loads) */
+        long W = r->w, H = r->h, tw = iw, th = ih;
+        if (r->kw == K_COVER || r->kw == K_CONTAIN) {
+            int wide = W * ih > H * iw;                  /* box is wider than the picture's aspect */
+            int by_w = r->kw == K_COVER ? wide : !wide;
+            tw = by_w ? W : H * iw / ih; th = by_w ? W * ih / iw : H;
+        } else {
+            if (r->kw == K_PX) tw = r->sw; else if (r->kw == K_PCT) tw = W * r->sw / 10000;
+            if (r->kh == K_PX) th = r->sh; else if (r->kh == K_PCT) th = H * r->sh / 10000;
+            if (r->kw != K_PX && r->kw != K_PCT && (r->kh == K_PX || r->kh == K_PCT)) tw = th * iw / ih;
+            if (r->kh != K_PX && r->kh != K_PCT && (r->kw == K_PX || r->kw == K_PCT)) th = tw * ih / iw;
+        }
+        if (tw < 1) tw = 1;
+        if (th < 1) th = 1;
+        if (tw > 4096 || th > 4096) return;
+        long ox = r->kx == K_PCT ? (W - tw) * r->px / 10000 : r->px, oy = r->ky == K_PCT ? (H - th) * r->py / 10000 : r->py;
+        const uint32_t *px = img_pixels(r->img - 1, (int)tw, (int)th, (r->col >> 24) == 0xFF ? r->col : d->bg);
+        if (!px) return;
+        int rx = r->rep == REP_REPEAT || r->rep == REP_X, ry = r->rep == REP_REPEAT || r->rep == REP_Y;
+        long x0 = rx ? ox - ((ox + tw - 1) / tw) * tw : ox, y0 = ry ? oy - ((oy + th - 1) / th) * th : oy, n = 0;
+        if (x0 > 0 && rx) x0 -= ((x0 + tw - 1) / tw) * tw;
+        if (y0 > 0 && ry) y0 -= ((y0 + th - 1) / th) * th;
+        for (long yy = y0; yy < H && n < 1500; yy += th) {
+            for (long xx = x0; xx < W && n < 1500; xx += tw, n++) {
+                gfx_blit_alpha(&c3, vx + r->x + (int)xx, y + (int)yy, px, (int)tw, (int)th, (int)tw);
+                if (!rx) break;
+            }
+            if (!ry) break;
+        }
+        return;
+    }
     if (r->ring) gfx_rrect_ring(c, vx + r->x, y, r->w, r->h, RADII(r->rad, r->rad, r->rad, r->rad), r->ring, r->col);
     else if (r->rad) gfx_round_fill(c, vx + r->x, y, r->w, r->h, r->rad, r->col);
     else gfx_fill(c, vx + r->x, y, r->w, r->h, r->col);
