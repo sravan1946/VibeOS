@@ -4,17 +4,20 @@
 #include <errno.h>
 #include <sys/types.h>
 
+/* 0-3 args go through sysenter (kernel: isr.asm): return eip in EBP, esp in ESI, ECX/EDX are clobbered by sysexit.
+ * 4-5 args use int 0x80, which still works for everything. */
+#define __SYSENTER "push %%ebp; mov $1f, %%ebp; mov %%esp, %%esi; sysenter; 1: pop %%ebp"
 static inline int __syscall0(int n) {
-    int r; __asm__ volatile("int $0x80" : "=a"(r) : "0"(n) : "memory"); return r;
+    int r, c, d; __asm__ volatile(__SYSENTER : "=a"(r), "=c"(c), "=d"(d) : "0"(n) : "memory", "esi"); return r;
 }
 static inline int __syscall1(int n, int a) {
-    int r; __asm__ volatile("int $0x80" : "=a"(r) : "0"(n), "b"(a) : "memory"); return r;
+    int r, c, d; __asm__ volatile(__SYSENTER : "=a"(r), "=c"(c), "=d"(d) : "0"(n), "b"(a) : "memory", "esi"); return r;
 }
 static inline int __syscall2(int n, int a, int b) {
-    int r; __asm__ volatile("int $0x80" : "=a"(r) : "0"(n), "b"(a), "c"(b) : "memory"); return r;
+    int r, d; __asm__ volatile(__SYSENTER : "=a"(r), "+c"(b), "=d"(d) : "0"(n), "b"(a) : "memory", "esi"); return r;
 }
 static inline int __syscall3(int n, int a, int b, int c) {
-    int r; __asm__ volatile("int $0x80" : "=a"(r) : "0"(n), "b"(a), "c"(b), "d"(c) : "memory"); return r;
+    int r; __asm__ volatile(__SYSENTER : "=a"(r), "+c"(b), "+d"(c) : "0"(n), "b"(a) : "memory", "esi"); return r;
 }
 static inline int __syscall4(int n, int a, int b, int c, int d) {
     int r; __asm__ volatile("int $0x80" : "=a"(r) : "0"(n), "b"(a), "c"(b), "d"(c), "S"(d) : "memory"); return r;

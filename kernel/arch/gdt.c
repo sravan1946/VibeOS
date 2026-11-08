@@ -8,7 +8,7 @@ struct tss {
 } PACKED;
 
 static uint64_t gdt[6];
-static struct tss tss;
+struct tss tss;                 /* isr.asm's sysenter_entry reads tss.esp0 */
 static struct { uint16_t limit; uint32_t base; } PACKED gdtr;
 extern void gdt_flush(void *gdtr);
 
@@ -34,6 +34,11 @@ void gdt_init(void) {
     gdtr.limit = sizeof gdt - 1;
     gdtr.base = (uint32_t)gdt;
     gdt_flush(&gdtr);
+    /* sysenter: CS = 0x08, SS = 0x10, user CS = 0x08+16, user SS = 0x08+24 - the layout above fits */
+    extern void sysenter_entry(void);
+    __asm__ volatile("wrmsr" :: "c"(0x174), "a"(KERNEL_CS), "d"(0));
+    __asm__ volatile("wrmsr" :: "c"(0x175), "a"(0), "d"(0));
+    __asm__ volatile("wrmsr" :: "c"(0x176), "a"((uint32_t)sysenter_entry), "d"(0));
 }
 
 void tss_set_kernel_stack(uint32_t esp0) { tss.esp0 = esp0; }
