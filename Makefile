@@ -331,6 +331,7 @@ test-host:   # host-side unit tests (libc, image codecs, terminal emulator, audi
 	sh tools/themetest/run.sh
 	sh tools/gfxtest/run.sh
 	sh tools/assetsheet/run.sh
+	sh tools/urltest/run.sh
 
 test-tls:    # HTTPS against local test servers (needs openssl)
 	sh tools/tlstest/run.sh
