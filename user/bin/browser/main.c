@@ -49,7 +49,7 @@ static int pend_push, pend_restore = -1, hops, layout_w;
 static int scroll, target;
 static uint32_t load_t0;
 static char post_body[2048];                 /* body for the next http fetch (form POST), consumed by start_fetch */
-static bool has_post;
+static bool has_post, was_post;               /* was_post: the fetch in flight is a POST (a 307/308 redirect repeats it) */
 /* page interaction state */
 static int fo = -1, caret;                   /* focused control (ordinal) and caret byte offset */
 static int sel_ci = -1, sel_scroll;          /* open <select> dropdown (control index) */
@@ -173,6 +173,7 @@ static void commit(const char *url, char *raw, size_t n, int html) {
         hcur = nhist++;
     }
     strlcpy(cur_url, url, sizeof cur_url);
+    fetch_set_referer(url_is_web(url) && strncasecmp(url, "data:", 5) ? url : 0);   /* Referer for this page's subresources and the next click */
     internal = false;
     if (!keep_imgs) img_reset();
     keep_imgs = false;
@@ -374,11 +375,12 @@ static void download(const char *url, const char *ct, char *body, size_t n, int 
 static void start_fetch(const char *url) {
     strlcpy(pend_url, url, sizeof pend_url);
     const char *pb = has_post ? post_body : 0;
+    was_post = has_post;
     has_post = false;
     if (fetch_start(&fe, url, pb) < 0) { net_error(url, "net:couldn't start the network helper"); return; }
     loading = true;
     load_t0 = fe.last;
-    char host[128], path[8];
+    char host[128] = "", path[8];
     int port;
     url_split_http(url, host, sizeof host, &port, path, sizeof path);
     say(false, "Looking up %s...", host);
@@ -395,6 +397,7 @@ static void finish_fetch(void) {
         free(rs.body);
         if (++hops > MAX_REDIRECTS) { net_error(pend_url, "net:too many redirects"); return; }
         bool ws = want_src;
+        if (was_post && (rs.status == 307 || rs.status == 308)) has_post = true;     /* 301/302/303 turn a POST into a GET; 307/308 keep it (post_body is still there) */
         load_url(next);
         want_src = ws && loading;
         return;
@@ -420,18 +423,6 @@ static void finish_fetch(void) {
     else if (!strncmp(ct, "text/", 5) || strstr(ct, "json") || strstr(ct, "xml") || strstr(ct, "javascript")) html = 0;
     for (size_t i = 0; html < 0 || (i < rs.blen && i < 512); i++) {
         if (html < 0 || !rs.body[i]) { if (rs.body) download(pend_url, ct, rs.body, rs.blen, rs.truncated); else unsupported(pend_url, ct[0] ? ct : "This content", 0); return; }
-    }
-    if (rs.latin1) {                                    /* ISO-8859-1 / cp1252 -> UTF-8 */
-        char *u = malloc(rs.blen * 2 + 1);
-        if (u) {
-            size_t o = 0;
-            for (size_t i = 0; i < rs.blen; i++) {
-                unsigned char c = rs.body[i];
-                if (c < 0x80) u[o++] = c; else { u[o++] = 0xC0 | c >> 6; u[o++] = 0x80 | (c & 63); }
-            }
-            u[o] = 0;
-            free(rs.body); rs.body = u; rs.blen = o;
-        }
     }
     size_t n = rs.blen;
     if (want_src) {                                     /* view-source: the same bytes as plain text */
@@ -823,10 +814,29 @@ static void bench(struct ui *ui, const char *arg) {
     for (int w = 0; w < 4; w++) { t = tsc(); doc_layout(&doc, pg.raw, pg.n, pg.html, w & 1 ? 700 : view_w(), cur_url); blog("BROWSER %s relayout w=%d %u us", arg, w & 1 ? 700 : view_w(), us(tsc() - t)); }
 }
 
+/* `browser --fetch URL [-r REFERER]`: the whole network path (cache, redirects aside, gzip, charset, cookies) without a window, for tests:
+ * "STATUS ctype len" and the response headers on stderr, the body (as the parser would get it) on stdout */
+static int fetch_cli(const char *url, const char *ref) {
+    struct fetch f;
+    struct response rs;
+    fetch_set_referer(ref);
+    if (fetch_start(&f, url, 0) < 0) return 1;
+    uint32_t t0 = uptime_ms();
+    int r;
+    while (!(r = fetch_pump(&f)) && uptime_ms() - t0 < 60000) usleep(5000);
+    if (r <= 0) { fprintf(stderr, "ERR timeout/read\n"); return 1; }
+    fetch_finish(&f, &rs);
+    if (rs.err[0]) { fprintf(stderr, "ERR %s\n", rs.err); return 1; }
+    fprintf(stderr, "%d %s [%s] %lu bytes %u ms%s\n%s", rs.status, rs.text, rs.ctype, (unsigned long)rs.blen, uptime_ms() - t0, rs.truncated ? " truncated" : "", rs.hdrs);
+    for (size_t o = 0; o < rs.blen; ) { ssize_t w = write(1, rs.body + o, rs.blen - o); if (w <= 0) break; o += w; }
+    return 0;
+}
+
 /* ---------- main loop ---------- */
 static void drop_key(struct ui *ui, int i) { memmove(ui->keys + i, ui->keys + i + 1, (--ui->nkeys - i) * sizeof ui->keys[0]); }
 
 int main(int argc, char **argv) {
+    if (argc > 2 && !strcmp(argv[1], "--fetch")) return fetch_cli(argv[2], argc > 3 ? argv[3] : 0);
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;
@@ -836,6 +846,7 @@ int main(int argc, char **argv) {
     if (argc > 1) url_from_input(argv[1], start, sizeof start);
     tabs[0].h = hist = calloc(HMAX, sizeof *hist);
     if (!hist) return 1;
+    cookie_init();
     navigate(start, 1, -1);
     char last_title[96] = "";
 
@@ -865,7 +876,7 @@ int main(int argc, char **argv) {
             struct gui_event k = ui.keys[i];
             int c = k.key | 32, ctrl = k.mods & MOD_CTRL, handled = 1;
             if (ctrl && (c == 'l' || k.ch == 12)) { ui.focus = aid; addr[0] = 0; }
-            else if ((ctrl && (c == 'r' || k.ch == 18)) || k.key == KEY_F5) navigate(hist[hcur].url, 0, scroll);
+            else if ((ctrl && (c == 'r' || k.ch == 18)) || k.key == KEY_F5) { fetch_cache_drop(hist[hcur].url); navigate(hist[hcur].url, 0, scroll); }
             else if ((k.mods & MOD_ALT) && k.key == KEY_LEFT) go_hist(-1);
             else if ((k.mods & MOD_ALT) && k.key == KEY_RIGHT) go_hist(1);
             else if (ctrl && (c == 'f' || k.ch == 6)) { find_open = true; ui.focus = ui_id(find_x(), find_y(), 240, H_SEARCH); fo = -1; }
@@ -904,7 +915,7 @@ int main(int argc, char **argv) {
         tx += H_CTL + SP_2;
         if (ui_icon_button(&ui, tx, ay, loading ? ICON_CLOSE : ICON_REFRESH, 0, loading ? "Stop \u00b7 Esc" : "Reload \u00b7 Ctrl+R")) {
             if (loading) { cancel_load(); say(false, "Stopped"); }
-            else if (hcur >= 0) navigate(hist[hcur].url, 0, scroll);
+            else if (hcur >= 0) { fetch_cache_drop(hist[hcur].url); navigate(hist[hcur].url, 0, scroll); }
         }
         tx += H_CTL + SP_2;
         if (ui_icon_button(&ui, tx, ay, ICON_HOME, 0, "Start page")) navigate("about:home", 1, -1);
