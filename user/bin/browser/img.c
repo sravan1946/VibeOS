@@ -240,6 +240,14 @@ int img_busy(void) {
     return 0;
 }
 
+static void free_set(struct pimg *p, int n) {
+    for (int i = 0; i < n; i++) {
+        free(p[i].url); free(p[i].sc);
+        if (p[i].nf > 1) image_anim_free(&p[i].an); else free(p[i].im.px);
+    }
+    free(p);
+}
+
 void img_reset(void) {
     for (int i = 0; i < NSLOT; i++) if (sl[i].idx >= 0) slot_free(&sl[i]);
     for (int i = 0; i < np; i++) {
@@ -248,6 +256,24 @@ void img_reset(void) {
     }
     np = 0; want_hi = -1;
 }
+
+/* a background tab keeps its decoded pictures: img_save() takes the cache (downloads in flight go back to the queue), img_restore() puts it back */
+struct img_saved { struct pimg *P; int np, pcap, want_hi; };
+void *img_save(void) {
+    struct img_saved *h = malloc(sizeof *h);
+    if (!h) return 0;
+    for (int i = 0; i < NSLOT; i++) if (sl[i].idx >= 0) { P[sl[i].idx].state = IMG_QUEUED; P[sl[i].idx].hops = 0; slot_free(&sl[i]); }
+    *h = (struct img_saved){ P, np, pcap, want_hi };
+    P = 0; np = pcap = 0; want_hi = -1;
+    return h;
+}
+void img_restore(void *v) {
+    struct img_saved *h = v;
+    img_reset(); free(P);
+    P = h->P; np = h->np; pcap = h->pcap; want_hi = h->want_hi;
+    free(h);
+}
+void img_drop(void *v) { struct img_saved *h = v; if (h) { free_set(h->P, h->np); free(h); } }
 
 const uint32_t *img_pixels(int i, int w, int h, color_t bg) {
     if (i < 0 || i >= np || w < 1 || h < 1) return 0;

@@ -18,6 +18,23 @@ void fs_reset(void) {
     F = 0; nf = 0;
 }
 
+/* background tabs keep their field values (see img_save) */
+struct fs_saved { struct fstate *F; int nf; };
+void *fs_save(void) {
+    struct fs_saved *h = malloc(sizeof *h);
+    if (!h) return 0;
+    *h = (struct fs_saved){ F, nf };
+    F = 0; nf = 0;
+    return h;
+}
+void fs_restore(void *v) { struct fs_saved *h = v; fs_reset(); F = h->F; nf = h->nf; free(h); }
+void fs_drop(void *v) {
+    struct fs_saved *h = v;
+    if (!h) return;
+    for (int i = 0; i < h->nf; i++) free(h->F[i].val);
+    free(h->F); free(h);
+}
+
 struct fstate *fs_ord(int ord) {
     if (ord < 0 || ord >= MAXORD) return 0;
     if (ord >= nf) {

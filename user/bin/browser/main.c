@@ -28,15 +28,22 @@
 
 static struct gui_window *win;
 static struct doc doc;
-static struct { char *raw; size_t n; int html, have; } pg;
+struct pgst { char *raw; size_t n; int html, have; };
+static struct pgst pg;
 static char cur_url[URL_MAX], pend_url[URL_MAX], addr[URL_MAX];
 static char status[200];
 static bool status_bad;
 struct hent { char url[URL_MAX]; int scroll; };
-/* tabs: only the session history is kept per tab (hist/nhist/hcur point at the current one); switching reloads the page at its
- * saved scroll. ponytail: background tabs hold no DOM, images or form state; keep a doc per tab if reloads on switch bother. */
+/* tabs: hist/nhist/hcur point at the current tab's session history. A tab you leave keeps its laid-out page, images, stylesheets, form
+ * values and scroll (live) unless it runs scripts (the QuickJS context is a single global: those reload on switch) or MAXLIVE others are
+ * already live (the oldest is dropped and reloads). */
 #define MAXTAB 8
-static struct tab { struct hent *h; int nh, hc; char title[40]; } tabs[MAXTAB];
+#define MAXLIVE 3                            /* background tabs that keep their page in memory; the least recently used are evicted (reloaded on switch) */
+static struct tab {
+    struct hent *h; int nh, hc; char title[40];
+    bool live, internal;                     /* live: doc/pg/caches below hold the page as it was left */
+    struct doc doc; struct pgst pg; char url[URL_MAX]; int scroll, lw; void *im, *fs, *sh; uint32_t used;
+} tabs[MAXTAB];
 static int ntabs = 1, curtab;
 static struct hent *hist;
 static int nhist, hcur = -1;
@@ -523,15 +530,46 @@ static void follow(int link) {
 /* ---------- tabs, bookmarks, downloads, view-source ---------- */
 static bool quit_req;
 
-static void tab_save(void) {
+static void tab_drop(struct tab *t) {                    /* free a live tab's page */
+    if (!t->live) return;
+    doc_free(&t->doc); free(t->pg.raw); img_drop(t->im); fs_drop(t->fs); sheet_drop(t->sh);
+    t->live = false; t->pg.raw = 0; t->im = t->fs = t->sh = 0;
+}
+static void tab_save(void) {                             /* history and title of the current tab */
     struct tab *t = &tabs[curtab];
     if (hcur >= 0 && pg.have && !loading) hist[hcur].scroll = scroll;
     t->nh = nhist; t->hc = hcur;
     strlcpy(t->title, doc.title, sizeof t->title);
 }
+static void tab_park(void) {                             /* leaving the current tab: move its page out so it survives */
+    struct tab *t = &tabs[curtab];
+    if (!pg.have || loading || js_active() || sheet_busy()) return;
+    t->doc = doc; t->pg = pg; memset(&doc, 0, sizeof doc); memset(&pg, 0, sizeof pg);
+    strlcpy(t->url, cur_url, sizeof t->url);
+    t->scroll = scroll; t->lw = layout_w; t->internal = internal; t->used = uptime_ms();
+    t->im = img_save(); t->fs = fs_save(); t->sh = sheet_save();
+    t->live = true;
+    int nlive = 0, old = -1;
+    for (int i = 0; i < ntabs; i++) if (tabs[i].live) { nlive++; if (i != curtab && (old < 0 || (int32_t)(tabs[i].used - tabs[old].used) < 0)) old = i; }
+    if (nlive > MAXLIVE && old >= 0) tab_drop(&tabs[old]);
+}
 static void tab_load(int n) {
     curtab = n; hist = tabs[n].h; nhist = tabs[n].nh; hcur = tabs[n].hc;
     cancel_load();
+    struct tab *t = &tabs[n];
+    if (t->live) {                                       /* back as it was: no fetch, no layout */
+        doc_free(&doc); free(pg.raw); img_reset(); fs_reset(); sheet_reset(); js_reset();
+        doc = t->doc; pg = t->pg;
+        img_restore(t->im); fs_restore(t->fs); sheet_restore(t->sh);
+        t->live = false; t->im = t->fs = t->sh = 0; memset(&t->doc, 0, sizeof t->doc); memset(&t->pg, 0, sizeof t->pg);
+        strlcpy(cur_url, t->url, sizeof cur_url);
+        scroll = target = t->scroll; layout_w = t->lw; internal = t->internal;
+        fo = sel_ci = -1; mk.from_it = mk.to_it = -1; mk.find = 0; mk.find_it = -1; last_needle[0] = 0; find_count = 0; selecting = false;
+        img_dirty = false; loading = false;
+        clamp_scroll();
+        say(false, "%s", cur_url);
+        return;
+    }
     cur_url[0] = 0;                                      /* so a #fragment URL isn't taken for "same page" */
     if (hcur >= 0) navigate(hist[hcur].url, 0, hist[hcur].scroll); else navigate("about:home", 1, -1);
 }
@@ -546,18 +584,19 @@ static void tab_new(const char *url, bool fg) {
     strlcpy(h[0].url, url, sizeof h[0].url);
     strlcpy(t->title, url, sizeof t->title);
     ntabs++;
-    if (fg) tab_load(ntabs - 1);
+    if (fg) { tab_park(); tab_load(ntabs - 1); }
 }
 static void tab_close(int i) {
     if (ntabs == 1) { quit_req = true; return; }
     if (i == curtab) cancel_load();
+    tab_drop(&tabs[i]);
     free(tabs[i].h);
     memmove(tabs + i, tabs + i + 1, (ntabs - i - 1) * sizeof *tabs);
     ntabs--;
     if (i == curtab) tab_load(i < ntabs ? i : ntabs - 1);
     else if (i < curtab) curtab--;
 }
-static void tab_go(int n) { if (n == curtab || n < 0 || n >= ntabs) return; tab_save(); tab_load(n); }
+static void tab_go(int n) { if (n == curtab || n < 0 || n >= ntabs) return; tab_save(); tab_park(); tab_load(n); }
 
 #define BMFILE "/home/.bookmarks"
 #define MAXBM 200

@@ -93,6 +93,9 @@ const char *sheet_get(const char *url, size_t *len);   /* the text once loaded; 
 int  sheet_pump(void);                           /* advance downloads; nonzero when a sheet arrived or failed */
 int  sheet_busy(void);
 void sheet_reset(void);                          /* new page */
+void *sheet_save(void);                          /* same trio as img_save, for a background tab */
+void sheet_restore(void *h);
+void sheet_drop(void *h);
 
 /* ---- img.c: per-page image cache. Images are fetched by helper processes (two at a time), decoded
  * in-process and kept (plus one scaled copy) until the next page. ---- */
@@ -103,6 +106,9 @@ const uint32_t *img_pixels(int i, int w, int h, color_t bg);   /* w*h opaque pix
 int  img_pump(void);                             /* advance downloads; nonzero when an image became ready/failed */
 int  img_busy(void);                             /* images still queued or downloading */
 void img_reset(void);                            /* new page */
+void *img_save(void);                            /* background tab: take the cache (empties it); img_restore(h) puts it back and frees h, img_drop(h) frees it */
+void img_restore(void *h);
+void img_drop(void *h);
 int  img_add_data(const char *url, const uint8_t *d, size_t n);   /* decode a body we already have */
 int  img_svg_inline(const char *svg, size_t n, long color);       /* an inline <svg> element's markup as an image (index, or -1); color = currentColor 0xRRGGBB or -1 */
 const char *img_url(int i);                      /* the cache key / URL of image i */
@@ -162,6 +168,9 @@ struct fstate *fs_get(const struct doc *d, int ci);      /* state of control ci 
 struct fstate *fs_ord(int ord);                          /* by ordinal, or NULL */
 void fs_set(struct fstate *s, const char *v);
 void fs_reset(void);
+void *fs_save(void);                                     /* same trio as img_save: field values of a background tab */
+void fs_restore(void *h);
+void fs_drop(void *h);
 void ctl_draw(struct canvas *c, const struct doc *d, const struct ctl *t, int x, int y, int w, int h, int focused, int caret);
 int  ctl_key(const struct doc *d, int ci, const struct gui_event *k, int *caret);   /* 1 = Enter pressed */
 int  ctl_caret_at(const struct doc *d, int ci, int rx, int ry);
