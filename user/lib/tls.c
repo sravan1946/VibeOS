@@ -128,6 +128,8 @@ static void set_err(struct tls *t) {
     else snprintf(errbuf, sizeof errbuf, "TLS error %d", e);
 }
 
+static const char *alpn[] = { "http/1.1" };       /* we speak nothing newer: say so, or some servers pick h2 */
+
 struct tls *tls_open(int fd, const char *host) {
     if (!ntas && load_anchors() < 0) return 0;
     struct tls *t = malloc(sizeof *t);
@@ -135,6 +137,7 @@ struct tls *tls_open(int fd, const char *host) {
     t->fd = fd;
     br_ssl_client_init_full(&t->sc, &t->xc, tas, ntas);
     br_ssl_engine_set_buffer(&t->sc.eng, t->buf, sizeof t->buf, 1);
+    br_ssl_engine_set_protocol_names(&t->sc.eng, alpn, 1);
     if (!br_ssl_client_reset(&t->sc, host, 0)) { set_err(t); free(t); return 0; }
     br_sslio_init(&t->io, &t->sc.eng, sock_read, &t->fd, sock_write, &t->fd);
     if (br_sslio_flush(&t->io) < 0 || br_ssl_engine_current_state(&t->sc.eng) == BR_SSL_CLOSED) { set_err(t); free(t); return 0; }
