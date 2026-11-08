@@ -40,10 +40,11 @@ struct bx {
     int par, first, last, next;
     uint8_t outer, inner, pos, flt, clr, ovf, vis, bsz, ws, align, valign, font, flags, nul, li, anon;
     uint8_t fdir, fwrap, just, ali, als, hasneg, zset, hdr;
-    int order, grow, shrink, gapr, gapc, ncols, zi;
+    int order, grow, shrink, gapr, gapc, zi, gcols, grows, gareas, garea, g[4];
+    uint8_t gk[4];
     color_t col, bg, bc[4];
     int bw[4], rad, lh, opacity;
-    int link, node;
+    int link, node, dn;           /* dn: DOM node (debug dumps) */
     uint32_t aname;               /* anchor name: doc arena offset + 1 */
     int v[NL]; uint8_t k[NL];
     uint32_t toff; int tlen;      /* IN_TEXT: bytes in the HD pool */
@@ -980,38 +981,222 @@ static void lay_flex(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
     free(it);
 }
 
-/* simple grid: ncols equal columns, items row by row */
+/* ---------- grid ----------
+ * Tracks from grid-template-columns (px, %, fr, auto, minmax(), repeat(n|auto-fill, ...)), items placed by named areas,
+ * line numbers/spans or auto-flow (row-major, sparse), columns sized fixed -> auto (max-content) -> fr, rows by content
+ * (or their px size). ponytail: no subgrid, no dense packing, no implicit column tracks beyond the explicit count. */
+struct trk { uint8_t kind; int v; };       /* 0 px, 1 fr (x100), 2 auto, 3 percent */
+#define GMAXC 24
+#define GMAXR 400
+
+static int css_px(const char *s) {          /* "12px", "1.5em", "3rem": px (em = 16) */
+    double v = atof(s);
+    const char *u = s;
+    while (*u && (isdigit((unsigned char)*u) || *u == '.' || *u == '-')) u++;
+    return (int)(!strncmp(u, "em", 2) || !strncmp(u, "rem", 3) ? v * 16 : v);
+}
+
+static int track_one(const char *t, int len, struct trk *o, int cw) {
+    char b[64];
+    if (len >= (int)sizeof b) len = sizeof b - 1;
+    memcpy(b, t, len); b[len] = 0;
+    char *p = b;
+    if (!strncmp(p, "minmax(", 7) || !strncmp(p, "fit-content(", 12)) {
+        char *c = strrchr(p, ',');
+        p = c ? c + 1 : strchr(p, '(') + 1;
+        while (*p == ' ') p++;
+        char *e = strchr(p, ')'); if (e) *e = 0;
+    }
+    if (strstr(p, "fr")) { o->kind = 1; o->v = (int)(atof(p) * 100); if (o->v <= 0) o->v = 100; }
+    else if (strchr(p, '%')) { o->kind = 3; o->v = (int)atof(p); }
+    else if (isdigit((unsigned char)*p) || *p == '.') { o->kind = 0; o->v = css_px(p); }
+    else { o->kind = 2; o->v = 0; }
+    return 1;
+}
+
+static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) {
+    int n = 0;
+    while (s && *s && n < max) {
+        while (*s == ' ') s++;
+        if (!*s) break;
+        if (*s == '[') { while (*s && *s != ']') s++; if (*s) s++; continue; }
+        const char *e = s;
+        int d = 0;
+        while (*e && (*e != ' ' || d)) { if (*e == '(') d++; if (*e == ')') d--; e++; }
+        if (!strncmp(s, "repeat(", 7)) {
+            const char *a = s + 7, *comma = strchr(a, ',');
+            if (comma && comma < e) {
+                struct trk in[8];
+                int ni = 0, cnt;
+                char sub[160];
+                int sl = (int)(e - comma - 2);
+                if (sl < 0) sl = 0;
+                if (sl > 159) sl = 159;
+                memcpy(sub, comma + 1, sl); sub[sl] = 0;
+                ni = parse_tracks(sub, in, 8, cw, gap);
+                if (isdigit((unsigned char)*a)) cnt = atoi(a);
+                else {                                       /* auto-fill / auto-fit: as many as fit */
+                    int m = 0;
+                    const char *mm = strstr(sub, "minmax(");
+                    m = mm ? css_px(mm + 7) : in[0].kind == 0 ? in[0].v : 200;
+                    if (m < 40) m = 40;
+                    cnt = imax_(1, (cw + gap) / (m + gap));
+                    for (int i = 0; i < ni; i++) if (in[i].kind == 1 || in[i].kind == 2) { in[i].kind = 1; in[i].v = 100; }
+                }
+                if (ni < 1) ni = 1, in[0] = (struct trk){ 2, 0 };
+                for (int c = 0; c < cnt && n < max; c++) for (int i = 0; i < ni && n < max; i++) t[n++] = in[i];
+            }
+        } else { track_one(s, e - s, &t[n], cw); n++; }
+        s = e;
+    }
+    return n;
+}
+
+static int line_of(uint8_t k, int v, int nlines) {             /* 1-based line from a K_PX line number (negative counts from the end); 0 = auto */
+    if (k != K_PX) return 0;
+    return v > 0 ? v : nlines + 1 + v;
+}
+
+struct gitem { struct bx *b; int r, c, rs, cs; };
+
 static void lay_grid(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *ch) {
-    int nc = b->ncols, gc = b->gapc, gr = b->gapr;
-    int colw = (cw - gc * (nc - 1)) / nc;
-    if (colw < 1) colw = 1;
-    int col = 0, y = cy, rowh = 0, rowstart = -1, any = 0;
-    struct bx *rowit[64];
-    int nrow = 0;
-    for (int c = b->first; c >= 0; c = B[c].next) {
-        struct bx *x = &B[c];
-        if (oof(x)) { x->sx = cx; x->sy = cy; continue; }
-        resolve(x, colw);
-        int e = hedge(x) + x->m[1] + x->m[3], span = x->cs > 1 ? imin_(x->cs, nc - col) : 1;
-        if (col + span > nc) { y += rowh + gr; rowh = 0; col = 0; nrow = 0; }
-        int w = colw * span + gc * (span - 1);
-        int sw = csize(x, L_W, w, 1);
-        x->fw = imax_(clampw(x, sw >= 0 ? sw : w - e, w), 0);
-        int c0 = 0;
-        lay_block(x, cx + col * (colw + gc), w, y, 0, &c0, LB_ABSY | LB_ROOT);
-        shift(x, cx + col * (colw + gc) + x->m[3] - x->x, 0);
-        rowh = imax_(rowh, x->h + x->m[0] + x->m[2]);
-        if (nrow < 64) rowit[nrow++] = x;
-        col += span; any = 1;
-        if (col >= nc) {                                          /* row done: stretch items to its height */
-            for (int i = 0; i < nrow; i++) if (rowit[i]->k[L_H] == K_AUTO) rowit[i]->h = rowh - rowit[i]->m[0] - rowit[i]->m[2];
-            y += rowh + gr; rowh = 0; col = 0; nrow = 0;
+    struct trk ct[GMAXC], rt[GMAXR];
+    int nc = parse_tracks(b->gcols ? css_str(b->gcols - 1) : 0, ct, GMAXC, cw, b->gapc), nr_t = parse_tracks(b->grows ? css_str(b->grows - 1) : 0, rt, GMAXR, cw, b->gapr);
+    if (nc < 1) { nc = 1; ct[0] = (struct trk){ 1, 100 }; }
+    /* areas */
+    struct { char name[24]; int r0, c0, r1, c1; } ar[32];
+    int nar = 0;
+    if (b->gareas) {
+        const char *s = css_str(b->gareas - 1);
+        int row = 0;
+        while (*s) {
+            if (*s != '"' && *s != 39) { s++; continue; }
+            char qt = *s++;
+            int col = 0;
+            while (*s && *s != qt) {
+                while (*s == ' ') s++;
+                const char *e = s;
+                while (*e && *e != ' ' && *e != qt) e++;
+                if (e > s) {
+                    int l = imin_((int)(e - s), 23), q;
+                    for (q = 0; q < nar; q++) if (!strncmp(ar[q].name, s, l) && !ar[q].name[l]) break;
+                    if (q == nar && nar < 32) { memcpy(ar[nar].name, s, l); ar[nar].name[l] = 0; ar[nar].r0 = row; ar[nar].c0 = col; ar[nar].r1 = row; ar[nar].c1 = col; nar++; }
+                    else if (q < nar) { ar[q].r1 = row; ar[q].c1 = col; }
+                    col++;
+                }
+                s = e;
+            }
+            if (*s) s++;
+            row++;
         }
     }
-    if (col > 0) { for (int i = 0; i < nrow; i++) if (rowit[i]->k[L_H] == K_AUTO) rowit[i]->h = rowh - rowit[i]->m[0] - rowit[i]->m[2]; y += rowh; }
-    else if (any) y -= gr;
-    (void)rowstart;
-    *ch = y - cy;
+    int n = 0;
+    for (int c = b->first; c >= 0; c = B[c].next) if (!oof(&B[c])) n++; else { B[c].sx = cx; B[c].sy = cy; }
+    *ch = 0;
+    if (!n) return;
+    struct gitem *it = calloc(n, sizeof *it);
+    uint8_t *occ = calloc((size_t)GMAXR * GMAXC, 1);
+    if (!it || !occ) { free(it); free(occ); return; }
+    int k = 0, cr = 0, cc = 0, nrows = 0;
+    for (int c = b->first; c >= 0; c = B[c].next) {
+        struct bx *x = &B[c];
+        if (oof(x)) continue;
+        resolve(x, cw);
+        int r0 = -1, c0 = -1, rs = 1, cs = 1;
+        if (x->garea) {
+            const char *nm = css_str(x->garea - 1);
+            for (int q = 0; q < nar; q++) if (!strcmp(ar[q].name, nm)) { r0 = ar[q].r0; c0 = ar[q].c0; rs = ar[q].r1 - ar[q].r0 + 1; cs = ar[q].c1 - ar[q].c0 + 1; }
+        } else {
+            int s = line_of(x->gk[0], x->g[0], nc + 1), e = line_of(x->gk[1], x->g[1], nc + 1);
+            if (x->gk[1] == K_SPAN) cs = x->g[1]; else if (s && e > s) cs = e - s;
+            if (x->gk[0] == K_SPAN) cs = x->g[0];
+            if (s > 0) c0 = s - 1;
+            s = line_of(x->gk[2], x->g[2], nr_t + 1); e = line_of(x->gk[3], x->g[3], nr_t + 1);
+            if (x->gk[3] == K_SPAN) rs = x->g[3]; else if (s && e > s) rs = e - s;
+            if (x->gk[2] == K_SPAN) rs = x->g[2];
+            if (s > 0) r0 = s - 1;
+        }
+        cs = imax_(1, imin_(cs, nc)); rs = imax_(1, imin_(rs, 50));
+        if (c0 >= 0 && c0 + cs > nc) c0 = imax_(0, nc - cs);
+        if (r0 >= GMAXR - 60) r0 = GMAXR - 61;
+        int pr = r0, pc = c0;
+        if (pr < 0 && pc < 0) { pr = cr; pc = cc; }
+        else if (pr < 0) pr = cr;
+        else if (pc < 0) pc = 0;
+        if (pc + cs > nc) { pc = imax_(0, c0 >= 0 ? nc - cs : 0); if (c0 < 0) pr++; }
+        if (!(r0 >= 0 && c0 >= 0))
+            for (int guard = 0; guard < GMAXR * GMAXC && pr < GMAXR - 61; guard++) {
+                int free = 1;
+                for (int rr = pr; rr < pr + rs && free; rr++) for (int q = pc; q < pc + cs; q++) if (occ[rr * GMAXC + q]) { free = 0; break; }
+                if (free) break;
+                if (c0 >= 0) pr++; else { pc++; if (pc + cs > nc) { pc = 0; pr++; } }
+            }
+        if (pr > GMAXR - 61) pr = GMAXR - 61;
+        for (int rr = pr; rr < pr + rs; rr++) for (int q = pc; q < pc + cs; q++) occ[rr * GMAXC + q] = 1;
+        it[k] = (struct gitem){ x, pr, pc, rs, cs };
+        if (r0 < 0 && c0 < 0) { cr = pr; cc = pc + cs; if (cc >= nc) { cc = 0; cr = pr + 1; } }
+        else if (r0 < 0) cr = pr;
+        if (it[k].r + it[k].rs > nrows) nrows = it[k].r + it[k].rs;
+        k++;
+    }
+    if (nrows > GMAXR - 60) nrows = GMAXR - 60;
+    /* column widths */
+    int cwid[GMAXC], fixed = 0, frsum = 0, gaps = b->gapc * (nc - 1);
+    for (int i = 0; i < nc; i++) {
+        cwid[i] = 0;
+        if (ct[i].kind == 0) cwid[i] = ct[i].v;
+        else if (ct[i].kind == 3) cwid[i] = pctof(ct[i].v, cw);
+        else if (ct[i].kind == 2) {
+            for (int q = 0; q < k; q++) if (it[q].cs == 1 && it[q].c == i) { int mn, mx; outer_intr(it[q].b, &mn, &mx); cwid[i] = imax_(cwid[i], mx); }
+        } else frsum += ct[i].v;
+        if (ct[i].kind != 1) fixed += cwid[i];
+    }
+    int room = cw - gaps - fixed;
+    if (room < 0 && fixed > 0) {                                  /* auto tracks overflow: shrink them, never below 0 */
+        int autos = 0;
+        for (int i = 0; i < nc; i++) if (ct[i].kind == 2) autos += cwid[i];
+        if (autos > 0) { int take = imin_(-room, autos); for (int i = 0; i < nc; i++) if (ct[i].kind == 2) cwid[i] -= (int)((long long)take * cwid[i] / autos); room += take; }
+    }
+    if (frsum) {
+        int rem = imax_(room, 0), used = 0, lastfr = -1;
+        for (int i = 0; i < nc; i++) if (ct[i].kind == 1) { cwid[i] = (int)((long long)rem * ct[i].v / frsum); used += cwid[i]; lastfr = i; }
+        if (lastfr >= 0) cwid[lastfr] += rem - used;
+    }
+    int colx[GMAXC + 1], x = cx;
+    for (int i = 0; i < nc; i++) { colx[i] = x; x += cwid[i] + b->gapc; }
+    /* lay the items out at their column widths, then rows */
+    int rowh[GMAXR] = { 0 };
+    for (int q = 0; q < k; q++) {
+        struct bx *xb = it[q].b;
+        int w = b->gapc * (it[q].cs - 1);
+        for (int i = it[q].c; i < it[q].c + it[q].cs; i++) w += cwid[i];
+        int e = hedge(xb) + xb->m[1] + xb->m[3], sw = csize(xb, L_W, w, 1);
+        xb->fw = imax_(clampw(xb, sw >= 0 ? sw : w - e, w), 0);
+        int c0 = 0;
+        lay_block(xb, colx[it[q].c], w, 0, 0, &c0, LB_ABSY | LB_ROOT);
+        int h = xb->h + xb->m[0] + xb->m[2];
+        if (it[q].rs == 1) rowh[it[q].r] = imax_(rowh[it[q].r], h);
+    }
+    for (int r = 0; r < nrows; r++) if (r < nr_t && rt[r].kind == 0) rowh[r] = imax_(rowh[r], rt[r].v);
+    for (int q = 0; q < k; q++) if (it[q].rs > 1) {
+        int h = it[q].b->h + it[q].b->m[0] + it[q].b->m[2], have = b->gapr * (it[q].rs - 1);
+        for (int r = it[q].r; r < it[q].r + it[q].rs; r++) have += rowh[r];
+        if (h > have) rowh[it[q].r + it[q].rs - 1] += h - have;
+    }
+    int rowy[GMAXR + 1], y = cy;
+    for (int r = 0; r < nrows; r++) { rowy[r] = y; y += rowh[r] + b->gapr; }
+    for (int q = 0; q < k; q++) {
+        struct bx *xb = it[q].b;
+        int span = b->gapr * (it[q].rs - 1);
+        for (int r = it[q].r; r < it[q].r + it[q].rs; r++) span += rowh[r];
+        int al = xb->als ? xb->als - 1 : b->ali, avail = span - xb->m[0] - xb->m[2], yy = rowy[it[q].r] + xb->m[0];
+        if (al == 0 && xb->k[L_H] == K_AUTO && xb->h < avail) xb->h = clamph(xb, avail - vedge(xb), 0) + vedge(xb);
+        else if (al == 2) yy += avail - xb->h;
+        else if (al == 3) yy += (avail - xb->h) / 2;
+        shift(xb, colx[it[q].c] + xb->m[3] - xb->x, yy - xb->y);
+    }
+    *ch = nrows ? y - b->gapr - cy : 0;
+    free(it); free(occ);
 }
 
 /* ---------- the block box ---------- */
@@ -1079,8 +1264,8 @@ static void lay_block(struct bx *b, int cx, int cw, int y, struct bfc *pf, int *
     case IN_IMG: case IN_CTL: { int W, H; repl_size(b, cw - ml - mr, &W, &H); ch = H; break; }
     case IN_FLEX: lay_flex(b, ix, cwid, iy, f, &ch, sh); break;
     case IN_GRID:
-        if (b->ncols > 0) { lay_grid(b, ix, cwid, iy, f, &ch); break; }
-        /* fallthrough */
+        lay_grid(b, ix, cwid, iy, f, &ch);
+        break;
     case IN_TABLE:
         if (b->inner == IN_TABLE) { tab_place(b, ix, iy, &ch); break; }
         /* fallthrough */
@@ -1830,26 +2015,6 @@ static void lenset(struct bx *S, int li, const struct cprops *cp, int prop) {
     else { S->k[li] = K_PX; S->v[li] = css_len(cp, prop, rootw); }
 }
 
-static int grid_count(const char *s) {                          /* number of columns in a grid-template-columns value */
-    if (!s) return 0;
-    int n = 0, depth = 0;
-    for (const char *p = s; *p; ) {
-        while (*p == ' ') p++;
-        if (!*p) break;
-        if (!strncmp(p, "repeat(", 7)) {
-            const char *q = p + 7;
-            if (isdigit((unsigned char)*q)) { int c = atoi(q); const char *e = strchr(q, ','); int inner = 0; if (e) { for (const char *t = e + 1; *t && *t != ')'; ) { while (*t == ' ') t++; if (!*t || *t == ')') break; inner++; if (!strncmp(t, "minmax(", 7)) while (*t && *t != ')') t++; while (*t && *t != ' ' && *t != ')') t++; } } n += c * (inner ? inner : 1); }
-            else { const char *m = strstr(q, "minmax("); int px = m ? atoi(m + 7) : 0; if (!px) px = 200; n += imax_(1, imin_(rootw / px, 8)); }
-            int d = 0;
-            while (*p) { if (*p == '(') d++; if (*p == ')' && --d == 0) { p++; break; } p++; }
-            continue;
-        }
-        n++;
-        while (*p && (*p != ' ' || depth)) { if (*p == '(') depth++; if (*p == ')') depth--; p++; }
-    }
-    return n;
-}
-
 /* ---------- css_dom: the node tree seen by css_compute ---------- */
 static int cd_parent(int n) { int p = DN(n).par; return p > 0 && DN(p).type == 1 ? p : 0; }
 static int cd_prev(int n) { for (int c = DN(n).prev; c >= 0; c = DN(c).prev) if (DN(c).type == 1) return c; return 0; }
@@ -1956,7 +2121,9 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     S->gapr = css_len(cp, P_RGAP, 0); S->gapc = css_len(cp, P_CGAP, 0);
     S->hdr = cp->v[P_COLLAPSE] != 0;
     if (tag == T_TABLE || disp == D_TABLE || disp == D_INLINE_TABLE) { S->gapc = cp->v[P_SPACING]; S->gapr = cp->v[P_SPACINGY] ? cp->v[P_SPACINGY] : cp->v[P_SPACING]; }
-    if (disp == D_GRID || disp == D_INLINE_GRID) S->ncols = grid_count(cp->k[P_GCOLS] == K_STR ? css_str(cp->v[P_GCOLS]) : 0);
+    S->gcols = cp->k[P_GCOLS] == K_STR ? cp->v[P_GCOLS] + 1 : 0; S->grows = cp->k[P_GROWS] == K_STR ? cp->v[P_GROWS] + 1 : 0;
+    S->gareas = cp->k[P_GAREAS] == K_STR ? cp->v[P_GAREAS] + 1 : 0; S->garea = cp->k[P_GAREA] == K_STR ? cp->v[P_GAREA] + 1 : 0;
+    { static const uint8_t gp[4] = { P_GCS, P_GCE, P_GRS, P_GRE }; for (int i = 0; i < 4; i++) { S->gk[i] = cp->k[gp[i]]; S->g[i] = cp->v[gp[i]]; } }
     S->cs = 1; S->rs = 1;
     int cv = cp->v[P_VALIGN];
     S->valn = cv == VA_MIDDLE ? 1 : cv == VA_BOTTOM ? 2 : cv == VA_BASELINE ? 3 : 0;
@@ -2275,7 +2442,7 @@ static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int 
     S.lh = ni.lh; S.vis = ni.vis; S.valign = ni.valign;
     if (S.flt || oof(&S)) { S.outer = OUT_BLOCK; if (S.inner == IN_INLINE) S.inner = IN_FLOW; }
     if (!pe && ((v = ATTR(dn, "id")) || (tag == T_A && (v = ATTR(dn, "name")))) && *v) S.aname = astr(v) + 1;
-    S.cb = cx->cb;
+    S.cb = cx->cb; S.dn = dn;
     if (li) { S.li = 1; S.mark = ni.nomark ? -1 : cx->cnt ? ++*cx->cnt : 0; }
 
     if (tag == T_BR) {
@@ -2380,6 +2547,17 @@ static int build_root(void) {
     return r;
 }
 
+#ifdef LT_DEBUG
+static void dump(int bi, int depth) {
+    struct bx *b = &B[bi];
+    const char *nm = b->inner == IN_TEXT ? "#text" : b->dn > 0 ? hd_str(HD.n[b->dn].nm) : b->anon ? "(anon)" : "?";
+    const char *id = b->dn > 0 && b->inner != IN_TEXT ? hd_attr(b->dn, "id") : 0, *cl = b->dn > 0 && b->inner != IN_TEXT ? hd_attr(b->dn, "class") : 0;
+    fprintf(stderr, "%*s%s%s%s%s%s o%d i%d p%d f%d [%d,%d %dx%d] %s\n", depth * 2, "", nm, id ? "#" : "", id ? id : "", cl ? "." : "", cl ? cl : "", b->outer, b->inner, b->pos, b->flt, b->x, b->y, b->w, b->h,
+            b->inner == IN_TEXT ? "" : "");
+    for (int c = b->first; c >= 0; c = B[c].next) if (depth < 14) dump(c, depth + 1);
+}
+#endif
+
 /* ---------- entry ---------- */
 static void free_boxes(void) {
     for (int i = 0; i < nb; i++) { free(B[i].fr); tab_free(B[i].tab); }
@@ -2413,6 +2591,9 @@ void doc_layout(struct doc *d, const char *src, size_t n, int is_html, int width
     lay_block(&B[root], 0, width, 0, 0, &c0, LB_ROOT);
     lay_abs_for(-1);
     d->height = B[root].y + B[root].h + 24;
+#ifdef LT_DEBUG
+    if (getenv("LT_DUMP")) dump(root, 0);
+#endif
     int bot = 0;
     paint_box(root, 0, 0);
     (void)bot;
