@@ -1220,7 +1220,7 @@ static void lay_block(struct bx *b, int cx, int cw, int y, struct bfc *pf, int *
     if (fw < 0 && b->inner != IN_TABLE && b->inner != IN_IMG && b->inner != IN_CTL) cwid = clampw(b, cwid, cw);
     if (cwid < 0) cwid = 0;
     int total = ml + cwid + hed + mr;
-    if (!outer_inl) {
+    if (!outer_inl && !(flags & LB_ABSY)) {          /* auto margins centre in-flow blocks; floats, flex/grid items and abs boxes place themselves */
         if (cw > total) {
             int free = cw - total, al = b->k[L_ML] == K_AUTO, ar = b->k[L_MR] == K_AUTO;
             if (al && ar) { ml = free / 2; mr = free - free / 2; } else if (al) ml = free; else if (ar) mr = free;
@@ -2182,7 +2182,7 @@ static void parse_options(int dn, struct ctl *c) {
 static void text_of(int dn, char *out, int cap) {
     int k = 0, sp = 0;
     for (int c = DN(dn).first; c >= 0 && k < cap - 1; c = DN(c).next) {
-        if (DN(c).type != 3) { if (DN(c).type == 1) { char t[200]; text_of(c, t, sizeof t); for (int q = 0; t[q] && k < cap - 1; q++) { out[k++] = t[q]; sp = 0; } } continue; }
+        if (DN(c).type != 3) { if (DN(c).type == 1 && DN(c).tag != T_SVG) { char t[200]; text_of(c, t, sizeof t); for (int q = 0; t[q] && k < cap - 1; q++) { out[k++] = t[q]; sp = 0; } } continue; }
         const char *s = hd_str(DN(c).nm);
         for (int q = 0; q < DN(c).tn && k < cap - 1; q++) {
             if (isspace((unsigned char)s[q])) { if (k && !sp) out[k++] = ' '; sp = 1; }
