@@ -1,0 +1,10 @@
+<html><head><title>Background and object-fit</title><style>
+.b{width:300px;height:120px;border:1px solid #888;margin:8px;display:inline-block}
+.t{background:url(img/spin.gif) repeat}
+.c{background:#eee url(img/logo.svg) no-repeat center / contain}
+.d{background:url(img/badge.png) no-repeat right 10px top 10px}
+img{width:200px;height:100px;border:1px solid #888;margin:8px;vertical-align:top}
+</style></head><body><h1>Background and object-fit</h1>
+<div class="b t"></div><div class="b c"></div><div class="b d"></div><br>
+<img src="img/badge.png" style="object-fit:contain"><img src="img/badge.png" style="object-fit:cover"><img src="img/badge.png" style="object-fit:none"><img src="img/badge.png">
+</body></html>

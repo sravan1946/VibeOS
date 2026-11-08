@@ -50,6 +50,7 @@ struct bx {
     uint32_t toff; int tlen;      /* IN_TEXT: bytes in the HD pool */
     int ref, iw, ih, bel, cs, rs, mark;   /* img cache index / control index; intrinsic size; baseline below the box; colspan, rowspan; list marker (0 bullet, n number, -1 none) */
     uint8_t halign, valn;         /* table cell: horizontal / vertical alignment */
+    int bgi; uint8_t brep, bkx, bky, bkw, bkh, objfit; int bpx, bpy, bsw, bsh;   /* background-image (img index + 1) and its repeat/position/size; object-fit for images */
     int x, y, w, h, base;         /* border box, document coordinates; base: baseline offset from the top (-1 = bottom edge) */
     int m[4], p[4];               /* used margins and paddings (t r b l) */
     int imin, imax; uint8_t iv;
@@ -1220,7 +1221,7 @@ static void lay_block(struct bx *b, int cx, int cw, int y, struct bfc *pf, int *
     if (fw < 0 && b->inner != IN_TABLE && b->inner != IN_IMG && b->inner != IN_CTL) cwid = clampw(b, cwid, cw);
     if (cwid < 0) cwid = 0;
     int total = ml + cwid + hed + mr;
-    if (!outer_inl) {
+    if (!outer_inl && !(flags & LB_ABSY)) {          /* auto margins centre in-flow blocks; floats, flex/grid items and abs boxes place themselves */
         if (cw > total) {
             int free = cw - total, al = b->k[L_ML] == K_AUTO, ar = b->k[L_MR] == K_AUTO;
             if (al && ar) { ml = free / 2; mr = free - free / 2; } else if (al) ml = free; else if (ar) mr = free;
@@ -1655,6 +1656,16 @@ static int clip_push(int x, int y, int w, int h) {         /* returns the previo
 static void paint_bg(struct bx *b, int ox, int oy) {
     int x = b->x + ox, y = b->y + oy, w = b->w, h = b->h;
     if (b->bg) emit_decor(x, y, w, h, b->bg, b->rad, 0);
+    if (b->bgi && w > 0 && h > 0) {                      /* background-image, placed in the padding box */
+        int l = b->bw[3], t = b->bw[0];
+        color_t under = (b->bg >> 24) == 0xFF ? b->bg : 1;       /* the box's own colour: what a transparent picture is drawn over */
+        emit_decor(x + l, y + t, w - l - b->bw[1], h - t - b->bw[2], under, 0, 0);
+        struct decor *r = &D->dc[D->ndc - 1];
+        if (D->ndc && r->it == D->nit && r->col == under && !r->img) {
+            r->img = b->bgi; r->rep = b->brep; r->kx = b->bkx; r->ky = b->bky; r->kw = b->bkw; r->kh = b->bkh;
+            r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh;
+        }
+    }
     int bt = b->bw[0], br = b->bw[1], bb = b->bw[2], bl = b->bw[3];
     if (!(bt | br | bb | bl)) return;
     if (b->rad > 0 && bt == br && br == bb && bb == bl && b->bc[0] == b->bc[1] && b->bc[1] == b->bc[2] && b->bc[2] == b->bc[3]) {
@@ -1739,7 +1750,7 @@ static void paint_replaced(struct bx *b, int ox, int oy) {
     int w = b->w - hedge(b), h = b->h - vedge(b);
     if (b->inner == IN_IMG) {
         struct item *it = emit_item();
-        it->x = x; it->y = y; it->w = w; it->h = h; it->flags = FL_IMG; it->ref = b->ref; it->node = b->node;
+        it->x = x; it->y = y; it->w = w; it->h = h; it->flags = FL_IMG; it->ref = b->ref; it->node = b->node; it->fit = b->objfit;
         if (b->tlen) { it->len = imin_(b->tlen, 200); it->off = arena(hd_str(b->toff), it->len); }
         if (it->h > D->maxh) D->maxh = it->h;
     } else {
@@ -2103,6 +2114,15 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     lenset(S, L_W, cp, P_WIDTH); lenset(S, L_H, cp, P_HEIGHT); lenset(S, L_MINW, cp, P_MINW); lenset(S, L_MAXW, cp, P_MAXW);
     lenset(S, L_MINH, cp, P_MINH); lenset(S, L_MAXH, cp, P_MAXH); lenset(S, L_BASIS, cp, P_FBASIS);
     S->bg = cp->v[P_BG];
+    S->bgi = 0;
+    if (cp->k[P_BGIMG] == K_STR) {                       /* url(...) is absolute already (css.c); a gradient or none paints nothing */
+        int ix = img_ref_ex(css_str(cp->v[P_BGIMG]), "lazy");
+        S->bgi = ix >= 0 ? ix + 1 : 0;
+        S->brep = cp->v[P_BGREP];
+        S->bkx = cp->k[P_BGPX]; S->bpx = cp->v[P_BGPX]; S->bky = cp->k[P_BGPY]; S->bpy = cp->v[P_BGPY];
+        S->bkw = cp->k[P_BGSW]; S->bsw = cp->v[P_BGSW]; S->bkh = cp->k[P_BGSH]; S->bsh = cp->v[P_BGSH];
+    }
+    S->objfit = cp->v[P_OBJFIT];
     S->rad = cp->v[P_RTL] > 0 ? css_len(cp, P_RTL, 100) : 0;
     if (cp->k[P_RTL] == K_PCT) S->rad = 999;
     S->opacity = cp->v[P_OPACITY];
@@ -2182,7 +2202,7 @@ static void parse_options(int dn, struct ctl *c) {
 static void text_of(int dn, char *out, int cap) {
     int k = 0, sp = 0;
     for (int c = DN(dn).first; c >= 0 && k < cap - 1; c = DN(c).next) {
-        if (DN(c).type != 3) { if (DN(c).type == 1) { char t[200]; text_of(c, t, sizeof t); for (int q = 0; t[q] && k < cap - 1; q++) { out[k++] = t[q]; sp = 0; } } continue; }
+        if (DN(c).type != 3) { if (DN(c).type == 1 && DN(c).tag != T_SVG) { char t[200]; text_of(c, t, sizeof t); for (int q = 0; t[q] && k < cap - 1; q++) { out[k++] = t[q]; sp = 0; } } continue; }
         const char *s = hd_str(DN(c).nm);
         for (int q = 0; q < DN(c).tn && k < cap - 1; q++) {
             if (isspace((unsigned char)s[q])) { if (k && !sp) out[k++] = ' '; sp = 1; }
@@ -2309,8 +2329,8 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
     }
     if (!picked && ATTR(dn, "srcset") && img_pick(src, ATTR(dn, "srcset"), ATTR(dn, "sizes"), rootw, pk, sizeof pk)) src = pk;
     if (src && *src) {
-        if (!strncasecmp(src, "data:", 5)) idx = img_ref(src);
-        else { url_resolve(cur_base_url, src, u, sizeof u); idx = img_ref(u); }
+        if (!strncasecmp(src, "data:", 5)) idx = img_ref_ex(src, ATTR(dn, "loading"));
+        else { url_resolve(cur_base_url, src, u, sizeof u); idx = img_ref_ex(u, ATTR(dn, "loading")); }
         st = img_info(idx, &iw, &ih);
     }
     const char *aw = ATTR(dn, "width"), *ah = ATTR(dn, "height");

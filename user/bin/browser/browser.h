@@ -45,6 +45,8 @@ struct fetch {
     int head, ready;               /* HEAD request (no body); buf already holds the whole response (data: URL, cache hit) */
     char *url;                     /* for the cache (malloc'd; NULL = don't cache) */
     struct fr fr; size_t fpos;     /* body framing: fed up to fpos body bytes */
+    uint32_t t0;                   /* uptime at fetch_start (timing log) */
+    unsigned char *stale; size_t stale_len;   /* revalidating: the cached response a 304 turns back into the answer */
     int wk;                        /* index of the pooled keep-alive helper doing this fetch, or -1 (one-shot process / no process) */
 };
 struct response {
@@ -60,10 +62,12 @@ int  fetch_start(struct fetch *f, const char *url, const char *post);
  * Content-Length, Connection, Accept-Encoding, Referer, Origin are ours and ignored), body/blen (may hold NULs; blen 0 = no body,
  * but method POST/PUT then sends an empty one). Cookies are sent and stored by vfetch as for any page. 0 / -1 */
 int  fetch_start_req(struct fetch *f, const char *url, const char *method, const char *hdrs, const char *body, size_t blen);
+int  fetch_hdr(const struct fetch *f, const char *name, char *out, int cap);   /* header value once fe->hdr_end is set */
 int  fetch_pump(struct fetch *f);                 /* 0 running, 1 finished, -1 failed */
 void fetch_cancel(struct fetch *f);
 void fetch_reap(void);                            /* collect killed children */
 void fetch_finish(struct fetch *f, struct response *r);   /* consumes f->buf */
+void fetch_preconnect(const char *html, size_t n, const char *base);   /* warm connections to the origins of the head's <link>/<img>/<script> */
 void fetch_set_referer(const char *url);          /* Referer for the requests that follow (the current page) */
 void fetch_cache_drop(const char *url);           /* forget one URL (reload), or everything when url is NULL */
 
@@ -182,10 +186,12 @@ void sheet_drop(void *h);
 /* ---- img.c: per-page image cache. Images are fetched by helper processes (two at a time), decoded
  * in-process and kept (plus one scaled copy) until the next page. ---- */
 enum { IMG_QUEUED, IMG_LOADING, IMG_READY, IMG_FAILED };
+int  img_ref_ex(const char *url, const char *loading);   /* same, with the <img loading=lazy|eager> attribute (or NULL): lazy = only fetched once drawn, eager = at once */
 int  img_ref(const char *url);                   /* index; queues the download on first use */
 int  img_info(int i, int *w, int *h);            /* IMG_*; size when ready */
 const uint32_t *img_pixels(int i, int w, int h, color_t bg);   /* w*h opaque pixels (scaled, over bg), or NULL */
 int  img_pump(void);                             /* advance downloads; nonzero when an image became ready/failed */
+void img_hold(int h);                            /* 1 while scrolling fast: img_pump decodes nothing (a decode is tens of ms) */
 int  img_busy(void);                             /* images still queued or downloading */
 void img_reset(void);                            /* new page */
 void *img_save(void);                            /* background tab: take the cache (empties it); img_restore(h) puts it back and frees h, img_drop(h) frees it */
@@ -210,8 +216,9 @@ struct form { uint32_t action; uint8_t post; int node; };
 #define FL_STRIKE 2
 #define FL_IMG 4
 #define FL_CTL 8
-struct item { int x, y; short w, h, clip; uint8_t font, flags; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
-struct decor { int x, y, w, h; color_t col; int it; short clip; uint8_t rad, ring; };   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */
+struct item { int x, y; short w, h, clip; uint8_t font, flags, fit; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
+struct decor { int x, y, w, h; color_t col; int it; short clip; uint8_t rad, ring;
+               int img; uint8_t rep, kx, ky, kw, kh; int px, py, sw, sh; };   /* img: background-image (image cache index + 1; col is then unused): repeat, position and size as k (K_PX/K_PCT[x100]/K_AUTO/K_COVER/K_CONTAIN) + value */   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */
 struct cliprect { int x, y, w, h; };
 struct anchor { char name[40]; int y; };
 struct doc {

@@ -15,16 +15,30 @@
 #include <ctype.h>
 #include <time.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 
 #define HDR_MAX 16384
 #define NET_MAX (24u << 20)      /* raw bytes accepted per response (MAX_PAGE still caps what a page keeps) */
 
+/* ---------- timing log: with /tmp/netlog present every finished fetch is logged to /dev/kmsg (serial) ---------- */
+static int netlog_on = -1;
+static uint32_t netlog_t0;
+static void netlog(uint32_t start, const char *tag, int status, size_t n, const char *url) {
+    if (netlog_on < 0) { struct stat st; netlog_on = stat("/tmp/netlog", &st) == 0; }
+    if (!netlog_on) return;
+    if (!netlog_t0) netlog_t0 = start;
+    char b[400];
+    int l = snprintf(b, sizeof b, "NETLOG +%u..+%u ms %s %d %lu %.200s\n", start - netlog_t0, uptime_ms() - netlog_t0, tag, status, (unsigned long)n, url);
+    int fd = open("/dev/kmsg", O_WRONLY);
+    if (fd >= 0) { write(fd, b, l); close(fd); }
+}
+
 /* ---------- cache ---------- */
 #define NCACHE 48
 #define CACHE_BYTES (16u << 20)
 #define CACHE_ONE (3u << 20)
-static struct cent { char *url; unsigned char *raw; size_t len; long expires; } C[NCACHE];   /* C[0] oldest after compaction; raw = the whole response as received */
+static struct cent { char *url; unsigned char *raw; size_t len; long expires; char etag[100], lm[48]; long cksum; } C[NCACHE];   /* C[0] oldest after compaction; raw = the whole response as received */
 static int ncache;
 static size_t cbytes;
 static char referer[URL_MAX];
@@ -41,37 +55,61 @@ void fetch_cache_drop(const char *url) {
     for (int i = ncache - 1; i >= 0; i--) if (!url || !strcmp(C[i].url, url)) cache_del(i);
 }
 
-static const struct cent *cache_find(const char *url) {
-    long now = uptime_ms() / 1000;
-    for (int i = 0; i < ncache; i++)
-        if (!strcmp(C[i].url, url)) {
-            if (C[i].expires <= now) { cache_del(i); return 0; }
-            return &C[i];
-        }
+/* the entry for url, fresh or not (a stale one with an ETag / Last-Modified is revalidated, see fetch_start_req) */
+static struct cent *cache_find(const char *url) {
+    for (int i = 0; i < ncache; i++) if (!strcmp(C[i].url, url)) return &C[i];
     return 0;
 }
 
-/* keep a finished GET: Cache-Control no-store/no-cache/private-less rules in brief. Freshness: max-age if given, else 2 minutes
- * (so back/forward and repeated subresources are free, but a news page isn't stale for long). ponytail: no revalidation
- * (ETag / If-None-Match), no Vary; a stale entry is simply refetched. */
-static void cache_put(const char *url, const unsigned char *raw, size_t n, long hdr_end) {
+/* Vary: Cookie -> the entry is only good for the same cookies; this is a hash of what we'd send now (0 = don't care) */
+static long ck_sum(const char *url) {
+    char host[128], path[URL_MAX], c[4096];
+    int port;
+    if (url_split_http(url, host, sizeof host, &port, path, sizeof path) < 0) return 0;
+    cookie_header(host, path, !strncasecmp(url, "https:", 6), 0, c, sizeof c);
+    long h = 5381;
+    for (const char *p = c; *p; p++) h = h * 33 + (unsigned char)*p;
+    return h | 1;
+}
+
+/* seconds a response stays fresh: max-age if given, else 2 minutes (so back/forward and repeated subresources are free, but a
+ * news page isn't stale for long); 0 = always revalidate. -1 = never store (no-store). h = the response's header block */
+static long freshness(const char *h, long hl) {
     char cc[200] = "", v[64];
-    hdr_get((const char *)raw, hdr_end, "cache-control", cc, sizeof cc);
+    hdr_get(h, hl, "cache-control", cc, sizeof cc);
     for (char *c = cc; *c; c++) *c = tolower((unsigned char)*c);
-    if (strstr(cc, "no-store") || strstr(cc, "no-cache") || n > CACHE_ONE) return;
-    long age = 120;
+    if (strstr(cc, "no-store")) return -1;
+    if (strstr(cc, "no-cache")) return 0;
     const char *m = strstr(cc, "max-age=");
+    long age = 120;
     if (m) age = atol(m + 8);
-    else if (hdr_get((const char *)raw, hdr_end, "pragma", v, sizeof v) && strstr(v, "no-cache")) return;
-    if (age <= 0) return;
-    if (age > 3600) age = 3600;
+    else if (hdr_get(h, hl, "pragma", v, sizeof v) && strstr(v, "no-cache")) return 0;
+    return age < 0 ? 0 : age > 3600 ? 3600 : age;
+}
+
+/* keep a finished GET. Stale-on-arrival ones (no-cache, max-age=0) are kept too when they carry a validator: the next use sends
+ * If-None-Match / If-Modified-Since and a 304 turns it back into the answer. Vary: * is not stored; Vary: Cookie is honoured
+ * (Accept-Encoding, User-Agent etc. never change for us). */
+static void cache_put(const char *url, const unsigned char *raw, size_t n, long hdr_end) {
+    char et[100] = "", lm[48] = "", vary[100] = "";
+    if (n > CACHE_ONE) return;
+    long age = freshness((const char *)raw, hdr_end);
+    hdr_get((const char *)raw, hdr_end, "etag", et, sizeof et);
+    hdr_get((const char *)raw, hdr_end, "last-modified", lm, sizeof lm);
+    hdr_get((const char *)raw, hdr_end, "vary", vary, sizeof vary);
+    for (char *c = vary; *c; c++) *c = tolower((unsigned char)*c);
+    if (age < 0 || strchr(vary, '*') || (age == 0 && !et[0] && !lm[0])) return;
     fetch_cache_drop(url);
     while (ncache && (ncache == NCACHE || cbytes + n > CACHE_BYTES)) cache_del(0);
     unsigned char *cp = malloc(n + 1);
     char *u = strdup(url);
     if (!cp || !u) { free(cp); free(u); return; }
     memcpy(cp, raw, n);
-    C[ncache++] = (struct cent){ u, cp, n, uptime_ms() / 1000 + age };
+    C[ncache] = (struct cent){ u, cp, n, uptime_ms() / 1000 + age };
+    snprintf(C[ncache].etag, sizeof C[0].etag, "%s", et);
+    snprintf(C[ncache].lm, sizeof C[0].lm, "%s", lm);
+    C[ncache].cksum = strstr(vary, "cookie") ? ck_sum(url) : 0;
+    ncache++;
     cbytes += n;
 }
 
@@ -126,7 +164,7 @@ void fetch_reap(void) {
  * their connection open between them. A request goes to an idle worker that last talked to the same origin, else any idle
  * one (it reconnects), else a new one. A worker is busy from fetch_start until fetch_finish/fetch_cancel; one whose response
  * didn't end cleanly is killed. They end by themselves when the browser exits (their stdin closes). */
-#define MAXW 16
+#define MAXW 24
 #define MAXIDLE 6
 static struct wk { int pid, in, out, busy; char origin[200]; } W[MAXW];
 
@@ -135,6 +173,22 @@ static void wk_kill(int i) {
     kill(W[i].pid, SIGKILL);
     if (waitpid(W[i].pid, 0, WNOHANG) == 0 && ndying < 8) dying[ndying++] = W[i].pid;
     W[i].pid = 0;
+}
+
+static int wk_new(void) {
+    int free_slot = -1;
+    for (int i = 0; i < MAXW; i++) if (!W[i].pid) { free_slot = i; break; }
+    if (free_slot < 0) return -1;
+    int pin[2], pout[2];
+    if (pipe(pin) < 0) return -1;
+    if (pipe(pout) < 0) { close(pin[0]); close(pin[1]); return -1; }
+    char *argv[] = { "/bin/vfetch", "--worker", 0 };
+    struct spawn_opts o = { { pin[0], pout[1], -1 }, 0, 0 };
+    int pid = spawnve("/bin/vfetch", argv, environ, &o);
+    close(pin[0]); close(pout[1]);
+    if (pid < 0) { close(pin[1]); close(pout[0]); return -1; }
+    W[free_slot] = (struct wk){ pid, pin[1], pout[0], 0, "" };
+    return free_slot;
 }
 
 static int wk_get(const char *origin) {
@@ -147,17 +201,8 @@ static int wk_get(const char *origin) {
         if (idle < 0) idle = i;
     }
     if (idle >= 0) return idle;
-    if (free_slot < 0) return -1;
-    int pin[2], pout[2];
-    if (pipe(pin) < 0) return -1;
-    if (pipe(pout) < 0) { close(pin[0]); close(pin[1]); return -1; }
-    char *argv[] = { "/bin/vfetch", "--worker", 0 };
-    struct spawn_opts o = { { pin[0], pout[1], -1 }, 0, 0 };
-    int pid = spawnve("/bin/vfetch", argv, environ, &o);
-    close(pin[0]); close(pout[1]);
-    if (pid < 0) { close(pin[1]); close(pout[0]); return -1; }
-    W[free_slot] = (struct wk){ pid, pin[1], pout[0], 0, "" };
-    return free_slot;
+    (void)free_slot;
+    return wk_new();
 }
 
 /* the fetch is over: its worker goes back to the pool if the response ended cleanly, else it's killed */
@@ -187,17 +232,79 @@ static char *esc_add(char *o, const char *s, size_t n) {
     return o;
 }
 
+/* Preconnect: the page's head names the stylesheets and images it will need, so as soon as the HTML is in (before layout, which
+ * is what asks for them) open connections to those origins in idle helpers: DNS + TCP + TLS (150-500 ms each) then overlap
+ * with layout instead of delaying the first request. Up to 4 per origin (the callers' slots), 8 origins. */
+void fetch_preconnect(const char *html, size_t n, const char *base) {
+    struct { char origin[200], url[URL_MAX]; int want; } O[8];
+    int no = 0;
+    if (n > 262144) n = 262144;
+    for (size_t i = 0; i < n && no < 8; i++) {
+        if (html[i] != '<') continue;
+        size_t j = i + 1, nl = 0;
+        while (j + nl < n && isalpha((unsigned char)html[j + nl])) nl++;
+        int tagok = (nl == 4 && !strncasecmp(html + j, "link", 4)) || (nl == 3 && !strncasecmp(html + j, "img", 3)) ||
+                    (nl == 6 && (!strncasecmp(html + j, "script", 6) || !strncasecmp(html + j, "source", 6)));
+        if (!tagok) continue;
+        size_t e = j;
+        while (e < n && html[e] != '>') e++;
+        for (size_t a = j + nl; a + 5 < e; a++) {
+            int isurl = (!strncasecmp(html + a, " src=", 5) || !strncasecmp(html + a, " href=", 6));
+            if (!isurl) continue;
+            a += html[a + 1] == 's' || html[a + 1] == 'S' ? 5 : 6;
+            char q = html[a] == '"' || html[a] == '\'' ? html[a++] : 0;
+            char ref[URL_MAX], abs[URL_MAX];
+            size_t k = 0;
+            while (a + k < e && k < sizeof ref - 1 && (q ? html[a + k] != q : !isspace((unsigned char)html[a + k]))) { ref[k] = html[a + k]; k++; }
+            ref[k] = 0;
+            if (!k || !strncasecmp(ref, "data:", 5)) break;
+            url_resolve(base, ref, abs, sizeof abs);
+            char host[128], path[8];
+            int port;
+            if ((strncasecmp(abs, "http://", 7) && strncasecmp(abs, "https://", 8)) || url_split_http(abs, host, sizeof host, &port, path, sizeof path) < 0) break;
+            char origin[200];
+            snprintf(origin, sizeof origin, "%s://%s:%d", strncasecmp(abs, "https:", 6) ? "http" : "https", host, port);
+            int o = 0;
+            while (o < no && strcmp(O[o].origin, origin)) o++;
+            if (o == no && no < 8) { strcpy(O[no].origin, origin); { const char *sl = strchr(abs + 8, '/'); snprintf(O[no].url, sizeof O[0].url, "%.*s", sl ? (int)(sl - abs) : (int)strlen(abs), abs); } O[no].want = 0; no++; }
+            if (o < no && O[o].want < 4) O[o].want++;
+            break;
+        }
+        i = e;
+    }
+    for (int o = 0; o < no; o++) {
+        int have = 0;
+        for (int i = 0; i < MAXW; i++) have += W[i].pid && !W[i].busy && !strcmp(W[i].origin, O[o].origin);
+        for (; have < O[o].want; have++) {
+            int w = wk_new();
+            if (w < 0) return;
+            char ln[URL_MAX + 40];
+            int l = snprintf(ln, sizeof ln, "PRECONNECT\t%s/\t\t\t-\n", O[o].url);
+            if (write(W[w].in, ln, l) != l) { wk_kill(w); return; }
+            snprintf(W[w].origin, sizeof W[w].origin, "%s", O[o].origin);
+        }
+    }
+}
+
 int fetch_start_req(struct fetch *f, const char *url, const char *method, const char *hdrs, const char *body, size_t blen) {
     memset(f, 0, sizeof *f);
     f->fd = -1; f->clen = -1; f->wk = -1;
     if (!method) method = body ? "POST" : "GET";
-    f->last = uptime_ms();
+    f->last = f->t0 = uptime_ms();
     f->head = !strcmp(method, "HEAD");
     if (!strncasecmp(url, "data:", 5)) return data_response(f, url);
     int plain = !strcmp(method, "GET") && !hdrs && !body;       /* the only kind the cache serves */
+    char cond[300];
     if (plain) {
-        const struct cent *c = cache_find(url);
-        if (c && (f->buf = malloc(c->len + 1))) { memcpy(f->buf, c->raw, c->len); f->len = c->len; f->cap = c->len + 1; f->ready = 1; return 0; }
+        struct cent *c = cache_find(url);
+        if (c && c->cksum && c->cksum != ck_sum(url)) c = 0;           /* Vary: Cookie and the cookies changed */
+        if (c && c->expires > (long)(uptime_ms() / 1000) && (f->buf = malloc(c->len + 1))) { memcpy(f->buf, c->raw, c->len); f->len = c->len; f->cap = c->len + 1; f->ready = 1; return 0; }
+        if (c && (c->etag[0] || c->lm[0]) && (f->stale = malloc(c->len + 1))) {      /* stale but revalidatable */
+            memcpy(f->stale, c->raw, f->stale_len = c->len);
+            snprintf(cond, sizeof cond, "%s%s%s%s%s%s", c->etag[0] ? "If-None-Match: " : "", c->etag, c->etag[0] ? "\r\n" : "",
+                     c->lm[0] ? "If-Modified-Since: " : "", c->lm, c->lm[0] ? "\r\n" : "");
+            hdrs = cond;
+        }
         f->url = strdup(url);
     }
     char origin[200], host[128], path[8];
@@ -239,8 +346,8 @@ void fetch_cancel(struct fetch *f) {
         if (waitpid(f->pid, 0, WNOHANG) == 0 && ndying < 8) dying[ndying++] = f->pid;
         f->pid = 0;
     }
-    free(f->buf); free(f->url);
-    f->buf = 0; f->url = 0; f->len = f->cap = 0;
+    free(f->buf); free(f->url); free(f->stale);
+    f->buf = 0; f->url = 0; f->stale = 0; f->len = f->cap = 0;
 }
 
 /* hdr_end: offset of the body, or -1 if the header block isn't complete. */
@@ -250,6 +357,11 @@ static long find_hdr_end(const unsigned char *b, size_t n) {
         if (i + 3 < n && b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' && b[i + 3] == '\n') return i + 4;
     }
     return -1;
+}
+
+/* a response header of the data read so far (once the headers are complete): 1 = found */
+int fetch_hdr(const struct fetch *f, const char *name, char *out, int cap) {
+    return f->hdr_end ? hdr_get((const char *)f->buf, f->hdr_end, name, out, cap) : 0;
 }
 
 int fetch_pump(struct fetch *f) {
@@ -281,6 +393,21 @@ int fetch_pump(struct fetch *f) {
             if (hdr_get((char *)f->buf, he, "transfer-encoding", v, sizeof v))
                 for (char *c = v; *c; c++) if (!strncasecmp(c, "chunked", 7)) f->chunked = 1;
             fr_init(&f->fr, f->head, f->status, f->clen, f->chunked);
+            if (f->stale && f->status == 304) {            /* not modified: the cached copy is the answer, fresh for another while */
+                long age = freshness((char *)f->stale, find_hdr_end(f->stale, f->stale_len));     /* the stored headers rule (no-cache stays no-cache) */
+                struct cent *c = f->url ? cache_find(f->url) : 0;
+                if (c) c->expires = uptime_ms() / 1000 + age;
+                free(f->buf);
+                f->buf = f->stale; f->len = f->stale_len; f->cap = f->len + 1; f->stale = 0;
+                f->hdr_end = find_hdr_end(f->buf, f->len);
+                f->buf[f->len] = 0;
+                f->status = atoi((char *)f->buf + 9);
+                f->clen = hdr_get((char *)f->buf, f->hdr_end, "content-length", v, sizeof v) ? atol(v) : -1;
+                f->chunked = hdr_get((char *)f->buf, f->hdr_end, "transfer-encoding", v, sizeof v) && strstr(v, "hunked");
+                f->fpos = f->len - f->hdr_end;               /* the worker's own (empty) 304 is complete: f->fr stays done */
+                free(f->url); f->url = 0;                    /* already cached */
+                f->ready = 1;
+            }
         }
     }
     if (f->hdr_end) {                                  /* where does the body end? (exactly: a keep-alive helper has no EOF to say so) */
@@ -293,7 +420,7 @@ int fetch_pump(struct fetch *f) {
 }
 
 /* ---------- charset -> UTF-8 ---------- */
-enum { E_UTF8, E_1252, E_8859_15, E_1251, E_U16LE, E_U16BE, E_OTHER };
+enum { E_UTF8, E_1252, E_8859_15, E_1251, E_8859_2, E_KOI8R, E_U16LE, E_U16BE, E_OTHER };
 
 static const uint16_t W1252[32] = { 0x20AC,0x81,0x201A,0x192,0x201E,0x2026,0x2020,0x2021,0x2C6,0x2030,0x160,0x2039,0x152,0x8D,0x17D,0x8F,
                                     0x90,0x2018,0x2019,0x201C,0x201D,0x2022,0x2013,0x2014,0x2DC,0x2122,0x161,0x203A,0x153,0x9D,0x17E,0x178 };
@@ -302,14 +429,32 @@ static const uint16_t W1251[64] = { 0x402,0x403,0x201A,0x453,0x201E,0x2026,0x202
                                     0xA0,0x40E,0x45E,0x408,0xA4,0x490,0xA6,0xA7,0x401,0xA9,0x404,0xAB,0xAC,0xAD,0xAE,0x407,
                                     0xB0,0xB1,0x406,0x456,0x491,0xB5,0xB6,0xB7,0x451,0x2116,0x454,0xBB,0x458,0x405,0x455,0x457 };
 
+static const uint16_t L2[96] = {   /* ISO-8859-2 0xA0..0xFF */
+    0xA0,0x104,0x2D8,0x141,0xA4,0x13D,0x15A,0xA7,0xA8,0x160,0x15E,0x164,0x179,0xAD,0x17D,0x17B,
+    0xB0,0x105,0x2DB,0x142,0xB4,0x13E,0x15B,0x2C7,0xB8,0x161,0x15F,0x165,0x17A,0x2DD,0x17E,0x17C,
+    0x154,0xC1,0xC2,0x102,0xC4,0x139,0x106,0xC7,0x10C,0xC9,0x118,0xCB,0x11A,0xCD,0xCE,0x10E,
+    0x110,0x143,0x147,0xD3,0xD4,0x150,0xD6,0xD7,0x158,0x16E,0xDA,0x170,0xDC,0xDD,0x162,0xDF,
+    0x155,0xE1,0xE2,0x103,0xE4,0x13A,0x107,0xE7,0x10D,0xE9,0x119,0xEB,0x11B,0xED,0xEE,0x10F,
+    0x111,0x144,0x148,0xF3,0xF4,0x151,0xF6,0xF7,0x159,0x16F,0xFA,0x171,0xFC,0xFD,0x163,0x2D9 };
+static const uint16_t K8[128] = {  /* KOI8-R 0x80..0xFF: box drawing, then the Cyrillic letters in KOI order */
+    0x2500,0x2502,0x250C,0x2510,0x2514,0x2518,0x251C,0x2524,0x252C,0x2534,0x253C,0x2580,0x2584,0x2588,0x258C,0x2590,
+    0x2591,0x2592,0x2593,0x2320,0x25A0,0x2219,0x221A,0x2248,0x2264,0x2265,0xA0,0x2321,0xB0,0xB2,0xB7,0xF7,
+    0x2550,0x2551,0x2552,0x451,0x2553,0x2554,0x2555,0x2556,0x2557,0x2558,0x2559,0x255A,0x255B,0x255C,0x255D,0x255E,
+    0x255F,0x2560,0x2561,0x401,0x2562,0x2563,0x2564,0x2565,0x2566,0x2567,0x2568,0x2569,0x256A,0x256B,0x256C,0xA9,
+    0x44E,0x430,0x431,0x446,0x434,0x435,0x444,0x433,0x445,0x438,0x439,0x43A,0x43B,0x43C,0x43D,0x43E,
+    0x43F,0x44F,0x440,0x441,0x442,0x443,0x436,0x432,0x44C,0x44B,0x437,0x448,0x44D,0x449,0x447,0x44A,
+    0x42E,0x410,0x411,0x426,0x414,0x415,0x424,0x413,0x425,0x418,0x419,0x41A,0x41B,0x41C,0x41D,0x41E,
+    0x41F,0x42F,0x420,0x421,0x422,0x423,0x416,0x412,0x42C,0x42B,0x417,0x428,0x42D,0x429,0x427,0x42A };
+
 static int enc_of(const char *cs) {
     static const struct { const char *n; int e; } T[] = {
         { "utf-8", E_UTF8 }, { "utf8", E_UTF8 }, { "us-ascii", E_UTF8 }, { "ascii", E_UTF8 },
         { "iso-8859-1", E_1252 }, { "iso8859-1", E_1252 }, { "latin1", E_1252 }, { "latin-1", E_1252 }, { "l1", E_1252 }, { "windows-1252", E_1252 }, { "cp1252", E_1252 }, { "x-cp1252", E_1252 },
+        { "iso-8859-2", E_8859_2 }, { "iso8859-2", E_8859_2 }, { "latin2", E_8859_2 }, { "l2", E_8859_2 }, { "koi8-r", E_KOI8R }, { "koi8", E_KOI8R },
         { "iso-8859-15", E_8859_15 }, { "latin9", E_8859_15 }, { "windows-1251", E_1251 }, { "cp1251", E_1251 }, { "x-cp1251", E_1251 },
         { "utf-16", E_U16LE }, { "utf-16le", E_U16LE }, { "utf-16be", E_U16BE } };
     for (unsigned i = 0; i < sizeof T / sizeof *T; i++) if (!strcasecmp(cs, T[i].n)) return T[i].e;
-    return E_OTHER;           /* gbk, shift_jis, koi8-r, iso-8859-2 ...: left alone (ponytail: add tables when a page needs them) */
+    return E_OTHER;           /* gbk, shift_jis, koi8-r, iso-8859-2 ...: left alone (ponytail: add tables when a page needs them; koi8-u, windows-1250 would be next) */
 }
 
 /* charset name after "charset=" in s (header value or meta tag) */
@@ -386,6 +531,8 @@ static unsigned char *to_utf8(unsigned char *b, size_t *n, const char *ctype) {
             unsigned c = s[i];
             if (c >= 0x80) {
                 if (enc == E_1251) c = c < 0xC0 ? W1251[c - 0x80] : 0x410 + c - 0xC0;
+                else if (enc == E_KOI8R) c = K8[c - 0x80];
+                else if (enc == E_8859_2) { if (c >= 0xA0) c = L2[c - 0xA0]; }
                 else if (c < 0xA0) c = W1252[c - 0x80];
                 else if (enc == E_8859_15) c = c == 0xA4 ? 0x20AC : c == 0xA6 ? 0x160 : c == 0xA8 ? 0x161 : c == 0xB4 ? 0x17D : c == 0xB8 ? 0x17E : c == 0xBC ? 0x152 : c == 0xBD ? 0x153 : c == 0xBE ? 0x178 : c;
             }
@@ -437,6 +584,8 @@ void fetch_finish(struct fetch *f, struct response *r) {
     char *url = f->url;
     f->buf = 0; f->url = 0; f->len = f->cap = 0;
     release(f);
+    free(f->stale); f->stale = 0;
+    netlog(f->t0, f->ready ? "hit" : "net", f->status, n, url ? url : "(other)");
     if (!b) { snprintf(r->err, sizeof r->err, "net:no data"); free(url); return; }
     b[n] = 0;
     if (n >= 6 && !memcmp(b, "VBERR:", 6)) { snprintf(r->err, sizeof r->err, "%s", (char *)b + 6); free(b); free(url); return; }
