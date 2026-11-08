@@ -172,6 +172,7 @@ static void commit(const char *url, char *raw, size_t n, int html) {
     last_needle[0] = 0; find_count = 0; mk.find = 0;
     doc.title[0] = 0;
     layout_w = view_w();
+    if (html && url_is_web(url)) fetch_preconnect(raw, n, url);     /* overlap the handshakes with layout */
     free(alert_msg);
     alert_msg = 0;
     if (html && js_page(pg.raw, pg.n, url)) {          /* scripts: lay out the DOM (js.c) instead of the source */
@@ -384,6 +385,11 @@ static void finish_fetch(void) {
         if (++hops > MAX_REDIRECTS) { net_error(pend_url, "net:too many redirects"); return; }
         if (was_post && (rs.status == 307 || rs.status == 308)) has_post = true;     /* 301/302/303 turn a POST into a GET; 307/308 keep it (post_body is still there) */
         load_url(next);
+        return;
+    }
+    if (rs.status == 204 || rs.status == 205) {        /* no content: stay where we are */
+        free(rs.body);
+        say(false, "%d %s - staying on this page", rs.status, rs.text);
         return;
     }
     int html = -1;

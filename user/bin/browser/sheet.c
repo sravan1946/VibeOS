@@ -9,7 +9,7 @@
 #include <fcntl.h>
 #include <syscall.h>
 
-#define NSLOT 2
+#define NSLOT 4
 #define MAXSHEET 32
 #define SHEET_MAX (512u << 10)           /* bytes kept per sheet; the rest is cut off */
 #define SHEET_TIMEOUT 8000               /* ms without a byte */

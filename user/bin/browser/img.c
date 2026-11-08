@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <syscall.h>
 
-#define NSLOT 2
+#define NSLOT 6
 #define MAXIMG 300
 #define MAXDIM 2048
 #define MAX_HOPS 4
