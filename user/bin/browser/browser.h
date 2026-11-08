@@ -114,7 +114,8 @@ int  img_type_ok(const char *mime);              /* a <source type=...> the deco
 /* ---- html.c ---- */
 extern int doc_zoom;                             /* main.c: page zoom in percent (100 = normal); layout scales fonts, lengths and images by it */
 enum { C_TEXT, C_PASS, C_AREA, C_BTN, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT };
-struct ctl { uint8_t kind, sub, chk; int form, ord, item, node; uint32_t name, val; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits */
+struct ctl { uint8_t kind, sub, chk, fl; int form, ord, item, node; uint32_t name, val, ph; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits; ph: placeholder (txt offset, "" = none); fl: CF_* */
+enum { CF_REQ = 1, CF_EMAIL = 2, CF_AUTO = 4, CF_RO = 8 };   /* required, type=email, autofocus, readonly/disabled */
 struct opt { uint32_t lab, val; };
 struct form { uint32_t action; uint8_t post; int node; };
 #define FL_UL 1
@@ -156,7 +157,7 @@ int  doc_find(const struct doc *d, const char *needle, int from_it, int from_off
 int  doc_count(const struct doc *d, const char *needle);
 
 /* ---- form.c: control state (survives re-layout), drawing, editing, submit URLs ---- */
-struct fstate { char *val; int cap, on, sel, init, sx, sy; };   /* sx/sy: text scroll */
+struct fstate { char *val; int cap, on, sel, init, sx, sy, anc1; };   /* sx/sy: text scroll; anc1: selection anchor byte + 1 (0 = none) */
 struct fstate *fs_get(const struct doc *d, int ci);      /* state of control ci (lazily initialised) */
 struct fstate *fs_ord(int ord);                          /* by ordinal, or NULL */
 void fs_set(struct fstate *s, const char *v);
@@ -164,6 +165,7 @@ void fs_reset(void);
 void ctl_draw(struct canvas *c, const struct doc *d, const struct ctl *t, int x, int y, int w, int h, int focused, int caret);
 int  ctl_key(const struct doc *d, int ci, const struct gui_event *k, int *caret);   /* 1 = Enter pressed */
 int  ctl_caret_at(const struct doc *d, int ci, int rx, int ry);
+int  form_check(const struct doc *d, int form, char *msg, int cap);   /* first control failing required / type=email: its index + a message, else -1 */
 void ctl_toggle(const struct doc *d, int ci);            /* click on a checkbox / radio */
 void form_reset(const struct doc *d, int form);
 /* URL (GET) or body (POST) for submitting `form`, pressed by control `btn` (or -1): returns 1 for POST, 0 for GET */

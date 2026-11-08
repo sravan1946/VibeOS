@@ -191,6 +191,10 @@ static void commit(const char *url, char *raw, size_t n, int html) {
     } else js_reset();
     doc_layout(&doc, pg.raw, pg.n, html, layout_w, cur_url);
     js_attach(&doc);
+    for (int i = 0; i < doc.nct; i++) {                    /* autofocus: the first text field that asks */
+        const struct ctl *c = &doc.ct[i];
+        if ((c->fl & CF_AUTO) && (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA)) { fo = c->ord; caret = strlen(fs_get(&doc, i)->val ?: ""); break; }
+    }
     if (!doc.title[0]) {
         const char *b = base_name(url);
         strlcpy(doc.title, *b ? b : url, sizeof doc.title);
@@ -699,7 +703,22 @@ static void relayout(void) {
 }
 
 /* ---------- forms, selection, find ---------- */
+static int ctl_by_ord(int ord);
+static const struct item *ctl_item(int ci);
+static int fo_drag;                          /* dragging a selection inside the focused field */
+static void scroll_to_y(int y, int vh);
+
 static void submit(int btn, int form) {
+    char vmsg[64];
+    int bad = form >= 0 ? form_check(&doc, form, vmsg, sizeof vmsg) : -1;
+    if (bad >= 0) {                                       /* required / email: focus the field and say why, don't submit */
+        const struct ctl *c = &doc.ct[bad];
+        if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = strlen(fs_get(&doc, bad)->val ?: ""); }
+        const struct item *it = ctl_item(bad);
+        if (it) scroll_to_y(it->y, view_h());
+        strlcpy(dl_toast, vmsg, sizeof dl_toast);
+        return;
+    }
     if (form < 0 || js_event(doc.fm[form].node, "submit", 0, 0, 0)) return;
     char url[URL_MAX], body[sizeof post_body];
     int post = form_submit(&doc, form, btn, cur_url, url, sizeof url, body, sizeof body);
@@ -985,7 +1004,7 @@ int main(int argc, char **argv) {
             if (ci >= 0) {                                   /* the page sees the click first; preventDefault skips our part */
                 const struct ctl *c = &doc.ct[ci];
                 const struct item *it = ctl_item(ci);
-                if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = ctl_caret_at(&doc, ci, dx - it->x, dy - it->y); js_event(node, "click", 0, dx, dy); }
+                if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = ctl_caret_at(&doc, ci, dx - it->x, dy - it->y); fs_get(&doc, ci)->anc1 = caret + 1; fo_drag = 1; js_event(node, "click", 0, dx, dy); }
                 else if (c->kind == C_BTN) { if (!js_event(node, "click", 0, dx, dy)) { if (c->sub == 1) submit(ci, c->form); else if (c->sub == 2) form_reset(&doc, c->form); } }
                 else if (c->kind == C_CHECK || c->kind == C_RADIO) {
                     struct fstate *fs = fs_get(&doc, ci);
@@ -1001,6 +1020,12 @@ int main(int argc, char **argv) {
                 js_event(node, "click", 0, dx, dy);
                 if (doc_pos_at(&doc, dx, dy, &anc_it, &anc_ch)) { selecting = true; sel_moved = false; }
             }
+        }
+        if (fo_drag) {                                       /* drag-select inside a text field */
+            int fci = ctl_by_ord(fo);
+            const struct item *fit = fci >= 0 ? ctl_item(fci) : 0;
+            if ((ui.buttons & 1) && fit) caret = ctl_caret_at(&doc, fci, ui.mx - fit->x, ui.my - CT + scroll - fit->y);
+            else fo_drag = 0;
         }
         if (selecting) {
             if (ui.buttons & 1) {

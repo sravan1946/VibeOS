@@ -577,6 +577,8 @@ static void open_ctl(int t) {
         if (c.rows > 30) c.rows = 30;
     } else c.kind = C_SELECT;
     c.name = astr(name);
+    c.ph = astr((v = A("placeholder")) ? v : "");
+    c.fl = (A("required") ? CF_REQ : 0) | (ty && !strcasecmp(ty, "email") ? CF_EMAIL : 0) | (A("autofocus") ? CF_AUTO : 0) | (A("readonly") || A("disabled") ? CF_RO : 0);
     if (t == T_TEXTAREA) {
         char *tv = malloc(L.clen + 1);                      /* initial text: raw body, entities decoded, first newline dropped */
         if (tv) {

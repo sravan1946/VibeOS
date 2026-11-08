@@ -1,6 +1,6 @@
 /* form.c - form controls: state that outlives a re-layout (indexed by control ordinal), drawing,
- * inline editing and the GET/POST submission string. ponytail: ASCII input only, no selection inside
- * a field, textareas don't soft-wrap. */
+ * inline editing (UTF-8, selection with Shift+arrows / Ctrl+A / mouse drag, Ctrl+C/X/V), soft-wrapping textareas,
+ * placeholders, required / type=email checks and the GET/POST submission string. */
 #include "browser.h"
 #include <stdlib.h>
 #include <string.h>
@@ -75,37 +75,88 @@ static void ins(struct fstate *s, int pos, const char *t, int n) {
 static void del(struct fstate *s, int pos, int n) { memmove(s->val + pos, s->val + pos + n, strlen(s->val + pos + n) + 1); }
 static int prev_ch(const char *v, int p) { if (p > 0) p--; while (p > 0 && (v[p] & 0xC0) == 0x80) p--; return p; }
 static int next_ch(const char *v, int p) { if (v[p]) p++; while (v[p] && (v[p] & 0xC0) == 0x80) p++; return p; }
-static int line_start(const char *v, int p) { while (p > 0 && v[p - 1] != '\n') p--; return p; }
 static int line_end(const char *v, int p) { while (v[p] && v[p] != '\n') p++; return p; }
+
+/* soft-wrapped lines of a textarea value: st[i] = byte offset where visual line i starts (hard newlines and word/char wraps at wpx) */
+#define MAXVL 1024
+static int vlines(const char *v, int wpx, int *st, int max) {
+    int n = 0, p = 0;
+    for (;;) {
+        st[n++] = p;
+        int le = line_end(v, p), q = p;
+        while (q < le) {
+            int e = q, sp = -1, w = 0;
+            while (e < le) {
+                int ne = next_ch(v, e), cw = gfx_text_width_n(&font_ui, v + e, ne - e);
+                if (w + cw > wpx && e > q) break;
+                w += cw;
+                if (v[e] == ' ') sp = e + 1;
+                e = ne;
+            }
+            if (e < le && sp > q) e = sp;
+            q = e;
+            if (q < le) { if (n >= max) return n; st[n++] = q; }
+        }
+        if (!v[le] || n >= max) return n;
+        p = le + 1;
+    }
+}
+static int vl_of(const int *st, int n, int p) { int i = 0; while (i + 1 < n && st[i + 1] <= p) i++; return i; }
+static int vl_end(const char *v, const int *st, int n, int i) { int le = line_end(v, st[i]); return i + 1 < n && st[i + 1] < le ? st[i + 1] : le; }
+static int pos_at_x(const char *v, int a, int e, int x) {          /* byte in v[a..e] nearest pixel x */
+    int k = a, acc = 0;
+    while (k < e) {
+        int nk = next_ch(v, k), cw = gfx_text_width_n(&font_ui, v + k, nk - k);
+        if (x < acc + cw / 2) break;
+        acc += cw; k = nk;
+    }
+    return k;
+}
+static int field_w(const struct doc *d, const struct ctl *c) { return c->item >= 0 ? d->it[c->item].w - 16 : 200; }
+
+static int sel_range(const struct fstate *s, int p, int *a, int *b) {      /* the selection (anchor = anc1 - 1 .. caret) */
+    int q = s->anc1 - 1;
+    if (!s->anc1 || q == p) return 0;
+    *a = q < p ? q : p; *b = q < p ? p : q;
+    return 1;
+}
 
 int ctl_key(const struct doc *d, int ci, const struct gui_event *k, int *caret) {
     const struct ctl *c = &d->ct[ci];
     if (c->kind != C_TEXT && c->kind != C_PASS && c->kind != C_AREA) return 0;
     struct fstate *s = fs_get(d, ci);
-    if (!s->val) return 0;
+    if (!s->val || (c->fl & CF_RO)) return 0;
     int area = c->kind == C_AREA, p = *caret, len = strlen(s->val);
     if (p > len) p = len;
-    int ctrl = k->mods & MOD_CTRL;
+    if (s->anc1 - 1 > len) s->anc1 = 0;
+    int ctrl = k->mods & MOD_CTRL, shift = k->mods & MOD_SHIFT, a = 0, b = 0, has = sel_range(s, p, &a, &b), nav = 0, np = p;
+    int st[MAXVL], nl = 0, li = 0;
+    if (area) { nl = vlines(s->val, field_w(d, c), st, MAXVL); li = vl_of(st, nl, p); }
+#define KILLSEL() do { if (has) { del(s, a, b - a); p = a; len -= b - a; has = 0; } s->anc1 = 0; } while (0)
     if (k->key == KEY_ENTER) {
         if (!area) return 1;
+        KILLSEL();
         ins(s, p, "\n", 1); p++;
-    } else if (k->key == KEY_BACKSPACE || (!ctrl && k->ch == 8)) { if (p) { int q = prev_ch(s->val, p); del(s, q, p - q); p = q; } }
-    else if (k->key == KEY_DELETE && k->ch != 8) { int q = next_ch(s->val, p); del(s, p, q - p); }
-    else if (k->key == KEY_LEFT) p = prev_ch(s->val, p);
-    else if (k->key == KEY_RIGHT) p = next_ch(s->val, p);
-    else if (k->key == KEY_HOME) p = area ? line_start(s->val, p) : 0;
-    else if (k->key == KEY_END) p = area ? line_end(s->val, p) : len;
-    else if (area && (k->key == KEY_UP || k->key == KEY_DOWN)) {
-        int ls = line_start(s->val, p), col = p - ls;
-        if (k->key == KEY_UP) {
-            if (ls) { int ps = line_start(s->val, ls - 1), pl = ls - 1 - ps; p = ps + (col < pl ? col : pl); }
-        } else {
-            int le = line_end(s->val, p);
-            if (s->val[le]) { int ns = le + 1, nl = line_end(s->val, ns) - ns; p = ns + (col < nl ? col : nl); }
-        }
+    } else if (k->key == KEY_BACKSPACE || (!ctrl && k->ch == 8)) {
+        if (has) KILLSEL(); else if (p) { int q = prev_ch(s->val, p); del(s, q, p - q); p = q; }
     }
-    else if (k->ch == 21) { s->val[0] = 0; p = 0; }                       /* ^U */
+    else if (k->key == KEY_DELETE && k->ch != 8) { if (has) KILLSEL(); else { int q = next_ch(s->val, p); del(s, p, q - p); } }
+    else if (k->key == KEY_LEFT) { np = prev_ch(s->val, p); nav = 1; }
+    else if (k->key == KEY_RIGHT) { np = next_ch(s->val, p); nav = 1; }
+    else if (k->key == KEY_HOME) { np = area ? (ctrl ? 0 : st[li]) : 0; nav = 1; }
+    else if (k->key == KEY_END) {
+        np = len; nav = 1;
+        if (area && !ctrl) { int e = vl_end(s->val, st, nl, li); np = li + 1 < nl && st[li + 1] == e ? prev_ch(s->val, e) : e; }
+    }
+    else if (area && (k->key == KEY_UP || k->key == KEY_DOWN)) {
+        int x = gfx_text_width_n(&font_ui, s->val + st[li], p - st[li]), tl = li + (k->key == KEY_UP ? -1 : 1);
+        np = tl < 0 ? 0 : tl >= nl ? len : pos_at_x(s->val, st[tl], vl_end(s->val, st, nl, tl), x);
+        nav = 1;
+    }
+    else if (k->ch == 21) { s->val[0] = 0; p = 0; s->anc1 = 0; has = 0; }                /* ^U */
+    else if (ctrl && (k->key | 32) == 'a') { s->anc1 = 1; p = len; has = 0; }
     else if (ctrl && (k->key | 32) == 'v') {
+        KILLSEL();
         char *cl = gui_clip_get(NULL);
         for (char *q = cl; q && *q; q++) {
             if (*q == '\n' && area) { ins(s, p, "\n", 1); p++; }
@@ -114,10 +165,51 @@ int ctl_key(const struct doc *d, int ci, const struct gui_event *k, int *caret) 
         }
         free(cl);
     }
-    else if (ctrl && (k->key | 32) == 'c') gui_clip_set(s->val, strlen(s->val));
-    else if (!ctrl && k->ch >= 32 && k->ch < 127) { char ch = k->ch; ins(s, p, &ch, 1); p++; }
+    else if (ctrl && ((k->key | 32) == 'c' || (k->key | 32) == 'x')) {
+        if (has) gui_clip_set(s->val + a, b - a); else gui_clip_set(s->val, len);
+        if ((k->key | 32) == 'x' && has) KILLSEL();
+    }
+    else if (!ctrl && k->ch >= 32 && k->ch != 127) {                       /* a character (ASCII, or a code point from a better keymap) */
+        char u[4];
+        int n = 1;
+        if (k->ch < 128) u[0] = k->ch;
+        else if (k->ch < 0x800) { u[0] = 0xC0 | k->ch >> 6; u[1] = 0x80 | (k->ch & 63); n = 2; }
+        else { u[0] = 0xE0 | k->ch >> 12; u[1] = 0x80 | (k->ch >> 6 & 63); u[2] = 0x80 | (k->ch & 63); n = 3; }
+        KILLSEL();
+        ins(s, p, u, n); p += n;
+    }
+    if (nav) {                                                              /* arrows: Shift extends the selection, otherwise it collapses */
+        if (shift) { if (!s->anc1) s->anc1 = p + 1; }
+        else { if (has && k->key == KEY_LEFT) np = a; else if (has && k->key == KEY_RIGHT) np = b; s->anc1 = 0; }
+        p = np;
+    }
     *caret = p;
     return 0;
+}
+#undef KILLSEL
+
+/* a required / email field that isn't acceptable: its control index and a message, else -1 */
+int form_check(const struct doc *d, int form, char *msg, int cap) {
+    for (int i = 0; i < d->nct; i++) {
+        const struct ctl *c = &d->ct[i];
+        if (c->form != form) continue;
+        struct fstate *s = fs_get(d, i);
+        const char *v = s->val ? s->val : "";
+        if ((c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) && (c->fl & (CF_REQ | CF_EMAIL))) {
+            if ((c->fl & CF_REQ) && !*v) { strlcpy(msg, "Please fill out this field", cap); return i; }
+            if ((c->fl & CF_EMAIL) && *v) {
+                const char *at = strchr(v, '@');
+                if (!at || at == v || !at[1] || strchr(at + 1, '@') || strchr(v, ' ')) { strlcpy(msg, "Please enter an email address", cap); return i; }
+            }
+        } else if (c->kind == C_CHECK && (c->fl & CF_REQ) && !s->on) { strlcpy(msg, "Please tick this box to continue", cap); return i; }
+        else if (c->kind == C_RADIO && (c->fl & CF_REQ)) {
+            int any = 0;
+            for (int j = 0; j < d->nct; j++)
+                if (d->ct[j].kind == C_RADIO && d->ct[j].form == form && !strcmp(d->txt + d->ct[j].name, d->txt + c->name) && fs_get(d, j)->on) any = 1;
+            if (!any) { strlcpy(msg, "Please select one of these options", cap); return i; }
+        }
+    }
+    return -1;
 }
 
 void ctl_toggle(const struct doc *d, int ci) {
@@ -153,12 +245,6 @@ static color_t page_accent(const struct doc *d) {
 
 static int caret_x(const char *v, int p) { return gfx_text_width_n(&font_ui, v, p); }
 
-static void line_geometry(const char *v, int *lines, int p, int *cl) {     /* number of lines, line of byte p */
-    int n = 1, c = 0;
-    for (int i = 0; v[i]; i++) if (v[i] == '\n') { n++; if (i < p) c++; }
-    *lines = n; *cl = c;
-}
-
 void ctl_draw(struct canvas *cv, const struct doc *d, const struct ctl *t, int x, int y, int w, int h, int focused, int caret) {
     int ci = t - d->ct, dk = dark_page(d);
     struct fstate *s = fs_get(d, ci);
@@ -174,29 +260,34 @@ void ctl_draw(struct canvas *cv, const struct doc *d, const struct ctl *t, int x
         canvas_clip(&c2, x + 4, y + 2, w - 8, h - 4);
         const char *v = s->val ? s->val : "";
         char *shown = 0;
-        if (t->kind == C_PASS) { int n = strlen(v); shown = malloc(n * 3 + 1); if (shown) { for (int i = 0; i < n; i++) memcpy(shown + i * 3, "\xE2\x80\xA2", 3); shown[n * 3] = 0; v = shown; } }
+        int sa = 0, sb = 0, hs = focused && sel_range(s, caret, &sa, &sb);
+        if (t->kind == C_PASS) { int n = strlen(v); shown = malloc(n * 3 + 1); if (shown) { for (int i = 0; i < n; i++) memcpy(shown + i * 3, "\xE2\x80\xA2", 3); shown[n * 3] = 0; v = shown; } sa *= 3; sb *= 3; }
         int cp = t->kind == C_PASS ? caret * 3 : caret;
         if (cp > (int)strlen(v)) cp = strlen(v);
+        color_t selc = mix(fill, acc, 110);
+        const char *ph = d->txt + t->ph;
         if (t->kind == C_AREA) {
-            int lines, cl, rows = (h - 10) / 18;
-            line_geometry(v, &lines, focused ? cp : 0, &cl);
+            int rows = (h - 10) / 18, st[MAXVL], nl = vlines(v, w - 16, st, MAXVL), cl = vl_of(st, nl, focused ? cp : 0);
             if (focused) { if (cl < s->sy) s->sy = cl; if (cl >= s->sy + rows) s->sy = cl - rows + 1; }
-            if (s->sy > lines - 1) s->sy = lines - 1;
+            if (s->sy > nl - 1) s->sy = nl - 1;
             if (s->sy < 0) s->sy = 0;
-            const char *p = v;
-            for (int i = 0; i < s->sy && *p; i++) { p = strchr(p, '\n'); if (!p) break; p++; }
-            for (int r = 0; p && r < rows + 1; r++) {
-                int le = line_end(p, 0);
-                gfx_text_n(&c2, &font_ui, x + 6, y + 5 + r * 18, p, le, txt);
-                if (focused && cl == s->sy + r) gfx_fill(&c2, x + 6 + caret_x(p, cp - (int)(p - v)), y + 6 + r * 18, 1, 15, txt);
-                if (!p[le]) break;
-                p += le + 1;
+            if (!*v && *ph) gfx_text_n(&c2, &font_ui, x + 6, y + 5, ph, strlen(ph), dim);
+            for (int r = 0; r < rows + 1 && s->sy + r < nl; r++) {
+                int li = s->sy + r, ls = st[li], le = vl_end(v, st, nl, li), ty = y + 5 + r * 18;
+                if (hs && sb > ls && sa < le + (li + 1 < nl && st[li + 1] == le ? 0 : 1)) {
+                    int x0 = caret_x(v + ls, (sa > ls ? sa : ls) - ls), x1 = caret_x(v + ls, (sb < le ? sb : le) - ls);
+                    gfx_fill(&c2, x + 6 + x0, ty, (x1 > x0 ? x1 - x0 : 4), 18, selc);
+                }
+                gfx_text_n(&c2, &font_ui, x + 6, ty, v + ls, le - ls, txt);
+                if (focused && cl == li) gfx_fill(&c2, x + 6 + caret_x(v + ls, cp - ls), ty + 1, 1, 15, txt);
             }
         } else {
             int cw = focused ? caret_x(v, cp) : 0;
             s->sx = focused && cw > w - 16 ? cw - (w - 16) : 0;
             if (!focused) s->sx = 0;
             int ty = y + (h - font_ui.height) / 2;
+            if (!*v && *ph) gfx_text(&c2, &font_ui, x + 6, ty, ph, dim);
+            if (hs) gfx_fill(&c2, x + 6 - s->sx + caret_x(v, sa), ty, caret_x(v, sb) - caret_x(v, sa), font_ui.height, selc);
             gfx_text(&c2, &font_ui, x + 6 - s->sx, ty, v, txt);
             if (focused) gfx_fill(&c2, x + 6 - s->sx + cw, ty, 1, font_ui.height, txt);
         }
@@ -237,24 +328,17 @@ int ctl_caret_at(const struct doc *d, int ci, int rx, int ry) {
     const struct ctl *c = &d->ct[ci];
     struct fstate *s = fs_get(d, ci);
     const char *v = s->val ? s->val : "";
-    int area = c->kind == C_AREA, base = 0;
-    if (area) {
-        int line = (ry - 5) / 18 + s->sy;
-        if (line < 0) line = 0;
-        for (int i = 0; i < line; i++) { const char *n = strchr(v + base, '\n'); if (!n) break; base = n + 1 - v; }
+    int a = 0, le = strlen(v), x = rx - 6 + (c->kind == C_AREA ? 0 : s->sx);
+    if (c->kind == C_AREA) {
+        int st[MAXVL], nl = vlines(v, field_w(d, c), st, MAXVL), li = (ry - 5) / 18 + s->sy;
+        li = li < 0 ? 0 : li >= nl ? nl - 1 : li;
+        a = st[li]; le = vl_end(v, st, nl, li);
     }
-    int le = line_end(v, base), x = rx - 6 + (area ? 0 : s->sx);
     if (c->kind == C_PASS) {                                              /* bullets: one char = 3 bytes of display, 1 of value */
-        int n = le - base, w = gfx_text_width(&font_ui, "\xE2\x80\xA2"), k = (x + w / 2) / (w ? w : 1);
-        return base + (k < 0 ? 0 : k > n ? n : k);
+        int n = le - a, w = gfx_text_width(&font_ui, "\xE2\x80\xA2"), k = (x + w / 2) / (w ? w : 1);
+        return a + (k < 0 ? 0 : k > n ? n : k);
     }
-    int k = base, acc = 0;
-    while (k < le) {
-        int nk = next_ch(v, k), cw = gfx_text_width_n(&font_ui, v + k, nk - k);
-        if (x < acc + cw / 2) break;
-        acc += cw; k = nk;
-    }
-    return k;
+    return pos_at_x(v, a, le, x);
 }
 
 /* ---------- submit ---------- */
