@@ -126,6 +126,8 @@ enum {
 #define SEEK_END 2
 
 #define WNOHANG 1
+#define WUNTRACED 2   /* waitpid also reports stopped children: status = 0x100|sig; WCONTINUED (4): resumed ones: 0x200 */
+#define WCONTINUED 4
 
 /* file types (st_mode high bits, ext2-compatible) */
 #define S_IFMT   0xF000
@@ -201,6 +203,11 @@ struct spawn_opts {
 #define SIGALRM  14
 #define SIGTERM  15
 #define SIGCHLD  17
+#define SIGCONT  18   /* default: resume a stopped process (else ignored) */
+#define SIGSTOP  19   /* uncatchable: stop */
+#define SIGTSTP  20   /* ^Z; default: stop */
+#define SIGTTIN  21   /* unused: no background-read stops */
+#define SIGTTOU  22
 #define SIGWINCH 28
 #define NSIG     32
 

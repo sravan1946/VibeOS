@@ -289,6 +289,8 @@ int proc_wait(int pid, int *status, int flags) {
         for (struct task *t = task_list(); t; t = t->next) {
             if (t->ppid != me->pid || t->proc != t || (pid > 0 && t->pid != pid)) continue;
             have = true;
+            if ((flags & WUNTRACED) && t->stop_rep) { t->stop_rep = 0; if (status) *status = 0x100 | t->stopped; irq_restore(f); return t->pid; }
+            if ((flags & WCONTINUED) && t->cont_rep) { t->cont_rep = 0; if (status) *status = 0x200; irq_restore(f); return t->pid; }
             if (t->state != PS_ZOMBIE) continue;
             int p = t->pid;
             if (status) *status = t->exit_code;
@@ -361,7 +363,28 @@ int proc_thread_join(int tid, int *value) {
 #define SIG_IGN_ 1
 static bool ignored(struct task *t, int sig) {
     uint32_t h = t->proc->sig_handler[sig];
-    return sig != SIGKILL && (h == SIG_IGN_ || (!h && (sig == SIGCHLD || sig == SIGWINCH)));
+    return sig != SIGKILL && (h == SIG_IGN_ || (!h && (sig == SIGCHLD || sig == SIGWINCH || sig == SIGCONT)));
+}
+
+/* job control. A stopped process keeps its address space and sleeps on &p->stopped; the parent learns of it
+ * through SIGCHLD and waitpid(WUNTRACED). Only the leader task stops (ponytail: threads keep running). */
+static void notify_parent(struct task *p) {
+    struct task *par = task_find(p->ppid);
+    if (!par || !par->user) return;
+    wakeup(par);
+    proc_kill(par->pid, SIGCHLD);
+}
+
+static void do_stop(struct task *p, int sig) {
+    p->stopped = sig; p->stop_rep = 1; p->cont_rep = 0;
+    notify_parent(p);
+}
+
+static void do_cont(struct task *p) {
+    if (!p->stopped) return;
+    p->stopped = 0; p->stop_rep = 0; p->cont_rep = 1;
+    wakeup(&p->stopped);
+    notify_parent(p);
 }
 
 int proc_kill(int pid, int sig) {
@@ -369,14 +392,23 @@ int proc_kill(int pid, int sig) {
     if (!t || pid == 0 || t->state == PS_ZOMBIE) return -ESRCH;
     if (!t->user) return -EPERM;
     if (sig < 0 || sig >= NSIG) return -EINVAL;
-    if (sig == 0 || ignored(t, sig) || t->proc->exiting) return 0;
+    if (t->proc->exiting) return 0;
+    if (sig == SIGCONT) { do_cont(t->proc); t->sig_pending &= ~(1u << SIGSTOP | 1u << SIGTSTP); }
+    if (sig == 0 || ignored(t, sig)) return 0;
+    if (sig == SIGSTOP || sig == SIGTSTP) t->sig_pending &= ~(1u << SIGCONT);
+    if ((sig == SIGSTOP || (sig == SIGTSTP && !t->proc->sig_handler[sig])) && t == t->proc && t->state == PS_BLOCKED) {
+        /* asleep in a syscall: park it on the stop channel instead of EINTR-ing it, so a read resumes after fg */
+        if (!t->stopped) do_stop(t, sig);
+        t->chan = &t->stopped; t->wake_at = 0;
+        return 0;
+    }
     t->sig_pending |= 1u << sig;
     if (t->state == PS_BLOCKED && sig_deliverable(t)) t->state = PS_READY;
     return 0;
 }
 
 int proc_sigaction(int sig, uint32_t handler, uint32_t restorer) {
-    if (sig < 1 || sig >= NSIG || sig == SIGKILL) return -EINVAL;
+    if (sig < 1 || sig >= NSIG || sig == SIGKILL || sig == SIGSTOP) return -EINVAL;
     if (handler > SIG_IGN_ && !vmm_user_ok(current->dir, handler, 1, false)) return -EFAULT;
     uint32_t old = current->proc->sig_handler[sig];
     current->proc->sig_handler[sig] = handler;
@@ -416,6 +448,16 @@ void proc_deliver_signals(struct regs *r) {
         t->sig_pending &= ~(1u << sig);
         uint32_t h = t->proc->sig_handler[sig];
         if (ignored(t, sig)) continue;
+        if (sig == SIGSTOP || (sig == SIGTSTP && !h)) {
+            struct task *p = t->proc;
+            uint32_t f = irq_save(), keep = t->sig_blocked;
+            if (!p->stopped) do_stop(p, sig);
+            t->sig_blocked = ~0u;                        /* only SIGKILL interrupts a stop */
+            while (p->stopped && !(t->sig_pending & 1u << SIGKILL)) sleep_on(&p->stopped, 0);
+            t->sig_blocked = keep;
+            irq_restore(f);
+            continue;
+        }
         if (!h || sig == SIGKILL || !t->proc->sig_restorer) proc_exit(128 + sig);
         struct sigframe f = { t->proc->sig_restorer, sig, r->eax, r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp,
                               r->useresp, r->eip, r->eflags, t->sig_blocked };

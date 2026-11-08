@@ -34,6 +34,8 @@ static int run(const char *arg) {
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "die")) { raise(SIGUSR2); return 0; }
     if (argc > 1 && !strcmp(argv[1], "kick")) { usleep(100000); kill(getppid(), SIGUSR1); return 0; }
+    if (argc > 1 && !strcmp(argv[1], "spin")) { for (volatile unsigned i = 0; i < 40000000; i++) {} return 5; }
+    if (argc > 1 && !strcmp(argv[1], "nap")) { usleep(300000); return 6; }
     if (argc > 1 && !strcmp(argv[1], "winch")) { raise(SIGWINCH); raise(SIGCHLD); return 7; }
 
     check(signal(SIGUSR1, on) == SIG_DFL, "first signal() returns SIG_DFL");
@@ -83,6 +85,26 @@ int main(int argc, char **argv) {
     check(got[SIGUSR1] == n0 + 1, "handler ran during the blocked read");
     while (waitpid(kid, 0, 0) < 0 && errno == EINTR) {}
 
+    /* job control: a stopped child (running or asleep) reports through WUNTRACED and resumes on SIGCONT */
+    signal(SIGCHLD, SIG_DFL);
+    for (int k = 0; k < 2; k++) {
+        char *sargv[] = { "/bin/sigtest", k ? "nap" : "spin", 0 };
+        int pid = spawnv(sargv[0], sargv), st = 0;
+        if (k) usleep(50000);
+        kill(pid, k ? SIGTSTP : SIGSTOP);
+        check(waitpid(pid, &st, WUNTRACED) == pid && WIFSTOPPED(st) && WSTOPSIG(st) == (k ? SIGTSTP : SIGSTOP), k ? "SIGTSTP stops a sleeper" : "SIGSTOP stops a runner");
+        usleep(400000);                                  /* a sleeper's timer must not wake it */
+        check(waitpid(pid, &st, WNOHANG) == 0, "a stopped child stays stopped");
+        kill(pid, SIGCONT);
+        check(waitpid(pid, &st, 0) == pid && WIFEXITED(st) && WEXITSTATUS(st) == (k ? 6 : 5), "SIGCONT resumes it to completion");
+    }
+    {
+        char *sargv[] = { "/bin/sigtest", "nap", 0 };
+        int pid = spawnv(sargv[0], sargv), st = 0;
+        usleep(50000); kill(pid, SIGSTOP); waitpid(pid, &st, WUNTRACED);
+        kill(pid, SIGKILL);
+        check(waitpid(pid, &st, 0) == pid && WEXITSTATUS(st) == 128 + SIGKILL, "SIGKILL kills a stopped process");
+    }
     check(signal(SIGKILL, on) == SIG_ERR && errno == EINVAL, "SIGKILL can't be caught");
     printf("%d passed, %d failed\n", pass, fail);
     return fail != 0;
