@@ -266,7 +266,7 @@ int main(int argc, char **argv) {
     int mode_tab = 0;
     for (;;) {
         bool busy = fly.on || autoplay || drag_p >= 0;
-        if (!ui_poll(&ui, busy ? 16 : 500)) break;
+        if (!ui_poll(&ui, busy ? 16 : started && !win ? (int)(1000 - (uptime_ms() - t_start) % 1000) : -1)) break;   /* the timer shown ticks once a second */
         W_ = w->w; H_ = w->h;
         gap = W_ / 60 < 8 ? 8 : W_ / 60;
         cw = (W_ - 8 * gap) / 7;

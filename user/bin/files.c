@@ -1191,12 +1191,14 @@ int main(int argc, char **argv) {
             if (kc == KEY_LSHIFT || kc == KEY_RSHIFT) mods &= ~MOD_SHIFT;
             if (kc == KEY_LALT || kc == KEY_RALT) mods &= ~MOD_ALT;
         }
+        bool changed = false;
         if (tick_ms - last_tick >= 1000) {                       /* notice changes made by other programs */
             last_tick = tick_ms;
-            if (sig_of(cwd) != dir_sig && !dragging && !banding) refresh(true);
+            if (sig_of(cwd) != dir_sig && !dragging && !banding) { refresh(true); changed = true; }
             int tn = fs_trash_count();
-            if (tn != trash_n) { trash_n = tn; if (intrash) refresh(true); }
+            if (tn != trash_n) { trash_n = tn; changed = true; if (intrash) refresh(true); }
         }
+        if (ui.timeout && !changed && !thumb_busy && !J.active && !pend && !drag_clear) continue;   /* only the 1 s check woke us and nothing changed: skip the redraw */
         if (J.active && J.done) job_finish();
         if (ui_toast_action(&ui)) do_undo();
         if (J.active && J.ask && !J.answer && (mode == M_NONE || mode == M_MENU)) { mode = M_CONFLICT; cf_first = true; cf_all = false; }
