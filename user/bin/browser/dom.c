@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 
-struct dom DOM;
+struct dom HD;
 
 static const struct { const char *n; int t; } TAGS[] = {
     { "html", T_HTML }, { "head", T_HEAD }, { "body", T_BODY },
@@ -35,46 +35,46 @@ static const struct { const char *n; int t; } TAGS[] = {
 
 /* ---------- storage ---------- */
 void hd_free(void) {
-    free(DOM.n); free(DOM.a); free(DOM.pool);
-    memset(&DOM, 0, sizeof DOM);
+    free(HD.n); free(HD.a); free(HD.pool);
+    memset(&HD, 0, sizeof HD);
 }
 
 static uint32_t pool_add(const char *s, size_t n) {
-    if (DOM.np + n + 1 > DOM.pcap) {
-        size_t nc = DOM.pcap ? DOM.pcap * 2 : 65536;
-        while (nc < DOM.np + n + 1) nc *= 2;
-        char *p = realloc(DOM.pool, nc);
+    if (HD.np + n + 1 > HD.pcap) {
+        size_t nc = HD.pcap ? HD.pcap * 2 : 65536;
+        while (nc < HD.np + n + 1) nc *= 2;
+        char *p = realloc(HD.pool, nc);
         if (!p) return 0;
-        DOM.pool = p; DOM.pcap = nc;
+        HD.pool = p; HD.pcap = nc;
     }
-    uint32_t off = DOM.np;
-    memcpy(DOM.pool + off, s, n);
-    DOM.pool[off + n] = 0;
-    DOM.np += n + 1;
+    uint32_t off = HD.np;
+    memcpy(HD.pool + off, s, n);
+    HD.pool[off + n] = 0;
+    HD.np += n + 1;
     return off;
 }
 
 #define MAXDOM 250000
 static int node_new(int par, int type, int tag, uint32_t nm, int tn) {
-    if (DOM.nn >= MAXDOM) return -1;
-    if (DOM.nn == DOM.cap) {
-        int nc = DOM.cap ? DOM.cap * 2 : 1024;
-        struct dnode *p = realloc(DOM.n, nc * sizeof *p);
+    if (HD.nn >= MAXDOM) return -1;
+    if (HD.nn == HD.cap) {
+        int nc = HD.cap ? HD.cap * 2 : 1024;
+        struct dnode *p = realloc(HD.n, nc * sizeof *p);
         if (!p) return -1;
-        DOM.n = p; DOM.cap = nc;
+        HD.n = p; HD.cap = nc;
     }
-    int id = DOM.nn++;
-    DOM.n[id] = (struct dnode){ .par = par, .first = -1, .last = -1, .next = -1, .type = type, .tag = tag, .nm = nm, .tn = tn };
+    int id = HD.nn++;
+    HD.n[id] = (struct dnode){ .par = par, .first = -1, .last = -1, .next = -1, .prev = par >= 0 ? HD.n[par].last : -1, .type = type, .tag = tag, .nm = nm, .tn = tn };
     if (par >= 0) {
-        if (DOM.n[par].last >= 0) DOM.n[DOM.n[par].last].next = id; else DOM.n[par].first = id;
-        DOM.n[par].last = id;
+        if (HD.n[par].last >= 0) HD.n[HD.n[par].last].next = id; else HD.n[par].first = id;
+        HD.n[par].last = id;
     }
     return id;
 }
 
 const char *hd_attr(int n, const char *name) {
-    const struct dnode *d = &DOM.n[n];
-    for (int i = 0; i < d->na; i++) if (!strcmp(DOM.pool + DOM.a[d->a0 + i].n, name)) return DOM.pool + DOM.a[d->a0 + i].v;
+    const struct dnode *d = &HD.n[n];
+    for (int i = 0; i < d->na; i++) if (!strcmp(HD.pool + HD.a[d->a0 + i].n, name)) return HD.pool + HD.a[d->a0 + i].v;
     return 0;
 }
 
@@ -162,7 +162,7 @@ static int stk[MAXSTK], nstk;
 static const char *cur_base;
 
 static int top(void) { return nstk ? stk[nstk - 1] : 0; }
-static const char *nm(int n) { return DOM.pool + DOM.n[n].nm; }
+static const char *nm(int n) { return HD.pool + HD.n[n].nm; }
 
 /* pop the stack down to and including index i */
 static void pop_to(int i) { nstk = i; }
@@ -241,11 +241,11 @@ static void add_text(const char *s, int n) {
     }
     int len = p - o;
     if (len) {
-        int par = top(), last = DOM.n[par].last;
-        if (last >= 0 && DOM.n[last].type == 3 && DOM.n[last].nm + DOM.n[last].tn + 1 == DOM.np) {   /* continue the previous text node (after a comment) */
-            DOM.np--;
+        int par = top(), last = HD.n[par].last;
+        if (last >= 0 && HD.n[last].type == 3 && HD.n[last].nm + HD.n[last].tn + 1 == HD.np) {   /* continue the previous text node (after a comment) */
+            HD.np--;
             pool_add(o, len);
-            DOM.n[last].tn += len;
+            HD.n[last].tn += len;
         } else {
             uint32_t off = pool_add(o, len);
             node_new(par, 3, 0, off, len);
@@ -256,7 +256,7 @@ static void add_text(const char *s, int n) {
 
 /* attributes of the tag text tb (after the name) into the attribute table; returns the first index */
 static int add_attrs(char *p, int *cnt) {
-    int a0 = DOM.na;
+    int a0 = HD.na;
     *cnt = 0;
     while (*p && !isspace((unsigned char)*p)) p++;
     while (*cnt < 40) {
@@ -277,17 +277,17 @@ static int add_attrs(char *p, int *cnt) {
         }
         if (!*n) continue;
         int dup = 0;
-        for (int i = a0; i < DOM.na; i++) if (!strcmp(DOM.pool + DOM.a[i].n, n)) dup = 1;
+        for (int i = a0; i < HD.na; i++) if (!strcmp(HD.pool + HD.a[i].n, n)) dup = 1;
         if (dup) continue;
-        if (DOM.na == DOM.acap) {
-            int nc = DOM.acap ? DOM.acap * 2 : 1024;
-            struct dattr *na = realloc(DOM.a, nc * sizeof *na);
+        if (HD.na == HD.acap) {
+            int nc = HD.acap ? HD.acap * 2 : 1024;
+            struct dattr *na = realloc(HD.a, nc * sizeof *na);
             if (!na) break;
-            DOM.a = na; DOM.acap = nc;
+            HD.a = na; HD.acap = nc;
         }
-        DOM.a[DOM.na].n = pool_add(n, strlen(n));
-        DOM.a[DOM.na].v = pool_add(v, strlen(v));
-        DOM.na++; (*cnt)++;
+        HD.a[HD.na].n = pool_add(n, strlen(n));
+        HD.a[HD.na].v = pool_add(v, strlen(v));
+        HD.na++; (*cnt)++;
     }
     return a0;
 }
@@ -408,9 +408,9 @@ int hd_parse(const char *src, size_t n, const char *base, struct doc *d) {
                 int a0, na;
                 const char *media = 0;
                 a0 = add_attrs(tb, &na);
-                for (int q2 = 0; q2 < na; q2++) if (!strcmp(DOM.pool + DOM.a[a0 + q2].n, "media")) media = DOM.pool + DOM.a[a0 + q2].v;
+                for (int q2 = 0; q2 < na; q2++) if (!strcmp(HD.pool + HD.a[a0 + q2].n, "media")) media = HD.pool + HD.a[a0 + q2].v;
                 if (css_media(media)) css_add_from(src + i, ce - i, cur_base);
-                DOM.na = a0;                                  /* only needed to read media */
+                HD.na = a0;                                  /* only needed to read media */
             }
             i = next;
             continue;
@@ -421,7 +421,7 @@ int hd_parse(const char *src, size_t n, const char *base, struct doc *d) {
         implied_end(name);
         int id = node_new(top(), 1, tag, pool_add(name, strlen(name)), 0);
         if (id < 0) break;
-        DOM.n[id].a0 = a0; DOM.n[id].na = na;
+        HD.n[id].a0 = a0; HD.n[id].na = na;
         if (!strcmp(name, "link")) link_sheet(id);
         if (is_void(name)) continue;
         if (tag == T_TEXTAREA) {                              /* raw text up to </textarea> */
@@ -438,7 +438,7 @@ int hd_parse(const char *src, size_t n, const char *base, struct doc *d) {
         }
         if (nstk < MAXSTK) stk[nstk++] = id;
     }
-    return DOM.nn;
+    return HD.nn;
 }
 
 uint32_t hd_pool_add(const char *s, size_t n) { return pool_add(s, n); }

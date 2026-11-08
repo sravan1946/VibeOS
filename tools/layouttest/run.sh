@@ -5,7 +5,7 @@ set -e
 here=$(cd "$(dirname "$0")" && pwd); root=$here/../..; b=$root/user/bin/browser
 out=${LT_BUILD:-/tmp/layouttest}; mkdir -p $out
 gcc -m32 -g -O1 -w -I$root/user/lib -I$root/common -I$b \
-  $here/render.c $b/layout.c $b/dom.c $b/html.c $b/css.c $b/url.c $b/form.c \
+  $here/render.c $b/layout.c $b/dom.c $b/html.c $b/css.c $b/cssel.c $b/url.c $b/form.c \
   $root/common/gfx.c $root/common/fonts.c $root/common/theme.c -o $out/render 2>$out/build.log || { head -40 $out/build.log; exit 1; }
 f=$1; w=$2; o=$3; shift 3
 $out/render $f $w $out/o.ppm "$@"

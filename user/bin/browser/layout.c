@@ -1,5 +1,5 @@
 /* layout.c - the page engine: style -> box tree -> layout -> display list.
- *   build   (bottom of file): the DOM (dom.c) + css.c's computed style become a tree of `struct bx` (anonymous blocks and
+ *   build   (bottom of file): the HD (dom.c) + css.c's computed style become a tree of `struct bx` (anonymous blocks and
  *           table parts are added so every container holds either blocks or inline content);
  *   layout  : block and inline formatting contexts, floats, abs/fixed positioning, flexbox, tables, simple grid. All
  *           geometry is in document coordinates, so a laid-out subtree moves with shift();
@@ -22,8 +22,8 @@
 
 enum { OUT_INLINE, OUT_BLOCK };
 enum { IN_FLOW, IN_INLINE, IN_FLEX, IN_GRID, IN_TABLE, IN_TGROUP, IN_TROW, IN_TCELL, IN_CAP, IN_TEXT, IN_IMG, IN_CTL, IN_BR };
-enum { POS_STATIC, POS_REL, POS_ABS, POS_FIXED, POS_STICKY };
-enum { VA_BASE, VA_TOP, VA_MID, VA_BOT, VA_SUP, VA_SUB };
+#define POS_REL POS_RELATIVE
+#define POS_ABS POS_ABSOLUTE
 enum { L_MT, L_MR, L_MB, L_ML, L_PT, L_PR, L_PB, L_PL, L_TOP, L_RIGHT, L_BOTTOM, L_LEFT, L_W, L_H, L_MINW, L_MAXW, L_MINH, L_MAXH, L_BASIS, NL };
 enum { F_TEXTRUN, F_BG, F_BOX };
 
@@ -46,7 +46,7 @@ struct bx {
     int link, node;
     uint32_t aname;               /* anchor name: doc arena offset + 1 */
     int v[NL]; uint8_t k[NL];
-    uint32_t toff; int tlen;      /* IN_TEXT: bytes in the DOM pool */
+    uint32_t toff; int tlen;      /* IN_TEXT: bytes in the HD pool */
     int ref, iw, ih, bel, cs, rs, mark;   /* img cache index / control index; intrinsic size; baseline below the box; colspan, rowspan; list marker (0 bullet, n number, -1 none) */
     uint8_t halign, valn;         /* table cell: horizontal / vertical alignment */
     int x, y, w, h, base;         /* border box, document coordinates; base: baseline offset from the top (-1 = bottom edge) */
@@ -417,12 +417,12 @@ static void finish_line(struct ls *s, int forced) {
             const struct font *f = FT[tb->font];
             int a = f->ascent, d = f->height - f->ascent;
             if (tb->lh > 0) { int lead = tb->lh - f->height; a += lead / 2; d += lead - lead / 2; } else d += LEAD;
-            if (tb->valign == VA_SUP) a += f->ascent / 3; else if (tb->valign == VA_SUB) d += f->ascent / 3;
+            if (tb->valign == VA_SUPER) a += f->ascent / 3; else if (tb->valign == VA_SUB) d += f->ascent / 3;
             asc = imax_(asc, a); desc = imax_(desc, d);
         } else if (it->t == LT_BOX) {
             struct bx *b = &B[it->b];
             int bel = below(b);
-            if (b->valign == VA_TOP || b->valign == VA_BOT) {
+            if (b->valign == VA_TOP || b->valign == VA_BOTTOM) {
                 int h = b->m[0] + b->h + b->m[2];
                 if (b->valign == VA_TOP) toph = imax_(toph, h); else both = imax_(both, h);
                 continue;
@@ -469,8 +469,8 @@ static void finish_line(struct ls *s, int forced) {
         if (it->t == LT_BOX) {
             struct bx *b = &B[it->b];
             int bel = below(b);
-            int top = b->valign == VA_TOP ? s->y + b->m[0] : b->valign == VA_BOT ? s->y + lineh - b->m[2] - b->h :
-                      b->valign == VA_MID ? base - s->sasc / 3 - b->h / 2 : base - (b->h - bel);
+            int top = b->valign == VA_TOP ? s->y + b->m[0] : b->valign == VA_BOTTOM ? s->y + lineh - b->m[2] - b->h :
+                      b->valign == VA_MIDDLE ? base - s->sasc / 3 - b->h / 2 : base - (b->h - bel);
             shift(b, it->x + b->m[3] - b->x, top - b->y);
             struct frag fg = { .t = F_BOX, .box = it->b, .x = b->x, .y = b->y, .w = b->w, .h = b->h };
             fr_add(s, &fg);
@@ -479,7 +479,7 @@ static void finish_line(struct ls *s, int forced) {
         if (it->t != LT_TEXT && it->t != LT_SPACE) continue;
         struct bx *tb = &B[it->b];
         const struct font *f = FT[tb->font];
-        int dy = tb->valign == VA_SUP ? -f->ascent / 3 : tb->valign == VA_SUB ? f->ascent / 3 : 0;
+        int dy = tb->valign == VA_SUPER ? -f->ascent / 3 : tb->valign == VA_SUB ? f->ascent / 3 : 0;
         uint8_t flags = tb->flags | (tb->link >= 0 && !tb->nul ? FL_UL : 0);
         struct frag *last = s->nfr ? &s->fr[s->nfr - 1] : 0;
         const char *t = it->t == LT_SPACE ? " " : s->tb + it->toff;
@@ -1631,7 +1631,7 @@ static void paint_box(int bi, int ox, int oy) {
     cur_clip = prev;
 }
 
-/* ---------- build: DOM + CSS -> boxes ---------- */
+/* ---------- build: HD + CSS -> boxes ---------- */
 #define PM(p) (1u << (p))
 static color_t col_em, col_dim;
 static int nord, curform_;
@@ -1800,7 +1800,7 @@ static void el_fill(struct el *e, int dn, int first) {
     if (css_attrs()) {
         int k = 0;
         for (int i = 0; i < DN(dn).na; i++) {
-            const char *n = hd_str(DOM.a[DN(dn).a0 + i].n), *val = hd_str(DOM.a[DN(dn).a0 + i].v);
+            const char *n = hd_str(HD.a[DN(dn).a0 + i].n), *val = hd_str(HD.a[DN(dn).a0 + i].v);
             int ln = strlen(n), lv = strlen(val);
             if (!strcmp(n, "style") || k + ln + lv + 3 >= (int)sizeof e->at) continue;
             e->at[k++] = 1; memcpy(e->at + k, n, ln); k += ln;
@@ -1819,139 +1819,153 @@ static int block_tag(int t) {
 }
 
 static void set_px(struct bx *S, int i, int v) { S->k[i] = K_PX; S->v[i] = v; }
-static void len_from(struct bx *S, int li, const struct cprops *cp, int prop) {
-    if (!(cp->set & PM(prop))) return;
-    S->k[li] = cp->k[prop]; S->v[li] = cp->v[prop];
+
+/* a computed length -> bx lens: auto/none/keywords -> auto, % stays %, everything else px (calc() against the viewport) */
+static void lenset(struct bx *S, int li, const struct cprops *cp, int prop) {
+    int k = cp->k[prop];
+    if (k == K_AUTO || k == K_NONE || k == K_FIT || k == K_MINC || k == K_MAXC) { S->k[li] = K_AUTO; S->v[li] = 0; }
+    else if (k == K_PCT) { S->k[li] = K_PCT; S->v[li] = cp->v[prop] / 100; }
+    else { S->k[li] = K_PX; S->v[li] = css_len(cp, prop, rootw); }
 }
 
-/* the presentational attributes of the old web: align, bgcolor, width, height, nowrap... (lower priority than CSS) */
-static void present_attrs(int dn, int tag, struct bx *S, struct inh *ni, struct bctx *cx) {
-    const char *v;
-    if (tag == T_P || tag == T_DIV || tag == T_H1 || tag == T_H2 || tag == T_H3 || tag == T_H4 || tag == T_H5 || tag == T_H6 || tag == T_FORM || tag == T_TD || tag == T_TH ||
-        tag == T_TR || tag == T_CAP || tag == T_TABLE || tag == T_TGROUP) {
-        if ((v = ATTR(dn, "align"))) {
-            int a = !strcasecmp(v, "center") ? 1 : !strcasecmp(v, "right") ? 2 : !strcasecmp(v, "left") ? 0 : -1;
-            if (a >= 0 && tag != T_TABLE) ni->align = a;
+static int grid_count(const char *s) {                          /* number of columns in a grid-template-columns value */
+    if (!s) return 0;
+    int n = 0, depth = 0;
+    for (const char *p = s; *p; ) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        if (!strncmp(p, "repeat(", 7)) {
+            const char *q = p + 7;
+            if (isdigit((unsigned char)*q)) { int c = atoi(q); const char *e = strchr(q, ','); int inner = 0; if (e) { for (const char *t = e + 1; *t && *t != ')'; ) { while (*t == ' ') t++; if (!*t || *t == ')') break; inner++; if (!strncmp(t, "minmax(", 7)) while (*t && *t != ')') t++; while (*t && *t != ' ' && *t != ')') t++; } } n += c * (inner ? inner : 1); }
+            else { const char *m = strstr(q, "minmax("); int px = m ? atoi(m + 7) : 0; if (!px) px = 200; n += imax_(1, imin_(rootw / px, 8)); }
+            int d = 0;
+            while (*p) { if (*p == '(') d++; if (*p == ')' && --d == 0) { p++; break; } p++; }
+            continue;
         }
+        n++;
+        while (*p && (*p != ' ' || depth)) { if (*p == '(') depth++; if (*p == ')') depth--; p++; }
     }
-    if ((tag == T_TD || tag == T_TH || tag == T_TR || tag == T_TGROUP) && (v = ATTR(dn, "valign")))
-        S->valn = !strcasecmp(v, "middle") ? 1 : !strcasecmp(v, "bottom") ? 2 : !strcasecmp(v, "baseline") ? 3 : 0;
-    if ((v = ATTR(dn, "bgcolor")) && (tag == T_TABLE || tag == T_TR || tag == T_TD || tag == T_TH || tag == T_BODY || tag == T_TGROUP)) parse_color(v, &S->bg);
-    if ((tag == T_TD || tag == T_TH || tag == T_TABLE || tag == T_HR || tag == T_IMG || tag == T_DIV) && (v = ATTR(dn, "width")) && atoi(v) > 0) {
+    return n;
+}
+
+/* ---------- css_dom: the node tree seen by css_compute ---------- */
+static int cd_parent(int n) { int p = DN(n).par; return p > 0 && DN(p).type == 1 ? p : 0; }
+static int cd_prev(int n) { for (int c = DN(n).prev; c >= 0; c = DN(c).prev) if (DN(c).type == 1) return c; return 0; }
+static int cd_next(int n) { for (int c = DN(n).next; c >= 0; c = DN(c).next) if (DN(c).type == 1) return c; return 0; }
+static int cd_first(int n) { for (int c = DN(n).first; c >= 0; c = DN(c).next) if (DN(c).type == 1) return c; return 0; }
+static const char *cd_tag(int n) { return hd_str(DN(n).nm); }
+static const char *cd_attr(int n, const char *a) { return hd_attr(n, a); }
+static int cd_state(int n) {
+    int t = DN(n).tag;
+    return (t == T_A || !strcmp(hd_str(DN(n).nm), "area")) && hd_attr(n, "href") ? CS_LINK : 0;
+}
+static int cd_has_text(int n) { for (int c = DN(n).first; c >= 0; c = DN(c).next) if (DN(c).type == 3 && DN(c).tn) return 1; return 0; }
+static const struct css_dom CD = { cd_parent, cd_prev, cd_next, cd_first, cd_tag, cd_attr, cd_state, cd_has_text };
+
+static int map_just(int v) { return v == AL_END ? 1 : v == AL_CENTER ? 2 : v == AL_BETWEEN ? 3 : v == AL_AROUND ? 4 : v == AL_EVENLY ? 5 : 0; }
+static int map_align(int v) { return v == AL_START ? 1 : v == AL_END ? 2 : v == AL_CENTER ? 3 : v == AL_BASELINE ? 1 : 0; }
+
+/* the presentational attributes of the old web, applied only where CSS left the user-agent value (author CSS wins) */
+static void hints(int dn, int tag, struct bx *S, struct inh *ni, struct bctx *cx, struct bctx *cx2) {
+    const char *v;
+    if ((v = ATTR(dn, "align")) && (tag == T_P || tag == T_DIV || (tag >= T_H1 && tag <= T_H6) || tag == T_FORM || tag == T_TD || tag == T_TH || tag == T_TR || tag == T_CAP || tag == T_TGROUP || tag == T_IMG || tag == T_HR)) {
+        if (tag == T_TABLE || tag == T_IMG || tag == T_HR) { }
+        else if (ni->align == 0) ni->align = !strcasecmp(v, "center") ? 1 : !strcasecmp(v, "right") ? 2 : 0;
+    }
+    if (tag == T_TABLE && (v = ATTR(dn, "align")) && S->k[L_ML] == K_PX && S->v[L_ML] == 0 && S->k[L_MR] == K_PX && S->v[L_MR] == 0) {
+        if (!strcasecmp(v, "center")) S->k[L_ML] = S->k[L_MR] = K_AUTO; else if (!strcasecmp(v, "right")) S->k[L_ML] = K_AUTO;
+    }
+    if ((v = ATTR(dn, "bgcolor")) && !S->bg && (tag == T_TABLE || tag == T_TR || tag == T_TD || tag == T_TH || tag == T_BODY || tag == T_TGROUP)) parse_color(v, &S->bg);
+    if ((tag == T_TD || tag == T_TH || tag == T_TABLE || tag == T_HR || tag == T_IMG || tag == T_DIV) && S->k[L_W] == K_AUTO && (v = ATTR(dn, "width")) && atoi(v) > 0) {
         if (strchr(v, '%')) { S->k[L_W] = K_PCT; S->v[L_W] = atoi(v); } else set_px(S, L_W, atoi(v));
     }
-    if ((tag == T_TD || tag == T_TH || tag == T_IMG) && (v = ATTR(dn, "height")) && atoi(v) > 0 && !strchr(v, '%')) set_px(S, L_H, atoi(v));
-    if ((tag == T_TD || tag == T_TH) && ATTR(dn, "nowrap")) ni->ws = 1;
+    if ((tag == T_TD || tag == T_TH || tag == T_IMG) && S->k[L_H] == K_AUTO && (v = ATTR(dn, "height")) && atoi(v) > 0 && !strchr(v, '%')) set_px(S, L_H, atoi(v));
+    if ((tag == T_TD || tag == T_TH) && ATTR(dn, "nowrap") && ni->ws == 0) ni->ws = 1;
+    if (tag == T_FONT && (v = ATTR(dn, "color"))) parse_color(v, &ni->col);
+    if (tag == T_TABLE) {
+        int bd = (v = ATTR(dn, "border")) ? (*v ? atoi(v) : 1) : 0;
+        bd = bd < 0 ? 0 : bd > 8 ? 8 : bd;
+        if (bd) for (int i = 0; i < 4; i++) if (!S->bw[i]) { S->bw[i] = bd; S->bc[i] = mix(D->bg, ni->col, 120); }
+        cx2->tborder = bd;
+        cx2->tpad = (v = ATTR(dn, "cellpadding")) && *v ? imax_(0, imin_(atoi(v), 40)) : -1;
+        if ((v = ATTR(dn, "cellspacing")) && *v) S->gapc = S->gapr = imax_(0, imin_(atoi(v), 40));
+    }
+    if ((tag == T_TD || tag == T_TH)) {
+        if (cx->tpad >= 0) for (int i = 0; i < 4; i++) if (S->k[L_PT + i] == K_PX && S->v[L_PT + i] == 1) S->v[L_PT + i] = cx->tpad;
+        if (cx->tborder > 0) for (int i = 0; i < 4; i++) if (!S->bw[i]) { S->bw[i] = 1; S->bc[i] = mix(D->bg, ni->col, 120); }
+        if ((v = ATTR(dn, "valign"))) S->valn = !strcasecmp(v, "middle") ? 1 : !strcasecmp(v, "bottom") ? 2 : !strcasecmp(v, "baseline") ? 3 : 0;
+        else if (cx->tva != 255) S->valn = cx->tva;
+    }
+    if (tag == T_TR || tag == T_TGROUP) { if ((v = ATTR(dn, "valign"))) cx2->tva = !strcasecmp(v, "middle") ? 1 : !strcasecmp(v, "bottom") ? 2 : !strcasecmp(v, "baseline") ? 3 : 0; }
+    if (tag == T_TABLE) cx2->tva = 255;
+    if (tag == T_IMG && (v = ATTR(dn, "align")) && S->flt == 0) { if (!strcasecmp(v, "left")) S->flt = 1; else if (!strcasecmp(v, "right")) S->flt = 2; }
 }
 
-/* fill S (a fresh bx), ni (what children inherit) from tag defaults, attributes and CSS. Returns the display: 0 default, D_NONE, D_BLOCK, D_INLINE */
-static int style_el(int dn, int tag, struct bx *S, struct inh *ni, const struct inh *in, struct bctx *cx, struct bctx *cx2, const struct cprops *cp, int isfirst) {
-    const char *v;
+/* fill S (a fresh bx) and ni (what children inherit) from the element's computed style; returns the display (D_*) */
+static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct inh *in, struct bctx *cx, struct bctx *cx2, const struct cprops *cp) {
     *ni = *in;
-    ni->valign = 0;
     memset(S, 0, sizeof *S);
     S->par = S->first = S->last = S->next = -1; S->opacity = 255; S->fw = -1; S->cb = -1; S->base = -1; S->mark = -1; S->link = -1;
     lens_init(S);
     *cx2 = *cx;
-    ni->align = in->align;
-    color_t fg = D->fg;
-    switch (tag) {
-    case T_H1: case T_H2: case T_H3: case T_H4: case T_H5: case T_H6: {
-        static const uint8_t mt[] = { 18, 16, 14, 12, 10, 10 }, mb[] = { 10, 8, 6, 5, 4, 4 };
-        int k = tag - T_H1;
-        ni->font = k < 2 ? F_TITLE : F_UIB;
-        set_px(S, L_MT, mt[k]); set_px(S, L_MB, mb[k]);
-        if (tag == T_H6) ni->col = col_dim;
-        break;
+    int disp = cp->v[P_DISPLAY];
+    int bold = cp->v[P_BOLD], mono = cp->v[P_FAMILY] == FAM_MONO, size = cp->v[P_FSIZE];
+    ni->font = mono ? (bold ? F_MONOB : F_MONO) : size >= 22 ? F_TITLE : bold ? F_UIB : F_UI;
+    ni->col = cp->v[P_COLOR];
+    ni->align = cp->v[P_ALIGN] == TA_CENTER ? 1 : cp->v[P_ALIGN] == TA_RIGHT ? 2 : 0;
+    ni->ws = cp->v[P_WS] == WS_BREAK_SPACES ? 3 : cp->v[P_WS];
+    ni->flags = in->flags | ((cp->v[P_DECO] & DECO_UNDERLINE) ? FL_UL : 0) | ((cp->v[P_DECO] & DECO_LINETHROUGH) ? FL_STRIKE : 0);
+    ni->nul = 1;
+    ni->vis = cp->v[P_VISIB] != 0;
+    ni->nomark = cp->v[P_LISTT] == LT_NONE;
+    int va = cp->v[P_VALIGN];
+    ni->valign = va == VA_SUPER ? VA_SUPER : va == VA_SUB ? VA_SUB : in->valign;
+    int lhk = cp->k[P_LH];
+    ni->lh = lhk == K_AUTO || lhk == K_NONE ? 0 : lhk == K_NUM ? FT[ni->font]->height * cp->v[P_LH] / 100 : cp->v[P_LH];
+    if (ni->lh < 0) ni->lh = 0;
+    for (int i = 0; i < 4; i++) {
+        lenset(S, L_MT + i, cp, P_MT + i);
+        lenset(S, L_PT + i, cp, P_PT + i);
+        if (S->k[L_PT + i] == K_AUTO) set_px(S, L_PT + i, 0);
+        S->bw[i] = cp->v[P_BSTT + i] == BS_NONE ? 0 : cp->v[P_BWT + i];
+        S->bc[i] = cp->v[P_BCT + i];
+        if (!(S->bc[i] >> 24) && S->bw[i]) S->bw[i] = 0;
     }
-    case T_P: set_px(S, L_MT, 10); set_px(S, L_MB, 10); break;
-    case T_CENTER: ni->align = 1; break;
-    case T_UL: case T_OL:
-        set_px(S, L_MT, cx->nested ? 3 : 8); set_px(S, L_MB, cx->nested ? 3 : 8); set_px(S, L_PL, 28);
-        cx2->nested = 1;
-        break;
-    case T_LI: set_px(S, L_MT, 3); S->li = 1; break;
-    case T_DL: set_px(S, L_MT, 8); set_px(S, L_MB, 8); break;
-    case T_DT: set_px(S, L_MT, 4); ni->font = F_UIB; break;
-    case T_DD: set_px(S, L_MT, 2); set_px(S, L_ML, 32); break;
-    case T_BQ:
-        set_px(S, L_MT, 10); set_px(S, L_MB, 10); set_px(S, L_ML, 12); set_px(S, L_PL, 13);
-        S->bw[3] = 3; S->bc[3] = mix(D->bg, fg, 90);
-        break;
-    case T_PRE:
-        set_px(S, L_MT, 10); set_px(S, L_MB, 10); set_px(S, L_PT, 6); set_px(S, L_PB, 6); set_px(S, L_PL, 8); set_px(S, L_PR, 8);
-        ni->font = F_MONO; ni->ws = 2; ni->align = 0;
-        S->bg = mix(D->bg, fg, 20);
-        break;
-    case T_HR:
-        set_px(S, L_MT, 8); set_px(S, L_MB, 8); set_px(S, L_H, 2);
-        S->bg = mix(D->bg, fg, 70);
-        break;
-    case T_CODE: ni->font = fnt_mono(in->font); break;
-    case T_B: ni->font = font_bold(in->font); break;
-    case T_I: ni->col = col_em; break;
-    case T_U: ni->flags |= FL_UL; break;
-    case T_S: ni->flags |= FL_STRIKE; break;
-    case T_SUP: ni->valign = VA_SUP; break;
-    case T_SUB: ni->valign = VA_SUB; break;
-    case T_A:
-        if ((v = ATTR(dn, "href")) && strncasecmp(v, "javascript:", 11)) { ni->link = link_add(v); if (ni->link >= 0) ni->col = D->linkc; }
-        break;
-    case T_FONT: if ((v = ATTR(dn, "color"))) parse_color(v, &ni->col); break;
-    case T_TABLE: {
-        int bd = (v = ATTR(dn, "border")) ? (*v ? atoi(v) : 1) : 0, cpad = (v = ATTR(dn, "cellpadding")) && *v ? atoi(v) : 1, csp = (v = ATTR(dn, "cellspacing")) && *v ? atoi(v) : 2;
-        bd = bd < 0 ? 0 : bd > 8 ? 8 : bd;
-        cx2->tpad = cpad < 0 ? 0 : cpad > 40 ? 40 : cpad;
-        cx2->tborder = bd;
-        set_px(S, L_MT, 8); set_px(S, L_MB, 8);
-        for (int i = 0; i < 4; i++) { S->bw[i] = bd; S->bc[i] = mix(D->bg, fg, 120); }
-        S->gapc = S->gapr = csp < 0 ? 0 : csp > 40 ? 40 : csp;
-        if ((v = ATTR(dn, "align"))) { if (!strcasecmp(v, "center")) { S->k[L_ML] = S->k[L_MR] = K_AUTO; } else if (!strcasecmp(v, "right")) S->k[L_ML] = K_AUTO; }
-        break;
-    }
-    case T_TD: case T_TH:
-        for (int i = 0; i < 4; i++) {
-            set_px(S, L_PT + i, cx->tpad);
-            S->bw[i] = cx->tborder > 0 ? 1 : 0; S->bc[i] = mix(D->bg, fg, 120);
-        }
-        S->valn = cx->tva == 255 ? 1 : cx->tva;
+    lenset(S, L_TOP, cp, P_TOP); lenset(S, L_RIGHT, cp, P_RIGHT); lenset(S, L_BOTTOM, cp, P_BOTTOM); lenset(S, L_LEFT, cp, P_LEFT);
+    lenset(S, L_W, cp, P_WIDTH); lenset(S, L_H, cp, P_HEIGHT); lenset(S, L_MINW, cp, P_MINW); lenset(S, L_MAXW, cp, P_MAXW);
+    lenset(S, L_MINH, cp, P_MINH); lenset(S, L_MAXH, cp, P_MAXH); lenset(S, L_BASIS, cp, P_FBASIS);
+    S->bg = cp->v[P_BG];
+    S->rad = cp->v[P_RTL] > 0 ? css_len(cp, P_RTL, 100) : 0;
+    if (cp->k[P_RTL] == K_PCT) S->rad = 999;
+    S->opacity = cp->v[P_OPACITY];
+    S->pos = cp->v[P_POSITION];
+    S->flt = cp->v[P_FLOAT]; S->clr = cp->v[P_CLEAR];
+    S->ovf = cp->v[P_OVX] != OV_VISIBLE || cp->v[P_OVY] != OV_VISIBLE;
+    S->vis = ni->vis;
+    S->bsz = cp->v[P_BOXSZ] == 1;
+    if (cp->k[P_ZINDEX] != K_AUTO) { S->zset = 1; S->zi = cp->v[P_ZINDEX]; }
+    S->fdir = cp->v[P_FLEXDIR]; S->fwrap = cp->v[P_FLEXWRAP] != 0;
+    S->just = map_just(cp->v[P_JUSTC]); S->ali = map_align(cp->v[P_ALIGNI]);
+    S->als = cp->k[P_ALIGNS] == K_AUTO || cp->v[P_ALIGNS] == AL_NORMAL ? 0 : 1 + map_align(cp->v[P_ALIGNS]);
+    S->grow = cp->k[P_FGROW] == K_NUM ? cp->v[P_FGROW] : 0;
+    S->shrink = cp->k[P_FSHRINK] == K_NUM ? cp->v[P_FSHRINK] : 100;
+    S->order = cp->v[P_ORDER];
+    S->gapr = css_len(cp, P_RGAP, 0); S->gapc = css_len(cp, P_CGAP, 0);
+    S->hdr = cp->v[P_COLLAPSE] != 0;
+    if (tag == T_TABLE || disp == D_TABLE || disp == D_INLINE_TABLE) { S->gapc = cp->v[P_SPACING]; S->gapr = cp->v[P_SPACINGY] ? cp->v[P_SPACINGY] : cp->v[P_SPACING]; }
+    if (disp == D_GRID || disp == D_INLINE_GRID) S->ncols = grid_count(cp->k[P_GCOLS] == K_STR ? css_str(cp->v[P_GCOLS]) : 0);
+    S->cs = 1; S->rs = 1;
+    int cv = cp->v[P_VALIGN];
+    S->valn = cv == VA_MIDDLE ? 1 : cv == VA_BOTTOM ? 2 : cv == VA_BASELINE ? 3 : 0;
+    if (tag == T_TD || tag == T_TH) {
+        const char *v;
         S->cs = (v = ATTR(dn, "colspan")) ? atoi(v) : 1;
         S->rs = (v = ATTR(dn, "rowspan")) ? (*v && atoi(v) == 0 ? 1000 : atoi(v)) : 1;
-        if (tag == T_TH) { ni->font = font_bold(in->font); ni->align = 1; }
-        break;
-    case T_TR: case T_TGROUP:
-        cx2->tva = 255;
-        break;
-    case T_CAP: set_px(S, L_MT, 4); set_px(S, L_MB, 4); ni->font = font_bold(in->font); ni->align = 1; break;
+        S->valn = 1;                                              /* vertical-align: middle is the table cell default */
+        if (cv == VA_TOP) S->valn = 0; else if (cv == VA_BOTTOM) S->valn = 2; else if (cv == VA_BASELINE && !ATTR(dn, "valign")) S->valn = 1;
     }
-    present_attrs(dn, tag, S, ni, cx2);
-    if (tag == T_TR || tag == T_TGROUP) cx2->tva = (v = ATTR(dn, "valign")) ? S->valn : cx->tva;
-    if (tag == T_TD || tag == T_TH) { if ((v = ATTR(dn, "valign"))) S->valn = !strcasecmp(v, "middle") ? 1 : !strcasecmp(v, "bottom") ? 2 : !strcasecmp(v, "baseline") ? 3 : 0; }
-    /* ---- CSS ---- */
-    int disp = 0;
-    if (cp) {
-        uint32_t set = cp->set;
-        if (set & PM(P_COLOR)) ni->col = cp->v[P_COLOR];
-        else if ((set & PM(P_ITALIC)) && cp->v[P_ITALIC]) ni->col = col_em;
-        if (set & PM(P_BOLD)) ni->font = cp->v[P_BOLD] ? font_bold(ni->font) : font_plain(ni->font);
-        if ((set & PM(P_MONO)) && cp->v[P_MONO]) ni->font = fnt_mono(ni->font);
-        if ((set & PM(P_FSIZE)) && cp->v[P_FSIZE] >= 20 && (ni->font == F_UI || ni->font == F_UIB)) ni->font = F_TITLE;
-        if (set & PM(P_ALIGN)) ni->align = cp->v[P_ALIGN];
-        if (set & PM(P_DECO)) { int m = cp->v[P_DECO]; ni->flags = (ni->flags & ~(FL_UL | FL_STRIKE)) | (m & 1 ? FL_UL : 0) | (m & 2 ? FL_STRIKE : 0); ni->nul = !(m & 1); }
-        if ((set & PM(P_LIST)) && cp->v[P_LIST]) ni->nomark = 1;
-        if (set & PM(P_DISPLAY)) disp = cp->v[P_DISPLAY];
-        if ((set & PM(P_BG)) && cp->v[P_BG]) S->bg = cp->v[P_BG];
-        for (int i = 0; i < 8; i++) len_from(S, L_MT + i, cp, P_MT + i);
-        for (int i = 0; i < 4; i++) {
-            if (set & PM(P_BWT + i)) S->bw[i] = cp->v[P_BWT + i];
-            if (set & PM(P_BCT + i)) S->bc[i] = cp->v[P_BCT + i];
-            else if ((set & PM(P_BWT + i)) && S->bw[i]) S->bc[i] = mix(D->bg, ni->col, 90);
-        }
-        len_from(S, L_W, cp, P_WIDTH); len_from(S, L_MAXW, cp, P_MAXW); len_from(S, L_H, cp, P_HEIGHT);
-        if ((set & PM(P_VALIGN))) { S->valn = cp->v[P_VALIGN] == 3 ? 0 : cp->v[P_VALIGN]; }
-        if (set & PM(P_COLLAPSE)) S->hdr = cp->v[P_COLLAPSE];
-        if ((set & PM(P_SPACING)) && tag == T_TABLE) S->gapc = S->gapr = cp->v[P_SPACING];
-    }
+    if (tag == T_TR || tag == T_TGROUP) { cx2->tva = cv == VA_TOP ? 0 : cv == VA_MIDDLE ? 1 : cv == VA_BOTTOM ? 2 : 255; }
+    hints(dn, tag, S, ni, cx, cx2);
     if (ATTR(dn, "hidden")) disp = D_NONE;
     return disp;
 }
@@ -2145,104 +2159,113 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
     if (W && !cssw) { b->k[L_W] = K_PX; b->v[L_W] = W; }
     if (H && !cssh) { b->k[L_H] = K_PX; b->v[L_H] = H; }
     if (aw && strchr(aw, '%') && !cssw && atoi(aw) > 0) { b->k[L_W] = K_PCT; b->v[L_W] = atoi(aw); }
-    if (alt && *alt) { b->toff = (uint32_t)(alt - DOM.pool); b->tlen = strlen(alt); }
+    if (alt && *alt) { b->toff = (uint32_t)(alt - HD.pool); b->tlen = strlen(alt); }
     bx_append(pb, bi);
 }
 
 static int bg_from_html;
+static struct cprops CPS[256];
+static int cpd;
 
-static void root_colors(const struct bx *S, const struct cprops *cp, int tag, int dn, struct inh *ni) {
+static int luma(color_t c) { return (((c >> 16) & 255) * 3 + ((c >> 8) & 255) * 6 + (c & 255)) / 10; }
+
+/* the page background comes from <html> or <body>; a dark one gets light text and links unless the page says otherwise */
+static void root_colors(const struct bx *S, int tag, int dn, struct inh *ni) {
     struct doc *d = D;
-    const char *v;
-    if (tag == T_BODY) {
-        if (S->bg && !bg_from_html) d->bg = S->bg;
-        if ((v = ATTR(dn, "text"))) parse_color(v, &d->fg);
-        if ((v = ATTR(dn, "link"))) { parse_color(v, &d->linkc); d->hoverc = d->fg; }
-        else if (dark(d->bg)) { d->linkc = RGB(0x8C, 0xB4, 0xFF); d->hoverc = RGB(0xFF, 0x9A, 0xD0); }
-        if (dark(d->bg) && !ATTR(dn, "text")) d->fg = RGB(0xE8, 0xE6, 0xF5);
-    }
-    if (cp && (cp->set & PM(P_BG)) && cp->v[P_BG]) {
+    if (S->bg >> 24 == 0xFF && (tag == T_HTML || (tag == T_BODY && !bg_from_html))) {
+        d->bg = S->bg;
         if (tag == T_HTML) bg_from_html = 1;
-        d->bg = cp->v[P_BG];
-        if (dark(d->bg)) {
-            d->linkc = RGB(0x8C, 0xB4, 0xFF); d->hoverc = RGB(0xFF, 0x9A, 0xD0);
-            if (!(cp->set & PM(P_COLOR))) d->fg = RGB(0xE8, 0xE6, 0xF5);
-        }
     }
-    if (cp && (cp->set & PM(P_COLOR))) d->fg = cp->v[P_COLOR];
-    col_em = dark(d->bg) ? RGB(0xFF, 0xA0, 0xD8) : RGB(0x8A, 0x1C, 0x8A);
+    if (tag == T_BODY) {
+        const char *v;
+        if ((v = ATTR(dn, "text"))) parse_color(v, &ni->col);
+        if ((v = ATTR(dn, "link"))) { parse_color(v, &d->linkc); d->hoverc = ni->col; }
+    }
+    if (dark(d->bg)) {
+        d->linkc = RGB(0x8C, 0xB4, 0xFF); d->hoverc = RGB(0xFF, 0x9A, 0xD0);
+    }
+    d->fg = ni->col;
     col_dim = mix(d->fg, d->bg, 130);
-    ni->col = d->fg;
 }
 
-static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int isfirst) {
-    int tag = DN(dn).tag;
+static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int isfirst, int pe);
+
+static void build_pseudo(int dn, int pb, const struct inh *in, struct bctx *cx, int pe) {
+    build_el(dn, pb, in, cx, 0, pe);
+}
+
+static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int isfirst, int pe) {
+    int tag = pe ? T_NONE : DN(dn).tag;
     const char *name = hd_str(DN(dn).nm), *v;
-    if (tag == T_HEAD || tag == T_SKIP || tag == T_COL || tag == T_OPTION) return;
-    if (tag == T_DIV && !strcmp(name, "noscript") && is_js) return;
-    int pushed = 0;
-    if (nel < 128) { el_fill(&E[nel], dn, isfirst); nel++; pushed = 1; }
-    struct cprops cp;
-    memset(&cp, 0, sizeof cp);
-    const char *sty = ATTR(dn, "style");
-    if (pushed && (css_any() || (sty && *sty))) css_cascade(E, nel, sty, &cp);
+    if (!pe && (tag == T_HEAD || tag == T_SKIP || tag == T_COL || tag == T_OPTION)) return;
+    if (!pe && tag == T_DIV && !strcmp(name, "noscript") && is_js) return;
+    if (cpd >= 250) return;
+    struct cprops *cp = &CPS[cpd];
+    const struct cprops *par = cpd ? &CPS[cpd - 1] : 0;
+    if (pe) { if (!css_compute(dn, pe, par, cp)) return; }
+    else css_compute(dn, PE_NONE, par, cp);
     struct bx S;
     struct inh ni;
     struct bctx cx2;
-    int disp = style_el(dn, tag, &S, &ni, in, cx, &cx2, &cp, isfirst);
-    if ((v = ATTR(dn, "data-vjs"))) ni.node = atoi(v);
-    if (disp == D_NONE) { nel -= pushed; return; }
+    int disp = style_cp(dn, tag, &S, &ni, in, cx, &cx2, cp);
+    if (!pe && (v = ATTR(dn, "data-vjs"))) ni.node = atoi(v);
+    if (disp == D_NONE) return;
     if (tag == T_HTML || tag == T_BODY) {
-        root_colors(&S, &cp, tag, dn, &ni);
+        root_colors(&S, tag, dn, &ni);
         S.bg = 0;
-        if (tag == T_BODY) {
-            if (css_any()) { for (int i = 0; i < 4; i++) if (!(cp.set & PM(P_MT + i))) set_px(&S, L_MT + i, 8); }
-            else { S.k[L_ML] = S.k[L_MR] = K_AUTO; set_px(&S, L_MAXW, 880); set_px(&S, L_PL, 20); set_px(&S, L_PR, 20); set_px(&S, L_PT, 14); }
+        if (tag == T_BODY && !css_any()) {                      /* no author CSS at all: a readable centred column, like the old engine */
+            for (int i = 0; i < 4; i++) set_px(&S, L_MT + i, 0);
+            S.k[L_ML] = S.k[L_MR] = K_AUTO; set_px(&S, L_MAXW, 880); set_px(&S, L_PL, 20); set_px(&S, L_PR, 20); set_px(&S, L_PT, 14);
         }
     }
     if (plain_text && tag == T_PRE) { for (int i = 0; i < 8; i++) set_px(&S, L_MT + i, 0); S.bg = 0; }
-    int blockdef = block_tag(tag);
-    S.outer = blockdef ? OUT_BLOCK : OUT_INLINE; S.inner = blockdef ? IN_FLOW : IN_INLINE;
-    switch (tag) {
-    case T_TABLE: S.inner = IN_TABLE; break;
-    case T_TGROUP: S.inner = IN_TGROUP; break;
-    case T_TR: S.inner = IN_TROW; break;
-    case T_TD: case T_TH: S.inner = IN_TCELL; break;
-    case T_CAP: S.inner = IN_CAP; break;
+    if (tag == T_A && (v = ATTR(dn, "href")) && strncasecmp(v, "javascript:", 11)) ni.link = link_add(v);
+    /* display -> box kind */
+    S.outer = OUT_INLINE; S.inner = IN_INLINE;
+    int li = 0, contents = 0;
+    switch (disp) {
+    case D_BLOCK: S.outer = OUT_BLOCK; S.inner = IN_FLOW; break;
+    case D_INLINE_BLOCK: S.inner = IN_FLOW; break;
+    case D_FLEX: S.outer = OUT_BLOCK; S.inner = IN_FLEX; break;
+    case D_INLINE_FLEX: S.inner = IN_FLEX; break;
+    case D_GRID: S.outer = OUT_BLOCK; S.inner = IN_GRID; break;
+    case D_INLINE_GRID: S.inner = IN_GRID; break;
+    case D_TABLE: S.outer = OUT_BLOCK; S.inner = IN_TABLE; break;
+    case D_INLINE_TABLE: S.inner = IN_TABLE; break;
+    case D_TABLE_ROW: S.outer = OUT_BLOCK; S.inner = IN_TROW; break;
+    case D_TABLE_CELL: S.outer = OUT_BLOCK; S.inner = IN_TCELL; break;
+    case D_TABLE_ROWGROUP: case D_TABLE_HEADER: case D_TABLE_FOOTER: S.outer = OUT_BLOCK; S.inner = IN_TGROUP; break;
+    case D_TABLE_CAPTION: S.outer = OUT_BLOCK; S.inner = IN_CAP; break;
+    case D_TABLE_COL: case D_TABLE_COLGROUP: return;
+    case D_LIST_ITEM: S.outer = OUT_BLOCK; S.inner = IN_FLOW; li = 1; break;
+    case D_CONTENTS: contents = 1; break;
     }
-    if (disp == D_INLINE && blockdef) { S.outer = OUT_INLINE; S.inner = IN_INLINE; S.li = 0; }
-    else if (disp == D_BLOCK && !blockdef) { S.outer = OUT_BLOCK; S.inner = IN_FLOW; }
-    else if (disp == D_BLOCK && S.inner != IN_FLOW && S.inner != IN_TABLE) S.inner = IN_FLOW;
     S.font = ni.font; S.flags = ni.flags; S.nul = ni.nul; S.ws = ni.ws; S.align = ni.align; S.col = ni.col; S.link = ni.link; S.node = ni.node;
     S.lh = ni.lh; S.vis = ni.vis; S.valign = ni.valign;
-    if (tag == T_IMG && (v = ATTR(dn, "align"))) { if (!strcasecmp(v, "left")) S.flt = 1; else if (!strcasecmp(v, "right")) S.flt = 2; }
-    if (S.flt || oof(&S)) S.outer = OUT_BLOCK;
-    if ((v = ATTR(dn, "id")) || (tag == T_A && (v = ATTR(dn, "name")))) { if (*v) S.aname = astr(v) + 1; }
+    if (S.flt || oof(&S)) { S.outer = OUT_BLOCK; if (S.inner == IN_INLINE) S.inner = IN_FLOW; }
+    if (!pe && ((v = ATTR(dn, "id")) || (tag == T_A && (v = ATTR(dn, "name")))) && *v) S.aname = astr(v) + 1;
     S.cb = cx->cb;
-    if (S.li) S.mark = ni.nomark ? -1 : cx->cnt ? ++*cx->cnt : 0;
-    if (tag == T_OL) { static int olcnt[1]; (void)olcnt; }
+    if (li) { S.li = 1; S.mark = ni.nomark ? -1 : cx->cnt ? ++*cx->cnt : 0; }
 
     if (tag == T_BR) {
         int bi = bx_new();
         if (bi >= 0) { B[bi] = S; B[bi].outer = OUT_INLINE; B[bi].inner = IN_BR; bx_append(pb, bi); }
-        nel -= pushed;
         return;
     }
-    if (tag == T_IMG) { build_img(dn, pb, &S, &ni); nel -= pushed; return; }
+    if (tag == T_IMG) { build_img(dn, pb, &S, &ni); return; }
     if (tag == T_INPUT || tag == T_TEXTAREA || tag == T_SELECT || tag == T_BUTTON) {
         int bi = bx_new();
         if (bi >= 0) {
             B[bi] = S;
             int ci = build_ctl(dn, tag, &B[bi], cx, &ni);
-            if (ci < 0) { nb--; }
+            if (ci < 0) nb--;
             else {
                 struct bx *b = &B[bi];
-                b->outer = S.flt || oof(&S) ? OUT_BLOCK : S.outer == OUT_BLOCK && disp == D_BLOCK ? OUT_BLOCK : OUT_INLINE;
+                b->outer = S.flt || oof(&S) || S.outer == OUT_BLOCK ? OUT_BLOCK : OUT_INLINE;
                 b->inner = IN_CTL; b->ref = ci; b->li = 0;
                 bx_append(pb, bi);
             }
         }
-        nel -= pushed;
         return;
     }
     if (tag == T_FORM) {
@@ -2253,40 +2276,49 @@ static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int 
             cx2.curform = D->nfm++;
         }
     }
-    if (tag == T_OL) { }
     int cnt = 0;
     if (tag == T_OL) { cnt = (v = ATTR(dn, "start")) ? atoi(v) - 1 : 0; cx2.cnt = &cnt; }
     else if (tag == T_UL) cx2.cnt = 0;
 
     /* an inline element with nothing to paint or position needs no box of its own: its children join the parent */
-    int plain = S.outer == OUT_INLINE && S.inner == IN_INLINE && S.pos == POS_STATIC && !S.bg && !S.aname && !S.li;
-    for (int i = 0; i < 4 && plain; i++) if (S.bw[i]) plain = 0;
-    if (plain && (S.v[L_ML] || S.v[L_MR] || S.v[L_PL] || S.v[L_PR] || S.v[L_PT] || S.v[L_PB] || S.v[L_MT] || S.v[L_MB])) plain = 0;
-    if (plain && (S.k[L_ML] != K_PX || S.k[L_MR] != K_PX)) plain = 0;
+    int plain = contents || (S.outer == OUT_BLOCK && 0);
+    if (!plain && S.outer == OUT_INLINE && S.inner == IN_INLINE && S.pos == POS_STATIC && !S.bg && !S.aname && !S.li && !pe) {
+        plain = 1;
+        for (int i = 0; i < 4 && plain; i++) if (S.bw[i]) plain = 0;
+        for (int i = 0; i < 8 && plain; i++) if (S.k[L_MT + i] == K_AUTO || S.v[L_MT + i]) plain = 0;
+        if (S.opacity != 255) plain = 0;
+    }
     if (plain) {
+        cpd++;
         build_children(dn, pb, &ni, &cx2);
-        nel -= pushed;
+        cpd--;
         return;
     }
     int bi = bx_new();
-    if (bi < 0) { nel -= pushed; return; }
+    if (bi < 0) return;
     B[bi] = S;
     if (pb >= 0) bx_append(pb, bi);
     if (S.pos != POS_STATIC) cx2.cb = bi;
     if (oof(&S)) abs_reg(bi);
     if (S.zset && S.zi < 0) { int o = cx->cb >= 0 ? cx->cb : root_box; if (o >= 0) B[o].hasneg = 1; }
-    if (tag == T_PRE) {
-        int c = DN(dn).first;
-        if (c >= 0 && DN(c).type == 3 && hd_str(DN(c).nm)[0] == '\n') { /* the first newline after <pre> is dropped */
-            DN(c).nm++; DN(c).tn--;
+    if (pe) {
+        const char *t = css_str(cp->v[P_CONTENT]);
+        if (t && *t) mk_text(bi, hd_pool_add(t, strlen(t)), strlen(t), &ni);
+    } else {
+        if (tag == T_PRE) {
+            int c = DN(dn).first;
+            if (c >= 0 && DN(c).type == 3 && hd_str(DN(c).nm)[0] == '\n') { DN(c).nm++; DN(c).tn--; }   /* the first newline after <pre> is dropped */
         }
+        cpd++;
+        build_pseudo(dn, bi, &ni, &cx2, PE_BEFORE);
+        build_children(dn, bi, &ni, &cx2);
+        build_pseudo(dn, bi, &ni, &cx2, PE_AFTER);
+        cpd--;
     }
-    build_children(dn, bi, &ni, &cx2);
     if (B[bi].inner == IN_INLINE) {                           /* blocks inside an inline element: it becomes a block */
         for (int c = B[bi].first; c >= 0; c = B[c].next) if (in_flow_block(&B[c])) { B[bi].outer = OUT_BLOCK; B[bi].inner = IN_FLOW; break; }
     }
     fixup(bi);
-    nel -= pushed;
 }
 
 static void build_children(int dn, int pb, const struct inh *in, struct bctx *cx) {
@@ -2294,7 +2326,7 @@ static void build_children(int dn, int pb, const struct inh *in, struct bctx *cx
     for (int c = DN(dn).first; c >= 0; c = DN(c).next) {
         if (DN(c).type == 3) { build_text(c, pb, in); continue; }
         if (DN(c).type != 1) continue;
-        build_el(c, pb, in, cx, !seen);
+        build_el(c, pb, in, cx, !seen, PE_NONE);
         seen = 1;
     }
 }
@@ -2306,9 +2338,11 @@ static int build_root(void) {
     b->outer = OUT_BLOCK; b->inner = IN_FLOW;
     root_box = r;
     struct inh in = { .font = F_UI, .col = D->fg, .link = -1 };
-    struct bctx cx = { .cb = -1, .curform = -1, .tpad = 1, .tva = 255 };
+    struct bctx cx = { .cb = -1, .curform = -1, .tpad = -1, .tva = 255 };
     for (int c = DN(0).first; c >= 0; c = DN(c).next) if (DN(c).type == 1 && DN(c).tag == T_HTML) is_js = hd_attr(c, "data-vjs") != 0;
     b->font = in.font; b->col = in.col; b->link = -1;
+    css_dom_set(&CD);
+    cpd = 0;
     build_children(0, r, &in, &cx);
     fixup(r);
     return r;
@@ -2327,7 +2361,9 @@ void doc_layout(struct doc *d, const char *src, size_t n, int is_html, int width
     D = d;
     cur_base_url = base;
     css_reset();
-    css_viewport(width);
+    css_viewport_size(width, VIEWH);
+    css_base(base);
+    rootw = width;
     d->bg = RGB(0xFF, 0xFF, 0xFF); d->fg = RGB(0x1A, 0x1A, 0x22);
     d->linkc = RGB(0x0B, 0x57, 0xD0); d->hoverc = RGB(0xC0, 0x1F, 0x7A);
     col_em = RGB(0x8A, 0x1C, 0x8A);
