@@ -322,6 +322,40 @@ Method: `/bin/sysbench` (`sysbench -k [-w] [sys spawn pingpong pipe fsmall f4m d
 - Durability change to know about: ext2 writes are no longer on disk when `write()` returns, but within ~1 ms of the CPU going idle (or at once on `fsync`, shutdown, a `/dev/kmsg` write, or 256 dirty blocks/1 s). A panic or a `quit` while the guest is busy loses the unflushed tail; an image that was idle (or reported through kmsg) is fsck-clean.
 - Shared files touched: `common/abi.h` (+`SYS_fsync`), `Makefile` (one `-fno-tree-loop-distribute-patterns` line for kernel/lib/string.c), `root/home/runtests.sh` (+`r fasttest`), `tools/libctest/*`, `tools/ext2test/*`, `docs/ARCHITECTURE.md`; the apps agent's `bench` stays, mine is `sysbench`.
 
+### Kernel, memory, compositor, command line, apps (perf-usability)
+Five agents in parallel (kernel core, memory/filesystem, compositor, command line, GUI apps), merged on `perf-usability`.
+Same method as above: `sysbench`, `bench`, `tools/gfxbench.py` (now `--headless`), KVM, medians of 3-5 runs.
+- [x] Syscalls: 0-3 argument calls use `sysenter`/`sysexit` (libc `__syscall0..3`; return eip in EBP, esp in ESI, ECX/EDX
+  clobbered; the kernel stack comes from `tss.esp0`, so a switch needs no `wrmsr`). 4-5 argument calls and `mmap` stay on
+  `int 0x80`, which still works for everything. Null syscall ~207 -> ~88 ns.
+- [x] `poll()`: a sleeper whose files are all pipes, terminals, sockets or windows (`poll_keyed_ops`) wakes only when one of
+  them is woken, not on every `wakeup()`; threaded processes or more than 4 fds keep the old behaviour. Pipe ping-pong with
+  8 other poll() sleepers 1471 -> ~850 ns; plain round trip ~1046 -> ~968 ns. Redundant `CR0.TS` writes skipped.
+- [x] Clock: `SYS_clock_us` (`CLK_REALTIME`/`CLK_MONOTONIC`): the PIT tick stamps the TSC and reads add the TSC delta, so it
+  never drifts from the PIT. `clock_gettime`, `gettimeofday` (moved from compat.c to time.c) and MicroPython's `ticks_us`
+  use it: 1 ms -> 1 us resolution, 0 backward steps in 100k calls, 116-200 ns per call.
+- [x] mm: mapping a page that wasn't present skips `invlpg` (x86 never caches a not-present entry): anonymous fault
+  1055 -> ~860 ns (`vmm_map` 450-660 -> ~100 cycles). `munmap` skips unmapped 4 MiB regions: 73 -> 55 ns per page.
+- [x] ext2: a 2048-entry name -> inode cache (positive only, invalidated on add/remove/setino and cleared when an unlinked inode
+  is released), in-place scans of cached directory blocks, and inode-table/directory blocks read ahead in runs. Create in a
+  1000-file directory 77 -> 25-38 us, `stat` there 8 -> 3 us; cold `ls -l` is faster too.
+- [x] Window buffers: each window's buffer is now sized to the window (stride = width) and moves to a full-screen buffer the
+  first time it outgrows it (`buf_grow`/`buf_swap`, shared with display mode changes). 9 windows at 1280x800 used 99.9 ->
+  78.8 MiB. `map_into_owner` slots now fit a 2560x1600 screen (they were 4 KiB short). `WIN_SET_MINSIZE` +
+  `gui_set_minsize()`: Notepad asks for 440x220, Code for 640x480.
+- [x] Usability: job control (Ctrl-Z, `jobs`, `fg`, `bg`, `kill %N`; SIGSTOP/SIGTSTP/SIGCONT, `waitpid` WUNTRACED/WCONTINUED;
+  only the leader thread stops), `du`, `tar`, `gzip`/`gunzip`/`zcat` (fixed-Huffman deflate, checked against host gzip),
+  `edit` undo/redo, Tab after `cd` completes directories only; Notepad undo/redo, find/replace, go to line; Ctrl+Q/Ctrl+W
+  close any app through the X's path; word-wise editing in every text input; Settings Ctrl+F; Code folds its tree below
+  640 px; launcher search ranked; Super+Down minimises. Files: folders past 2048 entries were silently cut off (now 16384),
+  and Select all kept only 256 entries after a refresh. Settings launch CPU 13 -> 10 ms (wallpaper thumbnails drawn when on
+  screen). `strtod` is now correctly rounded (bit-exact with glibc on 550k inputs); `setenv` no longer leaks.
+- Measured and left alone: compositor frames (drag 5-7 kcycles, launcher 11-13), terminal output (~1.7M lines/s), input
+  latency (woken straight from the IRQ), futex wake-N (libc never asks for a count), batched readdir (~90 us per 1000
+  entries), trap entry/exit (~250 cycles above hardware; the rest of a first-touch fault is the host's EPT), kernel heap
+  size classes (`kmalloc` ~130 cycles average), 128 KiB ATA commands (host-bound), `realloc` growth (already in place),
+  stdio (already 100-200 MB/s), Files with 2000 entries (opens in ~25 ms).
+
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
 - Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.

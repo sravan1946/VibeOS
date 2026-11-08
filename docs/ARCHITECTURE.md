@@ -73,8 +73,10 @@ and two font files that are baked into C arrays at build time.
   next task already owns the registers), and the `#NM` handler `fnsave`s the old owner and `frstor`s the new one
   (`fpu_ensure` does the same for the kernel's own `fnsave`/`fninit` on a task's behalf: signals, exec). The kernel
   identity map is global (`CR4.PGE`), so a process switch keeps those TLB entries.
-* Blocking is `sleep_on(chan, timeout)` / `wakeup(chan)`; `poll()` sleeps on a global channel
-  that every wakeup pokes.
+* Blocking is `sleep_on(chan, timeout)` / `wakeup(chan)`. `poll()` sleeps on a global channel; when every polled file's
+  type is registered with `poll_keyed_ops` (pipes, ttys, sockets, windows: their readiness only changes where they
+  `wakeup(v->priv)`), `wakeup` pokes the sleeper only for those `priv`s. Threaded processes, more than 4 fds or any other
+  file type fall back to waking on every wakeup.
 * There's no `fork`: new processes are created with `spawn(path, argv, envp, opts)` where `opts`
   carries the child's stdin/stdout/stderr, cwd and flags. ELF32 executables are linked at
   `0x40001000` (`user/user.ld`), and argv/envp land on the stack in the Linux i386 layout.
@@ -84,8 +86,11 @@ and two font files that are baked into C arrays at build time.
   registers, the blocked mask and the `fnsave`d x87 state), and `SYS_sigreturn` from the
   restorer puts it all back. The signal is blocked while its handler runs; blocking syscalls
   fail with `EINTR`. The default action is exit with `128 + sig`, except for SIGCHLD and SIGWINCH,
-  which are ignored. The TTY sends `SIGINT` to its foreground process on `^C` and SIGWINCH on
-  resize, and a child's exit sends SIGCHLD to its parent. Ignored signals stay ignored across
+  which are ignored. The TTY sends `SIGINT` to its foreground process on `^C`, `SIGTSTP` on `^Z` and SIGWINCH on
+  resize, and a child's exit sends SIGCHLD to its parent. Job control: SIGSTOP and a default-action SIGTSTP stop the
+  process (it sleeps on `&p->stopped`; a task already blocked in a syscall is parked there instead of getting `EINTR`,
+  so a `read` resumes after `fg`), SIGCONT wakes it, and the parent gets SIGCHLD plus `waitpid` `WUNTRACED`
+  (`0x100|sig`) / `WCONTINUED` (`0x200`) reports. Only the leader thread stops. Ignored signals stay ignored across
   `spawn` and `exec`. `/bin/sigtest` checks it all.
 * **exec** (`SYS_exec`, `proc_exec`): `load_image` (shared with spawn, including the `#!` rule) builds the new
   address space first, so a failed exec returns `-errno` with the old image untouched. Then the old page directory
@@ -115,7 +120,10 @@ and two font files that are baked into C arrays at build time.
 ## Syscalls
 
 `int 0x80`, number in `EAX`, arguments in `EBX ECX EDX ESI EDI`, a negative return is
-`-errno`. The whole ABI (numbers, structs, flags, errno, key codes, GUI events) lives in one
+`-errno`. Calls with 0-3 arguments may use `sysenter` instead (libc's `__syscall0..3` in `user/include/syscall.h`):
+the stub passes the return eip in `EBP` and its esp in `ESI`, and `ECX`/`EDX` are clobbered; the kernel takes its stack
+from `tss.esp0` and returns with `sysexit` (restoring the saved eflags, so `sigreturn` works). Time comes from
+`SYS_clock_us` (`CLK_REALTIME`/`CLK_MONOTONIC`, microseconds: each PIT tick stamps the TSC and a read adds the delta). The whole ABI (numbers, structs, flags, errno, key codes, GUI events) lives in one
 header shared by the kernel and libc: `common/abi.h`.
 
 ## Filesystems

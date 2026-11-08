@@ -18,11 +18,13 @@ emulator, and a set of desktop apps and games.
 - Two-stage BIOS bootloader: A20, E820 memory map, VBE 32-bpp linear framebuffer, unreal-mode
   kernel load to 1 MiB. A boot splash with a progress bar crossfades into the desktop.
 - Paging with a separate address space per process, physical frame bitmap, kernel heap,
-  demand paging (lazy brk, stacks and `mmap`), `mmap`/`munmap`/`mprotect`.
+  demand paging (lazy brk, stacks and `mmap`), `mmap`/`munmap`/`mprotect`. `poll()` sleepers on pipes, terminals, sockets
+  and windows wake only for their own files.
 - Preemptive scheduling of user programs, ring 3, ELF loading, `spawn`/`exec`/`waitpid`/signals, threads (`<pthread.h>`: mutexes, condvars),
-  per-task FPU state, POSIX-style signal handlers (masks, `sigreturn`, SIGCHLD/SIGWINCH),
-  64 syscalls (`common/abi.h`).
-- VFS with mounts: read/write **ext2** root filesystem on ATA (8 MiB hashed block cache, read-ahead, delayed write-back with `fsync`; `statfs` for free space, `df`), `/dev` (null zero random tty
+  per-task FPU state, POSIX-style signal handlers (masks, `sigreturn`, SIGCHLD/SIGWINCH), job control (SIGSTOP/SIGTSTP/SIGCONT,
+  `waitpid` `WUNTRACED`/`WCONTINUED`), 65 syscalls (`common/abi.h`; 0-3 argument calls enter through `sysenter`, the rest
+  through `int 0x80`), a microsecond clock (`clock_gettime`, `gettimeofday`) from the TSC.
+- VFS with mounts: read/write **ext2** root filesystem on ATA (8 MiB hashed block cache, read-ahead, a name-lookup cache, delayed write-back with `fsync`; `statfs` for free space, `df`), `/dev` (null zero random tty
   kmsg clipboard notify display theme wallpaper dsp), `/proc` (meminfo uptime cpuinfo version processes), pipes, `poll()`.
 - TTY line discipline (canonical and raw modes, job control signals, window size).
 - **Networking**: PCI, Intel e1000 driver, Ethernet/ARP/IPv4/ICMP/UDP, DHCP, DNS, TLS (BearSSL), and TCP
@@ -44,13 +46,13 @@ emulator, and a set of desktop apps and games.
   ![Themes](docs/screenshots/themes.png)
 
 - Drag, resize, maximise (double-click the title bar), minimise, edge snapping and Super+arrow
-  tiling, smart window placement, a right-click window menu (always on top, move to workspace),
+  tiling (Super+Down restores, or minimises a window that isn't maximised or snapped), smart window placement, a right-click window menu (always on top, move to workspace),
   Super+drag to move from anywhere, a desktop context menu.
 - Runtime resolution switching on the QEMU/Bochs display adapter (1024x768 up to 2560x1600): Settings >
   Display with a "Keep this resolution?" revert, or `display 1920x1080` in the shell; saved in `/etc/display`.
 - 4 virtual workspaces (Super+1..4, Super+Shift+1..4 to move a window), an Alt+Tab switcher with
   live thumbnails, toast notifications and a notification center (Super+N; `notify TITLE BODY`,
-  `/dev/notify`), a panel with a searchable launcher, workspace pills, task buttons, network/volume/notification tray and clock.
+  `/dev/notify`), a panel with a searchable launcher (ranked: name prefix, word start, substring, description), workspace pills, task buttons, network/volume/notification tray and clock.
 - An xterm-compatible terminal emulator (256 colours and truecolor, bold/dim/italic/underline/strike,
   alternate screen, scroll regions, scrollback, UTF-8) with mouse selection; a system clipboard shared by
   every app. Terminal windows have tabs (Ctrl+Shift+T/W, Ctrl+PgUp/PgDn), scrollback search (Ctrl+Shift+F),
@@ -60,26 +62,29 @@ emulator, and a set of desktop apps and games.
   baked into the build with Latin-1, arrows, symbols and box/block glyphs; Lucide icons (ISC) and the app/file-type
   icon set rasterised with nanosvg at build time (`common/icons.h`).
 - Apps are ordinary processes: a window is a file descriptor whose buffer is mapped into the
-  process, and `read()` returns input events. `libgui` + `ui.h` is a small immediate-mode
-  widget toolkit.
+  process (sized to the window, grown to screen size the first time it outgrows it), and `read()` returns input
+  events; apps can set a minimum size (`gui_set_minsize`). `libgui` + `ui.h` is a small immediate-mode widget
+  toolkit: Ctrl+Q closes any app and Ctrl+W any app without tabs (documents ask to save first), and every text
+  input moves and deletes by word with Ctrl+Left/Right and Ctrl+Backspace/Delete.
 
 **Userland**
 - A libc: stdio, printf/scanf (incl. `%a`), a binned malloc, correctly-rounded strtod/libm, POSIX regex (BRE/ERE, `regcomp`/`regexec`), string, math, time, termios, dirents, sockets.
 - `/bin/sh`: a scripting shell with if/for/while/case, functions, `$(..)`, `$((..))`,
   here-docs, `test`/`read`/`printf` builtins and `#!` scripts, plus line editing, persistent
-  history, Ctrl-R, `!!`, Tab completion, pipes, redirections and globbing.
+  history, Ctrl-R, `!!`, Tab completion (directories only after `cd`/`rmdir`), pipes, redirections and globbing, and job
+  control: Ctrl-Z stops the foreground job, `jobs`, `fg`/`bg [%N]`, `kill %N`.
 - Coreutils: `ls cat echo mkdir rm rmdir touch cp mv pwd wc head tail grep hexdump ps kill
   uptime date free clear sleep env seq sort uniq tee find which stat dmesg uname cal fortune
-  vibefetch colortest` and more.
+  vibefetch colortest` and more; `du`, `tar` (ustar, `z` for gzip) and `gzip`/`gunzip`/`zcat`.
 - Text processing: `grep` (BRE/ERE/fixed, context, `-o -w -r`), `sed`, `awk`, `tr cut paste nl tac rev`, `diff` (normal and
   unified), `cmp`, `xargs`, `md5sum sha256sum`.
 - `/bin/lua`: Lua 5.4 with a REPL, plus `vibe` (system info, processes, beep) and `gui` (windows) modules.
 - `/bin/python`: MicroPython 1.29 with a line-editing REPL (history, Tab completion), scripts, file I/O through `open`/`os`, and `sys time math json re random struct collections os.path` plus `vibe`, `gui` (windows and events), `socket`/`select`/`ssl` (TCP/UDP, TLS client) modules; `projects/paint.py` is a launcher app (Python Paint).
 - `/bin/qjs`: QuickJS (ES2023+) with its REPL and the `std`/`os` modules (`qjs ~/projects/test.js`).
 - `/bin/tcc`: TinyCC 0.9.27 compiles C inside VibeOS against its own libc (`tcc hello.c -o hello`, `tcc -run`, `-lgui` for windows); see `~/projects/README.txt`.
-- Terminal apps: `edit` (a nano-like editor with C syntax highlighting), `less`, `top`.
+- Terminal apps: `edit` (a nano-like editor with C syntax highlighting and undo/redo, ^Z/^Y), `less`, `top`.
 - Network tools: `ifconfig ping nslookup wget nc` (`nc -l` listens; `wget` does https:// with certificate checks), and `httpd` — run it inside `make run` and open http://localhost:8080 on the host. Audio: `play` (WAV files), `midi` (Standard MIDI Files through an OPL3 FM synth; needs the Freedoom WAD for its instruments), `tone`.
-- GUI apps: Files, Notepad, Browser (HTTP and HTTPS, HTML + CSS (`<style>`, `<link>` stylesheets, `@import`, `@media`), real tables (colspan/rowspan, CSS widths and borders), PNG/JPEG/GIF images, forms, find-in-page, JavaScript with a DOM, events, timers and `fetch`), Paint (saves/opens PNG), **Code** (a small IDE: project sidebar, tabs, C and Lua highlighting, find/replace, Build with tcc and Run with an output pane, click an error to jump to it), Image
+- GUI apps: Files, Notepad (undo/redo, find/replace, go to line), Browser (HTTP and HTTPS, HTML + CSS (`<style>`, `<link>` stylesheets, `@import`, `@media`), real tables (colspan/rowspan, CSS widths and borders), PNG/JPEG/GIF images, forms, find-in-page, JavaScript with a DOM, events, timers and `fetch`), Paint (saves/opens PNG), **Code** (a small IDE: project sidebar, tabs, C and Lua highlighting, find/replace, Build with tcc and Run with an output pane, click an error to jump to it), Image
   viewer (PNG/JPEG/GIF/BMP/PPM, animated GIFs, zoom, pan, browse), Calculator, Clock (with stopwatch and timer), System
   Monitor, Settings, About, Piano (a polyphonic synth keyboard), Music (library, playlist, shuffle/repeat, seek, album art; MP3/Ogg/WAV). PrtSc saves a PNG screenshot
   to `~/Pictures`.
