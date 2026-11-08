@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
         uint32_t t0 = uptime_ms();
         say("SPAWN %s t=%u\n", argv[2], t0);
         int pid = spawnv(argv[2], av);
-        sleep(4);
+        sleep(3);
         struct procinfo p;
         if (cpu_of(pid, &p)) say("LAUNCHED %s cpu_ms=%u mem_kb=%u\n", argv[2], p.cpu_ms, p.mem_kb);
         else say("LAUNCHED %s gone\n", argv[2]);
