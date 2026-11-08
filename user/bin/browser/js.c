@@ -1087,6 +1087,12 @@ static void report(JSContext *c) {
     if (killed) {
         if (++strikes >= 3) { jlog(2, "scripts on this page ran too long three times and are now off"); dead = 1; nt = 0; }
         else jlog(2, "a script ran for more than %d s and was stopped", RUN_MS / 1000);
+        if (JS_IsError(c, e)) {                              /* where it was when the budget ran out */
+            JSValue st = JS_GetPropertyStr(c, e, "stack");
+            const char *sk = JS_IsUndefined(st) ? 0 : JS_ToCString(c, st);
+            for (const char *p = sk; p && *p; ) { const char *nl = strchr(p, '\n'); int l = nl ? (int)(nl - p) : (int)strlen(p); if (l > 0) jlog(2, "%.*s", l, p); p += l + (nl != 0); }
+            JS_FreeCString(c, sk); JS_FreeValue(c, st);
+        }
         JS_FreeValue(c, e);
         return;
     }

@@ -129,16 +129,16 @@ function invoke(t, ev, phase) {
         } catch (e) { if (!inReport) report(e); }
     }
 }
-function pathOf(t) {
+function pathOf(t, type) {
     const p = [];
     if (t === g) return [g];
     for (let n = t; n; n = n.parentNode) p.push(n);
-    if (p[p.length - 1] === document) p.push(g);
+    if (p[p.length - 1] === document && type !== 'load') p.push(g);      // load events from elements stop at the document (DOM spec)
     return p;
 }
 function dispatch(t, ev) {
     ev.target = ev.srcElement = t;
-    const path = pathOf(t);
+    const path = pathOf(t, ev.type);
     Object.defineProperty(ev, '__path', { value: path, configurable: true });
     for (let i = path.length - 1; i > 0 && !ev.__stop; i--) invoke(path[i], ev, 1);
     if (!ev.__stop) invoke(t, ev, 2);

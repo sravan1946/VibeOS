@@ -276,8 +276,10 @@ const t0 = performance.now();
     check('script load order (defer < module < DCL < load; dynamic src ran in place)', [window.order.filter(x => x !== 'async'), window.order.includes('async'), window.dynCurrent, window.rsAtDefer, window.modResult],
           [['inline1', 'dyn', 'inline2', 'defer', 'module', 'DCL', 'load'], true, 'jstest-dyn.js', 'interactive', 42]);
     check('readyState complete', document.readyState, 'complete');
+    let winLoads = 0; const wl = () => winLoads++; addEventListener('load', wl, true);
     await new Promise(res => { const s = document.createElement('script'); s.src = 'jstest-dyn2.js'; s.onload = res; s.onerror = res; document.head.appendChild(s); });
     check('dynamic external script + onload', window.dyn2, 1);
+    check('element load events stop at the document', winLoads, 0); removeEventListener('load', wl, true);
     await new Promise(res => { const s = document.createElement('script'); s.src = 'nope-missing.js'; s.onerror = () => res(window.errFired = 1); document.head.appendChild(s); });
     check('script onerror', window.errFired, 1);
     {
