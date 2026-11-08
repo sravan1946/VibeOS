@@ -861,10 +861,10 @@ int main(int argc, char **argv) {
     struct ui ui;
     ui_init(&ui, win);
     char start[URL_MAX] = "about:home";
-    if (argc > 2 && !strcmp(argv[1], "--bench")) { bench(&ui, argv[2]); return 0; }
-    if (argc > 1) url_from_input(argv[1], start, sizeof start);
     tabs[0].h = hist = calloc(HMAX, sizeof *hist);
     if (!hist) return 1;
+    if (argc > 2 && !strcmp(argv[1], "--bench")) { bench(&ui, argv[2]); return 0; }
+    if (argc > 1) url_from_input(argv[1], start, sizeof start);
     cookie_init();
     navigate(start, 1, -1);
     char last_title[96] = "";
