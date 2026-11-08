@@ -129,6 +129,11 @@ int gui_next_event(struct gui_window *win, struct gui_event *ev, int timeout_ms)
     return 1;
 }
 
+int gui_set_minsize(struct gui_window *win, int w, int h) {
+    struct win_rect r = { 0, 0, w, h };
+    return win_set(win->fd, WIN_SET_MINSIZE, (uintptr_t)&r);
+}
+
 /* ask the window manager for a new client size; the EV_RESIZE event confirms it */
 int gui_resize(struct gui_window *win, int w, int h) {
     struct win_rect r = { 0, 0, w, h };

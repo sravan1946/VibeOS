@@ -13,6 +13,7 @@ struct window {
     int id;
     uint32_t born;              /* ticks_ms at creation, for the open animation */
     int x, y, w, h;                 /* client rect, screen coords */
+    int minw, minh;                 /* WIN_SET_MINSIZE: interactive resize floor (0 = the 160x80 default) */
     int flags;                      /* WIN_FLAG_* */
     char title[64];
     uint32_t *buf;                  /* stride = canvas.stride (>= screen width), sized for the whole screen */

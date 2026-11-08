@@ -2086,10 +2086,10 @@ static void mouse_event(int x, int y, int b, int dz) {
         if (ox == x && oy == y) return;
         struct rect g = rs_from;
         int dx = x - drag_sx, dy = y - drag_sy;
-        if (rs_edges & E_L) { int nw = imax(160, imin(g.w - dx, g.x + g.w)); g.x += g.w - nw; g.w = nw; }
-        if (rs_edges & E_R) g.w = imax(160, imin(g.w + dx, SW - g.x));
-        if (rs_edges & E_T) { int nh = imax(80, imin(g.h - dy, g.y + g.h - WM_TITLE_H)); g.y += g.h - nh; g.h = nh; }
-        if (rs_edges & E_B) g.h = imax(80, imin(g.h + dy, TB_Y - g.y));
+        if (rs_edges & E_L) { int nw = imax(imax(160, w->minw), imin(g.w - dx, g.x + g.w)); g.x += g.w - nw; g.w = nw; }
+        if (rs_edges & E_R) g.w = imax(imax(160, w->minw), imin(g.w + dx, SW - g.x));
+        if (rs_edges & E_T) { int nh = imax(imax(80, w->minh), imin(g.h - dy, g.y + g.h - WM_TITLE_H)); g.y += g.h - nh; g.h = nh; }
+        if (rs_edges & E_B) g.h = imax(imax(80, w->minh), imin(g.h + dy, TB_Y - g.y));
         set_geometry(w, g.x, g.y, g.w, g.h);
         return;
     }
@@ -2372,6 +2372,13 @@ int win_syscall(int num, uint32_t a, uint32_t b, uint32_t c) {
         struct win_rect *r = (struct win_rect *)c;
         if (b == WIN_SET_POS) set_geometry(w, r->x, r->y, w->w, w->h);
         else set_geometry(w, w->x, w->y, imax(80, imin(r->w, SW)), imax(40, imin(r->h, TB_Y - WM_TITLE_H)));
+        return 0;
+    }
+    case WIN_SET_MINSIZE: {
+        if (!vmm_user_ok(current->dir, c, sizeof(struct win_rect), false)) return -EFAULT;
+        struct win_rect *r = (struct win_rect *)c;
+        w->minw = imax(0, imin(r->w, SW)); w->minh = imax(0, imin(r->h, TB_Y - WM_TITLE_H));
+        if (!w->maximized && (w->w < w->minw || w->h < w->minh)) set_geometry(w, w->x, w->y, imax(w->w, w->minw), imax(w->h, w->minh));
         return 0;
     }
     case WIN_SET_PREFS:
