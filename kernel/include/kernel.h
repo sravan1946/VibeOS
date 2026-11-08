@@ -95,6 +95,7 @@ size_t    heap_size(void);
 
 /* ---- time (dev/pit.c) ---- */
 extern volatile uint64_t ticks_ms;
+uint64_t clock_us(void);                /* us since boot, TSC-interpolated between ticks (dev/pit.c) */
 void speaker_tone(uint32_t hz);          /* PC speaker, 0 = off */
 uint32_t rtc_now(void);                 /* unix time (dev/rtc.c) */
 void pit_init(void);

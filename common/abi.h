@@ -72,6 +72,7 @@ enum {
     SYS_statfs,       /* (const char *path, struct statfs *sf) */
     SYS_fstatfs,      /* (int fd, struct statfs *sf) */
     SYS_fsync,        /* (int fd): push the file's filesystem's dirty blocks to disk (ext2 delays them until idle) */
+    SYS_clock_us,     /* (int clk, uint64_t *us): CLK_REALTIME / CLK_MONOTONIC in microseconds (realtime = RTC at boot + uptime) */
     SYS_MAX
 };
 
@@ -108,6 +109,8 @@ enum {
 #define FD_CLOEXEC 1
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1
+#define CLK_REALTIME 0     /* SYS_clock_us clocks */
+#define CLK_MONOTONIC 1
 
 /* mmap: a file mapping is a private copy read in on fault (MAP_SHARED only read-only);
  * MAP_SHARED anonymous memory is shared by the threads of a process */

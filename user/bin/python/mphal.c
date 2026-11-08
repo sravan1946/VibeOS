@@ -62,7 +62,11 @@ void mp_hal_stdout_tx_strn_cooked(const char *s, size_t len) {
 }
 
 mp_uint_t mp_hal_ticks_ms(void) { return uptime_ms(); }
-mp_uint_t mp_hal_ticks_us(void) { return uptime_ms() * 1000; }   /* ponytail: ms clock; a TSC would give real us */
+mp_uint_t mp_hal_ticks_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (mp_uint_t)(ts.tv_sec * 1000000 + ts.tv_nsec / 1000);
+}
 
 uint64_t mp_hal_time_ns(void) {
     struct timeval tv;

@@ -1,5 +1,5 @@
 /* sysbench - kernel/libc microbenchmarks and real-workload timings.
- *   sysbench [-k] [-w] [name...]  names: sys spawn pingpong pipe fsmall f4m dir fault str malloc stdio kmsg
+ *   sysbench [-k] [-w] [name...]  names: sys clock spawn pingpong pipe fsmall f4m dir fault str malloc stdio kmsg
  *                           -w: also the workloads (make, tcc, python, qjs, lua, sh); with -w only: just those
  * Run in the VM:  sysbench -k   (or > /dev/kmsg; lines land on the serial log; BENCH-DONE ends the run).
  * Times come from rdtsc, calibrated against the 1 kHz uptime; "cold" = after reading ~20 MB of /bin
@@ -15,6 +15,8 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <syscall.h>
+#include <time.h>
+#include <sys/time.h>
 
 typedef unsigned long long u64;
 static u64 khz;                         /* TSC kHz */
@@ -55,6 +57,30 @@ static void b_sys(void) {
     t = tsc();
     for (int i = 0; i < 5000; i++) { int fd = open("/bin/true", O_RDONLY); close(fd); }
     US("open+close /bin/true", tsc() - t, 5000);
+}
+
+static u64 mono_us(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (u64)ts.tv_sec * 1000000 + ts.tv_nsec / 1000; }
+
+static void b_clock(void) {         /* monotonic, finer than a tick, in step with uptime and the TSC */
+    enum { N = 100000 };
+    u64 t = tsc(), prev = mono_us(), back = 0, distinct = 0, minstep = ~0ull;
+    for (int i = 0; i < N; i++) {
+        u64 v = mono_us();
+        if (v < prev) back++;
+        else if (v > prev) { distinct++; if (v - prev < minstep) minstep = v - prev; }
+        prev = v;
+    }
+    NS("clock_gettime (syscall)", tsc() - t, N);
+    rep("  went backwards", "%lu", back, "times");
+    rep("  distinct values", "%lu", distinct, "of 100000 calls");
+    rep("  smallest step", "%lu", minstep, "us");
+    u64 m0 = mono_us(), c0 = tsc(); uint32_t u0 = uptime_ms();
+    while (uptime_ms() < u0 + 500) {}
+    u64 dm = mono_us() - m0, dc = tsc() - c0;
+    rep("  500 ms of uptime =", "%lu", dm, "us on the clock");
+    rep("  same span by TSC =", "%lu", dc * 1000 / khz, "us");
+    struct timeval tv; gettimeofday(&tv, 0);
+    rep("  gettimeofday vs time()", "%lu", (unsigned long)(tv.tv_sec - time(0) + 100), "(100 = same second)");
 }
 
 static void b_spawn(void) {
@@ -391,7 +417,7 @@ static void b_work(void) {
 
 int main(int argc, char **argv) {
     static const struct { const char *n; void (*f)(void); } T[] = {
-        { "sys", b_sys }, { "spawn", b_spawn }, { "pingpong", b_pingpong }, { "pipe", b_pipe },
+        { "sys", b_sys }, { "clock", b_clock }, { "spawn", b_spawn }, { "pingpong", b_pingpong }, { "pipe", b_pipe },
         { "fsmall", b_fsmall }, { "f4m", b_f4m }, { "dir", b_dir }, { "fault", b_fault },
         { "str", b_str }, { "malloc", b_malloc }, { "stdio", b_stdio }, { "kmsg", b_kmsg },
     };

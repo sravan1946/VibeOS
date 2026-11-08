@@ -328,6 +328,17 @@ static int sys_poll(struct pollfd *ufds, int n, int timeout) {
     }
 }
 
+static int sys_clock_us(int clk, uint64_t *out) {
+    if (clk != CLK_REALTIME && clk != CLK_MONOTONIC) return -EINVAL;
+    if (!uok(out, 8, true)) return -EFAULT;
+    uint32_t f = irq_save();
+    uint64_t us = clock_us();
+    if (clk == CLK_REALTIME) us += (uint64_t)(rtc_now() - (uint32_t)(ticks_ms / 1000)) * 1000000;   /* RTC at boot; same irq-off span as the read above */
+    irq_restore(f);
+    *out = us;
+    return 0;
+}
+
 static int sys_beep(uint32_t hz, uint32_t ms) {
     if (hz < 20 || hz > 20000 || ms > 5000) return -EINVAL;
     speaker_tone(hz);
@@ -410,6 +421,7 @@ static void syscall_handler(struct regs *r) {
     case SYS_win_create: case SYS_win_flip: case SYS_win_set:
         ret = win_syscall(r->eax, a, b, c); break;
     case SYS_beep:     ret = sys_beep(a, b); break;
+    case SYS_clock_us: ret = sys_clock_us(a, (uint64_t *)b); break;
     case SYS_shutdown: sys_shutdown(a);
     case SYS_klog:     ret = sys_klog((char *)a, b); break;
     case SYS_sigaction:   ret = proc_sigaction(a, b, c); break;

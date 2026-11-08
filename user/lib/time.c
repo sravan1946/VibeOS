@@ -1,5 +1,6 @@
 /* time.c - the RTC is UTC; local time = UTC + env TZ_OFFSET (minutes east, e.g. 330 for IST) */
 #include <time.h>
+#include <sys/time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,25 @@ static int tz_off(void) {
         if (fd >= 0) { if (read(fd, buf, sizeof buf - 1) > 0) cached = atoi(buf); close(fd); }
     }
     return cached;
+}
+
+/* the kernel's clock in us (TSC-interpolated between 1 kHz ticks); realtime = RTC at boot + uptime */
+int clock_gettime(int clk, struct timespec *ts) {
+    uint64_t us;
+    if (__sysret(__syscall2(SYS_clock_us, clk, (int)(uintptr_t)&us)) < 0) return -1;
+    ts->tv_sec = us / 1000000;
+    ts->tv_nsec = us % 1000000 * 1000;
+    return 0;
+}
+
+int gettimeofday(struct timeval *tv, void *tz) {
+    struct timespec ts;
+    if (tv) {
+        if (clock_gettime(CLOCK_REALTIME, &ts) < 0) return -1;
+        tv->tv_sec = ts.tv_sec;
+        tv->tv_usec = ts.tv_nsec / 1000;
+    }
+    return 0;
 }
 
 double difftime(time_t a, time_t b) { return (double)(a - b); }
