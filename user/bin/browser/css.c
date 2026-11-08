@@ -1950,7 +1950,12 @@ static int try_chain(int head, int node, int pe, const uint32_t *anc, int legacy
     return nh;
 }
 
+static int hit_cmp(const void *a, const void *b) {
+    uint64_t x = ((const struct hit *)a)->key, y = ((const struct hit *)b)->key;
+    return x < y ? -1 : x > y;
+}
 static void sort_hits(int nh) {
+    if (nh > 24) { qsort(H, nh, sizeof *H, hit_cmp); return; }
     for (int i = 1; i < nh; i++) {
         struct hit t = H[i];
         int j = i;
