@@ -27,6 +27,13 @@ void url_unescape(const char *s, char *out, int cap);          /* %XX -> byte */
 void url_strip_frag(char *url);                                /* in place */
 void url_file_path(const char *url, char *out, int cap);       /* file: URL -> filesystem path */
 
+/* ---- frame.c: where a response body ends (shared with vfetch) ---- */
+enum { FR_NONE, FR_LEN, FR_CHUNK, FR_CLOSE };
+struct fr { int mode, st, ext, line, done; long rem, sz; };
+void   fr_init(struct fr *f, int head, int status, long clen, int chunked);
+size_t fr_eat(struct fr *f, const unsigned char *b, size_t n);   /* body bytes in: how many belong to the response; f->done when complete */
+int    hdr_get(const char *h, size_t n, const char *name, char *out, int cap);   /* header value (trimmed) from a header block */
+
 /* ---- fetch.c: HTTP runs in a child process (/bin/vfetch URL, a small binary of its own) so DNS and connect
  * never block the UI; the parent polls the pipe next to the window fd. ---- */
 struct fetch {
@@ -37,6 +44,8 @@ struct fetch {
     int chunked, status, truncated;
     int head, ready;               /* HEAD request (no body); buf already holds the whole response (data: URL, cache hit) */
     char *url;                     /* for the cache (malloc'd; NULL = don't cache) */
+    struct fr fr; size_t fpos;     /* body framing: fed up to fpos body bytes */
+    int wk;                        /* index of the pooled keep-alive helper doing this fetch, or -1 (one-shot process / no process) */
 };
 struct response {
     int status;

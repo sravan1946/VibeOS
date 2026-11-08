@@ -51,8 +51,6 @@ static const struct cent *cache_find(const char *url) {
     return 0;
 }
 
-static int hdr_get(const char *h, size_t n, const char *name, char *out, int cap);
-
 /* keep a finished GET: Cache-Control no-store/no-cache/private-less rules in brief. Freshness: max-age if given, else 2 minutes
  * (so back/forward and repeated subresources are free, but a news page isn't stale for long). ponytail: no revalidation
  * (ETag / If-None-Match), no Vary; a stale entry is simply refetched. */
@@ -123,9 +121,75 @@ void fetch_reap(void) {
         if (waitpid(dying[i], 0, WNOHANG) != 0) dying[i--] = dying[--ndying];
 }
 
+/* ---------- helper pool ---------- */
+/* Keep-alive: instead of one process per request, up to MAXW `vfetch --worker` processes take requests over a pipe and keep
+ * their connection open between them. A request goes to an idle worker that last talked to the same origin, else any idle
+ * one (it reconnects), else a new one. A worker is busy from fetch_start until fetch_finish/fetch_cancel; one whose response
+ * didn't end cleanly is killed. They end by themselves when the browser exits (their stdin closes). */
+#define MAXW 16
+#define MAXIDLE 6
+static struct wk { int pid, in, out, busy; char origin[200]; } W[MAXW];
+
+static void wk_kill(int i) {
+    close(W[i].in); close(W[i].out);
+    kill(W[i].pid, SIGKILL);
+    if (waitpid(W[i].pid, 0, WNOHANG) == 0 && ndying < 8) dying[ndying++] = W[i].pid;
+    W[i].pid = 0;
+}
+
+static int wk_get(const char *origin) {
+    int idle = -1, free_slot = -1;
+    for (int i = 0; i < MAXW; i++) {
+        if (W[i].pid && !W[i].busy && waitpid(W[i].pid, 0, WNOHANG) != 0) { close(W[i].in); close(W[i].out); W[i].pid = 0; }   /* died while idle */
+        if (!W[i].pid) { if (free_slot < 0) free_slot = i; continue; }
+        if (W[i].busy) continue;
+        if (!strcmp(W[i].origin, origin)) return i;
+        if (idle < 0) idle = i;
+    }
+    if (idle >= 0) return idle;
+    if (free_slot < 0) return -1;
+    int pin[2], pout[2];
+    if (pipe(pin) < 0) return -1;
+    if (pipe(pout) < 0) { close(pin[0]); close(pin[1]); return -1; }
+    char *argv[] = { "/bin/vfetch", "--worker", 0 };
+    struct spawn_opts o = { { pin[0], pout[1], -1 }, 0, 0 };
+    int pid = spawnve("/bin/vfetch", argv, environ, &o);
+    close(pin[0]); close(pout[1]);
+    if (pid < 0) { close(pin[1]); close(pout[0]); return -1; }
+    W[free_slot] = (struct wk){ pid, pin[1], pout[0], 0, "" };
+    return free_slot;
+}
+
+/* the fetch is over: its worker goes back to the pool if the response ended cleanly, else it's killed */
+static void release(struct fetch *f) {
+    if (f->wk >= 0) {
+        int i = f->wk, nidle = 0;
+        if (f->fr.done && f->hdr_end && !f->truncated) {
+            W[i].busy = 0;
+            for (int k = 0; k < MAXW; k++) nidle += W[k].pid && !W[k].busy;
+            if (nidle > MAXIDLE) wk_kill(i);
+        } else wk_kill(i);
+        f->wk = -1; f->fd = -1; f->pid = 0;
+        return;
+    }
+    if (f->fd >= 0) close(f->fd);
+    f->fd = -1;
+    if (f->pid > 0) { kill(f->pid, SIGKILL); if (waitpid(f->pid, 0, WNOHANG) == 0 && ndying < 8) dying[ndying++] = f->pid; f->pid = 0; }
+}
+
+/* %XX-escape s[0..n) (for % TAB CR LF NUL) onto o; returns the new end */
+static char *esc_add(char *o, const char *s, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = s[i];
+        if (c == '%' || c == '\t' || c == '\r' || c == '\n' || c == 0) { *o++ = '%'; *o++ = "0123456789ABCDEF"[c >> 4]; *o++ = "0123456789ABCDEF"[c & 15]; }
+        else *o++ = c;
+    }
+    return o;
+}
+
 int fetch_start_req(struct fetch *f, const char *url, const char *method, const char *hdrs, const char *body, size_t blen) {
     memset(f, 0, sizeof *f);
-    f->fd = -1; f->clen = -1;
+    f->fd = -1; f->clen = -1; f->wk = -1;
     if (!method) method = body ? "POST" : "GET";
     f->last = uptime_ms();
     f->head = !strcmp(method, "HEAD");
@@ -136,31 +200,29 @@ int fetch_start_req(struct fetch *f, const char *url, const char *method, const 
         if (c && (f->buf = malloc(c->len + 1))) { memcpy(f->buf, c->raw, c->len); f->len = c->len; f->cap = c->len + 1; f->ready = 1; return 0; }
         f->url = strdup(url);
     }
-    char tmp[40] = "";
-    if (body && (blen != strlen(body) || blen > 60000)) {      /* NULs or a big body: through a temp file, vfetch -f reads and removes it */
-        static int seq;
-        snprintf(tmp, sizeof tmp, "/tmp/vf%d.%d", (int)getpid(), seq++);
-        int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-        if (fd < 0 || write(fd, body, blen) != (ssize_t)blen) { if (fd >= 0) close(fd); free(f->url); f->url = 0; return -1; }
-        close(fd);
-    }
-    int p[2];
-    if (pipe(p) < 0) return -1;
-    char *argv[12];
-    int n = 0;
-    argv[n++] = "/bin/vfetch";
-    if (strcmp(method, "GET")) { argv[n++] = "-X"; argv[n++] = (char *)method; }
-    if (hdrs && *hdrs) { argv[n++] = "-H"; argv[n++] = (char *)hdrs; }
-    if (referer[0]) { argv[n++] = "-r"; argv[n++] = referer; }
-    if (tmp[0]) { argv[n++] = "-f"; argv[n++] = tmp; }
-    else if (body) { argv[n++] = "-d"; argv[n++] = (char *)body; }
-    argv[n++] = (char *)url;
-    argv[n] = 0;
-    struct spawn_opts o = { { -1, p[1], -1 }, 0, 0 };
-    f->pid = spawnve("/bin/vfetch", argv, environ, &o);
-    close(p[1]);
-    if (f->pid < 0) { close(p[0]); free(f->url); f->url = 0; return -1; }
-    f->fd = p[0];
+    char origin[200], host[128], path[8];
+    int port;
+    if (url_split_http(url, host, sizeof host, &port, path, sizeof path) < 0) { free(f->url); f->url = 0; return -1; }
+    snprintf(origin, sizeof origin, "%s://%s:%d", strncasecmp(url, "https:", 6) ? "http" : "https", host, port);
+    int w = wk_get(origin);
+    if (w < 0) { free(f->url); f->url = 0; return -1; }
+    /* one request line: METHOD TAB URL TAB REFERER TAB HEADERS TAB BODY ("-" none, "+" then the body), %XX-escaped */
+    size_t need = 16 + 3 * (strlen(method) + strlen(url) + strlen(referer) + (hdrs ? strlen(hdrs) : 0) + blen);
+    char *ln = malloc(need), *o = ln;
+    if (!ln) { wk_kill(w); free(f->url); f->url = 0; return -1; }
+    o = esc_add(o, method, strlen(method)); *o++ = '\t';
+    o = esc_add(o, url, strlen(url)); *o++ = '\t';
+    o = esc_add(o, referer, strlen(referer)); *o++ = '\t';
+    o = esc_add(o, hdrs ? hdrs : "", hdrs ? strlen(hdrs) : 0); *o++ = '\t';
+    if (body) { *o++ = '+'; o = esc_add(o, body, blen); } else *o++ = '-';
+    *o++ = '\n';
+    ssize_t wr = 1;
+    for (size_t k = 0; k < (size_t)(o - ln) && (wr = write(W[w].in, ln + k, o - ln - k)) > 0; k += wr) ;
+    free(ln);
+    if (wr <= 0) { wk_kill(w); free(f->url); f->url = 0; return -1; }
+    W[w].busy = 1;
+    snprintf(W[w].origin, sizeof W[w].origin, "%s", origin);
+    f->wk = w; f->pid = W[w].pid; f->fd = W[w].out;
     return 0;
 }
 
@@ -169,6 +231,7 @@ int fetch_start(struct fetch *f, const char *url, const char *post) {
 }
 
 void fetch_cancel(struct fetch *f) {
+    if (f->wk >= 0) { wk_kill(f->wk); f->wk = -1; f->fd = -1; f->pid = 0; }     /* mid-response: not reusable */
     if (f->fd >= 0) close(f->fd);
     f->fd = -1;
     if (f->pid > 0) {
@@ -180,25 +243,6 @@ void fetch_cancel(struct fetch *f) {
     f->buf = 0; f->url = 0; f->len = f->cap = 0;
 }
 
-/* case-insensitive header lookup in hdr[0..n); copies the value (trimmed) */
-static int hdr_get(const char *h, size_t n, const char *name, char *out, int cap) {
-    size_t nl = strlen(name);
-    for (size_t i = 0; i < n; ) {
-        const char *e = memchr(h + i, '\n', n - i);
-        size_t le = e ? (size_t)(e - h) : n;
-        if (le - i > nl && h[i + nl] == ':' && !strncasecmp(h + i, name, nl)) {
-            const char *v = h + i + nl + 1;
-            const char *end = h + le;
-            while (v < end && (*v == ' ' || *v == '\t')) v++;
-            while (end > v && (end[-1] == '\r' || end[-1] == ' ')) end--;
-            snprintf(out, cap, "%.*s", (int)(end - v), v);
-            return 1;
-        }
-        i = le + 1;
-    }
-    return 0;
-}
-
 /* hdr_end: offset of the body, or -1 if the header block isn't complete. */
 static long find_hdr_end(const unsigned char *b, size_t n) {
     for (size_t i = 0; i + 1 < n; i++) {
@@ -206,23 +250,6 @@ static long find_hdr_end(const unsigned char *b, size_t n) {
         if (i + 3 < n && b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' && b[i + 3] == '\n') return i + 4;
     }
     return -1;
-}
-
-/* walk chunks of body[0..n): returns 1 if the terminating 0-chunk is present */
-static int chunks_done(const unsigned char *b, size_t n) {
-    size_t i = 0;
-    for (;;) {
-        char *e;
-        unsigned long sz = strtoul((const char *)b + i, &e, 16);
-        if (i >= n || (const unsigned char *)e == b + i) return 0;
-        size_t j = (const unsigned char *)e - b;
-        while (j < n && b[j] != '\n') j++;      /* skips chunk extensions (";name=value") */
-        if (j >= n) return 0;
-        j++;
-        if (!sz) return 1;
-        if (sz > n || j + sz + 2 > n) return 0;
-        i = j + sz + 2;
-    }
 }
 
 int fetch_pump(struct fetch *f) {
@@ -253,13 +280,13 @@ int fetch_pump(struct fetch *f) {
             if (hdr_get((char *)f->buf, he, "content-length", v, sizeof v)) f->clen = atol(v);
             if (hdr_get((char *)f->buf, he, "transfer-encoding", v, sizeof v))
                 for (char *c = v; *c; c++) if (!strncasecmp(c, "chunked", 7)) f->chunked = 1;
+            fr_init(&f->fr, f->head, f->status, f->clen, f->chunked);
         }
     }
-    if (f->hdr_end) {
-        size_t bl = f->len - f->hdr_end;
-        if (f->head || f->status == 204 || f->status == 304 || (f->status >= 100 && f->status < 200 && f->status != 101)) eof = 1;
-        else if (!f->chunked && f->clen >= 0 && (long)bl >= f->clen) eof = 1;
-        else if (f->chunked && bl >= 5 && !memcmp(f->buf + f->len - 5, "0\r\n\r\n", 5) && chunks_done(f->buf + f->hdr_end, bl)) eof = 1;
+    if (f->hdr_end) {                                  /* where does the body end? (exactly: a keep-alive helper has no EOF to say so) */
+        size_t have = f->len - f->hdr_end;
+        if (have > f->fpos) f->fpos += fr_eat(&f->fr, f->buf + f->hdr_end + f->fpos, have - f->fpos);
+        if (f->fr.done) eof = 1;
     }
     if (eof) { f->buf[f->len] = 0; return 1; }
     return 0;
@@ -409,9 +436,7 @@ void fetch_finish(struct fetch *f, struct response *r) {
     size_t n = f->len;
     char *url = f->url;
     f->buf = 0; f->url = 0; f->len = f->cap = 0;
-    if (f->fd >= 0) close(f->fd);
-    f->fd = -1;
-    if (f->pid > 0) { kill(f->pid, SIGKILL); if (waitpid(f->pid, 0, WNOHANG) == 0 && ndying < 8) dying[ndying++] = f->pid; f->pid = 0; }
+    release(f);
     if (!b) { snprintf(r->err, sizeof r->err, "net:no data"); free(url); return; }
     b[n] = 0;
     if (n >= 6 && !memcmp(b, "VBERR:", 6)) { snprintf(r->err, sizeof r->err, "%s", (char *)b + 6); free(b); free(url); return; }
@@ -487,7 +512,8 @@ void fetch_finish(struct fetch *f, struct response *r) {
     int text = !r->ctype[0] || !strncmp(r->ctype, "text/", 5) || strstr(r->ctype, "html") || strstr(r->ctype, "xml") || strstr(r->ctype, "json") || strstr(r->ctype, "javascript") || strstr(r->ctype, "css");
     if (text) {
         int bin = 0;
-        for (size_t i = 0; i < bl && i < 512; i++) if (!b[i]) bin = 1;         /* an unlabelled blob that isn't text: leave it */
+        if (!(bl >= 2 && ((b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF))))     /* UTF-16 has NULs by design */
+            for (size_t i = 0; i < bl && i < 512; i++) if (!b[i]) bin = 1;         /* an unlabelled blob that isn't text: leave it */
         if (!bin) b = to_utf8(b, &bl, r->ctype);
         if (bl > MAX_PAGE) { bl = MAX_PAGE; r->truncated = 1; }
     }
