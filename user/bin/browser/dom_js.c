@@ -256,6 +256,11 @@ function wrap(id) {
     if (t === 1) {
         const tag = d.tag(id);
         const ce = tag.indexOf('-') > 0 && CE.get(tag);
+        if (ce && !V.upgrade) {                 // a parsed element of an already defined custom element: run its constructor (class fields, Lit's renderOptions ...)
+            V.upgrade = id;
+            try { const e = new ce(); if (e && e.__id === id) return e; } catch (x) { V.upgrade = 0; report(x); }
+            V.upgrade = 0;
+        }
         proto = ce ? ce.prototype : (TAGS[tag] || HTMLUnknownElement).prototype;
     } else proto = (t === 3 ? Text : t === 8 ? Comment : t === 9 ? Document : d.host(id) ? ShadowRoot : DocumentFragment).prototype;
     o = Object.create(proto);
