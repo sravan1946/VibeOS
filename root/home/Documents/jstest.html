@@ -132,7 +132,7 @@ check('onclick property', inl, 11);
 
 // ---- misc globals ----
 check('location', [location.protocol, location.pathname.endsWith('jstest.html')], ['file:', true]);
-check('navigator', /VibeOS/.test(navigator.userAgent), true);
+check('navigator', /VibeBrowser/.test(navigator.userAgent), true);
 check('localStorage', (localStorage.setItem('k', 1), localStorage.getItem('k')), '1');
 check('a.href resolves', (() => { const a = document.createElement('a'); a.setAttribute('href', 'js.html'); return a.href.endsWith('/home/Documents/js.html'); })(), true);
 document.title = 'JavaScript tests';

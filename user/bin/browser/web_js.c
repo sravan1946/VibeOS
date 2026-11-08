@@ -215,11 +215,13 @@ def(g, { Blob, File, FormData, FileReader, AbortSignal, AbortController });
 
 // ---------- fetch ----------
 const FM = new Map();
-function raw(url, body, cb) {                   // one request through the helper process: cb(status, text, ctype, body, err, url)
-    const id = d.fetch(String(url), body);
+function raw(url, body, cb, method, hdrs) {         // one request through the helper process: cb(status, text, ctype, body, err, url, rawHeaders)
+    const id = d.fetch(String(url), body, method, hdrs);
     FM.set(id, cb);
 }
-g.__fetchDone = (id, status, text, ct, body, err, url) => { const cb = FM.get(id); FM.delete(id); if (cb) try { cb(status, text, ct, body, err, url); } catch (e) { report(e); } };
+g.__fetchDone = (id, status, text, ct, body, err, url, hd) => { const cb = FM.get(id); FM.delete(id); if (cb) try { cb(status, text, ct, body, err, url, hd); } catch (e) { report(e); } };
+function hdrStr(h) { let s = ''; for (const [k, v] of h) s += k + ': ' + v + '\r\n'; return s; }
+function hdrFill(h, raw) { for (const l of String(raw || '').split('\r\n')) { const i = l.indexOf(':'); if (i > 0 && !/^set-cookie2?$/i.test(l.slice(0, i))) h.append(l.slice(0, i).trim(), l.slice(i + 1).trim()); } }
 class Headers {
     constructor(init) {
         Object.defineProperty(this, '__m', { value: new Map() });
@@ -299,17 +301,19 @@ function fetch(input, init) {
         const dr = /^data:/i.test(req.url) ? dataURL(req.url) : blobs.has(req.url) ? new Response(blobs.get(req.url).__s, { status: 200, headers: { 'content-type': blobs.get(req.url).type } }) : null;
         if (dr) return setTimeout(() => res(dr), 0);
         const m = req.method;
-        if (m !== 'GET' && m !== 'HEAD' && m !== 'POST') return rej(new TypeError('fetch: ' + m + ' requests are not supported by this browser'));
-        let done = false;
+                let done = false;
         req.signal.addEventListener('abort', () => { if (!done) { done = true; aborted(); } });
-        raw(req.url.replace(/#.*$/, ''), m === 'POST' ? (req.__b || '') : null, (status, text, ct, body, err, url) => {
+        const hs = new Headers(req.headers);
+        if (req.__b !== null && !hs.has('content-type')) hs.set('content-type', 'text/plain;charset=UTF-8');
+        if (!hs.has('accept')) hs.set('accept', '*/*');
+        raw(req.url.replace(/#.*$/, ''), req.__b === null && m !== 'POST' ? null : (req.__b || ''), (status, text, ct, body, err, url, hd) => {
             if (done) return;
             done = true;
             if (err !== null) return rej(new TypeError('Failed to fetch (' + err + ': ' + req.url + ')'));
             const r = new Response(m === 'HEAD' ? '' : body, { status, statusText: text });
-            r.headers.set('content-type', ct || ''); r.url = url; r.redirected = url !== req.url;
+            hdrFill(r.headers, hd); if (ct && !r.headers.has('content-type')) r.headers.set('content-type', ct); r.url = url; r.redirected = url !== req.url;
             res(r);
-        });
+        }, m, hdrStr(hs));
     });
 }
 def(g, { Headers, Request, Response, fetch });
@@ -327,10 +331,10 @@ class XMLHttpRequest extends XMLHttpRequestEventTarget {
     getAllResponseHeaders() { return [...this.__rh].map(([k, v]) => k + ': ' + v).join('\r\n') + (this.__rh.__m.size ? '\r\n' : ''); }
     overrideMimeType() {}
     abort() { this.__abort = true; if (this.readyState > 1 && this.readyState < 4) { this.readyState = 4; this.__ev('readystatechange'); this.__ev('abort'); this.__ev('loadend'); } this.readyState = 0; }
-    __finish(status, text, ct, body, err, url) {
+    __finish(status, text, ct, body, err, url, hd) {
         if (this.__abort) return;
         if (err !== null) { this.status = 0; this.readyState = 4; this.__ev('readystatechange'); this.__ev('error'); this.__ev('loadend'); return; }
-        this.status = status; this.statusText = text; this.responseURL = url; this.__rh.set('content-type', ct || '');
+        this.status = status; this.statusText = text; this.responseURL = url; hdrFill(this.__rh, hd); if (!this.__rh.has('content-type')) this.__rh.set('content-type', ct || '');
         this.responseText = body; this.__state(2); this.__state(3);
         const rt = this.responseType;
         if (rt === 'json') { try { this.response = JSON.parse(body); } catch (e) { this.response = null; } }
@@ -347,14 +351,15 @@ class XMLHttpRequest extends XMLHttpRequestEventTarget {
         const m = this.__m, u = this.__u;
         const dr = /^data:/i.test(u) ? dataURL(u) : null;
         const text = bodyText(body);
-        if (m !== 'GET' && m !== 'HEAD' && m !== 'POST') { setTimeout(() => this.__finish(0, '', '', '', 'unsupported method', u), 0); return; }
-        if (dr) { dr.text().then(t => this.__finish(200, 'OK', dr.headers.get('content-type'), t, null, u)); return; }
+                if (dr) { dr.text().then(t => this.__finish(200, 'OK', dr.headers.get('content-type'), t, null, u)); return; }
         if (!this.__async) {                    // synchronous: blocks the page until the download is done
             const t = d.syncGet(u);
             this.__finish(t === null ? 0 : 200, t === null ? '' : 'OK', '', t || '', t === null ? 'network' : null, u);
             return;
         }
-        raw(u.replace(/#.*$/, ''), m === 'POST' ? text || '' : null, (...a) => this.__finish(...a));
+        const hs = new Headers(); for (const k of Object.keys(this.__h)) hs.set(k, this.__h[k]);
+        if (text !== null && !hs.has('content-type')) hs.set('content-type', body instanceof FormData || body instanceof URLSearchParams ? 'application/x-www-form-urlencoded;charset=UTF-8' : 'text/plain;charset=UTF-8');
+        raw(u.replace(/#.*$/, ''), text === null && m !== 'POST' ? null : text || '', (...a) => this.__finish(...a), m, hdrStr(hs));
         if (this.timeout) setTimeout(() => { if (this.readyState < 4 && !this.__abort) { this.__abort = true; this.readyState = 4; this.__ev('readystatechange'); this.__ev('timeout'); this.__ev('loadend'); } }, this.timeout);
         this.__ev('loadstart');
     }
@@ -388,23 +393,8 @@ try { ls = storage(true); ss = storage(false); } catch (e) { ls = ss = storage(f
 def(g, { Storage: function Storage() {} });
 Object.defineProperties(g, { localStorage: { get() { return ls; }, configurable: true }, sessionStorage: { get() { return ss; }, configurable: true } });
 
-// ---------- cookies (a per-page jar; ponytail: not shared with the network layer yet) ----------
-const jar = new Map();
-def(g, {
-    __cookieGet() { const now = Date.now(); const r = []; for (const [k, c] of jar) { if (c.exp !== null && c.exp <= now) jar.delete(k); else r.push(k + '=' + c.v); } return r.join('; '); },
-    __cookieSet(s) {
-        const parts = s.split(';');
-        const i = parts[0].indexOf('=');
-        const k = (i < 0 ? '' : parts[0].slice(0, i)).trim(), v = (i < 0 ? parts[0] : parts[0].slice(i + 1)).trim();
-        let exp = null;
-        for (const a of parts.slice(1)) {
-            const [n, val] = a.split('=').map(x => x.trim());
-            if (/^max-age$/i.test(n)) exp = Date.now() + parseInt(val) * 1000;
-            else if (/^expires$/i.test(n) && exp === null) { const t = Date.parse(val); if (!isNaN(t)) exp = t; }
-        }
-        if (exp !== null && exp <= Date.now()) jar.delete(k); else jar.set(k, { v, exp });
-    },
-});
+// ---------- cookies: the shared jar (cookie.c), as document.cookie sees it ----------
+def(g, { __cookieGet: () => d.cookieGet(), __cookieSet: s => d.cookieSet(s) });
 
 // ---------- observers, media ----------
 class IntersectionObserver {
@@ -445,7 +435,7 @@ def(g, { crypto: {
     getRandomValues(a) { for (let i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 4294967296); return a; },
     randomUUID() { return hex(8) + '-' + hex(4) + '-4' + hex(3) + '-' + '89ab'[(Math.random() * 4) | 0] + hex(3) + '-' + hex(12); },
     subtle: undefined } });
-def(g, { navigator: { userAgent: 'Mozilla/5.0 (X11; VibeOS i686) VibeBrowser/1.0 QuickJS', appName: 'Netscape', appVersion: '5.0 (VibeOS)', appCodeName: 'Mozilla', product: 'Gecko', vendor: '', platform: 'VibeOS', language: 'en-US', languages: ['en-US', 'en'],
+def(g, { navigator: { userAgent: d.ua(), appName: 'Netscape', appVersion: '5.0 (VibeOS)', appCodeName: 'Mozilla', product: 'Gecko', vendor: '', platform: 'VibeOS', language: 'en-US', languages: ['en-US', 'en'],
     onLine: true, cookieEnabled: true, doNotTrack: null, hardwareConcurrency: 1, maxTouchPoints: 0, deviceMemory: 0.5, webdriver: false, pdfViewerEnabled: false, plugins: [], mimeTypes: [],
     clipboard: { writeText: () => Promise.resolve(), readText: () => Promise.resolve(''), write: () => Promise.resolve(), read: () => Promise.resolve([]) },
     permissions: { query: () => Promise.resolve({ state: 'denied', addEventListener() {} }) }, sendBeacon: () => true, vibrate: () => false, share: undefined,

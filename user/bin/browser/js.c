@@ -854,16 +854,27 @@ NATIVE(n_clear) {
 }
 NATIVE(n_now) { return JS_NewFloat64(c, uptime_ms()); }
 
-static int fetch_queue(const char *url, int script, const char *post);
+static int fetch_queue(const char *url, int script, const char *blob, int has_blob);
 NATIVE(n_fetch) {
     CSTR(u, 0);
     char abs[URL_MAX];
     url_resolve(page_url, u, abs, sizeof abs);
     url_strip_frag(abs);
     JS_FreeCString(c, u);
-    const char *post = JS_IsNull(argv[1]) || JS_IsUndefined(argv[1]) ? 0 : JS_ToCString(c, argv[1]);
-    int id = fetch_queue(abs, 0, post);
-    JS_FreeCString(c, post);
+    /* the request travels as one blob "METHOD\0headers\0body" (NULL = a plain GET) */
+    const char *body = JS_IsNull(argv[1]) || JS_IsUndefined(argv[1]) ? 0 : JS_ToCString(c, argv[1]);
+    const char *meth = argc > 2 && !JS_IsUndefined(argv[2]) ? JS_ToCString(c, argv[2]) : 0;
+    const char *hd = argc > 3 && !JS_IsUndefined(argv[3]) ? JS_ToCString(c, argv[3]) : 0;
+    char *blob = 0;
+    if (body || hd || (meth && strcmp(meth, "GET"))) {
+        const char *m = meth ? meth : "POST";
+        size_t lm = strlen(m), lh = hd ? strlen(hd) : 0, lb = body ? strlen(body) : 0;
+        blob = malloc(lm + lh + lb + 3);
+        if (blob) { memcpy(blob, m, lm + 1); memcpy(blob + lm + 1, hd ? hd : "", lh + 1); memcpy(blob + lm + lh + 2, body ? body : "", lb + 1); }
+    }
+    int id = fetch_queue(abs, 0, blob, blob ? 1 : 0);
+    free(blob);
+    JS_FreeCString(c, body); JS_FreeCString(c, meth); JS_FreeCString(c, hd);
     return id < 0 ? JS_ThrowRangeError(c, "too many fetches in flight") : JS_NewInt32(c, id);
 }
 
@@ -909,6 +920,9 @@ NATIVE(n_sync_get) {
     free(b);
     return v;
 }
+NATIVE(n_ua) { return str(BROWSER_UA); }
+NATIVE(n_cookie_get) { char b[4096]; cookie_get(page_url, b, sizeof b); return str(b); }
+NATIVE(n_cookie_set) { CSTR(v, 0); cookie_set(page_url, v); JS_FreeCString(c, v); return JS_UNDEFINED; }
 NATIVE(n_cur_script) { return JS_NewInt32(c, cur_script); }
 NATIVE(n_ready) { return JS_NewInt32(c, rstate); }
 NATIVE(n_set_url) {                                        /* pushState / replaceState / #hash: the page URL changes, no load */
@@ -1037,11 +1051,11 @@ static const JSCFunctionListEntry NATIVES[] = {
     JS_CFUNC_DEF("setChecked", 2, n_set_checked), JS_CFUNC_DEF("selIndex", 1, n_sel_index), JS_CFUNC_DEF("setSelIndex", 2, n_set_sel_index),
     JS_CFUNC_DEF("focus", 1, n_focus), JS_CFUNC_DEF("url", 0, n_url), JS_CFUNC_DEF("navigate", 1, n_navigate), JS_CFUNC_DEF("resolve", 1, n_resolve),
     JS_CFUNC_DEF("alert", 1, n_alert), JS_CFUNC_DEF("log", 2, n_log), JS_CFUNC_DEF("timer", 2, n_timer),
-    JS_CFUNC_DEF("clear", 1, n_clear), JS_CFUNC_DEF("now", 0, n_now), JS_CFUNC_DEF("fetch", 2, n_fetch),
+    JS_CFUNC_DEF("clear", 1, n_clear), JS_CFUNC_DEF("now", 0, n_now), JS_CFUNC_DEF("fetch", 4, n_fetch),
     JS_CFUNC_DEF("createComment", 1, n_create_comment), JS_CFUNC_DEF("docwrite", 1, n_docwrite), JS_CFUNC_DEF("curScript", 0, n_cur_script),
     JS_CFUNC_DEF("ready", 0, n_ready), JS_CFUNC_DEF("setUrl", 2, n_set_url), JS_CFUNC_DEF("scrollTo", 2, n_scroll_to),
     JS_CFUNC_DEF("view", 0, n_view), JS_CFUNC_DEF("rect", 1, n_rect), JS_CFUNC_DEF("media", 1, n_media),
-    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
+    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
 };
 
 /* ---------- running JS ---------- */
@@ -1181,7 +1195,7 @@ static struct scr *scr_by_fid(int id) {
     for (int i = 0; i < MAXDYN; i++) if (D[i].fid == id && D[i].state == 1) return &D[i];
     return 0;
 }
-static void deliver(int id, int script, int status, const char *text, const char *ctype, const char *body, size_t blen, const char *err, const char *url) {
+static void deliver(int id, int script, int status, const char *text, const char *ctype, const char *body, size_t blen, const char *err, const char *url, const char *hdrs) {
     if (script) {
         struct scr *e = scr_by_fid(id);
         if (!e || e->state != 1) return;
@@ -1191,9 +1205,9 @@ static void deliver(int id, int script, int status, const char *text, const char
         return;
     }
     if (dead) return;
-    JSValue argv[7] = { JS_NewInt32(ctx, id), JS_NewInt32(ctx, status), str(text), str(ctype),
-                        body ? JS_NewStringLen(ctx, body, blen) : str(""), err ? str(err) : JS_NULL, str(url) };
-    call(fn_fetch, 7, argv);
+    JSValue argv[8] = { JS_NewInt32(ctx, id), JS_NewInt32(ctx, status), str(text), str(ctype),
+                        body ? JS_NewStringLen(ctx, body, blen) : str(""), err ? str(err) : JS_NULL, str(url), str(hdrs) };
+    call(fn_fetch, 8, argv);
 }
 
 static int slot_start(struct jf *f, int id, const char *url, int script, char *post) {   /* takes post */
@@ -1202,13 +1216,22 @@ static int slot_start(struct jf *f, int id, const char *url, int script, char *p
     strlcpy(f->url, url, sizeof f->url);
     if (!url_is_web(url)) { f->used = 1; f->file = 1; return 0; }       /* read on the next pump */
     f->used = 1;
-    if (fetch_start(&f->f, url, post) < 0) f->fail = "the network helper didn't start";
+    const char *meth = post, *hdrs = post ? post + strlen(post) + 1 : 0, *body = hdrs ? hdrs + strlen(hdrs) + 1 : 0;
+    int started = post ? fetch_start_req(&f->f, url, strcmp(meth, "GET") ? meth : 0, *hdrs ? hdrs : 0,
+                                         strcmp(meth, "GET") && strcmp(meth, "HEAD") ? body : 0, strlen(body))
+                       : fetch_start(&f->f, url, 0);
+    if (started < 0) f->fail = "the network helper didn't start";
     return 0;
 }
 
-static int fetch_queue(const char *url, int script, const char *post) {
+static int fetch_queue(const char *url, int script, const char *blob, int has_blob) {
     int id = next_fid++;
-    char *pd = post ? strdup(post) : 0;
+    char *pd = 0;
+    if (has_blob) {
+        size_t l1 = strlen(blob) + 1, l2 = strlen(blob + l1) + 1, l3 = strlen(blob + l1 + l2) + 1;
+        pd = malloc(l1 + l2 + l3);
+        if (pd) memcpy(pd, blob, l1 + l2 + l3);
+    }
     for (int i = 0; i < MAXF; i++) if (!F[i].used) { slot_start(&F[i], id, url, script, pd); return id; }
     if (nfq == 64) { free(pd); return -1; }
     FQ[nfq].id = id; FQ[nfq].script = script; FQ[nfq].post = pd; strlcpy(FQ[nfq].url, url, sizeof FQ[0].url); nfq++;
@@ -1229,8 +1252,8 @@ static void read_file(struct jf *f) {
     }
     if (fd >= 0) close(fd);
     f->used = 0;
-    if (b) deliver(f->id, f->script, 200, "OK", "", b, got, 0, f->url);
-    else deliver(f->id, f->script, 0, "", "", 0, 0, "file not found", f->url);
+    if (b) deliver(f->id, f->script, 200, "OK", "", b, got, 0, f->url, "");
+    else deliver(f->id, f->script, 0, "", "", 0, 0, "file not found", f->url, "");
     free(b);
 }
 
@@ -1238,11 +1261,11 @@ static void pump_fetches(void) {
     for (int i = 0; i < MAXF && active; i++) {
         struct jf *f = &F[i];
         if (!f->used) continue;
-        if (f->fail) { f->used = 0; deliver(f->id, f->script, 0, "", "", 0, 0, f->fail, f->url); continue; }
+        if (f->fail) { f->used = 0; deliver(f->id, f->script, 0, "", "", 0, 0, f->fail, f->url, ""); continue; }
         if (f->file) { read_file(f); continue; }
         int r = fetch_pump(&f->f);
         if (r == 0 && uptime_ms() - f->f.last < 20000) continue;
-        if (r <= 0) { fetch_cancel(&f->f); f->used = 0; deliver(f->id, f->script, 0, "", "", 0, 0, r ? "read error" : "timeout", f->url); continue; }
+        if (r <= 0) { fetch_cancel(&f->f); f->used = 0; deliver(f->id, f->script, 0, "", "", 0, 0, r ? "read error" : "timeout", f->url, ""); continue; }
         struct response rs;
         fetch_finish(&f->f, &rs);
         f->used = 0;
@@ -1256,7 +1279,7 @@ static void pump_fetches(void) {
             f->hops = hops;
             continue;
         }
-        deliver(f->id, f->script, rs.status, rs.text, rs.ctype, rs.body, rs.blen, rs.err[0] ? rs.err : 0, f->url);
+        deliver(f->id, f->script, rs.status, rs.text, rs.ctype, rs.body, rs.blen, rs.err[0] ? rs.err : 0, f->url, rs.hdrs);
         free(rs.body); free(f->post); f->post = 0;
     }
     for (int i = 0; i < MAXF && nfq && active; i++)
@@ -1427,7 +1450,7 @@ static void add_script(int id, int where) {                /* where: 0 parser, 1
         slot = &S[at];
     }
     *slot = e;
-    if (e.url) { slot->fid = fetch_queue(e.url, 1, 0); if (slot->fid < 0) slot->state = 3; }
+    if (e.url) { slot->fid = fetch_queue(e.url, 1, 0, 0); if (slot->fid < 0) slot->state = 3; }
     idle = 0;
     if (where == 2 && !e.url && ctx && !dead) exec_entry(slot);       /* inline: runs at once, as jQuery's globalEval etc. expect */
 }
