@@ -27,6 +27,13 @@ void url_unescape(const char *s, char *out, int cap);          /* %XX -> byte */
 void url_strip_frag(char *url);                                /* in place */
 void url_file_path(const char *url, char *out, int cap);       /* file: URL -> filesystem path */
 
+/* ---- frame.c: where a response body ends (shared with vfetch) ---- */
+enum { FR_NONE, FR_LEN, FR_CHUNK, FR_CLOSE };
+struct fr { int mode, st, ext, line, done; long rem, sz; };
+void   fr_init(struct fr *f, int head, int status, long clen, int chunked);
+size_t fr_eat(struct fr *f, const unsigned char *b, size_t n);   /* body bytes in: how many belong to the response; f->done when complete */
+int    hdr_get(const char *h, size_t n, const char *name, char *out, int cap);   /* header value (trimmed) from a header block */
+
 /* ---- fetch.c: HTTP runs in a child process (/bin/vfetch URL, a small binary of its own) so DNS and connect
  * never block the UI; the parent polls the pipe next to the window fd. ---- */
 struct fetch {
@@ -37,6 +44,8 @@ struct fetch {
     int chunked, status, truncated;
     int head, ready;               /* HEAD request (no body); buf already holds the whole response (data: URL, cache hit) */
     char *url;                     /* for the cache (malloc'd; NULL = don't cache) */
+    struct fr fr; size_t fpos;     /* body framing: fed up to fpos body bytes */
+    int wk;                        /* index of the pooled keep-alive helper doing this fetch, or -1 (one-shot process / no process) */
 };
 struct response {
     int status;
@@ -183,12 +192,14 @@ struct form { uint32_t action; uint8_t post; int node; };
 #define FL_STRIKE 2
 #define FL_IMG 4
 #define FL_CTL 8
-struct item { int x, y; short w, h, bel; uint8_t font, flags; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
-struct decor { int x, y, w, h; color_t col; };
+struct item { int x, y; short w, h, clip; uint8_t font, flags; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
+struct decor { int x, y, w, h; color_t col; int it; short clip; uint8_t rad, ring; };   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */
+struct cliprect { int x, y, w, h; };
 struct anchor { char name[40]; int y; };
 struct doc {
     struct item *it; int nit, itcap;
     struct decor *dc; int ndc, dccap;
+    struct cliprect *cl; int ncl, clcap;   /* overflow clips; index 0 = none */
     char *txt; size_t ntxt, txtcap;
     char **link; int nlink, linkcap;
     struct anchor *an; int nan;

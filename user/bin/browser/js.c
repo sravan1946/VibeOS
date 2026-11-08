@@ -738,6 +738,7 @@ NATIVE(n_clone) { int id = ARGID(0); int r = id ? clone(id, JS_ToBool(c, argv[1]
 NATIVE(n_qsa) {
     int root = ARGID(0), first = JS_ToBool(c, argv[2]);
     CSTR(sel, 1);
+    css_dom_set(&CDOM);                                    /* layout installs its own tree between our calls */
     if (css_match_node(sel, 2) < 0) { JSValue e = JS_ThrowSyntaxError(c, "'%s' is not a valid selector", sel); JS_FreeCString(c, sel); return e; }
     JSValue a = JS_NewArray(c);
     uint32_t cnt = 0;
@@ -748,6 +749,7 @@ NATIVE(n_qsa) {
 NATIVE(n_matches) {
     int id = ARGID(0);
     CSTR(sel, 1);
+    css_dom_set(&CDOM);
     int r = id && N[id].type == 1 ? css_match_node(sel, id) : 0;
     JS_FreeCString(c, sel);
     return r < 0 ? JS_ThrowSyntaxError(c, "unsupported selector") : JS_NewBool(c, r);

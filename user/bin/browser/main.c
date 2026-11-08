@@ -889,29 +889,32 @@ static void bench(struct ui *ui, const char *arg) {
     for (int w = 0; w < 4; w++) { t = tsc(); doc_layout(&doc, pg.raw, pg.n, pg.html, w & 1 ? 700 : view_w(), cur_url); blog("BROWSER %s relayout w=%d %u us", arg, w & 1 ? 700 : view_w(), us(tsc() - t)); }
 }
 
-/* `browser --fetch URL [-r REFERER]`: the whole network path (cache, redirects aside, gzip, charset, cookies) without a window, for tests:
- * "STATUS ctype len" and the response headers on stderr, the body (as the parser would get it) on stdout */
-static int fetch_cli(const char *url, const char *ref) {
-    struct fetch f;
-    struct response rs;
-    fetch_set_referer(ref);
-    if (fetch_start(&f, url, 0) < 0) return 1;
-    uint32_t t0 = uptime_ms();
-    int r;
-    while (!(r = fetch_pump(&f)) && uptime_ms() - t0 < 60000) usleep(5000);
-    if (r <= 0) { fprintf(stderr, "ERR timeout/read\n"); return 1; }
-    fetch_finish(&f, &rs);
-    if (rs.err[0]) { fprintf(stderr, "ERR %s\n", rs.err); return 1; }
-    fprintf(stderr, "%d %s [%s] %lu bytes %u ms%s\n%s", rs.status, rs.text, rs.ctype, (unsigned long)rs.blen, uptime_ms() - t0, rs.truncated ? " truncated" : "", rs.hdrs);
-    for (size_t o = 0; o < rs.blen; ) { ssize_t w = write(1, rs.body + o, rs.blen - o); if (w <= 0) break; o += w; }
-    return 0;
+/* `browser --fetch URL...`: the whole network path (keep-alive pool, cache, gzip, charset, cookies) without a window, for tests:
+ * per URL "STATUS text [ctype] bytes ms" and the response headers on stderr; the last body (as the parser would get it) on stdout */
+static int fetch_cli(int n, char **urls) {
+    int rc = 0;
+    for (int i = 0; i < n; i++) {
+        struct fetch f;
+        struct response rs;
+        if (fetch_start(&f, urls[i], 0) < 0) { fprintf(stderr, "ERR start\n"); return 1; }
+        uint32_t t0 = uptime_ms();
+        int r;
+        while (!(r = fetch_pump(&f)) && uptime_ms() - t0 < 60000) usleep(2000);
+        if (r <= 0) { fprintf(stderr, "ERR timeout/read\n"); return 1; }
+        fetch_finish(&f, &rs);
+        if (rs.err[0]) { fprintf(stderr, "ERR %s\n", rs.err); rc = 1; continue; }
+        fprintf(stderr, "%d %s [%s] %lu bytes %u ms%s\n%s", rs.status, rs.text, rs.ctype, (unsigned long)rs.blen, uptime_ms() - t0, rs.truncated ? " truncated" : "", n == 1 ? rs.hdrs : "");
+        if (i == n - 1) for (size_t o = 0; o < rs.blen; ) { ssize_t w = write(1, rs.body + o, rs.blen - o); if (w <= 0) break; o += w; }
+        free(rs.body);
+    }
+    return rc;
 }
 
 /* ---------- main loop ---------- */
 static void drop_key(struct ui *ui, int i) { memmove(ui->keys + i, ui->keys + i + 1, (--ui->nkeys - i) * sizeof ui->keys[0]); }
 
 int main(int argc, char **argv) {
-    if (argc > 2 && !strcmp(argv[1], "--fetch")) return fetch_cli(argv[2], argc > 3 ? argv[3] : 0);
+    if (argc > 2 && !strcmp(argv[1], "--fetch")) return fetch_cli(argc - 2, argv + 2);
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;
