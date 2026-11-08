@@ -82,6 +82,12 @@ int  img_pump(void);                             /* advance downloads; nonzero w
 int  img_busy(void);                             /* images still queued or downloading */
 void img_reset(void);                            /* new page */
 int  img_add_data(const char *url, const uint8_t *d, size_t n);   /* decode a body we already have */
+int  img_svg_inline(const char *svg, size_t n, long color);       /* an inline <svg> element's markup as an image (index, or -1); color = currentColor 0xRRGGBB or -1 */
+const char *img_url(int i);                      /* the cache key / URL of image i */
+int  img_anim_due(void);                         /* ms until an animated GIF on screen wants its next frame, -1 = none (wake the loop then; no relayout needed) */
+/* srcset/sizes: the URL to load for an <img> or <source> (src may be NULL), vw = viewport width. 1 = out filled (unresolved URL) */
+int  img_pick(const char *src, const char *srcset, const char *sizes, int vw, char *out, int cap);
+int  img_type_ok(const char *mime);              /* a <source type=...> the decoders handle (png/jpeg/gif/svg/bmp; not webp/avif) */
 
 /* ---- html.c ---- */
 extern int doc_zoom;                             /* main.c: page zoom in percent (100 = normal); layout scales fonts, lengths and images by it */

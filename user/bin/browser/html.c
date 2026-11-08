@@ -11,6 +11,7 @@
 #include <ctype.h>
 
 enum { F_UI, F_UIB, F_TITLE, F_MONO, F_MONOB };
+static char pic_src[URL_MAX];                              /* URL picked from a <picture>'s <source>, for the <img> that follows */
 static const struct font *const FT[] = { &font_ui, &font_ui_bold, &font_title, &font_mono, &font_mono_bold };
 #define LEAD 3
 #define LN_MAX 256
@@ -701,7 +702,9 @@ static void open_tag(int t) {
         break;
     case T_IMG: {
         const char *src = A("src"), *alt = A("alt");
-        char u[URL_MAX];
+        char u[URL_MAX], pk[URL_MAX];
+        if (pic_src[0]) { src = pic_src; pic_src[0] = 0; }
+        else if (img_pick(src, A("srcset"), A("sizes"), right(), pk, sizeof pk)) src = pk;
         int idx = -1, iw = 0, ih = 0, st = IMG_FAILED;
         if (src && *src && strncasecmp(src, "data:", 5)) {
             url_resolve(L.base, src, u, sizeof u);
@@ -1112,6 +1115,16 @@ static void parse_range(const char *src, size_t i, size_t n) {
             continue;
         }
         parse_attrs(tb);
+        if (t == T_RAW && !strcmp(name, "svg") && nat < 15) {     /* inline SVG: rasterised (svg.c) and placed like an <img> */
+            int ce, next = skip_raw(src, i, n, name, &ce), idx = img_svg_inline(src + k - 1, next - (k - 1), S.col & 0xFFFFFF);
+            if (idx >= 0) {
+                at[nat].n = "src"; at[nat].v = (char *)img_url(idx); nat++;
+                L.src = src; L.srcn = n; L.tpos = next;
+                start_el(T_IMG, "img", 0, 0);
+            }
+            i = next;
+            continue;
+        }
         if (t == T_RAW || t == T_TITLE) {
             int ce;
             int next = skip_raw(src, i, n, name, &ce);
@@ -1120,6 +1133,9 @@ static void parse_range(const char *src, size_t i, size_t n) {
             i = next;
             continue;
         }
+        if (!strcmp(name, "picture")) pic_src[0] = 0;               /* <picture>: the first <source> we can use wins over the <img> */
+        else if (!strcmp(name, "source") && !pic_src[0] && img_type_ok(A("type")) && (!A("media") || css_media(A("media"))))
+            img_pick(0, A("srcset"), A("sizes"), right(), pic_src, sizeof pic_src);
         if (!strcmp(name, "link")) link_sheet();
         const char *content = 0;
         int clen = 0;

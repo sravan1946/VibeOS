@@ -337,7 +337,7 @@ static void load_file(const char *url) {
         load_dir(u, path);
         return;
     }
-    if (ext_is(path, ".png.bmp.ppm.pgm.jpg.jpeg.gif")) {                      /* open the picture itself */
+    if (ext_is(path, ".png.bmp.ppm.pgm.jpg.jpeg.gif.svg")) {                      /* open the picture itself */
         char key[URL_MAX];
         url_resolve("about:blank", url, key, sizeof key);
         show_image(url, key);
@@ -842,6 +842,8 @@ int main(int argc, char **argv) {
     for (;;) {
         int timeout = loading || img_busy() || sheet_busy() || js_busy() ? 40 : -1, jt = js_timeout();
         if (jt >= 0 && (timeout < 0 || jt < timeout)) timeout = jt;
+        int at = img_anim_due();
+        if (at >= 0 && (timeout < 0 || at < timeout)) timeout = at;
         if (scroll != target) timeout = 16;
         struct pollfd pf[2] = { { win->fd, POLLIN, 0 }, { fe.fd, POLLIN, 0 } };
         poll(pf, loading ? 2 : 1, timeout);
