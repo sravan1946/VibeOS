@@ -15,6 +15,10 @@
 #include <stdio.h>
 #include <ctype.h>
 
+#ifdef LT_DEBUG
+#include <time.h>
+static double now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
+#endif
 #define LEAD 3                    /* extra line gap under every line (the bitmap fonts have none) */
 #define MAXFL 64
 #define BIGW 100000
@@ -1915,15 +1919,13 @@ static int is_ws_text(const struct bx *b) {
 }
 
 /* move children [a, e) (e exclusive, -1 = to the end) of p into a new anonymous box of the given kind, placed where a was */
-static int wrap_range(int p, int a, int e, int outer, int inner) {
+static int wrap_range(int p, int prev, int a, int e, int outer, int inner) {
     int w = bx_new();
     if (w < 0) return -1;
     B[w].outer = outer; B[w].inner = inner;
     lens_init(&B[w]);
     anon_style(&B[w], &B[p]);
     if (inner == IN_TCELL) { B[w].cs = B[w].rs = 1; }
-    int prev = -1;
-    for (int c = B[p].first; c >= 0 && c != a; c = B[c].next) prev = c;
     B[w].par = p;
     B[w].next = e;
     if (prev >= 0) B[prev].next = w; else B[p].first = w;
@@ -1937,33 +1939,45 @@ static int wrap_range(int p, int a, int e, int outer, int inner) {
 
 static int out_of_flow_or_float(const struct bx *b) { return oof(b) || b->flt; }
 
+/* drop q (whose previous sibling is `prev`, -1 = first) from p's child list */
+static void unlink_after(int p, int prev, int q) {
+    int nx = B[q].next;
+    if (prev >= 0) B[prev].next = nx; else B[p].first = nx;
+    if (B[p].last == q) B[p].last = prev;
+    B[q].par = B[q].next = -1;
+}
+
+/* the blank text boxes of the run [c, e) go; returns the last kept box before e (or prev) */
+static int drop_blanks(int p, int prev, int c, int e) {
+    int n;
+    for (int q = c; q != e; q = n) {
+        n = B[q].next;
+        if (is_ws_text(&B[q])) unlink_after(p, prev, q); else prev = q;
+    }
+    return prev;
+}
+
 /* a container holds blocks or inline content, never both: inline runs among blocks get anonymous blocks */
 static void fix_flow(int p, int force) {
     int anyblk = force;
     for (int c = B[p].first; c >= 0 && !anyblk; c = B[c].next) if (in_flow_block(&B[c])) anyblk = 1;
     if (!anyblk) return;
-    int c = B[p].first;
+    int c = B[p].first, prev = -1;
     while (c >= 0) {
-        if (in_flow_block(&B[c])) { c = B[c].next; continue; }
+        if (in_flow_block(&B[c])) { prev = c; c = B[c].next; continue; }
         int e = c, real = 0;
         while (e >= 0 && !in_flow_block(&B[e])) { if (!out_of_flow_or_float(&B[e]) && !is_ws_text(&B[e])) real = 1; e = B[e].next; }
-        if (!real) {                                          /* only blanks (and floats) between blocks: drop the blanks */
-            int n;
-            for (int q = c; q != e; q = n) { n = B[q].next; if (is_ws_text(&B[q])) bx_unlink(q); }
-            c = e;
-            continue;
-        }
-        int w = wrap_range(p, c, e, OUT_BLOCK, IN_FLOW);
+        if (!real) { prev = drop_blanks(p, prev, c, e); c = e; continue; }
+        prev = wrap_range(p, prev, c, e, OUT_BLOCK, IN_FLOW);
         c = e;
-        (void)w;
     }
 }
 
 static void fix_table_kids(int p, int want_row, int want_cell) {   /* rows under a table/group, cells under a row */
-    int c = B[p].first;
+    int c = B[p].first, prev = -1;
     while (c >= 0) {
         int ok = want_cell ? B[c].inner == IN_TCELL : B[c].inner == IN_TROW || (want_row == 2 && (B[c].inner == IN_CAP || B[c].inner == IN_TGROUP));
-        if (ok) { c = B[c].next; continue; }
+        if (ok) { prev = c; c = B[c].next; continue; }
         int e = c, real = 0;
         for (;;) {
             if (e < 0) break;
@@ -1972,32 +1986,34 @@ static void fix_table_kids(int p, int want_row, int want_cell) {   /* rows under
             if (!is_ws_text(&B[e]) && !oof(&B[e])) real = 1;
             e = B[e].next;
         }
-        if (!real) { int n; for (int q = c; q != e; q = n) { n = B[q].next; if (is_ws_text(&B[q])) bx_unlink(q); } c = e; continue; }
+        if (!real) { prev = drop_blanks(p, prev, c, e); c = e; continue; }
         if (want_cell) {
-            int w = wrap_range(p, c, e, OUT_BLOCK, IN_TCELL);
+            int w = wrap_range(p, prev, c, e, OUT_BLOCK, IN_TCELL);
             if (w >= 0) fix_flow(w, 0);
+            prev = w;
         } else {                                              /* stray cells or content under a table: an anonymous row (and cell) */
-            int w = wrap_range(p, c, e, OUT_BLOCK, IN_TROW);
+            int w = wrap_range(p, prev, c, e, OUT_BLOCK, IN_TROW);
             if (w >= 0) {
                 int needcell = 0;
                 for (int q = B[w].first; q >= 0; q = B[q].next) if (B[q].inner != IN_TCELL) needcell = 1;
                 if (needcell) fix_table_kids(w, 0, 1);
             }
+            prev = w;
         }
         c = e;
     }
 }
 
 static void fix_items(int p) {                                  /* flex / grid: every in-flow child is a block item */
-    int c = B[p].first;
+    int c = B[p].first, prev = -1;
     while (c >= 0) {
         struct bx *x = &B[c];
         if (!out_of_flow_or_float(x) && x->outer == OUT_INLINE && x->inner != IN_TEXT && x->inner != IN_BR && x->inner != IN_INLINE) x->outer = OUT_BLOCK;   /* atoms are blockified */
-        if (x->flt || oof(x) || x->outer == OUT_BLOCK) { c = B[c].next; continue; }
+        if (x->flt || oof(x) || x->outer == OUT_BLOCK) { prev = c; c = B[c].next; continue; }
         int e = c, real = 0;
         while (e >= 0 && !(B[e].flt || oof(&B[e]) || B[e].outer == OUT_BLOCK)) { if (!is_ws_text(&B[e])) real = 1; e = B[e].next; }
-        if (!real) { int n; for (int q = c; q != e; q = n) { n = B[q].next; bx_unlink(q); } c = e; continue; }
-        wrap_range(p, c, e, OUT_BLOCK, IN_FLOW);
+        if (!real) { int n; for (int q = c; q != e; q = n) { n = B[q].next; unlink_after(p, prev, q); } c = e; continue; }
+        prev = wrap_range(p, prev, c, e, OUT_BLOCK, IN_FLOW);
         c = e;
     }
 }
@@ -2053,7 +2069,7 @@ static void lenset(struct bx *S, int li, const struct cprops *cp, int prop) {
     int k = cp->k[prop];
     if (k == K_AUTO || k == K_NONE || k == K_FIT || k == K_MINC || k == K_MAXC) { S->k[li] = K_AUTO; S->v[li] = 0; }
     else if (k == K_PCT) { S->k[li] = K_PCT; S->v[li] = cp->v[prop] / 100; }
-    else { S->k[li] = K_PX; S->v[li] = css_len(cp, prop, rootw); }
+    else { S->k[li] = K_PX; S->v[li] = k == K_PX ? cp->v[prop] : css_len(cp, prop, rootw); }
 }
 
 /* ---------- css_dom: the node tree seen by css_compute ---------- */
@@ -2419,6 +2435,9 @@ static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
 
 static int bg_from_html;
 static struct cprops CPS[256];
+#ifdef LT_DEBUG
+static double t_css, t_sty;
+#endif
 static int cpd;
 
 static int luma(color_t c) { return (((c >> 16) & 255) * 3 + ((c >> 8) & 255) * 6 + (c & 255)) / 10; }
@@ -2457,8 +2476,14 @@ static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int 
     if (cpd >= 250) return;
     struct cprops *cp = &CPS[cpd];
     const struct cprops *par = cpd ? &CPS[cpd - 1] : 0;
+#ifdef LT_DEBUG
+    double tq = now_ms();
+#endif
     if (pe) { if (!css_compute(dn, pe, par, cp)) return; }
     else css_compute(dn, PE_NONE, par, cp);
+#ifdef LT_DEBUG
+    t_css += now_ms() - tq;
+#endif
     if (tag == T_TABLE && (HD.quirks || cx->incenter)) cp->v[P_ALIGN] = TA_LEFT;   /* quirks (or <center><table>, which relied on it): a table doesn't inherit text-align */
     if (!pe) css_cnt_enter(cp, cpd);
     build_el_body(dn, pb, in, cx, isfirst, pe, tag, cp);
@@ -2470,8 +2495,15 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
     struct bx S;
     struct inh ni;
     struct bctx cx2;
+#ifdef LT_DEBUG
+    double ts = now_ms();
+#endif
     int disp = style_cp(dn, tag, &S, &ni, in, cx, &cx2, cp);
-    if (!pe && (v = ATTR(dn, "data-vjs"))) ni.node = atoi(v);
+#ifdef LT_DEBUG
+    t_sty += now_ms() - ts;
+#endif
+    if (!pe && HD.n[dn].js) ni.node = HD.n[dn].js;
+    else if (!pe && (v = ATTR(dn, "data-vjs"))) ni.node = atoi(v);
     if (disp == D_NONE) return;
     if (tag == T_HTML || tag == T_BODY) {
         root_colors(&S, tag, dn, &ni);
@@ -2602,7 +2634,8 @@ static int build_root(void) {
     root_box = r;
     struct inh in = { .font = F_UI, .col = D->fg, .link = -1 };
     struct bctx cx = { .cb = -1, .curform = -1, .tpad = -1, .tva = 255 };
-    for (int c = DN(0).first; c >= 0; c = DN(c).next) if (DN(c).type == 1 && DN(c).tag == T_HTML) is_js = hd_attr(c, "data-vjs") != 0;
+    is_js = HD.js;
+    for (int c = DN(0).first; c >= 0; c = DN(c).next) if (DN(c).type == 1 && DN(c).tag == T_HTML && hd_attr(c, "data-vjs")) is_js = 1;
     b->font = in.font; b->col = in.col; b->link = -1;
     css_dom_set(&CD);
     cpd = 0;
@@ -2629,7 +2662,13 @@ static void free_boxes(void) {
     nb = 0;
 }
 
-void doc_layout(struct doc *d, const char *src, size_t n, int is_html, int width, const char *base) {
+#ifdef LT_DEBUG
+#define PH(name) do { double n_ = now_ms(); if (getenv("LT_TIME")) fprintf(stderr, "  %-8s %6.1f ms\n", name, n_ - t_phase); t_phase = n_; } while (0)
+#else
+#define PH(name) ((void)0)
+#endif
+
+static void layout_do(struct doc *d, const char *src, size_t n, int mode, int width, const char *base) {   /* mode: 0 plain text, 1 html source, 2 js.c tree */
     char title[sizeof d->title];
     strlcpy(title, d->title, sizeof title);          /* a title survives relayout */
     doc_free(d);
@@ -2643,18 +2682,28 @@ void doc_layout(struct doc *d, const char *src, size_t n, int is_html, int width
     d->linkc = RGB(0x0B, 0x57, 0xD0); d->hoverc = RGB(0xC0, 0x1F, 0x7A);
     col_em = RGB(0x8A, 0x1C, 0x8A);
     col_dim = mix(d->fg, d->bg, 130);
+#ifdef LT_DEBUG
+    double t_phase = now_ms();
+#endif
     free_boxes();
     nabs = npe = nord = nel = cur_clip = 0;
     bg_from_html = is_js = 0;
     root_box = -1;
-    plain_text = !is_html;
-    if (is_html) hd_parse(src, n, base, d); else hd_plain(src, n);
+    plain_text = mode == 0;
+    if (mode == 2) hd_from_js(d, base); else if (mode == 1) hd_parse(src, n, base, d); else hd_plain(src, n);
+    PH("parse");
     int root = build_root();
+    PH("build");
+#ifdef LT_DEBUG
+    if (getenv("LT_TIME")) fprintf(stderr, "  (css_compute %.1f, style_cp %.1f ms of build)\n", t_css, t_sty);
+    t_css = 0;
+#endif
     rootw = width;
     int c0 = 0;
     B[root].fw = -1;
     lay_block(&B[root], 0, width, 0, 0, &c0, LB_ROOT);
     lay_abs_for(-1);
+    PH("layout");
     d->height = B[root].y + B[root].h + 24;
 #ifdef LT_DEBUG
     if (getenv("LT_DUMP")) dump(root, 0);
@@ -2667,6 +2716,7 @@ void doc_layout(struct doc *d, const char *src, size_t n, int is_html, int width
     int bot = 0;
     paint_box(root, 0, 0);
     (void)bot;
+    PH("paint");
     free_boxes();
     hd_free();
     d->pmax = malloc((d->nit + 1) * sizeof *d->pmax);
@@ -2679,3 +2729,6 @@ void doc_layout(struct doc *d, const char *src, size_t n, int is_html, int width
     }
     if (!d->title[0]) strlcpy(d->title, title, sizeof d->title);
 }
+
+void doc_layout(struct doc *d, const char *src, size_t n, int is_html, int width, const char *base) { layout_do(d, src, n, is_html, width, base); }
+void doc_layout_js(struct doc *d, int width, const char *base) { layout_do(d, 0, 0, 2, width, base); }

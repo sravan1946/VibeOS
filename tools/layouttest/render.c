@@ -32,6 +32,17 @@ const char *img_url(int i) { return ""; }
 int doc_zoom = 100;
 int js_active(void) { return 0; }
 void js_set_rect(int n, int x, int y, int w, int h) {}
+int dom_first(int n) { return 0; }
+int dom_next(int n) { return 0; }
+int dom_type(int n) { return 0; }
+const char *dom_tag(int n) { return ""; }
+const char *dom_text(int n) { return ""; }
+int dom_nattr(int n) { return 0; }
+int dom_attr_at(int n, int i, const char **a, const char **v) { return 0; }
+const char *dom_ctl_value(int n) { return ""; }
+int dom_ctl_checked(int n) { return 0; }
+int dom_ctl_sel(int n) { return 0; }
+const char *dom_attr(int n, const char *a) { return 0; }
 int sheet_pump(void) { return 0; }
 int sheet_busy(void) { return 0; }
 void sheet_reset(void) {}

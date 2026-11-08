@@ -238,6 +238,7 @@ struct doc {
 };
 void doc_free(struct doc *d);
 void doc_layout(struct doc *d, const char *src, size_t n, int is_html, int width, const char *base);
+void doc_layout_js(struct doc *d, int width, const char *base);   /* the same for a page with scripts: reads js.c's tree through dom_*(), no HTML in between */
 /* sel: selection (document order, item/char offsets; from < 0 = none), find: highlight needle (or NULL) with the
  * active match at find_it/find_off */
 struct docmark { int from_it, from_ch, to_it, to_ch; const char *find; int find_it, find_off; };

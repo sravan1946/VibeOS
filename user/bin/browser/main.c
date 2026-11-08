@@ -208,11 +208,8 @@ static void commit(const char *url, char *raw, size_t n, int html) {
     if (html && url_is_web(url)) fetch_preconnect(raw, n, url);     /* overlap the handshakes with layout */
     free(alert_msg);
     alert_msg = 0;
-    if (html && js_page(pg.raw, pg.n, url)) {          /* scripts: lay out the DOM (js.c) instead of the source */
-        free(pg.raw);
-        pg.raw = js_html(&pg.n);
-    } else js_reset();
-    doc_layout(&doc, pg.raw, pg.n, html, layout_w, cur_url);
+    if (html && js_page(pg.raw, pg.n, url)) doc_layout_js(&doc, layout_w, cur_url);     /* scripts: lay out the DOM (js.c) itself, no HTML round trip */
+    else { js_reset(); doc_layout(&doc, pg.raw, pg.n, html, layout_w, cur_url); }
     js_attach(&doc);
     for (int i = 0; i < doc.nct; i++) {                    /* autofocus: the first text field that asks */
         const struct ctl *c = &doc.ct[i];
@@ -870,7 +867,7 @@ static void retheme(void) {                  /* EV_THEME: recolour our own pages
 static void relayout(void) {
     int old = doc.height ? doc.height : 1;
     layout_w = lay_w();
-    doc_layout(&doc, pg.raw, pg.n, pg.html, layout_w, cur_url);
+    if (js_active()) doc_layout_js(&doc, layout_w, cur_url); else doc_layout(&doc, pg.raw, pg.n, pg.html, layout_w, cur_url);
     last_relayout = uptime_ms();
     mk.from_it = mk.to_it = -1; mk.find_it = -1; last_needle[0] = 0;
     if (!doc.title[0]) strlcpy(doc.title, base_name(cur_url), sizeof doc.title);
@@ -931,11 +928,9 @@ static void field_commit(void) {
 static void js_relayout(void) {
     int ci = ctl_by_ord(fo), fnode = ci >= 0 ? doc.ct[ci].node : 0;
     js_sync();
-    free(pg.raw);
-    pg.raw = js_html(&pg.n);
     fs_reset();
     layout_w = lay_w();
-    doc_layout(&doc, pg.raw, pg.n, 1, layout_w, cur_url);
+    doc_layout_js(&doc, layout_w, cur_url);
     last_relayout = uptime_ms();
     mk.from_it = mk.to_it = -1; mk.find_it = -1; last_needle[0] = 0;
     sel_ci = -1;

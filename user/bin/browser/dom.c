@@ -146,6 +146,7 @@ static int is_void(const char *n) {
 #define MAXSTK 200
 static int stk[MAXSTK], nstk;
 static const char *cur_base;
+static struct doc *cur_doc;
 
 static int top(void) { return nstk ? stk[nstk - 1] : 0; }
 static const char *nm(int n) { return HD.pool + HD.n[n].nm; }
@@ -454,4 +455,143 @@ void hd_plain(const char *src, size_t n) {
     for (size_t i = 0; i < n; i++) if (src[i] != '\r' && ((unsigned char)src[i] >= 32 || src[i] == '\n' || src[i] == '\t')) o[k++] = src[i];
     node_new(p, 3, 0, pool_add(o, k), k);
     free(o);
+}
+
+/* ---------- the script engine's tree (js.c accessors) -> HD ----------
+ * One tree per page: for a page with scripts the layout reads js.c's composed tree directly (no serialise/parse). Nodes get dense
+ * ids of our own; `js` keeps the js.c id, which items, controls, forms and js_set_rect() use. Scripts, templates and comments are
+ * dropped here; <style>/<link> are fed to css.c in document order; inline <svg> becomes an element with its markup in a text child,
+ * as the parser does; live control state (value, checked, selected option) replaces the attributes. */
+struct sbuf { char *s; size_t n, cap; };
+static void sb_put(struct sbuf *b, const char *t, size_t n) {
+    if (b->n + n + 1 > b->cap) {
+        size_t nc = b->cap ? b->cap * 2 : 1024;
+        while (nc < b->n + n + 1) nc *= 2;
+        char *p = realloc(b->s, nc);
+        if (!p) return;
+        b->s = p; b->cap = nc;
+    }
+    memcpy(b->s + b->n, t, n);
+    b->n += n;
+    b->s[b->n] = 0;
+}
+static void sb_esc(struct sbuf *b, const char *t, int attr) {
+    for (; *t; t++) {
+        if (*t == '&') sb_put(b, "&amp;", 5);
+        else if (*t == '<') sb_put(b, "&lt;", 4);
+        else if (*t == '>') sb_put(b, "&gt;", 4);
+        else if (attr && *t == '"') sb_put(b, "&quot;", 6);
+        else sb_put(b, t, 1);
+    }
+}
+static void svg_ser(struct sbuf *b, int j, int depth) {
+    int ty = dom_type(j);
+    if (ty == 3) { sb_esc(b, dom_text(j), 0); return; }
+    if (ty != 1 || depth > 40) return;
+    const char *tag = dom_tag(j);
+    sb_put(b, "<", 1); sb_put(b, tag, strlen(tag));
+    for (int i = 0, n = dom_nattr(j); i < n; i++) {
+        const char *an, *av;
+        if (!dom_attr_at(j, i, &an, &av)) continue;
+        sb_put(b, " ", 1); sb_put(b, an, strlen(an)); sb_put(b, "=\"", 2); sb_esc(b, av, 1); sb_put(b, "\"", 1);
+    }
+    sb_put(b, ">", 1);
+    for (int c = dom_first(j); c; c = dom_next(c)) svg_ser(b, c, depth + 1);
+    sb_put(b, "</", 2); sb_put(b, tag, strlen(tag)); sb_put(b, ">", 1);
+}
+
+static int sel_want = -1, sel_i;                              /* the open <select>'s selected index and the option counter */
+
+static void js_copy(int j, int par, struct doc *d, int depth) {
+    int ty = dom_type(j);
+    if (ty == 3) {
+        const char *t = dom_text(j);
+        size_t n = strlen(t);
+        if (!n) return;
+        int id = node_new(par, 3, 0, pool_add(t, n), n);
+        if (id >= 0) HD.n[id].js = j;
+        return;
+    }
+    if (ty != 1 || depth > 190) return;
+    const char *name = dom_tag(j);
+    if (!strcmp(name, "script") || !strcmp(name, "template")) return;
+    if (!strcmp(name, "title")) {
+        for (int c = dom_first(j); c; c = dom_next(c)) if (dom_type(c) == 3 && !cur_doc->title[0]) capture_title(cur_doc, dom_text(c), strlen(dom_text(c)));
+        return;
+    }
+    if (!strcmp(name, "style")) {
+        struct sbuf b = { 0 };
+        for (int c = dom_first(j); c; c = dom_next(c)) if (dom_type(c) == 3) sb_put(&b, dom_text(c), strlen(dom_text(c)));
+        const char *media = dom_attr(j, "media");
+        if (b.s && css_media(media)) css_add_from(b.s, b.n, cur_base);
+        free(b.s);
+        return;
+    }
+    /* attributes, with the live control state folded in */
+    const char *an[64], *av[64];
+    int na = 0;
+    int tag = tag_id(name), isinput = !strcmp(name, "input"), isarea = !strcmp(name, "textarea"), issel = !strcmp(name, "select"), isopt = !strcmp(name, "option");
+    const char *ctlv = 0;
+    int checked = -1;
+    if (isinput || isarea || issel) {
+        const char *ty2 = dom_attr(j, "type");
+        int textual = isinput && (!ty2 || !(!strcasecmp(ty2, "checkbox") || !strcasecmp(ty2, "radio") || !strcasecmp(ty2, "hidden") || !strcasecmp(ty2, "submit") ||
+                                           !strcasecmp(ty2, "button") || !strcasecmp(ty2, "image") || !strcasecmp(ty2, "reset")));
+        if (textual || isarea) ctlv = dom_ctl_value(j);
+        if (isinput && !textual && ty2 && (!strcasecmp(ty2, "checkbox") || !strcasecmp(ty2, "radio"))) checked = dom_ctl_checked(j);
+    }
+    char *ctlcopy = ctlv ? strdup(ctlv) : 0;
+    for (int i = 0, n = dom_nattr(j); i < n && na < 62; i++) {
+        const char *a, *v;
+        if (!dom_attr_at(j, i, &a, &v)) continue;
+        if (!strcmp(a, "data-vjs")) continue;
+        if (isinput && ctlcopy && !strcmp(a, "value")) continue;
+        if (checked >= 0 && !strcmp(a, "checked")) continue;
+        if (isopt && sel_want >= 0 && !strcmp(a, "selected")) continue;
+        an[na] = a; av[na] = v; na++;
+    }
+    if (isinput && ctlcopy) { an[na] = "value"; av[na] = ctlcopy; na++; }
+    if (checked > 0) { an[na] = "checked"; av[na] = ""; na++; }
+    if (isopt && sel_want >= 0) { if (sel_i == sel_want) { an[na] = "selected"; av[na] = ""; na++; } sel_i++; }
+    int a0 = HD.na;
+    for (int i = 0; i < na; i++) {
+        if (HD.na == HD.acap) {
+            int nc = HD.acap ? HD.acap * 2 : 1024;
+            struct dattr *nat = realloc(HD.a, nc * sizeof *nat);
+            if (!nat) break;
+            HD.a = nat; HD.acap = nc;
+        }
+        HD.a[HD.na].n = pool_add(an[i], strlen(an[i]));
+        HD.a[HD.na].v = pool_add(av[i], strlen(av[i]));
+        HD.na++;
+    }
+    int id = node_new(par, 1, !strcmp(name, "svg") ? T_SVG : tag, pool_add(name, strlen(name)), 0);
+    if (id < 0) { free(ctlcopy); return; }
+    HD.n[id].a0 = a0; HD.n[id].na = HD.na - a0; HD.n[id].js = j;
+    if (!strcmp(name, "link")) link_sheet(id);
+    if (tag == T_SVG || !strcmp(name, "svg")) {
+        struct sbuf b = { 0 };
+        svg_ser(&b, j, 0);
+        if (b.s) node_new(id, 3, 0, pool_add(b.s, b.n), b.n);
+        free(b.s);
+    } else if (isarea) {
+        if (ctlcopy && *ctlcopy) node_new(id, 3, 0, pool_add(ctlcopy, strlen(ctlcopy)), strlen(ctlcopy));
+    } else if (!is_void(name)) {
+        int save_want = sel_want, save_i = sel_i;
+        if (issel) { sel_want = dom_ctl_sel(j); sel_i = 0; }
+        for (int c = dom_first(j); c; c = dom_next(c)) {
+            js_copy(c, id, d, depth + 1);
+        }
+        sel_want = save_want; sel_i = save_i;
+    }
+    free(ctlcopy);
+}
+
+int hd_from_js(struct doc *d, const char *base) {
+    hd_free();
+    cur_base = base; cur_doc = d;
+    node_new(-1, 9, 0, pool_add("#root", 5), 0);
+    HD.js = 1;
+    for (int c = dom_first(1); c; c = dom_next(c)) js_copy(c, 0, d, 0);
+    return HD.nn;
 }
