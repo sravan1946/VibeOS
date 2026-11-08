@@ -1179,9 +1179,19 @@ static void call(JSValue fn, int argc, JSValue *argv) {
     leave(r);
 }
 
+/* import.meta.url (webpack's "automatic publicPath", relative lookups) = the module's own URL */
+static void set_meta(JSContext *c, JSValueConst compiled, const char *name) {
+    if (JS_VALUE_GET_TAG(compiled) != JS_TAG_MODULE) return;
+    JSValue meta = JS_GetImportMeta(c, JS_VALUE_GET_PTR(compiled));
+    if (!JS_IsException(meta)) { JS_SetPropertyStr(c, meta, "url", JS_NewString(c, name)); JS_SetPropertyStr(c, meta, "main", JS_FALSE); }
+    JS_FreeValue(c, meta);
+}
 static void run_script(const char *src, size_t n, const char *name, int module) {
     enter();
-    leave(JS_Eval(ctx, src, n, name, module ? JS_EVAL_TYPE_MODULE : JS_EVAL_TYPE_GLOBAL));
+    if (!module) { leave(JS_Eval(ctx, src, n, name, JS_EVAL_TYPE_GLOBAL)); return; }
+    JSValue f = JS_Eval(ctx, src, n, name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (!JS_IsException(f)) { set_meta(ctx, f, name); f = JS_EvalFunction(ctx, f); }
+    leave(f);
 }
 
 int js_event(int node, const char *type, const struct gui_event *k, int x, int y) {
@@ -1488,6 +1498,7 @@ static JSModuleDef *mod_load(JSContext *c, const char *name, void *op) {
     JSValue v = JS_Eval(c, b, l, name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
     free(b);
     if (JS_IsException(v)) return 0;
+    set_meta(c, v, name);
     JSModuleDef *m = JS_VALUE_GET_PTR(v);
     JS_FreeValue(c, v);
     return m;
