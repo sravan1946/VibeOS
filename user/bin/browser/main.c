@@ -153,6 +153,7 @@ static int view_w(void) { return win->w - SB; }
 static int view_h(void) { return win->h - CT - STH - (find_open ? FB : 0); }
 static int find_x(void) { return SP_3; }
 static int find_y(void) { return win->h - STH - FB + (FB - H_SEARCH) / 2; }
+static int vh0(void) { return view_h() / 2; }
 static int max_scroll(void) { int m = doc.height - view_h(); return m > 0 ? m : 0; }
 static void clamp_scroll(void) {
     int m = max_scroll();
@@ -917,8 +918,10 @@ int main(int argc, char **argv) {
         struct pollfd pf[2] = { { win->fd, POLLIN, 0 }, { fe.fd, POLLIN, 0 } };
         poll(pf, loading ? 2 : 1, timeout);
         if (!ui_poll(&ui, 0) || quit_req) break;
+        uint32_t frame_t0 = uptime_ms();
         fetch_reap();
         if (loading) service_fetch();
+        img_hold(abs(target - scroll) > vh0());
         if (pg.have && img_pump()) img_dirty = true;
         if (pg.have && sheet_pump()) { relayout(); img_dirty = false; }    /* a stylesheet arrived (or failed): lay the page out again */
         if (img_dirty && pg.have && (!img_busy() || uptime_ms() - last_relayout > 400)) { relayout(); img_dirty = false; }
@@ -1202,6 +1205,7 @@ int main(int argc, char **argv) {
         snprintf(t, sizeof t, strcmp(doc.title, "Vibe Browser") ? "%s \u2014 Vibe Browser" : "%s", doc.title);
         if (strcmp(t, last_title)) { gui_set_title(win, t); strlcpy(last_title, t, sizeof last_title); }
         ui_end(&ui);
+        if (uptime_ms() - frame_t0 > 40) blog("BROWSER slow frame %u ms (%d items)", (unsigned)(uptime_ms() - frame_t0), doc.nit);
     }
     cancel_load();
     js_reset();

@@ -100,10 +100,12 @@ void sheet_drop(void *h);
 /* ---- img.c: per-page image cache. Images are fetched by helper processes (two at a time), decoded
  * in-process and kept (plus one scaled copy) until the next page. ---- */
 enum { IMG_QUEUED, IMG_LOADING, IMG_READY, IMG_FAILED };
+int  img_ref_ex(const char *url, const char *loading);   /* same, with the <img loading=lazy|eager> attribute (or NULL): lazy = only fetched once drawn, eager = at once */
 int  img_ref(const char *url);                   /* index; queues the download on first use */
 int  img_info(int i, int *w, int *h);            /* IMG_*; size when ready */
 const uint32_t *img_pixels(int i, int w, int h, color_t bg);   /* w*h opaque pixels (scaled, over bg), or NULL */
 int  img_pump(void);                             /* advance downloads; nonzero when an image became ready/failed */
+void img_hold(int h);                            /* 1 while scrolling fast: img_pump decodes nothing (a decode is tens of ms) */
 int  img_busy(void);                             /* images still queued or downloading */
 void img_reset(void);                            /* new page */
 void *img_save(void);                            /* background tab: take the cache (empties it); img_restore(h) puts it back and frees h, img_drop(h) frees it */

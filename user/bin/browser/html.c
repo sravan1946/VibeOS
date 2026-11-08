@@ -709,8 +709,8 @@ static void open_tag(int t) {
         else if (A("srcset") && img_pick(src, A("srcset"), A("sizes"), right(), pk, sizeof pk)) src = pk;
         int idx = -1, iw = 0, ih = 0, st = IMG_FAILED;
         if (src && *src) {
-            if (!strncasecmp(src, "data:", 5)) idx = img_ref(src);        /* data: URLs can be long and are already absolute */
-            else { url_resolve(L.base, src, u, sizeof u); idx = img_ref(u); }
+            if (!strncasecmp(src, "data:", 5)) idx = img_ref_ex(src, A("loading"));        /* data: URLs can be long and are already absolute */
+            else { url_resolve(L.base, src, u, sizeof u); idx = img_ref_ex(u, A("loading")); }
             st = img_info(idx, &iw, &ih);
         }
         int avail = right() - left(), W = 0, H = 0;
