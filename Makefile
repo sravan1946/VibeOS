@@ -14,7 +14,7 @@ CWARN   := -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 CBASE   := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
            -fno-omit-frame-pointer -fno-asynchronous-unwind-tables -nostdinc -isystem $(GCCINC) \
            -O2 -g $(CWARN) -Icommon
-KCFLAGS := $(CBASE) -mgeneral-regs-only -Ikernel/include
+KCFLAGS := $(CBASE) -mgeneral-regs-only -Ikernel/include $(KEXTRA)
 # gfx_line_aa uses x87; keep floats legal in the shared gfx object. Per-symbol sections + --gc-sections: only the
 # font faces and helpers a binary references get linked (fonts.c holds every face in one object)
 GCSECT  := -ffunction-sections -fdata-sections

@@ -19,21 +19,9 @@ void canvas_clip(struct canvas *c, int x, int y, int w, int h) {
     if (c->cy1 < c->cy0) c->cy1 = c->cy0;
 }
 
-color_t blend(color_t d, color_t s) {
-    uint32_t a = s >> 24;
-    if (a == 255) return s;
-    if (a == 0) return d;
-    a += a >> 7;                                   /* 0..256 */
-    uint32_t rb = ((s & 0xFF00FF) * a + (d & 0xFF00FF) * (256 - a)) >> 8;
-    uint32_t g  = ((s & 0x00FF00) * a + (d & 0x00FF00) * (256 - a)) >> 8;
-    return 0xFF000000u | (rb & 0xFF00FF) | (g & 0x00FF00);
-}
-
-color_t mix(color_t x, color_t y, int t) {
-    uint32_t rb = ((y & 0xFF00FF) * t + (x & 0xFF00FF) * (256 - t)) >> 8;
-    uint32_t g  = ((y & 0x00FF00) * t + (x & 0x00FF00) * (256 - t)) >> 8;
-    uint32_t a  = (((y >> 24) * t + (x >> 24) * (256 - t)) >> 8) << 24;
-    return a | (rb & 0xFF00FF) | (g & 0x00FF00);
+/* d under a source whose rgb parts are premultiplied by its 0..256 alpha already: srb = (s & 0xFF00FF) * a, sg = (s & 0xFF00) * a, m = 256 - a */
+static inline __attribute__((always_inline)) uint32_t over(uint32_t d, uint32_t srb, uint32_t sg, uint32_t m) {
+    return 0xFF000000u | (((srb + (d & 0xFF00FF) * m) >> 8) & 0xFF00FF) | (((sg + (d & 0x00FF00) * m) >> 8) & 0x00FF00);
 }
 
 static inline color_t with_alpha(color_t col, uint32_t a) {   /* scale col alpha by a/255 */
@@ -55,12 +43,16 @@ void gfx_fill(struct canvas *c, int x, int y, int w, int h, color_t col) {
         for (int yy = y0; yy < y1; yy++) {
             uint32_t *p = &c->px[yy * c->stride + x0];
             int n = x1 - x0;
+            if (n < 32) { for (int i = 0; i < n; i++) p[i] = col; continue; }          /* rep stosl costs ~30 cycles to start */
             __asm__ volatile("rep stosl" : "+D"(p), "+c"(n) : "a"(col) : "memory");
         }
     } else if (ALPHA(col)) {
+        uint32_t a = ALPHA(col), srb, sg;
+        a += a >> 7;
+        srb = (col & 0xFF00FF) * a; sg = (col & 0x00FF00) * a;
         for (int yy = y0; yy < y1; yy++) {
             uint32_t *p = &c->px[yy * c->stride];
-            for (int xx = x0; xx < x1; xx++) p[xx] = blend(p[xx], col);
+            for (int xx = x0; xx < x1; xx++) p[xx] = over(p[xx], srb, sg, 256 - a);
         }
     }
 }
@@ -199,18 +191,36 @@ void gfx_shadow9(struct canvas *c, int x, int y, int w, int h, int r, int dy, in
     if (!t) return;
     int e = t->e, cs = t->c, W = w + 2 * e, H = h + 2 * e, sx0 = x - e, sy0 = y + dy - e;
     int hy0 = y + r, hy1 = y + h - r;                   /* the caster's own rows (minus its corners) are left alone */
-    uint8_t lut[256];
-    for (int v = 0; v < 256; v++) lut[v] = (v * imin(alpha, 255) + 127) / 255;
+    /* lm[v]: what the backdrop keeps (256 - alpha, alpha of black over it) for coverage v; 256 = untouched */
+    uint16_t lm[256];
+    for (int v = 0; v < 256; v++) { int al = (v * imin(alpha, 255) + 127) / 255; al += al >> 7; lm[v] = 256 - al; }
     int x0 = imax(sx0, c->cx0), x1 = imin(sx0 + W, c->cx1);
+    int Ln = imin(cs, (W + 1) / 2), Rs = imax(Ln, W - cs);       /* columns [0,Ln) mirror the left tile, [Rs,W) the right, between: the edge-free middle */
     for (int yy = imax(sy0, c->cy0); yy < imin(sy0 + H, c->cy1); yy++) {
         int ly = yy - sy0, ry = H - 1 - ly, vy = ly < cs && ly <= ry ? ly : ry < cs ? ry : -1;
         uint32_t *row = &c->px[yy * c->stride];
+        const uint8_t *trow = vy < 0 ? 0 : t->px + vy * cs;
         int hole = yy >= hy0 && yy < hy1, ha = imax(x0, x), hb = imin(x1, x + w);
-        for (int xx = x0; xx < x1; xx++) {
-            if (hole && xx == ha && ha < hb) { xx = hb - 1; continue; }
-            int lx = xx - sx0, rx = W - 1 - lx, vx = lx < cs && lx <= rx ? lx : rx < cs ? rx : -1;
-            int v = vy < 0 ? (vx < 0 ? 255 : t->edge[vx]) : vx < 0 ? t->edge[vy] : t->px[vy * cs + vx];
-            if (lut[v]) row[xx] = blend(row[xx], (uint32_t)lut[v] << 24);
+        /* segments of this row: [s0,s1) clipped to [x0,x1) minus the hole */
+        for (int seg = 0; seg < 3; seg++) {
+            int s0 = imax(x0, sx0 + (seg == 0 ? 0 : seg == 1 ? Ln : Rs)), s1 = imin(x1, sx0 + (seg == 0 ? Ln : seg == 1 ? Rs : W));
+            for (int part = 0; part < 2; part++) {               /* before / after the hole */
+                int p0 = s0, p1 = s1;
+                if (hole && ha < hb) { if (part == 0) p1 = imin(p1, ha); else p0 = imax(p0, hb); }
+                else if (part) break;
+                if (p0 >= p1) continue;
+                if (seg == 1) {                                  /* constant coverage across the span */
+                    uint32_t m = lm[vy < 0 ? 255 : t->edge[vy]];
+                    if (m == 256) continue;
+                    for (int xx = p0; xx < p1; xx++) row[xx] = over(row[xx], 0, 0, m);
+                } else {
+                    for (int xx = p0; xx < p1; xx++) {
+                        int lx = xx - sx0, vx = seg == 0 ? lx : W - 1 - lx;
+                        uint32_t m = lm[vy < 0 ? t->edge[vx] : trow[vx]];
+                        if (m != 256) row[xx] = over(row[xx], 0, 0, m);
+                    }
+                }
+            }
         }
     }
 }
@@ -224,14 +234,21 @@ void gfx_mask(struct canvas *c, int x, int y, const uint8_t *a, int w, int h, in
     int x0 = imax(x, c->cx0), y0 = imax(y, c->cy0), x1 = imin(x + w, c->cx1), y1 = imin(y + h, c->cy1);
     uint32_t ca = col >> 24, rgb = col & 0xFFFFFF;
     if (!ca) return;
+    uint32_t rb = rgb & 0xFF00FF, g = rgb & 0x00FF00, solid = 0xFF000000u | rgb;
     for (int yy = y0; yy < y1; yy++) {
         const uint8_t *m = a + (yy - y) * stride - x;
         uint32_t *row = &c->px[yy * c->stride];
         for (int xx = x0; xx < x1; xx++) {
             uint32_t v = m[xx];
-            if (!v) continue;
-            if (ca != 255) v = v * ca / 255;
-            row[xx] = blend(row[xx], v << 24 | rgb);
+            if (!v) {                                           /* glyph rows are mostly empty: hop over 4 zero bytes at once */
+                uint32_t q;
+                while (xx + 4 < x1 && (__builtin_memcpy(&q, m + xx + 1, 4), !q)) xx += 4;
+                continue;
+            }
+            if (ca != 255) { v = ((v * ca + 1) * 257) >> 16; if (!v) continue; }   /* v * ca / 255 */
+            if (v == 255) { row[xx] = solid; continue; }
+            v += v >> 7;
+            row[xx] = over(row[xx], rb * v, g * v, 256 - v);
         }
     }
 }
@@ -334,11 +351,16 @@ void gfx_blit_premul(struct canvas *c, int x, int y, const uint32_t *src, int w,
 
 void gfx_blit_scaled(struct canvas *c, int x, int y, int dw, int dh, const uint32_t *src, int sw, int sh, int stride) {
     if (dw <= 0 || dh <= 0) return;
+    int xa = imax(x, c->cx0), xb = imin(x + dw, c->cx1);
     for (int yy = imax(y, c->cy0); yy < imin(y + dh, c->cy1); yy++) {
         const uint32_t *row = &src[((yy - y) * sh / dh) * stride];
         uint32_t *d = &c->px[yy * c->stride];
-        for (int xx = imax(x, c->cx0); xx < imin(x + dw, c->cx1); xx++)
-            d[xx] = blend(d[xx], row[(xx - x) * sw / dw]);
+        int k = (xa - x) * sw, q = k / dw, r = k % dw;           /* (xx - x) * sw / dw, stepped without dividing */
+        for (int xx = xa; xx < xb; xx++) {
+            d[xx] = blend(d[xx], row[q]);
+            int ge;
+            r += sw % dw; ge = r >= dw; q += sw / dw + ge; r -= dw & -ge;
+        }
     }
 }
 
@@ -381,7 +403,7 @@ int gfx_text_n(struct canvas *c, const struct font *f, int x, int y, const char 
     int fr = frac_pen(f), pen = x << 6;
     uint32_t cp;
     for (int i = 0; i < n && s[i]; ) {
-        i += utf8_decode(s + i, n - i, &cp);
+        if ((uint8_t)s[i] < 0x80) cp = (uint8_t)s[i++]; else i += utf8_decode(s + i, n - i, &cp);
         const struct glyph *g = font_glyph(f, cp);
         int gx = (pen + 32) >> 6;
         gfx_mask(c, gx + g->xoff, y + g->yoff, f->alpha + g->off, g->w, g->h, g->w, col);

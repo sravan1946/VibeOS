@@ -347,7 +347,15 @@ static void tw_frame(struct window *w) {
     tw->dirty = false;
     struct rect d;
     if (tw->full) tw->sb_h = -1;                                 /* the repaint wipes it */
+#ifdef GFXSTAT
+    uint32_t t0_, t1_; __asm__ volatile("rdtsc" : "=a"(t0_) :: "edx");
+#endif
     term_render(ct->t, &w->canvas, PADX, term_y(tw), tw->full, &d);
+#ifdef GFXSTAT
+    __asm__ volatile("rdtsc" : "=a"(t1_) :: "edx");
+    { static uint32_t n_, cyc_, px_, t_; n_++; cyc_ += (t1_ - t0_) / 1000; px_ += d.w * d.h;
+      if (ticks_ms - t_ >= 1000) { if (t_) kprintf("GFXSTAT term renders=%u kcyc/render=%u px/render=%u\n", n_, cyc_ / n_, px_ / n_); t_ = ticks_ms; n_ = cyc_ = px_ = 0; } }
+#endif
     tw->full = false;
     if (d.w) wm_damage_client(w, d.x, d.y, d.w, d.h);
     if (tw->find) draw_find(tw);

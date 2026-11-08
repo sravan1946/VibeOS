@@ -20,8 +20,23 @@ void canvas_init(struct canvas *c, uint32_t *px, int w, int h, int stride);
 void canvas_clip(struct canvas *c, int x, int y, int w, int h);   /* intersect */
 void canvas_noclip(struct canvas *c);
 
-color_t blend(color_t dst, color_t src);          /* src over dst, uses src alpha */
-color_t mix(color_t a, color_t b, int t);         /* t in 0..256 */
+/* src over dst, uses src alpha (255: src, 0: dst, else an opaque result) */
+static inline color_t blend(color_t d, color_t s) {
+    uint32_t a = s >> 24;
+    if (a == 255) return s;
+    if (a == 0) return d;
+    a += a >> 7;                                   /* 0..256 */
+    uint32_t rb = ((s & 0xFF00FF) * a + (d & 0xFF00FF) * (256 - a)) >> 8;
+    uint32_t g  = ((s & 0x00FF00) * a + (d & 0x00FF00) * (256 - a)) >> 8;
+    return 0xFF000000u | (rb & 0xFF00FF) | (g & 0x00FF00);
+}
+/* t in 0..256 (a at 0, b at 256), alpha mixed too */
+static inline color_t mix(color_t x, color_t y, int t) {
+    uint32_t rb = ((y & 0xFF00FF) * t + (x & 0xFF00FF) * (256 - t)) >> 8;
+    uint32_t g  = ((y & 0x00FF00) * t + (x & 0x00FF00) * (256 - t)) >> 8;
+    uint32_t a  = (((y >> 24) * t + (x >> 24) * (256 - t)) >> 8) << 24;
+    return a | (rb & 0xFF00FF) | (g & 0x00FF00);
+}
 
 void gfx_pixel(struct canvas *c, int x, int y, color_t col);
 void gfx_fill(struct canvas *c, int x, int y, int w, int h, color_t col);      /* blends if alpha<255 */
