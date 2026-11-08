@@ -49,7 +49,8 @@ struct bx {
     int v[NL]; uint8_t k[NL];
     uint32_t toff; int tlen;      /* IN_TEXT: bytes in the HD pool */
     int ref, iw, ih, bel, cs, rs, mark;   /* img cache index / control index; intrinsic size; baseline below the box; colspan, rowspan; list marker (0 bullet, n number, -1 none) */
-    uint8_t halign, valn;         /* table cell: horizontal / vertical alignment */
+    uint8_t halign, valn, lt, txk, tyk;
+    int aspect, txv, tyv;         /* aspect-ratio (w/h x1000), transform: translate() */         /* table cell: horizontal / vertical alignment */
     int bgi; uint8_t brep, bkx, bky, bkw, bkh, objfit; int bpx, bpy, bsw, bsh;   /* background-image (img index + 1) and its repeat/position/size; object-fit for images */
     int x, y, w, h, base;         /* border box, document coordinates; base: baseline offset from the top (-1 = bottom edge) */
     int m[4], p[4];               /* used margins and paddings (t r b l) */
@@ -1295,6 +1296,7 @@ static void lay_block(struct bx *b, int cx, int cw, int y, struct bfc *pf, int *
     }
     int hh = sh >= 0 ? sh : ch;
     if (b->inner == IN_TABLE || b->inner == IN_FLEX) hh = sh >= 0 ? imax_(sh, 0) : ch;
+    if (b->aspect > 0 && sh < 0 && b->inner != IN_IMG && b->inner != IN_CTL) hh = imax_(hh, (int)((long long)cwid * 1000 / b->aspect));
     if (b->inner == IN_IMG || b->inner == IN_CTL) hh = ch;
     else if (b->inner == IN_TCELL && sh >= 0) hh = imax_(sh, ch);
     hh = clamph(b, hh, 0);
@@ -1709,8 +1711,8 @@ static int first_text_y(const struct bx *b, int *y) {
 
 static void paint_marker(struct bx *b, int ox, int oy) {
     if (b->mark < 0) return;
-    char m[16] = "\xE2\x80\xA2";
-    if (b->mark > 0) snprintf(m, sizeof m, "%d.", b->mark);
+    char m[24] = "\xE2\x80\xA2";
+    if (b->lt >= LT_DECIMAL && b->lt != LT_NONE) { int n = css_counter_format(b->lt, b->mark, m, sizeof m - 2); m[n] = '.'; m[n + 1] = 0; }
     const struct font *f = FT[b->font];
     int w = gfx_text_width(f, m), y;
     if (!first_text_y(b, &y)) y = b->y + b->bw[0] + b->p[0];
@@ -1798,6 +1800,7 @@ static void paint_box(int bi, int ox, int oy) {
     if (b->opacity == 0 || (b->inner == IN_CTL && b->ref < 0)) return;
     int positioned = b->pos != POS_STATIC && b->pos != POS_STICKY, mark = npe;
     if (b->pos == POS_REL) { int dx, dy; rel_offset(b, &dx, &dy); ox += dx; oy += dy; }
+    if (b->txv || b->tyv) { ox += b->txk ? b->w * b->txv / 10000 : b->txv; oy += b->tyk ? b->h * b->tyv / 10000 : b->tyv; }
     if (b->aname) anchor_add(b->aname, b->y + oy);
     int prev = cur_clip, hidden = b->vis;
     if (!hidden) paint_bg(b, ox, oy);
@@ -2114,6 +2117,9 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     lenset(S, L_W, cp, P_WIDTH); lenset(S, L_H, cp, P_HEIGHT); lenset(S, L_MINW, cp, P_MINW); lenset(S, L_MAXW, cp, P_MAXW);
     lenset(S, L_MINH, cp, P_MINH); lenset(S, L_MAXH, cp, P_MAXH); lenset(S, L_BASIS, cp, P_FBASIS);
     S->bg = cp->v[P_BG];
+    S->aspect = cp->k[P_ASPECT] == K_PX ? cp->v[P_ASPECT] : 0;
+    S->txk = cp->k[P_TRX] == K_PCT; S->tyk = cp->k[P_TRY] == K_PCT;
+    S->txv = S->txk ? cp->v[P_TRX] : css_len(cp, P_TRX, 0); S->tyv = S->tyk ? cp->v[P_TRY] : css_len(cp, P_TRY, 0);
     S->bgi = 0;
     if (cp->k[P_BGIMG] == K_STR) {                       /* url(...) is absolute already (css.c); a gradient or none paints nothing */
         int ix = img_ref_ex(css_str(cp->v[P_BGIMG]), "lazy");
@@ -2406,6 +2412,7 @@ static void root_colors(const struct bx *S, int tag, int dn, struct inh *ni) {
 }
 
 static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int isfirst, int pe);
+static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx, int isfirst, int pe, int tag, struct cprops *cp);
 
 static void build_pseudo(int dn, int pb, const struct inh *in, struct bctx *cx, int pe) {
     build_el(dn, pb, in, cx, 0, pe);
@@ -2413,7 +2420,7 @@ static void build_pseudo(int dn, int pb, const struct inh *in, struct bctx *cx, 
 
 static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int isfirst, int pe) {
     int tag = pe ? T_NONE : DN(dn).tag;
-    const char *name = hd_str(DN(dn).nm), *v;
+    const char *name = hd_str(DN(dn).nm);
     if (!pe && (tag == T_HEAD || tag == T_SKIP || tag == T_COL || tag == T_OPTION)) return;
     if (!pe && tag == T_DIV && !strcmp(name, "noscript") && is_js) return;
     if (cpd >= 250) return;
@@ -2422,6 +2429,13 @@ static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int 
     if (pe) { if (!css_compute(dn, pe, par, cp)) return; }
     else css_compute(dn, PE_NONE, par, cp);
     if (tag == T_TABLE && (HD.quirks || cx->incenter)) cp->v[P_ALIGN] = TA_LEFT;   /* quirks (or <center><table>, which relied on it): a table doesn't inherit text-align */
+    if (!pe) css_cnt_enter(cp, cpd);
+    build_el_body(dn, pb, in, cx, isfirst, pe, tag, cp);
+    if (!pe) css_cnt_leave(cpd);
+}
+
+static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx, int isfirst, int pe, int tag, struct cprops *cp) {
+    const char *v;
     struct bx S;
     struct inh ni;
     struct bctx cx2;
@@ -2463,7 +2477,7 @@ static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int 
     if (S.flt || oof(&S)) { S.outer = OUT_BLOCK; if (S.inner == IN_INLINE) S.inner = IN_FLOW; }
     if (!pe && ((v = ATTR(dn, "id")) || (tag == T_A && (v = ATTR(dn, "name")))) && *v) S.aname = astr(v) + 1;
     S.cb = cx->cb; S.dn = dn;
-    if (li) { S.li = 1; S.mark = ni.nomark ? -1 : cx->cnt ? ++*cx->cnt : 0; }
+    if (li) { S.li = 1; S.mark = ni.nomark ? -1 : cx->cnt ? ++*cx->cnt : 1; S.lt = cp->v[P_LISTT]; }
 
     if (tag == T_BR) {
         int bi = bx_new();
@@ -2496,8 +2510,7 @@ static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int 
         }
     }
     int cnt = 0;
-    if (tag == T_OL) { cnt = (v = ATTR(dn, "start")) ? atoi(v) - 1 : 0; cx2.cnt = &cnt; }
-    else if (tag == T_UL) cx2.cnt = 0;
+    if (tag == T_OL || tag == T_UL || tag == T_NONE) { cnt = tag == T_OL && (v = ATTR(dn, "start")) ? atoi(v) - 1 : 0; if (tag != T_NONE || disp == D_BLOCK) cx2.cnt = &cnt; }
 
     /* an inline element with nothing to paint or position needs no box of its own: its children join the parent */
     int plain = contents || (S.outer == OUT_BLOCK && 0);
@@ -2562,6 +2575,7 @@ static int build_root(void) {
     b->font = in.font; b->col = in.col; b->link = -1;
     css_dom_set(&CD);
     cpd = 0;
+    css_cnt_reset_all();
     build_children(0, r, &in, &cx);
     fixup(r);
     return r;

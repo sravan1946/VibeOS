@@ -34,6 +34,7 @@ int sheet_pump(void) { return 0; }
 int sheet_busy(void) { return 0; }
 void sheet_reset(void) {}
 int img_ref(const char *u) { return 0; }
+int img_ref_ex(const char *u, const char *l) { return 0; }
 int img_info(int i, int *w, int *h) { return IMG_LOADING; }
 const uint32_t *img_pixels(int i, int w, int h, color_t bg) { return 0; }
 void browser_status(int bad, const char *fmt, ...) {}
