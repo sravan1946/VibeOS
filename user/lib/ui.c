@@ -190,6 +190,8 @@ bool ui_poll(struct ui *ui, int timeout_ms) {
         case EV_MOUSE_LEAVE: ui->mx = ui->my = -1; break;
         case EV_SCROLL: ui->scroll += ev.dz; break;
         case EV_KEY:
+            if (ev.pressed && (ev.mods & MOD_CTRL) && !(ev.mods & MOD_ALT) && ev.key < 128 &&
+                ((ev.key | 0x20) == 'q' || ((ev.key | 0x20) == 'w' && !ui->own_w))) { ui->closed = true; return false; }   /* Ctrl+Q / Ctrl+W = the X (apps with documents ask first); tab apps set own_w */
             if (ev.pressed && ui->nkeys < 32) ui->keys[ui->nkeys++] = ev;
             else if (!ev.pressed && ui->nups < 16) ui->ups[ui->nups++] = ev.key;
             break;

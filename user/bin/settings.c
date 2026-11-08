@@ -227,6 +227,8 @@ int main(void) {
     do {
         struct canvas *c = ui.c;
         if (ui.themed || ui.pressed || ui.nkeys) gui_theme_state(&ts);
+        for (int i = 0; i < ui.nkeys; i++)                  /* Ctrl+F: back to the search box */
+            if ((ui.keys[i].mods & MOD_CTRL) && (ui.keys[i].key | 0x20) == 'f') { ui.focus = ui_id(SP_3, SP_3, W_SIDEBAR - 2 * SP_3, H_SEARCH); ui.kbd = true; break; }
         ui_clear(&ui);
         /* ---- sidebar: search, then the pages that match it ---- */
         ui_sidebar(&ui, 0, 0, W_SIDEBAR, H);

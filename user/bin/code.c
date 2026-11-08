@@ -1132,7 +1132,7 @@ int main(int argc, char **argv) {
     if (!w) return 1;
     CW = T_MONO->g['M' - 32].adv;
     LH = T_MONO->height + SP_1;
-    ui_init(&ui, w);
+    ui_init(&ui, w); ui.own_w = true;
     bool sidebar = true;
     if (argc > 1) {
         struct stat st;
