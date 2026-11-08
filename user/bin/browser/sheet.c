@@ -131,3 +131,21 @@ void sheet_reset(void) {
     for (int i = 0; i < ns; i++) { free(S[i].url); free(S[i].body); }
     ns = 0;
 }
+
+/* background tabs keep their stylesheets (see img_save); only taken when nothing is loading */
+struct sheet_saved { struct sheet S[MAXSHEET]; int ns; };
+void *sheet_save(void) {
+    init();
+    struct sheet_saved *h = malloc(sizeof *h);
+    if (!h) return 0;
+    memcpy(h->S, S, sizeof S); h->ns = ns;
+    ns = 0;
+    return h;
+}
+void sheet_restore(void *v) { struct sheet_saved *h = v; sheet_reset(); memcpy(S, h->S, sizeof S); ns = h->ns; free(h); }
+void sheet_drop(void *v) {
+    struct sheet_saved *h = v;
+    if (!h) return;
+    for (int i = 0; i < h->ns; i++) { free(h->S[i].url); free(h->S[i].body); }
+    free(h);
+}

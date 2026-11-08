@@ -5,17 +5,34 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* the browser's faces have wide glyph coverage and a box for what is still missing (common/fontsw.c) */
+#define font_ui bfont_ui
+#define font_ui_bold bfont_ui_bold
+#define font_title bfont_title
+#define font_mono bfont_mono
+#define font_mono_bold bfont_mono_bold
+
 #define MAX_PAGE (2u << 20)      /* body bytes kept per page */
 #define URL_MAX  1024
+/* what we call ourselves everywhere (HTTP User-Agent; JS navigator.userAgent should say the same): Firefox-shaped so sites
+ * serve the normal page, VibeBrowser at the end so we're still identifiable */
+#define BROWSER_UA "Mozilla/5.0 (X11; Linux i686; rv:128.0) Gecko/20100101 Firefox/128.0 VibeBrowser/1.0"
 
 /* ---- url.c ---- */
 void url_resolve(const char *base, const char *ref, char *out, int cap);
 void url_from_input(const char *in, char *out, int cap);       /* address-bar text -> absolute URL */
 int  url_split_http(const char *url, char *host, int hcap, int *port, char *path, int pcap);   /* http:// or https:// */
-int  url_is_web(const char *url);
+int  url_is_web(const char *url);                              /* http:, https: or data: (fetch_start handles all three) */
 void url_unescape(const char *s, char *out, int cap);          /* %XX -> byte */
 void url_strip_frag(char *url);                                /* in place */
 void url_file_path(const char *url, char *out, int cap);       /* file: URL -> filesystem path */
+
+/* ---- frame.c: where a response body ends (shared with vfetch) ---- */
+enum { FR_NONE, FR_LEN, FR_CHUNK, FR_CLOSE };
+struct fr { int mode, st, ext, line, done; long rem, sz; };
+void   fr_init(struct fr *f, int head, int status, long clen, int chunked);
+size_t fr_eat(struct fr *f, const unsigned char *b, size_t n);   /* body bytes in: how many belong to the response; f->done when complete */
+int    hdr_get(const char *h, size_t n, const char *name, char *out, int cap);   /* header value (trimmed) from a header block */
 
 /* ---- fetch.c: HTTP runs in a child process (/bin/vfetch URL, a small binary of its own) so DNS and connect
  * never block the UI; the parent polls the pipe next to the window fd. ---- */
@@ -25,19 +42,40 @@ struct fetch {
     uint32_t last;                 /* uptime of the last byte (timeout) */
     long hdr_end, clen;            /* offset of the body (0 = headers incomplete), Content-Length or -1 */
     int chunked, status, truncated;
+    int head, ready;               /* HEAD request (no body); buf already holds the whole response (data: URL, cache hit) */
+    char *url;                     /* for the cache (malloc'd; NULL = don't cache) */
+    struct fr fr; size_t fpos;     /* body framing: fed up to fpos body bytes */
+    int wk;                        /* index of the pooled keep-alive helper doing this fetch, or -1 (one-shot process / no process) */
 };
 struct response {
     int status;
     char text[48], ctype[96], loc[URL_MAX], err[160];
-    char *body; size_t blen;       /* malloc'd, NUL-terminated; caller frees */
-    int truncated, latin1;
+    char hdrs[3072];               /* the response header lines after the status line ("Name: value\r\n"...), for fetch()/XHR */
+    char *body; size_t blen;       /* malloc'd, NUL-terminated; caller frees. Already inflated (gzip/deflate) and, for text, always UTF-8 */
+    int truncated, latin1;         /* latin1: unused (always 0): the charset conversion happens in fetch_finish */
 };
 int  fetch_main(const char *url, const char *post);   /* the child (user/bin/vfetch); post = form body for a POST, or NULL */
 int  fetch_start(struct fetch *f, const char *url, const char *post);
+/* any request (fetch()/XHR): method (NULL = GET, or POST with a body), hdrs ("Name: v\r\nName: v" or NULL; Host, Cookie,
+ * Content-Length, Connection, Accept-Encoding, Referer, Origin are ours and ignored), body/blen (may hold NULs; blen 0 = no body,
+ * but method POST/PUT then sends an empty one). Cookies are sent and stored by vfetch as for any page. 0 / -1 */
+int  fetch_start_req(struct fetch *f, const char *url, const char *method, const char *hdrs, const char *body, size_t blen);
 int  fetch_pump(struct fetch *f);                 /* 0 running, 1 finished, -1 failed */
 void fetch_cancel(struct fetch *f);
 void fetch_reap(void);                            /* collect killed children */
 void fetch_finish(struct fetch *f, struct response *r);   /* consumes f->buf */
+void fetch_set_referer(const char *url);          /* Referer for the requests that follow (the current page) */
+void fetch_cache_drop(const char *url);           /* forget one URL (reload), or everything when url is NULL */
+
+/* ---- cookie.c: the jar (~/.config/browser/cookies), shared with the vfetch processes ---- */
+void cookie_init(void);                           /* browser start: forget session cookies */
+void cookie_clear(void);
+/* "a=1; b=2" for a request to host + path (path may carry ?query); from_js: leave out HttpOnly. Returns the length */
+int  cookie_header(const char *host, const char *path, int secure, int from_js, char *out, int cap);
+/* file one Set-Cookie value, or a document.cookie assignment (from_js = 1); secure_origin: the page is https */
+void cookie_store(const char *host, const char *rpath, const char *setcookie, int from_js, int secure_origin);
+void cookie_get(const char *url, char *out, int cap);          /* document.cookie getter for the page at url (no HttpOnly), "a=1; b=2" */
+void cookie_set(const char *url, const char *setcookie);       /* document.cookie = "..." on the page at url */
 
 /* ---- css.c: stylesheets -> computed style. Two entry points:
  *  - css_compute(): the DOM-tree API (LAYOUT). Fills EVERY property of `struct cprops` with its computed value
@@ -137,6 +175,9 @@ const char *sheet_get(const char *url, size_t *len);   /* the text once loaded; 
 int  sheet_pump(void);                           /* advance downloads; nonzero when a sheet arrived or failed */
 int  sheet_busy(void);
 void sheet_reset(void);                          /* new page */
+void *sheet_save(void);                          /* same trio as img_save, for a background tab */
+void sheet_restore(void *h);
+void sheet_drop(void *h);
 
 /* ---- img.c: per-page image cache. Images are fetched by helper processes (two at a time), decoded
  * in-process and kept (plus one scaled copy) until the next page. ---- */
@@ -147,23 +188,36 @@ const uint32_t *img_pixels(int i, int w, int h, color_t bg);   /* w*h opaque pix
 int  img_pump(void);                             /* advance downloads; nonzero when an image became ready/failed */
 int  img_busy(void);                             /* images still queued or downloading */
 void img_reset(void);                            /* new page */
+void *img_save(void);                            /* background tab: take the cache (empties it); img_restore(h) puts it back and frees h, img_drop(h) frees it */
+void img_restore(void *h);
+void img_drop(void *h);
 int  img_add_data(const char *url, const uint8_t *d, size_t n);   /* decode a body we already have */
+int  img_svg_inline(const char *svg, size_t n, long color);       /* an inline <svg> element's markup as an image (index, or -1); color = currentColor 0xRRGGBB or -1 */
+const char *img_url(int i);                      /* the cache key / URL of image i */
+int  img_anim_due(void);                         /* ms until an animated GIF on screen wants its next frame, -1 = none (wake the loop then; no relayout needed) */
+/* srcset/sizes: the URL to load for an <img> or <source> (src may be NULL), vw = viewport width. 1 = out filled (unresolved URL) */
+int  img_pick(const char *src, const char *srcset, const char *sizes, int vw, char *out, int cap);
+int  img_type_ok(const char *mime);              /* a <source type=...> the decoders handle (png/jpeg/gif/svg/bmp; not webp/avif) */
 
 /* ---- html.c ---- */
+extern int doc_zoom;                             /* main.c: page zoom in percent (100 = normal); layout scales fonts, lengths and images by it */
 enum { C_TEXT, C_PASS, C_AREA, C_BTN, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT };
-struct ctl { uint8_t kind, sub, chk; int form, ord, item, node; uint32_t name, val; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits */
+struct ctl { uint8_t kind, sub, chk, fl; int form, ord, item, node; uint32_t name, val, ph; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits; ph: placeholder (txt offset, "" = none); fl: CF_* */
+enum { CF_REQ = 1, CF_EMAIL = 2, CF_AUTO = 4, CF_RO = 8 };   /* required, type=email, autofocus, readonly/disabled */
 struct opt { uint32_t lab, val; };
 struct form { uint32_t action; uint8_t post; int node; };
 #define FL_UL 1
 #define FL_STRIKE 2
 #define FL_IMG 4
 #define FL_CTL 8
-struct item { int x, y; short w, h, bel; uint8_t font, flags; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
-struct decor { int x, y, w, h; color_t col; };
+struct item { int x, y; short w, h, clip; uint8_t font, flags; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
+struct decor { int x, y, w, h; color_t col; int it; short clip; uint8_t rad, ring; };   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */
+struct cliprect { int x, y, w, h; };
 struct anchor { char name[40]; int y; };
 struct doc {
     struct item *it; int nit, itcap;
     struct decor *dc; int ndc, dccap;
+    struct cliprect *cl; int ncl, clcap;   /* overflow clips; index 0 = none */
     char *txt; size_t ntxt, txtcap;
     char **link; int nlink, linkcap;
     struct anchor *an; int nan;
@@ -193,14 +247,18 @@ int  doc_find(const struct doc *d, const char *needle, int from_it, int from_off
 int  doc_count(const struct doc *d, const char *needle);
 
 /* ---- form.c: control state (survives re-layout), drawing, editing, submit URLs ---- */
-struct fstate { char *val; int cap, on, sel, init, sx, sy; };   /* sx/sy: text scroll */
+struct fstate { char *val; int cap, on, sel, init, sx, sy, anc1; };   /* sx/sy: text scroll; anc1: selection anchor byte + 1 (0 = none) */
 struct fstate *fs_get(const struct doc *d, int ci);      /* state of control ci (lazily initialised) */
 struct fstate *fs_ord(int ord);                          /* by ordinal, or NULL */
 void fs_set(struct fstate *s, const char *v);
 void fs_reset(void);
+void *fs_save(void);                                     /* same trio as img_save: field values of a background tab */
+void fs_restore(void *h);
+void fs_drop(void *h);
 void ctl_draw(struct canvas *c, const struct doc *d, const struct ctl *t, int x, int y, int w, int h, int focused, int caret);
 int  ctl_key(const struct doc *d, int ci, const struct gui_event *k, int *caret);   /* 1 = Enter pressed */
 int  ctl_caret_at(const struct doc *d, int ci, int rx, int ry);
+int  form_check(const struct doc *d, int form, char *msg, int cap);   /* first control failing required / type=email: its index + a message, else -1 */
 void ctl_toggle(const struct doc *d, int ci);            /* click on a checkbox / radio */
 void form_reset(const struct doc *d, int form);
 /* URL (GET) or body (POST) for submitting `form`, pressed by control `btn` (or -1): returns 1 for POST, 0 for GET */
