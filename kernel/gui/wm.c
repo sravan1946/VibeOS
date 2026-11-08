@@ -2336,6 +2336,7 @@ int win_syscall(int num, uint32_t a, uint32_t b, uint32_t c) {
         if (map_into_owner(w) < 0) { wm_destroy(w); kfree(w); return -ENOMEM; }
         w->vn.mode = S_IFCHR | 0600;
         w->vn.ops = &win_ops;
+        poll_keyed_ops(&win_ops);           /* readiness only changes in wm_post, which wakes w: poll() sleeps keyed on it */
         w->vn.priv = w;
         struct file *f = vfs_open_vnode(&w->vn, O_RDWR);
         int fd = f ? fd_alloc(f) : -ENOMEM;
