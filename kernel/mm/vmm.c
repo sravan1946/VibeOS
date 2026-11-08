@@ -85,6 +85,7 @@ int vmm_alloc_range(uint32_t dir, uint32_t va, uint32_t len, uint32_t flags) {
 
 void vmm_unmap_range(uint32_t dir, uint32_t va, uint32_t len, bool free_frames) {
     for (uint32_t a = ALIGN_DOWN(va, PAGE_SIZE); a < va + len; a += PAGE_SIZE) {
+        if (!(((uint32_t *)dir)[a >> 22] & PTE_P)) { a = (a | 0x3FFFFF) & ~0xFFFu; if (!(a + PAGE_SIZE)) break; continue; }   /* no page table: skip its 4 MiB */
         uint32_t *pte = pte_for(dir, a, false);
         if (!pte || !(*pte & PTE_P)) continue;
         if (free_frames && !(*pte & PTE_NOFREE)) pmm_free(*pte & ~0xFFFu);
