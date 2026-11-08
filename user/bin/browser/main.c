@@ -195,6 +195,7 @@ static void commit(const char *url, char *raw, size_t n, int html) {
         hcur = nhist++;
     }
     strlcpy(cur_url, url, sizeof cur_url);
+    visited_add(url);
     fetch_set_referer(url_is_web(url) && strncasecmp(url, "data:", 5) ? url : 0);   /* Referer for this page's subresources and the next click */
     internal = false;
     if (!keep_imgs) img_reset();

@@ -9,13 +9,14 @@ extern char *SP;
 uint32_t hash_str(const char *s);
 
 /* ---- selectors ---- */
-enum { T_TAG, T_ID, T_CLASS, T_ATTR, T_PC, T_NOT, T_IS, T_HAS, T_NTH };
+enum { T_TAG, T_ID, T_CLASS, T_ATTR, T_PC, T_NOT, T_IS, T_HAS, T_NTH, T_HOST, T_HOSTCTX, T_SLOTTED };   /* T_HOST/HOSTCTX/SLOTTED: a = first sel, b = count (0 = bare :host) */
 enum { PC_FIRSTC, PC_LASTC, PC_ONLYC, PC_FIRSTT, PC_LASTT, PC_ONLYT, PC_EMPTY, PC_ROOT, PC_LINK, PC_HOVER, PC_FOCUS, PC_ACTIVE, PC_CHECKED,
-       PC_DISABLED, PC_ENABLED, PC_FOCUSWITHIN, PC_REQUIRED, PC_OPTIONAL, PC_READONLY, PC_READWRITE, PC_NEVER, PC_ALWAYS, PC_LANG };
+       PC_DISABLED, PC_ENABLED, PC_FOCUSWITHIN, PC_REQUIRED, PC_OPTIONAL, PC_READONLY, PC_READWRITE, PC_NEVER, PC_ALWAYS, PC_LANG, PC_ANYLINK, PC_VISITED };
 struct simple { uint8_t t, op, ci; int a, b; };       /* T_ATTR: a name, b value, op; T_PC: a PC_*; T_NOT/IS/HAS: a first sel, b count; T_NTH: a, b = An+B, op: 0 child 1 last-child 2 of-type 3 last-of-type */
 struct comp { int s0; uint8_t ns, comb; };            /* comb: how this compound relates to the one on its left: ' ' '>' '+' '~' (0 for the first) */
 #define BLW 8                                       /* bloom filter words: 256 bits, enough for the ~60 keys of a deep ancestor chain */
-struct sel { int c0; uint8_t nc, pe; uint32_t spec; uint32_t mask[BLW], rmask[BLW]; };   /* pe: PE_*; mask: bloom bits the ancestors must have; rmask: ...the subject itself */
+struct sel { int c0; uint8_t nc, pe, kind;   /* kind: 0 normal, 1 :host rule, 2 ::slotted rule (matched in the shadow scope's terms) */
+     uint32_t spec; uint32_t mask[BLW], rmask[BLW]; };   /* pe: PE_*; mask: bloom bits the ancestors must have; rmask: ...the subject itself */
 extern struct simple *SI; extern struct comp *CO; extern struct sel *SE;
 extern int nsi, nco, nse;
 extern const struct css_dom *DOM;
@@ -25,6 +26,7 @@ int  sel_push(const struct sel *s);
 void sel_mark(int *a, int *b, int *c);
 void sel_trunc(int a, int b, int c);
 int  sel_match(const struct sel *s, int node);
+int  sel_match_scoped(const struct sel *s, int node, int scope);
 
 void sel_key(const struct sel *s, int *kind, uint32_t *h);   /* bucket: kind 1 id, 2 class, 3 tag, 0 any */
 void bloom_add(uint32_t *b, uint32_t h);
