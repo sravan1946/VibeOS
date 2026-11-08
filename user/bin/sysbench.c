@@ -282,6 +282,11 @@ static void b_fault(void) {
     t = tsc();
     munmap(m, PAGES * 4096);
     NS("munmap per page", tsc() - t, PAGES);
+    t = tsc();                      /* same frames again: the host has them backed already, so this is the guest's own cost */
+    m = mmap(0, PAGES * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    for (int i = 0; i < PAGES; i++) m[i * 4096] = 1;
+    NS("page fault (reused frames)", tsc() - t, PAGES);
+    munmap(m, PAGES * 4096);
     static char big[4 << 20];
     t = tsc();
     for (int i = 0; i < 1024; i++) *(volatile char *)&big[i * 4096] = 1;
