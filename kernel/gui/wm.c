@@ -2498,6 +2498,21 @@ static int wm_thread(void *arg) {
 }
 
 char *fwcfg_read(const char *name, uint32_t *size);
+void testcmd_init(void);
+
+/* tools/vmtest.py `type:` (kernel/dev/testcmd.c): TEXT straight into the focused window as key presses; -1 if none */
+int wm_type(const char *s, int n) {
+    if (!focused) return -1;
+    for (int i = 0; i < n && focused; i++) {
+        struct window *w = focused;
+        char c = s[i];
+        struct gui_event e = { .type = EV_KEY, .pressed = 1, .key = c, .ch = c };
+        if (c >= 'A' && c <= 'Z') { e.key = c + 32; e.mods = MOD_SHIFT; }
+        send(w, &e);
+        if (!w->on_event) { e.pressed = 0; send(w, &e); if (!(i & 15)) yield(); }   /* user windows queue 128 events: let the app drain */
+    }
+    return n;
+}
 
 /* /etc/autostart (or the QEMU fw_cfg file opt/vibeos/autostart, which wins: tools/vmtest.py's way in): "term ARGV..." opens a terminal running ARGV (kept open after
  * exit), "run ARGV..." starts a GUI app, "shell" opens an interactive terminal.
@@ -2593,6 +2608,7 @@ void wm_init(void) {
     if (snap) { no_present = true; compose(); no_present = false; crossfade(snap, 64, 16); big_free(snap, SW, SH); }
     kthread_create("compositor", wm_thread, 0);
     kthread_create("chime", chime, 0);
+    testcmd_init();
     autostart();
     struct vnode *dv;
     if (vfs_lookup("/", "/bin/desktop", &dv) == 0) { vnode_put(dv); wm_spawn_app("/bin/desktop", 0); }     /* desktop icons */

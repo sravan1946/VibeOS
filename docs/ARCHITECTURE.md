@@ -399,9 +399,16 @@ dlopen fail. See `third_party/quickjs/README.vibeos`.
 ## Testing
 
 * `tools/filestest/vm.sh` is the visible-VM walkthrough of Files, the desktop icons and the trash (real pointer events, `--abs`); `tools/filestest/run.sh` tests `fsutil.c` on the host and `/home/filestest.sh` checks `open -w` and `trash` inside VibeOS.
-* `tools/vmtest.py` boots the image in QEMU and drives it through QMP: type text (~1.6 ms/char), send
-  keys, move/click/drag the mouse, wait for serial output, take screenshots. `--autostart LINE` (and the `suites`
-  preset) hands the kernel an autostart through QEMU fw_cfg (`opt/vibeos/autostart`, `kernel/dev/fwcfg.c`) so a
+* `tools/vmtest.py` boots the image in QEMU and drives it through QMP (keys, mouse, screenshots) and a serial
+  command channel. The serial port is a QEMU socket chardev (`build/serial.sock`, guest output still logged to
+  `build/serial.log`); when vmtest sets the fw_cfg flag `opt/vibeos/testmode`, `kernel/dev/testcmd.c` listens on COM1
+  (IRQ4, a kthread sleeping on the receive ring; without the flag serial input is ignored). Lines are `VERB ID TEXT`:
+  `run` spawns `/bin/sh -c TEXT` in the background (output to the kernel log; the shell's EXIT trap prints
+  `[run ID] exit CODE` through `/dev/kmsg`, which also flushes the ext2 write-back), `term` opens a visible held terminal,
+  `type` feeds TEXT into the focused window as key presses in one go (`wm_type`). The steps `run:` / `run?:` / `term:` /
+  `type:` use it (~1-2 ms per `run:` on KVM); `keys:` keeps real PS/2 key events (~1.6 ms/char) for keyboard tests. Never
+  type a command key by key: `run:`, `term:` or `--autostart LINE` (and the `suites` preset, which is one `run:`) start it directly.
+  `--autostart` hands the kernel an autostart through fw_cfg (`opt/vibeos/autostart`, `kernel/dev/fwcfg.c`) so a
   command can start at boot with no typing and no disk edit.
 * Sound is captured to `build/audio.wav` (`--audiodev` / `VIBE_AUDIODEV` to override) and checked with `tools/wavcheck.py`.
 * `/etc/autostart` lists what the desktop opens at boot (`shell`, `term ARGV`, `run ARGV`).

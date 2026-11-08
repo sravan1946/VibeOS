@@ -377,7 +377,8 @@ static int bi_pwd(int argc, char **argv) {
 
 static int bi_exit(int argc, char **argv) {
     fflush(stdout);
-    exit(argc > 1 ? atoi(argv[1]) & 255 : g_status);
+    g_status = argc > 1 ? atoi(argv[1]) & 255 : g_status;   /* the EXIT trap sees it as $? */
+    exit(g_status);
 }
 
 static int pr_export(const char *name, const char *val, int exported) {

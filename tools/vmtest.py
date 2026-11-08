@@ -5,7 +5,13 @@
 
 steps:
   wait:TEXT        wait until TEXT shows up in the serial log
-  type:TEXT        type TEXT (\\n = Enter, \\t = Tab)
+  run:CMD          run CMD (/bin/sh -c, pipes and redirects work) in the background through the serial command channel and block
+                   until it exits: no typing, no terminal, ~ms per command. Prints its output (kernel log lines on serial) and
+                   FAILS on a non-zero exit; run?:CMD only prints the exit code. CMD is passed as is (no \\n decoding).
+  term:CMD         open a visible terminal window running CMD (kept open); returns at once, so follow it with shot:
+  type:TEXT        feed TEXT (\\n = Enter, \\t = Tab) into the focused window in one go via the channel (for tests that need
+                   typed input in a terminal or app; a command to run belongs in run:/term:/--autostart, never typed key by key)
+  keys:TEXT        same, as real QMP key events through the PS/2 keyboard (tests of the keyboard path itself; ~1.5 ms per char)
   key:NAME         QEMU sendkey name, e.g. ctrl-c, up, esc (prtsc = print)
   keydown:NAME     press and hold a key (QMP qcode: alt, meta_l, shift, ctrl, tab, 1 ...) until keyup:NAME
   mclick           middle click (rclick right, dclick double)
@@ -17,19 +23,22 @@ steps:
   drag:X0,Y0,X1,Y1 left-drag
   smoke            = wait for the desktop and take build/smoke.png
   (shot: waits until the screen has stopped changing, so no sleep is needed between an action and its shot)
-  typetest         type a 200-char line (upper/lower, digits, shifted symbols) into the shell and check it arrives intact; prints the time
+  typetest         keys: a 200-char line (upper/lower, digits, shifted symbols) into the shell and check it arrives intact; prints the time
+  typechan         type: a 500-char line into the shell and check it arrives intact
+  runbench[:N]     N (default 50) back-to-back run:true; prints the per-command latency
   boot             = wait for the desktop and print the boot time (host wall since QEMU started; the kernel's own ms from its serial line)
-  suites           = run root/home/runtests.sh (every in-VM suite) and check each summary line on serial; nothing is typed:
-                     the kernel starts it from the fw_cfg autostart below, so it needs no wait:[desktop] ready either
+  suites           = run:sh /home/runtests.sh (every in-VM suite) and check each summary line on serial; nothing is typed
 --autostart LINE   an /etc/autostart line the kernel runs at boot instead of the file (QEMU fw_cfg opt/vibeos/autostart),
                    e.g. --autostart 'term /bin/ls /bin' : starts commands with no typing and no disk edit (no quoting: split on spaces)
 The VM window opens on the desktop unless --headless (or VIBE_HEADLESS=1).
 Sound: an AC'97 card feeds -audiodev AUDIODEV, default wav,id=snd0,path=build/audio.wav (finalised when
 the VM quits; analyse it with tools/wavcheck.py). Override with --audiodev SPEC or VIBE_AUDIODEV, e.g.
 `pa,id=snd0` to hear it (the id must stay snd0).
+The serial port is a QEMU socket chardev (build/serial.sock): the guest's output is logged to build/serial.log as before, and the
+host writes command lines to it. The kernel only listens when vmtest sets the fw_cfg flag opt/vibeos/testmode (kernel/dev/testcmd.c).
 Serial output goes to build/serial.log (--pcap: packets to build/net.pcap); exits non-zero on timeout or panic.
 """
-import json, os, re, socket, subprocess, sys, time
+import json, os, re, socket, subprocess, sys, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 B = os.path.join(ROOT, "build")
@@ -49,13 +58,13 @@ def keyname(ch):
     if ch in SHIFTED: return "shift-" + (KEYS.get(SHIFTED[ch], SHIFTED[ch]))
     raise ValueError(f"can't type {ch!r}")
 
-def typetest(vm, n=200):
+def typetest(vm, n=200, chan=False):
     import random
     r = random.Random(7)
     s = re.sub(" +", " ", "".join(r.choice("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -=,./_+:@%^") for _ in range(n)))
-    t = time.time(); vm.type(f"echo TT{s}E > /dev/kmsg\n"); dt = time.time() - t
+    t = time.time(); (vm.type if chan else vm.keys)(f"echo TT{s}E > /dev/kmsg\n"); dt = time.time() - t
     ok = vm.wait(f"TT{s}E", 5)
-    print(f"typetest: {len(s)} chars typed in {dt:.3f} s, {'intact' if ok else 'KEYS DROPPED'}")
+    print(f"{'typechan' if chan else 'typetest'}: {len(s)} chars typed in {dt:.3f} s, {'intact' if ok else 'KEYS DROPPED'}")
     return ok
 
 def key_events(ch):
@@ -68,20 +77,22 @@ def key_events(ch):
 class VM:
     def __init__(self, headless=False, extra=(), audiodev=None, hostfwd=None, pcap=False, absolute=False, autostart=()):
         os.makedirs(B, exist_ok=True)
-        self.qsock = os.path.join(B, "qmp.sock")
+        self.qsock, self.ssock = os.path.join(B, "qmp.sock"), os.path.join(B, "serial.sock")
         self.log = os.path.join(B, "serial.log")
-        for p in (self.qsock, self.log):
+        for p in (self.qsock, self.ssock, self.log):
             if os.path.exists(p): os.unlink(p)
         self._s, self._lf, self.t0 = "", None, time.time()
-        fw = []
+        tm = os.path.join(B, "testmode.txt")    # the flag that makes the kernel listen on COM1 (kernel/dev/testcmd.c)
+        open(tm, "w").write("1\n")
+        fw = ["-fw_cfg", f"name=opt/vibeos/testmode,file={tm}"]
         if autostart:                           # the kernel runs these lines instead of /etc/autostart (kernel/dev/fwcfg.c)
             f = os.path.join(B, "autostart.txt")
             open(f, "w").write("\n".join(autostart) + "\n")
-            fw = ["-fw_cfg", f"name=opt/vibeos/autostart,file={f}"]
+            fw += ["-fw_cfg", f"name=opt/vibeos/autostart,file={f}"]
         self.p = subprocess.Popen([
             "qemu-system-i386", "-m", "256", "-drive", f"file={B}/vibeos.img,format=raw,if=ide",
             "-display", "none" if headless else "gtk,zoom-to-fit=on", "-name", "VibeOS (vmtest)",
-            "-serial", f"file:{self.log}", "-no-reboot", "-netdev", "user,id=n0" + (f",hostfwd={hostfwd}" if hostfwd else ""), "-device", "e1000,netdev=n0,romfile=",
+            "-chardev", f"socket,id=ser0,path={self.ssock},server=on,wait=off,logfile={self.log}", "-serial", "chardev:ser0", "-no-reboot", "-netdev", "user,id=n0" + (f",hostfwd={hostfwd}" if hostfwd else ""), "-device", "e1000,netdev=n0,romfile=",
             *(["-object", f"filter-dump,id=dump,netdev=n0,file={B}/net.pcap"] if pcap else []),
             "-device", "isa-debug-exit,iobase=0xf4,iosize=4", "-machine", "pc" if absolute else "pc,vmport=off",  # --abs: the vmmouse pointer `make run` gets; else relative PS/2
             *(["-accel", "tcg"] if os.environ.get("VIBE_ACCEL") == "tcg" else ["-accel", "kvm", "-accel", "tcg"]),  # KVM when available (VIBE_ACCEL=tcg: software emulation, a slow-CPU worst case)
@@ -96,6 +107,51 @@ class VM:
         self.qf.readline()                      # greeting
         self.qmp("qmp_capabilities")
         self.absolute = absolute
+        self.s = socket.socket(socket.AF_UNIX)  # serial: the log file has the guest's output, this is the way in
+        for _ in range(2000):
+            try: self.s.connect(self.ssock); break
+            except OSError: time.sleep(0.005)
+        else: raise RuntimeError("no serial socket")
+        threading.Thread(target=self._drain, daemon=True).start()
+        self.seq, self.ready = 0, False
+
+    def _drain(self):
+        """QEMU stalls the guest's serial output when nobody reads the socket; the log file has the text, so discard it"""
+        try:
+            while self.s.recv(65536): pass
+        except OSError: pass
+
+    def send(self, verb, text):
+        """one line on the serial command channel (kernel/dev/testcmd.c: run/term/type); returns the id the guest echoes back"""
+        if not self.ready:
+            if not self.wait("[testcmd] ready", 30): raise RuntimeError("the kernel's command channel never came up")
+            self.ready = True
+        self.seq += 1
+        text = text.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
+        self.s.sendall(f"{verb} {self.seq} {text}\n".encode())
+        return self.seq
+
+    def await_(self, pat, timeout, poll=0.0005):
+        """wait for regex PAT on serial; the match object, or None on timeout/panic/QEMU exit"""
+        t = time.time() + timeout
+        while time.time() < t:
+            m = re.search(pat, self.serial())
+            if m: return m
+            if "KERNEL PANIC" in self._s or self.p.poll() is not None: return None
+            time.sleep(poll)
+
+    def run(self, cmd, timeout=30):
+        """run CMD in the guest (/bin/sh -c) and wait for it: (exit code, output) or (None, output) on timeout"""
+        at = len(self.serial())
+        n = self.send("run", cmd)
+        m = self.await_(rf"\[run {n}\] exit (\d+)", timeout)
+        if at and self._s[at - 1] != "\n": at = self._s.find("\n", at) + 1 or at   # the log may have been read mid-line
+        out = self._s[at:m.start()] if m else self._s[at:]
+        return (int(m.group(1)) if m else None), out.replace("\r", "")
+
+    def term(self, cmd, timeout=10):
+        n = self.send("term", cmd)
+        return bool(self.await_(rf"\[term {n}\] started", timeout))
 
     def qmp(self, cmd, **args):
         """one QMP command; returns when QEMU has answered (events are skipped)"""
@@ -165,7 +221,12 @@ class VM:
             time.sleep(0.005)
         return False
 
-    def type(self, text, burst=None, gap=None):
+    def type(self, text, timeout=10):
+        """TEXT into the focused window in one go through the serial channel (\\n = Enter)"""
+        n = self.send("type", text)
+        return bool(self.await_(rf"\[type {n}\] ok", timeout))
+
+    def keys(self, text, burst=None, gap=None):
         """type TEXT as QMP key down/up events, at most `burst` events per command (then `gap` s). QEMU's PS/2 keyboard
         queue holds 16 bytes and silently drops the rest of a bigger burst, so BURST stays under that; the command round trip
         paces the guest (measured: 200 chars in ~0.3 s, no drops; the old per-key sendkey took ~35 s)"""
@@ -191,6 +252,8 @@ class VM:
         os.replace(tmp, path)
 
     def close(self):
+        if self.ready and self.p.poll() is None and "KERNEL PANIC" not in self.serial():
+            self.run("true", 3)                 # ext2 writes are delayed; a /dev/kmsg write (the run's exit line) flushes them first
         try: self.qmp("quit")
         except (OSError, RuntimeError, ValueError): pass
         try: self.p.wait(3)
@@ -212,19 +275,37 @@ def main(argv):
         elif a == "--abs": absolute = True
         elif a == "--autostart": autostart.append(next(it))
         elif a == "smoke": steps += ["wait:[desktop] ready", "sleep:0.5", f"shot:{B}/smoke.png"]   # 0.5: /bin/desktop draws its icons after "ready"
-        elif a == "suites": autostart.append("term /bin/sh /home/runtests.sh"); steps += ["wait:ALL-SUITES-DONE", "suites"]
+        elif a == "suites": steps += ["run:sh /home/runtests.sh > /dev/null", "suites"]
         else: steps.append(a)
     vm = VM(headless, audiodev=audiodev, hostfwd=hostfwd, pcap=pcap, absolute=absolute, autostart=autostart)
     ok = True
     try:
         for s in steps:
             kind, _, arg = s.partition(":")
-            arg = arg.encode().decode("unicode_escape")
+            if kind not in ("run", "run?", "term"): arg = arg.encode().decode("unicode_escape")   # run/term: the command as typed
             if kind == "wait":
                 if not vm.wait(arg, timeout):
                     print(f"FAIL: timed out waiting for {arg!r}"); ok = False; break
-            elif kind == "type": vm.type(arg)
+            elif kind == "type":
+                if not vm.type(arg): print("FAIL: type: not acknowledged (no focused window?)"); ok = False; break
+            elif kind == "keys": vm.keys(arg)
+            elif kind in ("run", "run?"):
+                t = time.time(); code, out = vm.run(arg, timeout); dt = (time.time() - t) * 1000
+                print(f"$ {arg}\n{out}", end="" if out.endswith("\n") or not out else "\n")
+                if code is None: print(f"FAIL: run: no exit line within {timeout:g} s"); ok = False; break
+                print(f"[exit {code}, {dt:.1f} ms]")
+                if code and kind == "run": print(f"FAIL: exit {code}"); ok = False; break
+            elif kind == "term":
+                if not vm.term(arg): print("FAIL: term: window did not open"); ok = False; break
+            elif kind == "runbench":
+                n = int(arg or 50); ts = []
+                for _ in range(n):
+                    t = time.time(); code, _ = vm.run("true", timeout); ts.append((time.time() - t) * 1000)
+                    if code != 0: print(f"FAIL: run:true gave {code}"); ok = False; break
+                if ts: print(f"runbench: {len(ts)} x run:true, per command mean {sum(ts)/len(ts):.1f} ms, median {sorted(ts)[len(ts)//2]:.1f}, min {min(ts):.1f}, max {max(ts):.1f}")
+                if not ok: break
             elif kind == "typetest": ok = typetest(vm) and ok
+            elif kind == "typechan": ok = typetest(vm, 500, True) and ok
             elif kind == "boot":
                 if not vm.wait("[desktop] ready", timeout): print("FAIL: no desktop"); ok = False; break
                 print(f"boot: {time.time() - vm.t0:.3f} s host wall from QEMU start to [desktop] ready; "
