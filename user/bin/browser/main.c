@@ -158,12 +158,17 @@ static const char HOME_HTML[] =
     "</body></html>";
 
 /* ---------- page lifecycle ---------- */
+/* zoom: baked fonts can't scale, so the page is laid out and drawn at (window size * 100 / zoom) and the picture is scaled to the window.
+ * Scroll and layout are in page ("doc") pixels; zd() takes screen pixels to doc pixels, zs() back. */
+static int zd(int v) { return (int)((long long)v * 100 / doc_zoom); }
+static int zs(int v) { return (int)((long long)v * doc_zoom / 100); }
 static int view_w(void) { return win->w - SB; }
 static int view_h(void) { return win->h - CT - STH - (find_open ? FB : 0); }
 static int find_x(void) { return SP_3; }
 static int find_y(void) { return win->h - STH - FB + (FB - H_SEARCH) / 2; }
 static int vh0(void) { return view_h() / 2; }
-static int max_scroll(void) { int m = doc.height - view_h(); return m > 0 ? m : 0; }
+static int lay_w(void) { return zd(view_w()); }
+static int max_scroll(void) { int m = doc.height - zd(view_h()); return m > 0 ? m : 0; }
 static void clamp_scroll(void) {
     int m = max_scroll();
     if (target > m) target = m;
@@ -199,7 +204,7 @@ static void commit(const char *url, char *raw, size_t n, int html) {
     fo = sel_ci = -1; mk.from_it = mk.to_it = -1; selecting = false; img_dirty = false;
     last_needle[0] = 0; find_count = 0; mk.find = 0;
     doc.title[0] = 0;
-    layout_w = view_w();
+    layout_w = lay_w();
     free(alert_msg);
     alert_msg = 0;
     if (html && js_page(pg.raw, pg.n, url)) {          /* scripts: lay out the DOM (js.c) instead of the source */
@@ -817,6 +822,22 @@ static void view_source(void) {                          /* Ctrl+U */
 }
 
 static void relayout(void);
+static uint32_t *zbuf; static size_t zcap;
+/* the page at doc size into a scratch canvas, then scaled (area average when zooming out, bilinear in) into the window */
+static void zoom_draw(struct ui *ui, int vw, int vh, int hover) {
+    int dw = zd(vw), dh = zd(vh);
+    size_t need = (size_t)dw * dh * 4;
+    if (need > zcap) { free(zbuf); zbuf = malloc(need); zcap = zbuf ? need : 0; }
+    if (!zbuf) { doc_draw(ui, &doc, 0, CT, vw, vh, scroll, hover, &mk, fo, caret); return; }
+    struct canvas t;
+    canvas_init(&t, zbuf, dw, dh, dw);
+    struct ui u2 = *ui;
+    u2.c = &t;
+    doc_draw(&u2, &doc, 0, 0, dw, dh, scroll, hover, &mk, fo, caret);
+    struct image im = { dw, dh, zbuf };
+    image_sample(&im, ui->c->px + (size_t)CT * ui->c->stride, vw, vh, ui->c->stride, 0, 0, doc_zoom / 100.0f, 1);
+}
+
 static void zoom_by(int d) {
     static const short Z[] = { 30, 50, 67, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300 };
     int i = 0, n = sizeof Z / sizeof *Z;
@@ -827,6 +848,7 @@ static void zoom_by(int d) {
         if (d < 0 && i && Z[i] >= doc_zoom) i--;
         doc_zoom = Z[i >= n ? n - 1 : i];
     }
+    if (doc_zoom == 100) { free(zbuf); zbuf = 0; zcap = 0; }
     if (pg.have) relayout();
     say(false, "Zoom %d%%", doc_zoom);
 }
@@ -841,7 +863,7 @@ static void retheme(void) {                  /* EV_THEME: recolour our own pages
 
 static void relayout(void) {
     int old = doc.height ? doc.height : 1;
-    layout_w = view_w();
+    layout_w = lay_w();
     doc_layout(&doc, pg.raw, pg.n, pg.html, layout_w, cur_url);
     last_relayout = uptime_ms();
     mk.from_it = mk.to_it = -1; mk.find_it = -1; last_needle[0] = 0;
@@ -864,7 +886,7 @@ static void submit(int btn, int form) {
         const struct ctl *c = &doc.ct[bad];
         if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = strlen(fs_get(&doc, bad)->val ?: ""); }
         const struct item *it = ctl_item(bad);
-        if (it) scroll_to_y(it->y, view_h());
+        if (it) scroll_to_y(it->y, zd(view_h()));
         strlcpy(dl_toast, vmsg, sizeof dl_toast);
         return;
     }
@@ -890,7 +912,7 @@ static void js_relayout(void) {
     free(pg.raw);
     pg.raw = js_html(&pg.n);
     fs_reset();
-    layout_w = view_w();
+    layout_w = lay_w();
     doc_layout(&doc, pg.raw, pg.n, 1, layout_w, cur_url);
     last_relayout = uptime_ms();
     mk.from_it = mk.to_it = -1; mk.find_it = -1; last_needle[0] = 0;
@@ -1038,8 +1060,8 @@ int main(int argc, char **argv) {
         if (pg.have && sheet_pump()) { relayout(); img_dirty = false; }    /* a stylesheet arrived (or failed): lay the page out again */
         if (img_dirty && pg.have && (!img_busy() || uptime_ms() - last_relayout > 400)) { relayout(); img_dirty = false; }
 
-        int W = win->w, H = win->h, vw = view_w(), vh = view_h();
-        if (pg.have && vw != layout_w) relayout();
+        int W = win->w, H = win->h, vw = view_w(), vh = view_h(), vhd = zd(vh);
+        if (pg.have && lay_w() != layout_w) relayout();
         if (ui.themed) retheme();
         int aw = W - AX - SP_3, ay = (TB - H_CTL) / 2;
         uint32_t aid = ui_id(AX, ay, aw, H_CTL);
@@ -1053,7 +1075,7 @@ int main(int argc, char **argv) {
             else if ((k.mods & MOD_ALT) && k.key == KEY_LEFT) go_hist(-1);
             else if ((k.mods & MOD_ALT) && k.key == KEY_RIGHT) go_hist(1);
             else if (ctrl && (c == 'f' || k.ch == 6)) { find_open = true; ui.focus = ui_id(find_x(), find_y(), 240, H_SEARCH); fo = -1; }
-            else if (k.key == KEY_F3 || (ctrl && (c == 'g' || k.ch == 7))) { if (find_open) find_go((k.mods & MOD_SHIFT) ? -1 : 1, vh, false); else handled = 0; }
+            else if (k.key == KEY_F3 || (ctrl && (c == 'g' || k.ch == 7))) { if (find_open) find_go((k.mods & MOD_SHIFT) ? -1 : 1, vhd, false); else handled = 0; }
             else if (k.key == KEY_F12) console_open = !console_open;
             else if (ctrl && c == 't') { tab_new("about:home", true); ui.focus = aid; addr[0] = 0; }
             else if (ctrl && c == 'w') { tab_close(curtab); ui.focus = 0; }
@@ -1137,9 +1159,9 @@ int main(int argc, char **argv) {
             else {
                 int no = doc.ct[sel_ci].no;
                 prows = no < 12 ? no : 12;
-                px = it->x; pw = it->w < 120 ? 120 : it->w;
-                py = CT + it->y - scroll + it->h;
-                if (py + prows * rh > H - STH) py = CT + it->y - scroll - prows * rh;
+                px = zs(it->x); pw = zs(it->w) < 120 ? 120 : zs(it->w);
+                py = CT + zs(it->y - scroll + it->h);
+                if (py + prows * rh > H - STH) py = CT + zs(it->y - scroll) - prows * rh;
                 bool inp = ui.mx >= px && ui.mx < px + pw && ui.my >= py && ui.my < py + prows * rh;
                 if (inp && ui.scroll) { sel_scroll += ui.scroll; ui.scroll = 0; }
                 if (sel_scroll > no - prows) sel_scroll = no - prows;
@@ -1151,9 +1173,9 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (in_view && sel_ci < 0) hover = doc_hit(&doc, ui.mx, ui.my - CT + scroll);
+        if (in_view && sel_ci < 0) hover = doc_hit(&doc, zd(ui.mx), zd(ui.my - CT) + scroll);
         if (ui.pressed && !consumed && in_view) {
-            int dx = ui.mx, dy = ui.my - CT + scroll, ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
+            int dx = zd(ui.mx), dy = zd(ui.my - CT) + scroll, ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
             fo = -1;
             mk.from_it = mk.to_it = -1;
             if (ci >= 0) {                                   /* the page sees the click first; preventDefault skips our part */
@@ -1179,14 +1201,14 @@ int main(int argc, char **argv) {
         if (fo_drag) {                                       /* drag-select inside a text field */
             int fci = ctl_by_ord(fo);
             const struct item *fit = fci >= 0 ? ctl_item(fci) : 0;
-            if ((ui.buttons & 1) && fit) caret = ctl_caret_at(&doc, fci, ui.mx - fit->x, ui.my - CT + scroll - fit->y);
+            if ((ui.buttons & 1) && fit) caret = ctl_caret_at(&doc, fci, zd(ui.mx) - fit->x, zd(ui.my - CT) + scroll - fit->y);
             else fo_drag = 0;
         }
         if (selecting) {
             if (ui.buttons & 1) {
                 int my = ui.my < CT ? CT : ui.my > CT + vh - 1 ? CT + vh - 1 : ui.my, i, ch;
                 if (ui.my < CT + 6) target -= 24; else if (ui.my > CT + vh - 6) target += 24;
-                if (doc_pos_at(&doc, ui.mx, my - CT + scroll, &i, &ch)) {
+                if (doc_pos_at(&doc, zd(ui.mx), zd(my - CT) + scroll, &i, &ch)) {
                     if (i != anc_it || ch != anc_ch) sel_moved = true;
                     if (sel_moved) set_sel(anc_it, anc_ch, i, ch);
                 }
@@ -1210,7 +1232,7 @@ int main(int argc, char **argv) {
             }
             if (find_focus) {
                 int n = strlen(needle);
-                if (k.key == KEY_ENTER) find_go(shift ? -1 : 1, vh, false);
+                if (k.key == KEY_ENTER) find_go(shift ? -1 : 1, vhd, false);
                 else if (k.key == KEY_BACKSPACE || k.ch == 8) { if (n) needle[n - 1] = 0; }
                 else if (k.ch == 21) needle[0] = 0;
                 else if (ctrl && (k.key | 32) == 'v') {
@@ -1224,7 +1246,7 @@ int main(int argc, char **argv) {
             if (fo >= 0) {                                    /* typing into a form field: keydown, the edit, input */
                 int ci = ctl_by_ord(fo), node = ci >= 0 ? doc.ct[ci].node : 0;
                 if (js_event(node, "keydown", &k, 0, 0)) continue;
-                if (k.key == KEY_TAB) focus_next(shift ? -1 : 1, vh);
+                if (k.key == KEY_TAB) focus_next(shift ? -1 : 1, vhd);
                 else if (ci >= 0) {
                     struct fstate *fs = fs_get(&doc, ci);
                     char *before = js_active() && fs->val ? strdup(fs->val) : 0;
@@ -1239,12 +1261,12 @@ int main(int argc, char **argv) {
             switch (k.key) {
             case KEY_DOWN: target += 48; break;
             case KEY_UP: target -= 48; break;
-            case KEY_PGDN: target += vh - 40; break;
-            case KEY_PGUP: target -= vh - 40; break;
-            case ' ': target += shift ? 40 - vh : vh - 40; break;
+            case KEY_PGDN: target += vhd - 40; break;
+            case KEY_PGUP: target -= vhd - 40; break;
+            case ' ': target += shift ? 40 - vhd : vhd - 40; break;
             case KEY_HOME: target = 0; break;
             case KEY_END: target = max_scroll(); break;
-            case KEY_TAB: focus_next(shift ? -1 : 1, vh); break;
+            case KEY_TAB: focus_next(shift ? -1 : 1, vhd); break;
             default:
                 if (ctrl && (k.key | 32) == 'c') copy_sel();
                 else if (ctrl && (k.key | 32) == 'a' && doc.nit) set_sel(0, 0, doc.nit - 1, 1 << 20);
@@ -1255,7 +1277,7 @@ int main(int argc, char **argv) {
                 strlcpy(last_needle, needle, sizeof last_needle);
                 find_count = doc_count(&doc, needle);
                 mk.find_it = -1;
-                find_go(1, vh, true);
+                find_go(1, vhd, true);
             }
             mk.find = needle[0] ? needle : 0;
         } else mk.find = 0;
@@ -1272,7 +1294,8 @@ int main(int argc, char **argv) {
         if (al) { free(alert_msg); alert_msg = al; }
         const char *jn = js_nav();
         if (jn) { char u[URL_MAX]; strlcpy(u, jn, sizeof u); navigate(u, 1, -1); }
-        doc_draw(&ui, &doc, 0, CT, vw, vh, scroll, hover, &mk, fo, caret);
+        if (doc_zoom == 100) doc_draw(&ui, &doc, 0, CT, vw, vh, scroll, hover, &mk, fo, caret);
+        else zoom_draw(&ui, vw, vh, hover);
         if (sel_ci >= 0 && prows) {                      /* dropdown on top of the page */
             const struct ctl *c = &doc.ct[sel_ci];
             struct fstate *fsx = fs_get(&doc, sel_ci);
@@ -1295,8 +1318,8 @@ int main(int argc, char **argv) {
             gfx_fill(ui.c, 0, by, W, FB, ui_th.window);
             gfx_hline(ui.c, 0, by, W, UI_LINE);
             ui_search(&ui, fx, fy, 240, needle, sizeof needle, "Find in page");
-            if (ui_icon_button(&ui, bx, iy, ICON_CHEVRON_UP, find_count ? 0 : UI_DISABLED, "Previous \u00b7 Shift+F3")) find_go(-1, vh, false);
-            if (ui_icon_button(&ui, bx + H_CTL + SP_2, iy, ICON_CHEVRON_DOWN, find_count ? 0 : UI_DISABLED, "Next \u00b7 F3")) find_go(1, vh, false);
+            if (ui_icon_button(&ui, bx, iy, ICON_CHEVRON_UP, find_count ? 0 : UI_DISABLED, "Previous \u00b7 Shift+F3")) find_go(-1, vhd, false);
+            if (ui_icon_button(&ui, bx + H_CTL + SP_2, iy, ICON_CHEVRON_DOWN, find_count ? 0 : UI_DISABLED, "Next \u00b7 F3")) find_go(1, vhd, false);
             char fc[40];
             snprintf(fc, sizeof fc, !needle[0] ? "" : find_count ? "%d match%s" : "No matches", find_count, find_count == 1 ? "" : "es");
             gfx_text(ui.c, T_BODY, bx + 2 * H_CTL + SP_2 + SP_4, by + (FB - T_BODY->height) / 2, fc, !needle[0] || find_count ? UI_TEXT2 : UI_BAD);
@@ -1304,9 +1327,9 @@ int main(int argc, char **argv) {
         }
         if (console_open) console_panel(&ui, vw, vh);
         gfx_fill(ui.c, vw, CT, SB, vh, ui_th.window);
-        int sp = scroll;
-        ui_vscroll(&ui, vw + 1, CT, vh, doc.height, vh, &sp);
-        if (sp != scroll) scroll = target = sp;
+        int sp = zs(scroll);
+        ui_vscroll(&ui, vw + 1, CT, vh, zs(doc.height), vh, &sp);
+        if (sp != zs(scroll)) scroll = target = zd(sp);
 
         /* status bar */
         ui_status(&ui, 0, H - STH, W, NULL, NULL);
