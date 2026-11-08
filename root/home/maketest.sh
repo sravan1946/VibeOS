@@ -62,7 +62,7 @@ printf '%%.o: %%.c\n\t@echo cc $< $@; cp $< $@\nall: w1.o w2.o\n' > m10
 t pattern "cc w1.c w1.o
 cc w2.c w2.o" "$(make -f m10)"
 t pattern-uptodate "make: Nothing to be done for 'all'." "$(make -f m10)"
-sleep 2; touch w1.c
+sleep 1.05; touch w1.c          # mtimes are whole seconds: any gap > 1 s makes the touch newer
 t pattern-rebuild "cc w1.c w1.o" "$(make -f m10)"
 printf '.SUFFIXES: .in .out\n.in.out:\n\t@echo conv $< $@; cp $< $@\nall: s.out\n' > m11
 echo x > s.in
@@ -105,7 +105,7 @@ LINK wordfreq" "$(make)"
 t proj-run "3 the" "$(printf 'the cat the dog\nthe end\n' | ./wordfreq | head -1)"
 t proj-test "test: ok" "$(make test)"
 t proj-uptodate "make: Nothing to be done for 'all'." "$(make)"
-sleep 2; touch words.h
+sleep 1.05; touch words.h
 t proj-header-dep "CC main.c
 CC words.c
 CC table.c
