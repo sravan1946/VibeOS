@@ -33,6 +33,12 @@ void tty_input(struct tty *t, const char *s, int n) {
             if (t->fg_pid > 0) proc_kill(t->fg_pid, SIGINT);
             continue;
         }
+        if ((t->lflag & ISIG) && c == 26) {       /* ^Z */
+            echo(t, "^Z\n", 3);
+            t->line_len = 0;
+            if (t->fg_pid > 0) proc_kill(t->fg_pid, SIGTSTP);
+            continue;
+        }
         if (!(t->lflag & ICANON)) { in_put(t, c); continue; }
         if (c == '\r') c = '\n';
         if (c == 8 || c == 127) {                 /* backspace */

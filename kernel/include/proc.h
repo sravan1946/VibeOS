@@ -30,6 +30,8 @@ struct task {
     uint32_t sig_handler[NSIG];   /* 0 default, 1 ignore, else a user address */
     uint32_t sig_restorer;
     int nthreads;                 /* live tasks in the process, leader included */
+    int stopped;                  /* SIGSTOP/SIGTSTP: the signal that stopped the process (0 = running) */
+    uint8_t stop_rep, cont_rep;   /* a stop / continue the parent hasn't collected via waitpid yet */
     bool exiting;                 /* exit()/fatal signal under way: exit_code is final */
     uint32_t uerrno;              /* user address of libc's errno, swapped per thread (0 = unthreaded) */
     /* ---- per task ---- */

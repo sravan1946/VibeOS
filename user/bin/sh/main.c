@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -58,6 +59,8 @@ static void source_if_exists(const char *path) {
     if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) run_source(path, 0, NULL);
 }
 
+static void nop(int sig) {}
+
 int main(int argc, char **argv) {
     char cwd[PATH_MAX];
     int i = 1, cmd = 0;
@@ -90,6 +93,7 @@ int main(int argc, char **argv) {
         return g_status & 255;
     }
     g_interactive = 1;
+    signal(SIGTSTP, nop);                              /* ^Z while we are the tty foreground must not stop us (a handler resets on exec, SIG_IGN would not) */
     hist_load();
     source_if_exists("/etc/profile");
     char rc[PATH_MAX];

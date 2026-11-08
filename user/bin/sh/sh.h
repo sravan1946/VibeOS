@@ -81,6 +81,10 @@ void fn_list(void (*fn)(const char *name, const char *src));
 void reap_jobs(void);
 int jobs_wait(int pid);                          /* wait [pid]; 0 pid = all */
 void jobs_print(void);
+int job_spec(const char *s);                     /* "%N", "%%", "" -> job index or -1 */
+int job_pid(int i);
+int job_fg(int i);
+int job_bg(int i);
 void local_mark(int *mark);
 void local_release(int mark);
 void local_declare(const char *name);

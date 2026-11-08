@@ -5,7 +5,7 @@
 
 static const struct { const char *n; int s; } sigs[] = {
     { "HUP", 1 }, { "INT", SIGINT }, { "QUIT", 3 }, { "KILL", SIGKILL }, { "USR1", 10 },
-    { "USR2", 12 }, { "PIPE", 13 }, { "ALRM", 14 }, { "TERM", SIGTERM }, { "CHLD", 17 },
+    { "USR2", 12 }, { "PIPE", 13 }, { "ALRM", 14 }, { "TERM", SIGTERM }, { "CHLD", 17 }, { "CONT", SIGCONT }, { "STOP", SIGSTOP }, { "TSTP", SIGTSTP },
 };
 
 static int signo(const char *s) {

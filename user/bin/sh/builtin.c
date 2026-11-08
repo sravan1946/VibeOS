@@ -436,7 +436,8 @@ static int bi_help(int argc, char **argv) {
         { "alias  unalias", "command-name shortcuts" },
         { "type  which", "how a name resolves" },
         { "return  break  continue", "leave function / loop [n]" },
-        { "wait [pid]  jobs", "wait for / list background jobs" },
+        { "wait [pid]  jobs", "wait for / list background jobs (^Z stops the foreground job)" },
+        { "fg [%N]  bg [%N]", "resume a stopped job in the foreground / background; kill %N works too" },
         { "history [-c|N]", "show / clear the history" },
         { "trap [cmd] SIG...", "run cmd on a signal (INT TERM HUP USR1 USR2 EXIT ...); '' ignores, - resets" },
         { "true false : exit clear", "" },
@@ -492,6 +493,32 @@ static int bi_source(int argc, char **argv) {
 
 static int bi_jobs(int argc, char **argv) { jobs_print(); return 0; }
 static int bi_wait(int argc, char **argv) { return jobs_wait(argc > 1 ? atoi(argv[1]) : 0); }
+static int job_arg(const char *cmd, int argc, char **argv) {
+    int i = job_spec(argc > 1 ? argv[1] : "%");
+    if (i < 0) fprintf(stderr, "sh: %s: %s: no such job\n", cmd, argc > 1 ? argv[1] : "current");
+    return i;
+}
+static int bi_fg(int argc, char **argv) { int i = job_arg("fg", argc, argv); return i < 0 ? 1 : job_fg(i); }
+static int bi_bg(int argc, char **argv) { int i = job_arg("bg", argc, argv); return i < 0 ? 1 : job_bg(i); }
+/* kill: only here to turn %N into a pid; /bin/kill does the work */
+static int bi_kill(int argc, char **argv) {
+    char *av[argc + 1], num[argc][12];
+    for (int i = 0; i < argc; i++) {
+        av[i] = argv[i];
+        if (i && argv[i][0] == '%') {
+            int j = job_spec(argv[i]);
+            if (j < 0) { fprintf(stderr, "sh: kill: %s: no such job\n", argv[i]); return 1; }
+            snprintf(num[i], sizeof num[i], "%d", job_pid(j));
+            av[i] = num[i];
+        }
+    }
+    av[argc] = NULL;
+    av[0] = "/bin/kill";
+    int pid = spawnv("/bin/kill", av), st = 0;
+    if (pid < 0) return 127;
+    waitpid(pid, &st, 0);
+    return st & 0xff;
+}
 static int bi_clear(int argc, char **argv) { fputs("\x1b[H\x1b[2J", stdout); return 0; }
 static int bi_true(int argc, char **argv) { return 0; }
 static int bi_false(int argc, char **argv) { return 1; }
@@ -589,7 +616,7 @@ static const struct { const char *name; int (*fn)(int, char **); } bt[] = {
     { "read", bi_read }, { "shift", bi_shift }, { "set", bi_set }, { "eval", bi_eval }, { "exec", bi_exec },
     { "type", bi_type }, { "alias", bi_alias }, { "unalias", bi_unalias }, { "wait", bi_wait },
     { "local", bi_local }, { "return", bi_return }, { "break", bi_break }, { "continue", bi_break },
-    { "trap", bi_trap },
+    { "trap", bi_trap }, { "fg", bi_fg }, { "bg", bi_bg }, { "kill", bi_kill },
 };
 #define NBT ((int)(sizeof bt / sizeof bt[0]))
 

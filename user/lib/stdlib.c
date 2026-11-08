@@ -130,6 +130,20 @@ int rand(void) {
 /* ---- environment ---- */
 
 static int env_owned;           /* environ array was malloc'd by us */
+/* the "NAME=value" strings setenv() malloc'd (putenv and the initial environment belong to the caller): only these are freed when replaced or unset */
+static char **own; static size_t nown, capown;
+static void own_add(char *s) {
+    if (nown == capown) {
+        char **n = realloc(own, (capown = capown ? capown * 2 : 16) * sizeof *n);
+        if (!n) { capown = nown; return; }                   /* can't track it: it leaks, as it used to */
+        own = n;
+    }
+    own[nown++] = s;
+}
+static void own_free(char *s) {                              /* free s if setenv made it */
+    for (size_t i = 0; i < nown; i++)
+        if (own[i] == s) { own[i] = own[--nown]; free(s); return; }
+}
 
 static char **env_find(const char *name, size_t len) {
     if (!environ) return NULL;
@@ -161,7 +175,7 @@ int putenv(char *s) {
     char *eq = strchr(s, '=');
     if (!eq) { errno = EINVAL; return -1; }
     char **e = env_find(s, eq - s);
-    if (e) { *e = s; return 0; }
+    if (e) { own_free(*e); *e = s; return 0; }
     return env_add(s);
 }
 
@@ -170,18 +184,20 @@ int setenv(const char *name, const char *val, int overwrite) {
     if (!nl || strchr(name, '=')) { errno = EINVAL; return -1; }
     char **e = env_find(name, nl);
     if (e && !overwrite) return 0;
-    char *s = malloc(nl + strlen(val) + 2);                  /* ponytail: old string leaks on overwrite */
+    char *s = malloc(nl + strlen(val) + 2);
     if (!s) return -1;
     memcpy(s, name, nl);
     s[nl] = '=';
     strcpy(s + nl + 1, val);
-    if (e) { *e = s; return 0; }
-    return env_add(s);
+    if (e) { own_free(*e); *e = s; own_add(s); return 0; }
+    if (env_add(s)) { free(s); return -1; }
+    own_add(s);
+    return 0;
 }
 
 int unsetenv(const char *name) {
     char **e = env_find(name, strlen(name));
-    if (e) for (; *e; e++) *e = e[1];
+    if (e) { own_free(*e); for (; *e; e++) *e = e[1]; }
     return 0;
 }
 

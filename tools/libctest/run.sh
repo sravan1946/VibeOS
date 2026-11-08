@@ -61,3 +61,14 @@ for n in copysign nearbyint expm1 log1p asinh acosh atanh erf erfc tgamma lgamma
 gcc -O2 -ffreestanding -fno-builtin -nostdinc -isystem $GCCINC -Iuser/include -Icommon $R -w -c user/lib/compat2.c -o $T/compat2_64.o
 gcc -O2 -Wall tools/libctest/compat2_diff.c $T/compat2_64.o -o $T/compat2_diff -lm
 $T/compat2_diff
+
+echo "== gzip interop with the host gzip (user/lib/image.c gzip_buf / gunzip_buf)"
+gcc -O1 -fsanitize=address,undefined -w -Iuser/lib tools/libctest/gz_interop.c user/lib/image.c user/lib/jpeg.c user/lib/gif.c -lm -o $T/gz_interop
+for src in /usr/bin/ls user/lib/image.c /dev/null; do
+    $T/gz_interop z $src $T/t.gz
+    gzip -dc $T/t.gz | cmp - $src
+    gzip -c $src > $T/h.gz
+    $T/gz_interop u $T/h.gz $T/t.out
+    cmp $T/t.out $src
+done
+echo "gzip interop ok"

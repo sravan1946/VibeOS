@@ -43,47 +43,113 @@ int wait_pid(int pid) {
     return r < 0 ? 127 : s & 0xff;
 }
 
-/* ---- background jobs ---- */
-static struct job { int id, pid; char cmd[48]; } jobs[16];
+/* ---- jobs: background pipelines, and foreground ones stopped with ^Z ---- */
+struct job { int id, n, stopped, pid[MAXSTAGE]; char cmd[48]; };
+static struct job jobs[16];
 static int njobs, nextjob = 1;
 
 static void job_del(int i) { jobs[i] = jobs[--njobs]; if (!njobs) nextjob = 1; }
+static int job_of_pid(int pid) {
+    for (int i = 0; i < njobs; i++) for (int k = 0; k < jobs[i].n; k++) if (jobs[i].pid[k] == pid) return i;
+    return -1;
+}
+/* %N / %% / %+ / % (the newest stopped job, else the newest) ; -1 if none */
+int job_spec(const char *s) {
+    if (*s == '%') s++;
+    if (*s >= '0' && *s <= '9') { for (int i = 0; i < njobs; i++) if (jobs[i].id == atoi(s)) return i; return -1; }
+    int best = -1;
+    for (int i = 0; i < njobs; i++)
+        if (best < 0 || jobs[i].stopped > jobs[best].stopped || (jobs[i].stopped == jobs[best].stopped && jobs[i].id > jobs[best].id)) best = i;
+    return best;
+}
+int job_pid(int i) { return jobs[i].pid[0]; }
 
-void reap_jobs(void) {
-    int st, pid;
-    while (njobs && (pid = waitpid(-1, &st, WNOHANG)) > 0)
-        for (int i = 0; i < njobs; i++)
-            if (jobs[i].pid == pid) {
-                if (g_interactive) {
-                    if (st) printf("[%d]+  Exit %d\t%s\n", jobs[i].id, st, jobs[i].cmd);
-                    else printf("[%d]+  Done\t%s\n", jobs[i].id, jobs[i].cmd);
-                }
-                job_del(i);
-                break;
-            }
+static void job_report(struct job *j, const char *what, int st) {
+    if (!g_interactive) return;
+    if (st) printf("[%d]+  %s %d\t%s\n", j->id, what, st, j->cmd);
+    else printf("[%d]+  %s\t%s\n", j->id, what, j->cmd);
 }
 
-void jobs_print(void) { for (int i = 0; i < njobs; i++) printf("[%d]+  Running\t%s\n", jobs[i].id, jobs[i].cmd); }
+void reap_jobs(void) {
+    int st, pid, fl = WNOHANG | (g_interactive ? WUNTRACED : 0);
+    while (njobs && (pid = waitpid(-1, &st, fl)) > 0) {
+        int i = job_of_pid(pid);
+        if (i < 0) continue;
+        struct job *j = &jobs[i];
+        if (WIFSTOPPED(st)) { if (!j->stopped) { j->stopped = 1; job_report(j, "Stopped", 0); } continue; }
+        for (int k = 0; k < j->n; k++) if (j->pid[k] == pid) { j->pid[k] = j->pid[--j->n]; break; }
+        if (!j->n) { job_report(j, st ? "Exit" : "Done", st); job_del(i); }
+    }
+}
+
+void jobs_print(void) {
+    int cur = job_spec("%");
+    for (int i = 0; i < njobs; i++)
+        printf("[%d]%c  %s\t%s\n", jobs[i].id, i == cur ? '+' : '-', jobs[i].stopped ? "Stopped" : "Running", jobs[i].cmd);
+}
 
 int jobs_wait(int pid) {
     int rc = 0;
     if (pid) {
         rc = wait_pid(pid);
-        for (int i = 0; i < njobs; i++) if (jobs[i].pid == pid) { job_del(i); break; }
+        int i = job_of_pid(pid);
+        if (i >= 0) job_del(i);
         return rc;
     }
-    while (njobs) { wait_pid(jobs[0].pid); job_del(0); }
+    for (int i = 0; i < njobs; ) {                        /* stopped jobs would never finish: skip them */
+        if (jobs[i].stopped) { i++; continue; }
+        for (int k = 0; k < jobs[i].n; k++) wait_pid(jobs[i].pid[k]);
+        job_del(i); i = 0;
+    }
     return 0;
 }
 
-static void job_add(int pid, const char *cmd) {
-    g_lastbg = pid;
-    if (njobs >= 16) return;
+static int job_add(const int *pids, int n, const char *cmd, int stopped) {
+    g_lastbg = pids[n - 1];
+    if (njobs >= 16) return -1;
     struct job *j = &jobs[njobs++];
-    j->id = nextjob++; j->pid = pid;
+    j->id = nextjob++; j->n = n; j->stopped = stopped;
+    memcpy(j->pid, pids, n * sizeof *pids);
     snprintf(j->cmd, sizeof j->cmd, "%s", cmd);
     for (char *p = j->cmd; *p; p++) if (*p == '\n') *p = ' ';
-    if (g_interactive) printf("[%d] %d\n", j->id, j->pid);
+    if (!stopped && g_interactive) printf("[%d] %d\n", j->id, j->pid[n - 1]);
+    return njobs - 1;
+}
+
+/* wait for a foreground process; WUNTRACED so ^Z (the tty sends SIGTSTP to it) comes back as *stopped */
+static int wait_fg(int pid, int *stopped) {
+    int s = 0;
+    pid_t r;
+    while ((r = waitpid(pid, &s, g_interactive ? WUNTRACED : 0)) < 0 && errno == EINTR) {}
+    if (r > 0 && WIFSTOPPED(s)) { *stopped = 1; return 128 + SIGTSTP; }
+    return r < 0 ? 127 : s & 0xff;
+}
+
+/* fg: resume job i in the foreground and wait for it (stopped again: it stays a job) */
+int job_fg(int i) {
+    struct job j = jobs[i];
+    int stopped = 0, rc = 0, id = j.id;
+    printf("%s\n", j.cmd); fflush(stdout);
+    set_fg(j.pid[0]);
+    for (int k = 0; k < j.n; k++) kill(j.pid[k], SIGCONT);
+    jobs[i].stopped = 0;
+    for (int k = 0; k < j.n && !stopped; k++) rc = wait_fg(j.pid[k], &stopped);
+    set_fg(getpid());
+    i = -1;
+    for (int k = 0; k < njobs; k++) if (jobs[k].id == id) i = k;
+    if (i < 0) return rc;
+    if (stopped) {
+        for (int k = 0; k < j.n; k++) kill(j.pid[k], SIGSTOP);
+        jobs[i].stopped = 1; job_report(&jobs[i], "Stopped", 0);
+    } else job_del(i);
+    return rc;
+}
+
+int job_bg(int i) {
+    for (int k = 0; k < jobs[i].n; k++) kill(jobs[i].pid[k], SIGCONT);
+    jobs[i].stopped = 0;
+    printf("[%d]+ %s &\n", jobs[i].id, jobs[i].cmd);
+    return 0;
 }
 
 /* ---- functions (parsed once, kept until redefined) ---- */
@@ -432,12 +498,19 @@ static int run_pipeline(struct node **sn, int ns, int bg) {
     int last = 0;
     if (bg) {
         for (int i = ns - 1; i >= 0; i--)
-            if (st[i].pid > 0) { job_add(st[i].pid, stage_text(sn[0])); break; }
+            if (st[i].pid > 0) { job_add(&st[i].pid, 1, stage_text(sn[0]), 0); break; }
     } else {
-        int killed = 0;
-        for (int i = 0; i < ns; i++) {
+        int killed = 0, stopped = 0;
+        for (int i = 0; i < ns && !stopped; i++) {
             if (st[i].pid > 0) {
-                st[i].st = wait_pid(st[i].pid);
+                st[i].st = wait_fg(st[i].pid, &stopped);
+                if (stopped) {                               /* ^Z reached the first stage: stop the rest, keep all as one job */
+                    int pids[MAXSTAGE], n = 0;
+                    for (int j = 0; j < ns; j++) if (st[j].pid > 0) { pids[n++] = st[j].pid; if (j > i) kill(st[j].pid, SIGSTOP); }
+                    int ji = job_add(pids, n, stage_text(sn[0]), 1);
+                    if (ji >= 0) job_report(&jobs[ji], "Stopped", 0);
+                    break;
+                }
                 if (st[i].st == 128 + SIGINT && !killed) {   /* ^C only reaches the first stage: take the rest down too */
                     killed = 1;
                     for (int j = i + 1; j < ns; j++) if (st[j].pid > 0) kill(st[j].pid, SIGKILL);
@@ -445,7 +518,7 @@ static int run_pipeline(struct node **sn, int ns, int bg) {
             }
         }
         set_fg(getpid());
-        last = killed ? 128 + SIGINT : st[ns - 1].st;
+        last = stopped ? 128 + SIGTSTP : killed ? 128 + SIGINT : st[ns - 1].st;
         if (last == 128 + SIGINT && !g_interactive) {                   /* ^C aborts scripts, unless trapped */
             if (trap_set(SIGINT)) trap_raise(SIGINT);
             else { fflush(stdout); exit(last); }
@@ -556,7 +629,7 @@ int run_node(struct node *n) {
         else {                                            /* && lists, compound commands: child shell */
             int fds[3] = { -1, -1, -1 }, pid, dn = open("/dev/null", O_RDONLY);
             fds[0] = dn;
-            if (spawn_sh(n->src, fds, &pid) == 0) job_add(pid, n->src);
+            if (spawn_sh(n->src, fds, &pid) == 0) job_add(&pid, 1, n->src, 0);
             if (dn >= 0) close(dn);
         }
         g_status = 0;

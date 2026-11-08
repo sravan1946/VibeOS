@@ -115,10 +115,9 @@ static int inf_codes(struct inf *s, const struct huff *lc, const struct huff *dc
     }
 }
 
-int zlib_inflate(const uint8_t *in, size_t n, uint8_t **out, size_t *olen, size_t hint) {
+int deflate_inflate(const uint8_t *in, size_t n, size_t start, uint8_t **out, size_t *olen, size_t hint) {
     struct inf s = { .in = in, .n = n };
-    if (n < 2 || (in[0] & 15) != 8 || ((in[0] << 8) | in[1]) % 31) return -1;
-    s.pos = 2;
+    s.pos = start;
     if (hint && !(s.out = malloc(s.cap = hint))) return -1;
     int last, rc = 0;
     do {
@@ -176,6 +175,11 @@ int zlib_inflate(const uint8_t *in, size_t n, uint8_t **out, size_t *olen, size_
     *out = s.out ? s.out : malloc(1);
     *olen = s.len;
     return 0;
+}
+
+int zlib_inflate(const uint8_t *in, size_t n, uint8_t **out, size_t *olen, size_t hint) {
+    if (n < 2 || (in[0] & 15) != 8 || ((in[0] << 8) | in[1]) % 31) return -1;
+    return deflate_inflate(in, n, 2, out, olen, hint);
 }
 
 /* ================= checksums ================= */
@@ -540,6 +544,45 @@ static void deflate_fixed(struct bw *b, const uint8_t *in, size_t n) {
     bw_lit(b, 256);
     if (b->nb) bw_bits(b, 0, 8 - b->nb);
     free(head);
+}
+
+uint8_t *deflate_buf(const uint8_t *in, size_t n, size_t *len) {
+    struct bw z = { 0 };
+    deflate_fixed(&z, in, n);
+    if (z.err) { free(z.p); return NULL; }
+    *len = z.len;
+    return z.p ? z.p : malloc(1);
+}
+
+/* gzip (RFC 1952): 10-byte header, raw deflate, CRC-32 + size (little endian). One member; fixed-Huffman deflate */
+uint8_t *gzip_buf(const uint8_t *in, size_t n, size_t *len) {
+    size_t dl;
+    uint8_t *d = deflate_buf(in, n, &dl), *o;
+    if (!d || !(o = malloc(dl + 18))) { free(d); return NULL; }
+    static const uint8_t h[10] = { 0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3 };
+    uint32_t c = crc32_update(0, in, n);
+    memcpy(o, h, 10); memcpy(o + 10, d, dl);
+    for (int i = 0; i < 4; i++) { o[10 + dl + i] = c >> 8 * i; o[14 + dl + i] = n >> 8 * i; }
+    free(d);
+    *len = dl + 18;
+    return o;
+}
+
+/* 0 / -1 (not gzip, truncated, or CRC / size mismatch); *out is malloc'd */
+int gunzip_buf(const uint8_t *in, size_t n, uint8_t **out, size_t *olen) {
+    if (n < 18 || in[0] != 0x1f || in[1] != 0x8b || in[2] != 8) return -1;
+    size_t p = 10;
+    int fl = in[3];
+    if (fl & 4) { if (p + 2 > n) return -1; p += 2 + (in[p] | in[p + 1] << 8); }
+    for (int b = 8; b <= 16; b <<= 1)                               /* FNAME, FCOMMENT: NUL-terminated */
+        if (fl & b) { while (p < n && in[p]) p++; p++; }
+    if (fl & 2) p += 2;
+    if (p + 8 > n) return -1;
+    if (deflate_inflate(in, n - 8, p, out, olen, n * 3)) return -1;
+    const uint8_t *t = in + n - 8;
+    uint32_t c = t[0] | t[1] << 8 | t[2] << 16 | (uint32_t)t[3] << 24, sz = t[4] | t[5] << 8 | t[6] << 16 | (uint32_t)t[7] << 24;
+    if (crc32_update(0, *out, *olen) != c || (uint32_t)*olen != sz) { free(*out); return -1; }
+    return 0;
 }
 
 static void put32(uint8_t *p, uint32_t v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }

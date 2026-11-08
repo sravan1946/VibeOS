@@ -373,6 +373,20 @@ static void b_malloc(void) {
     t = tsc();
     for (int i = 0; i < 200; i++) { char *q = malloc(1 << 20); q[0] = 1; free(q); }
     NS("malloc+free 1M (mmap)", tsc() - t, 200);
+    t = tsc();                                          /* a buffer that only grows: in place when it is the last block */
+    for (int r = 0; r < 50; r++) {
+        char *q = NULL;
+        for (int sz = 64; sz <= 96 << 10; sz += 64) { q = realloc(q, sz); q[sz - 1] = 1; }
+        free(q);
+    }
+    NS("realloc grow 64B..96K", tsc() - t, 50 * 1536);
+    t = tsc();
+    for (int r = 0; r < 20; r++) {
+        char *q = NULL;
+        for (int sz = 16; sz <= 4 << 20; sz *= 2) { q = realloc(q, sz); q[sz - 1] = 1; }
+        free(q);
+    }
+    NS("realloc double 16B..4M", tsc() - t, 20 * 18);
 }
 
 static void b_stdio(void) {

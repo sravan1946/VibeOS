@@ -243,6 +243,14 @@ static void complete(struct ed *e) {
             while ((de = readdir(dp))) add_cand(&c, de->d_name, ld, base);
             closedir(dp);
         }
+        int cs = s;                                        /* the command this word belongs to: cd and rmdir only take directories */
+        while (cs > 0 && !strchr("|;&", e->buf[cs - 1])) cs--;
+        while (cs < s && (e->buf[cs] == ' ' || e->buf[cs] == '\t')) cs++;
+        if ((!strncmp(e->buf + cs, "cd ", 3) || !strncmp(e->buf + cs, "rmdir ", 6)) && cs + 3 <= s) {
+            int k = 0;
+            for (int i = 0; i < c.n; i++) if (c.v[i][strlen(c.v[i]) - 1] == '/') c.v[k++] = c.v[i]; else free(c.v[i]);
+            c.n = k;
+        }
     }
     if (!c.n) { free(c.v); return; }
     qsort(c.v, c.n, sizeof(char *), cmp_s);
