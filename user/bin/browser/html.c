@@ -704,11 +704,11 @@ static void open_tag(int t) {
         const char *src = A("src"), *alt = A("alt");
         char u[URL_MAX], pk[URL_MAX];
         if (pic_src[0]) { src = pic_src; pic_src[0] = 0; }
-        else if (img_pick(src, A("srcset"), A("sizes"), right(), pk, sizeof pk)) src = pk;
+        else if (A("srcset") && img_pick(src, A("srcset"), A("sizes"), right(), pk, sizeof pk)) src = pk;
         int idx = -1, iw = 0, ih = 0, st = IMG_FAILED;
-        if (src && *src && strncasecmp(src, "data:", 5)) {
-            url_resolve(L.base, src, u, sizeof u);
-            idx = img_ref(u);
+        if (src && *src) {
+            if (!strncasecmp(src, "data:", 5)) idx = img_ref(src);        /* data: URLs can be long and are already absolute */
+            else { url_resolve(L.base, src, u, sizeof u); idx = img_ref(u); }
             st = img_info(idx, &iw, &ih);
         }
         int avail = right() - left(), W = 0, H = 0;
