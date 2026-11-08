@@ -1298,7 +1298,7 @@ struct window *wm_create(const char *title, int x, int y, int w, int h, int flag
                 }
                 if (best < 0 || ov < best) { best = ov; x = cx; y = cy; }
             }
-        if (best * 10 > (int64_t)w * h * 6) { x = bx; y = by; }   /* mostly covered anyway: cascade */
+        if (best < 0 || best * 10 > (int64_t)w * h * 6) { x = bx; y = by; }   /* no slot fits, or mostly covered anyway: cascade */
         if (x + w > SW - 10) x = imax(10, SW - 10 - w);
         if (y + h > TB_Y - 10) y = imax(WM_TITLE_H + 10, TB_Y - 10 - h);
     }
