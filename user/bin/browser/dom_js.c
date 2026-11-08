@@ -132,7 +132,7 @@ function invoke(t, ev, phase) {
 function pathOf(t, type) {
     const p = [];
     if (t === g) return [g];
-    for (let n = t; n; n = n.parentNode) p.push(n);
+    for (let n = t; n; n = n.parentNode || (n.nodeType === 11 && n.host)) p.push(n);       // a shadow root's parent for events is its host
     if (p[p.length - 1] === document && type !== 'load') p.push(g);      // load events from elements stop at the document (DOM spec)
     return p;
 }
@@ -257,7 +257,7 @@ function wrap(id) {
         const tag = d.tag(id);
         const ce = tag.indexOf('-') > 0 && CE.get(tag);
         proto = ce ? ce.prototype : (TAGS[tag] || HTMLUnknownElement).prototype;
-    } else proto = (t === 3 ? Text : t === 8 ? Comment : t === 9 ? Document : DocumentFragment).prototype;
+    } else proto = (t === 3 ? Text : t === 8 ? Comment : t === 9 ? Document : d.host(id) ? ShadowRoot : DocumentFragment).prototype;
     o = Object.create(proto);
     Object.defineProperty(o, '__id', { value: id });
     return W[id] = o;
@@ -283,7 +283,7 @@ class Node extends EventTarget {
     get previousSibling() { return wrap(d.prev(this.__id)); }
     get childNodes() { const r = []; for (let c = d.first(this.__id); c; c = d.next(c)) r.push(wrap(c)); return coll(r); }
     get ownerDocument() { return this.nodeType === 9 ? null : document; }
-    get isConnected() { for (let n = this; n; n = n.parentNode) if (n === document) return true; return false; }
+    get isConnected() { return d.connected(this.__id); }
     get baseURI() { return d.url(); }
     get textContent() { return this.nodeType === 9 ? null : d.text(this.__id); }
     set textContent(v) {
@@ -377,11 +377,16 @@ const query = {
 function mix(dst, src) { Object.defineProperties(dst, Object.getOwnPropertyDescriptors(src)); }
 
 class DocumentFragment extends Node {
+    get adoptedStyleSheets() { return this.__ass || []; } set adoptedStyleSheets(v) { this.__ass = v; }
     get innerHTML() { return d.html(this.__id, false); }
     set innerHTML(v) { d.setHTML(this.__id, v == null ? '' : String(v)); }
 }
 mix(DocumentFragment.prototype, query);
-class ShadowRoot extends DocumentFragment { get mode() { return 'open'; } get host() { return this.__host; } get delegatesFocus() { return false; } }
+class ShadowRoot extends DocumentFragment {
+    get mode() { return d.smode(this.__id) === 2 ? 'closed' : 'open'; } get host() { return wrap(d.host(this.__id)); } get delegatesFocus() { return false; }
+    get adoptedStyleSheets() { return this.__ass || []; } set adoptedStyleSheets(v) { this.__ass = v; }
+    get activeElement() { return null; } getSelection() { return g.getSelection(); }
+}
 
 // ---- class list, style, dataset
 class DOMTokenList {
@@ -590,15 +595,11 @@ class Element extends Node {
     insertAdjacentElement(where, e) { return this.insertAdjacentNode(where, e); }
     insertAdjacentText(where, s) { this.insertAdjacentNode(where, document.createTextNode(String(s))); }
     attachShadow(o) {
-        const s = Object.create(ShadowRoot.prototype);
-        const f = document.createDocumentFragment();
-        Object.defineProperty(s, '__id', { value: f.__id }); Object.defineProperty(s, '__host', { value: this });
-        W[f.__id] = s;
-        if (o && o.mode === 'closed') return s;
-        Object.defineProperty(this, 'shadowRoot', { value: s, configurable: true });
-        return s;
+        const id = d.attachShadow(this.__id, o && o.mode === 'closed' ? 2 : 1);
+        if (!id) throw new DOMException('This element does not support attachShadow', 'NotSupportedError');
+        return wrap(id);
     }
-    get shadowRoot() { return null; }
+    get shadowRoot() { const id = d.shadow(this.__id); return id && d.smode(id) === 1 ? wrap(id) : null; }
     animate() { return { finished: Promise.resolve(), cancel() {}, play() {}, pause() {}, finish() {}, onfinish: null, addEventListener() {} }; }
     getAnimations() { return []; }
     // geometry: from the display items laid out for the node (js.c n_rect)
@@ -656,7 +657,7 @@ class Element extends Node {
     requestFullscreen() { return Promise.reject(new TypeError('fullscreen is not available')); }
     setPointerCapture() {} releasePointerCapture() {} hasPointerCapture() { return false; }
     // ParentNode / ChildNode extras
-    get assignedSlot() { return null; }
+    get assignedSlot() { const p = this.parentNode; const sr = p && p.shadowRoot; if (!sr) return null; return [...sr.querySelectorAll('slot')].find(sl => sl.assignedNodes().includes(this)) || null; }
 }
 mix(Element.prototype, query);
 // reflected attributes
@@ -814,7 +815,8 @@ Object.defineProperties(HTMLFormElement.prototype, {
     elements: { get() { return coll(this.querySelectorAll('input, textarea, select, button, fieldset, output')); } },
     length: { get() { return this.elements.length; } },
 });
-Object.assign(g.HTMLSlotElement.prototype, { assignedNodes() { return []; }, assignedElements() { return []; } });
+Object.assign(g.HTMLSlotElement.prototype, { assignedNodes() { return d.assigned(this.__id).map(wrap); }, assignedElements() { return d.assigned(this.__id).map(wrap).filter(n => n.nodeType === 1); } });
+reflect(g.HTMLSlotElement, { name: 'name' });
 Object.assign(HTMLFormElement.prototype, {
     requestSubmit(btn) { const ev = new Event('submit', { bubbles: true, cancelable: true }); if (btn) ev.submitter = btn; if (dispatch(this, ev)) d.submit(this.__id); },
     submit() { d.submit(this.__id); },

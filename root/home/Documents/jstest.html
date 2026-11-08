@@ -173,6 +173,28 @@ document.title = 'JavaScript tests';
     o.remove();
 }
 
+// ---- shadow DOM ----
+{
+    const host = document.createElement('div');
+    host.innerHTML = '<b slot="a">A</b><i>default</i>';
+    document.body.appendChild(host);
+    const sr = host.attachShadow({ mode: 'open' });
+    sr.innerHTML = '<p><slot name="a"></slot>-<slot></slot><slot name="none">fallback</slot></p>';
+    const slots = sr.querySelectorAll('slot');
+    check('shadow root basics', [host.shadowRoot === sr, sr.host === host, sr.mode, sr.isConnected, document.querySelector('p slot')], [true, true, 'open', true, null]);
+    check('slot assignment', [slots[0].assignedNodes().map(n => n.nodeName), slots[1].assignedNodes().map(n => n.nodeName), slots[2].assignedNodes().length, host.firstChild.assignedSlot === slots[0]], [['B'], ['I'], 0, true]);
+    const path = [];
+    sr.querySelector('p').addEventListener('click', e => path.push(e.composedPath().includes(host)));
+    host.addEventListener('click', e => path.push('host'));
+    sr.querySelector('p').dispatchEvent(new Event('click', { bubbles: true, composed: true }));
+    check('events cross the shadow boundary', path, [true, 'host']);
+    check('closed root hidden', (() => { const h2 = document.createElement('div'); h2.attachShadow({ mode: 'closed' }); return h2.shadowRoot; })(), null);
+    const tpl = document.createElement('div'); tpl.innerHTML = '<x-dsd><template shadowrootmode="open"><span id="in">inside</span></template>light</x-dsd>';
+    document.body.appendChild(tpl);
+    check('declarative shadow DOM', [tpl.firstChild.shadowRoot && tpl.firstChild.shadowRoot.querySelector('#in').textContent, document.getElementById('in')], ['inside', null]);
+    host.remove(); tpl.remove();
+}
+
 // ---- DOM API breadth ----
 {
     const box = document.createElement('div');
