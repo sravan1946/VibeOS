@@ -1639,7 +1639,7 @@ static color_t col_em, col_dim;
 static int nord, curform_;
 
 struct inh { uint8_t font, flags, nul, ws, align, nomark, vis, valign; color_t col; int link, lh, node; };
-struct bctx { int cb, curform, tpad, tborder, tcollapse, nested, js; int *cnt; uint8_t tva; };
+struct bctx { int incenter, cb, curform, tpad, tborder, tcollapse, nested, js; int *cnt; uint8_t tva; };
 static struct el E[128];
 static int nel;
 
@@ -1910,6 +1910,7 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     S->par = S->first = S->last = S->next = -1; S->opacity = 255; S->fw = -1; S->cb = -1; S->base = -1; S->mark = -1; S->link = -1;
     lens_init(S);
     *cx2 = *cx;
+    if (tag == T_CENTER) cx2->incenter = 1;
     int disp = cp->v[P_DISPLAY];
     int bold = cp->v[P_BOLD], mono = cp->v[P_FAMILY] == FAM_MONO, size = cp->v[P_FSIZE];
     ni->font = mono ? (bold ? F_MONOB : F_MONO) : size >= 22 ? F_TITLE : bold ? F_UIB : F_UI;
@@ -2233,7 +2234,7 @@ static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int 
     const struct cprops *par = cpd ? &CPS[cpd - 1] : 0;
     if (pe) { if (!css_compute(dn, pe, par, cp)) return; }
     else css_compute(dn, PE_NONE, par, cp);
-    if (tag == T_TABLE && HD.quirks) cp->v[P_ALIGN] = TA_LEFT;      /* quirks: a table doesn't inherit text-align */
+    if (tag == T_TABLE && (HD.quirks || cx->incenter)) cp->v[P_ALIGN] = TA_LEFT;   /* quirks (or <center><table>, which relied on it): a table doesn't inherit text-align */
     struct bx S;
     struct inh ni;
     struct bctx cx2;
