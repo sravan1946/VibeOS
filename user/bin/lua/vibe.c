@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <syscall.h>
 #include <gui.h>
+#include <design.h>
 
 /* ---------------- vibe ---------------- */
 
@@ -185,8 +186,8 @@ static int w_circle(lua_State *L) {
 }
 
 static int w_text(lua_State *L) {
-    static const char *const names[] = { "mono", "mono_bold", "ui", "ui_bold", "title", "big", NULL };
-    static const struct font *const fonts[] = { &font_mono, &font_mono_bold, &font_ui, &font_ui_bold, &font_title, &font_big };
+    static const char *const names[] = { "mono", "mono_bold", "ui", "ui_bold", "title", "big", "caption", "heading", NULL };
+    static const struct font *const fonts[] = { T_MONO, &font_mono_bold, T_BODY, T_BODY_B, T_TITLE, T_DISPLAY, T_CAPTION, T_HEADING };
     struct gui_window *w = win_of(L, 1);
     const char *s = luaL_checkstring(L, 4);
     color_t c = lua_isnoneornil(L, 5) ? RGB(255, 255, 255) : col(L, 5);

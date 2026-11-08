@@ -1088,7 +1088,11 @@ static void request_close_tab(int i) {
 }
 
 int main(int argc, char **argv) {
-    struct gui_window *w = gui_window_create("Code", 1080, 690, 0);
+    struct sysinfo si = { 0 };
+    sysinfo(&si);                                          /* default size, shrunk to fit small screens (1024x768) */
+    int dw = si.screen_w && si.screen_w - 2 * SP_5 < 1080 ? (int)si.screen_w - 2 * SP_5 : 1080;
+    int dh = si.screen_h && si.screen_h - H_PANEL - H_TITLE - 2 * SP_5 < 690 ? (int)si.screen_h - H_PANEL - H_TITLE - 2 * SP_5 : 690;
+    struct gui_window *w = gui_window_create("Code", dw, dh, 0);
     const struct font *mf = T_MONO;
     if (!w) return 1;
     CW = T_MONO->g['M' - 32].adv;
@@ -1496,7 +1500,7 @@ int main(int argc, char **argv) {
                 if (hi > lo) snprintf(st + n, sizeof st - n, "  ·  %d selected", hi - lo);
                 static const char *const lname[] = { "Plain text", "C", "Lua" };
                 snprintf(rt, sizeof rt, "Spaces: 4  ·  %s", lname[d->lang]);
-            }
+            } else snprintf(st, sizeof st, "%s", root);           /* no file: the folder, so the bar isn't blank */
             ui_status(&ui, 0, H - SB_H, W, st, rt);
         }
 

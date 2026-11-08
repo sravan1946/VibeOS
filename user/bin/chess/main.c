@@ -102,7 +102,7 @@ static const char *status_text(void) {
     return b;
 }
 
-/* pieces captured so far by `by` (their colour's opponents), as sprites in a row; returns material lead */
+/* pieces captured so far by `by` (their colour's opponents), as sprites in a row, then the material lead */
 static void captured_row(struct ui *ui, int x, int y, int by_side) {
     static const int init[7] = { 0, 8, 2, 2, 2, 1, 0 }, val[7] = { 0, 1, 3, 3, 5, 9, 0 };
     int have[7] = { 0 }, gone[7], lead = 0, mine = 0, theirs = 0;
@@ -316,13 +316,14 @@ int main(int argc, char **argv) {
         /* ---- side panel: captures and the move list ---- */
         ui_card(&ui, px0, by, pw, 8 * cell);
         int y = by + SP_4, ix = px0 + SP_4, iw = pw - 2 * SP_4;
+        gfx_text(c, T_CAPTION_B, ix, y, "Captured", UI_TEXT2);
+        y += T_CAPTION_B->height + SP_2;
         int on_board = 0;
         for (int i = 0; i < 64; i++) on_board += hist[nply].b[i] != 0;
-        if (on_board == 32) gfx_text(c, T_BODY, ix, y + 28 - T_BODY->height / 2, "No captures yet", UI_TEXT3);
-        captured_row(&ui, ix, y, human == WHITE ? BLACK : WHITE);   /* what the AI has taken from you */
-        y += 28;
-        captured_row(&ui, ix, y, human);
-        y += 24 + SP_4;
+        if (on_board == 32) { gfx_text(c, T_BODY, ix, y + (H_ROW - T_BODY->height) / 2, "No captures yet", UI_TEXT2); y += H_ROW; }
+        else for (int i = 0; i < 2; i++, y += H_ROW)              /* what the computer took, then what you took */
+            captured_row(&ui, ix, y + (H_ROW - 24) / 2, i ? human : (human == WHITE ? BLACK : WHITE));
+        y += SP_3;
         gfx_hline(c, px0, y, pw, UI_LINE);
         y += SP_4;
         gfx_text(c, T_CAPTION_B, ix, y, "Moves", UI_TEXT2);

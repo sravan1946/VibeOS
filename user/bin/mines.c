@@ -153,13 +153,12 @@ static int stat_icon(struct ui *ui, int x, int icon, const char *val, const char
 }
 
 int main(void) {
-    struct gui_window *w = gui_window_create("Minesweeper", MINW, win_h(), WIN_FLAG_NORESIZE);
+    new_game(0);                                         /* first: the window is placed at the board's real size */
+    struct gui_window *w = gui_window_create("Minesweeper", win_w(), win_h(), WIN_FLAG_NORESIZE);
     if (!w) { perror("mines"); return 1; }
     struct ui ui;
     ui_init(&ui, w);
     srand((unsigned)uptime_ms());
-    new_game(0);
-    gui_resize(w, win_w(), win_h());
     for (;;) {
         if (!ui_poll(&ui, 200)) break;
         if (w->w != win_w() || w->h != win_h()) continue;     /* wait for EV_RESIZE after a level switch */

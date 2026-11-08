@@ -306,7 +306,7 @@ redraw:
         canvas_clip(&cc, ax, ay, aw, ah);
         gfx_elev(&cc, cx0, cy0, DOC_W, DOC_H, 0, E1, ui_th.elev[E1]);
         gfx_blit(&cc, cx0, cy0, doc, DOC_W, DOC_H, DOC_W);
-        gfx_ring_out(&cc, cx0, cy0, DOC_W, DOC_H, 0, ui_th.line);
+        gfx_ring_out(&cc, cx0, cy0, DOC_W, DOC_H, 0, ui_th.line_strong);
         if (over && !modal && mx >= 0 && my >= 0 && mx < DOC_W && my < DOC_H && tool != TL_FILL) {
             int r = brush <= 1 ? 1 : brush / 2;                   /* brush outline: reads on any paint colour */
             gfx_circle_fill(&cc, ui.mx, ui.my, r + 1, RGBA(255, 255, 255, 60));

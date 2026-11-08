@@ -5,6 +5,7 @@
 #include <design.h>
 #include <icons.h>
 #include <string.h>
+#include <syscall.h>
 #include <stdio.h>
 
 #define W 1232
@@ -17,7 +18,11 @@ static void cap(int x, int y, const char *s) { gfx_text(ui.c, T_CAPTION, x, y, s
 
 int main(int argc, char **argv) {
     const char *mode = argc > 1 ? argv[1] : "";
-    struct gui_window *w = gui_window_create("Widgets", W, H, WIN_FLAG_NORESIZE);
+    struct sysinfo si = { 0 };
+    sysinfo(&si);                                          /* smaller screens get a window that fits (and is placed: the compositor needs w <= screen - 32 and h <= screen - 64 - panel); Ctrl+Left/Right pans the columns */
+    int ww = si.screen_w && (int)si.screen_w - 2 * SP_5 < W ? (int)si.screen_w - 2 * SP_5 : W, pan = 0;
+    int hh = si.screen_h && (int)si.screen_h - H_PANEL - H_TITLE - 2 * SP_5 < H ? (int)si.screen_h - H_PANEL - H_TITLE - 2 * SP_5 : H;
+    struct gui_window *w = gui_window_create("Widgets", ww, hh, WIN_FLAG_NORESIZE);
     if (!w) { perror("widgets"); return 1; }
     ui_init(&ui, w);
     char t1[64] = "", t2[64] = "notes.txt", t3[64] = "Bad name/", t4[64] = "", q1[64] = "", q2[64] = "wallpaper";
@@ -37,9 +42,12 @@ int main(int argc, char **argv) {
 
     do {
         struct canvas *c = ui.c;
+        for (int i = 0; i < ui.nkeys; i++)
+            if ((ui.keys[i].mods & MOD_CTRL) && (ui.keys[i].key == KEY_LEFT || ui.keys[i].key == KEY_RIGHT)) pan += ui.keys[i].key == KEY_LEFT ? -SP_8 : SP_8;
+        pan = pan < 0 ? 0 : pan > W - ww ? W - ww : pan;
         ui_clear(&ui);
         /* ---- column 1: buttons, icon buttons, inputs ---- */
-        int x = 20, y = 16;
+        int x = 20 - pan, y = 16;
         head(x, y, "Buttons");
         static const char *const kinds[] = { "Primary", "Secondary", "Ghost", "Destructive" };
         static const char *const states[] = { "Default", "Hover", "Pressed", "Focus", "Disabled" };
@@ -99,7 +107,7 @@ int main(int argc, char **argv) {
         y += 44;
 
         /* ---- column 2: toggles, slider, segmented, dropdown ---- */
-        x = 476, y = 16;
+        x = 476 - pan, y = 16;
         head(x, y, "Checkboxes and radios");
         y += 28;
         ui_checkbox(&ui, x, y, "Off", &cb[0]);
@@ -165,7 +173,7 @@ int main(int argc, char **argv) {
         if (!strcmp(mode, "toast") && !ui.toast_until) ui_toast(&ui, "Moved \xe2\x80\x9cold-notes.txt\xe2\x80\x9d to Trash", "Undo");
 
         /* ---- column 3: sidebar, rows, toolbar, list, empty state ---- */
-        x = 860, y = 16;
+        x = 860 - pan, y = 16;
         head(x, y, "Sidebar and rows");
         y += 28;
         ui_sidebar(&ui, x, y, 200, 236);
@@ -206,7 +214,7 @@ int main(int argc, char **argv) {
         ui.force = 0;
         ui_card(&ui, x + 176, y, 176, 148);
         ui_empty(&ui, x + 176, y, 176, 148, ICON_FOLDER_OPEN, "No files here", NULL, "Open a folder");
-        ui_status(&ui, 0, H - H_STATUS, W, "12 items, \xe2\x80\x9cPictures\xe2\x80\x9d selected", "2.1 GB free");
+        ui_status(&ui, 0, hh - H_STATUS, ww, "12 items, \xe2\x80\x9cPictures\xe2\x80\x9d selected", "2.1 GB free");
 
         if (dlg == 1 || dlg == 2) {
             int r = dlg == 1 ? ui_dialog(&ui, "Replace \xe2\x80\x9cnotes.txt\xe2\x80\x9d?", "A file with this name already exists in Documents. Replacing it overwrites its contents.", "Cancel", "Replace", UI_PRIMARY)
