@@ -12,6 +12,7 @@ const char *sheet_get(const char *url, size_t *len) {
     if (!dir) return 0;
     char p[1400]; int k = snprintf(p, sizeof p, "%s/", dir);
     for (const char *u = url; *u && k < 1390; u++) p[k++] = ((*u >= '0' && *u <= '9') || ((*u | 32) >= 'a' && (*u | 32) <= 'z')) ? *u : '_';
+    if (k - (int)strlen(dir) - 1 > 150) { int full = k - strlen(dir) - 1; k = strlen(dir) + 1 + 120; k += snprintf(p + k, 20, "_%d", full); }
     p[k] = 0;
     FILE *f = fopen(p, "rb");
     if (!f) return 0;

@@ -9,7 +9,7 @@ enum { T_NONE, T_HTML, T_HEAD, T_BODY, T_H1, T_H2, T_H3, T_H4, T_H5, T_H6, T_P, 
        T_FORM, T_INPUT, T_TEXTAREA, T_SELECT, T_OPTION, T_BUTTON, T_SKIP, T_SUP, T_SUB, T_SMALL, T_BIG, T_LEGEND, T_COL };
 struct dnode { int par, first, last, next, prev; uint8_t type, tag; short na; int a0; uint32_t nm; int tn; };   /* type 1 element, 3 text, 9 root; nm: pool offset of the name / text */
 struct dattr { uint32_t n, v; };
-struct dom { struct dnode *n; int nn, cap; struct dattr *a; int na, acap; char *pool; size_t np, pcap; };
+struct dom { int quirks; struct dnode *n; int nn, cap; struct dattr *a; int na, acap; char *pool; size_t np, pcap; };
 extern struct dom HD;
 #define DN(i) (HD.n[i])
 static inline const char *hd_str(uint32_t off) { return HD.pool + off; }

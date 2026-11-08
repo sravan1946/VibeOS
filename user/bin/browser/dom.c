@@ -351,6 +351,7 @@ int hd_parse(const char *src, size_t n, const char *base, struct doc *d) {
     nstk = 0;
     stk[nstk++] = 0;
     size_t i = 0;
+    { size_t k = 0; while (k < n && isspace((unsigned char)src[k])) k++; HD.quirks = !(k + 9 <= n && !strncasecmp(src + k, "<!doctype", 9)); }   /* no doctype: quirks mode (tables don't inherit text-align) */
     char tb[2048];
     while (i < n) {
         if (src[i] != '<') {

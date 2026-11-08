@@ -2204,6 +2204,7 @@ static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int 
     const struct cprops *par = cpd ? &CPS[cpd - 1] : 0;
     if (pe) { if (!css_compute(dn, pe, par, cp)) return; }
     else css_compute(dn, PE_NONE, par, cp);
+    if (tag == T_TABLE && HD.quirks) cp->v[P_ALIGN] = TA_LEFT;      /* quirks: a table doesn't inherit text-align */
     struct bx S;
     struct inh ni;
     struct bctx cx2;
