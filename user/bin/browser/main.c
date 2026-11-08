@@ -774,6 +774,22 @@ static void scroll_to_y(int y, int vh) { target = y - vh / 3; clamp_scroll(); }
 
 static int ctl_by_node(int node) { for (int i = 0; node && i < doc.nct; i++) if (doc.ct[i].node == node) return i; return -1; }
 
+/* `change` for text fields: fired on Enter and when focus leaves, if the value differs from what it was on focus */
+static int cb_ord = -1;
+static char *cb_val;
+static int ctl_by_ord(int ord);
+static void field_base(void) {
+    free(cb_val); cb_val = 0;
+    int ci = cb_ord >= 0 ? ctl_by_ord(cb_ord) : -1;
+    if (ci >= 0 && fs_get(&doc, ci)->val) cb_val = strdup(fs_get(&doc, ci)->val);
+}
+static void field_commit(void) {
+    int ci = cb_ord >= 0 ? ctl_by_ord(cb_ord) : -1;
+    if (ci < 0) return;
+    const char *v = fs_get(&doc, ci)->val;
+    if (strcmp(v ? v : "", cb_val ? cb_val : "")) { field_base(); js_event(doc.ct[ci].node, "change", 0, 0, 0); }
+}
+
 /* a script changed the DOM: lay out the new tree, keeping the scroll position and the focused field */
 static void js_relayout(void) {
     int ci = ctl_by_ord(fo), fnode = ci >= 0 ? doc.ct[ci].node : 0;
@@ -1128,7 +1144,7 @@ int main(int argc, char **argv) {
                     if (before && fs->val && strcmp(before, fs->val)) js_event(node, "input", 0, 0, 0);
                     free(before);
                     js_event(node, "keyup", &k, 0, 0);
-                    if (enter) submit(-1, doc.ct[ci].form);
+                    if (enter) { field_commit(); if (!js_event(node, "keypress", &k, 0, 0)) submit(-1, doc.ct[ci].form); }
                 }
                 continue;
             }
@@ -1162,6 +1178,7 @@ int main(int argc, char **argv) {
             if (!step) step = d > 0 ? 1 : -1;
             scroll += step;
         }
+        if (js_active() && fo != cb_ord) { field_commit(); cb_ord = fo; field_base(); }      /* focus left a field: its change event */
         js_viewport(scroll, vw, vh);
         { static int last_scroll, last_vw, last_vh;
           if (scroll != last_scroll) { last_scroll = scroll; js_event(1, "scroll", 0, 0, 0); }
