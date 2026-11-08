@@ -179,7 +179,20 @@ static int del_attr(int id, const char *name) {
 }
 
 static int connected(int id) { while (id && id != 1) id = N[id].parent; return id == 1; }
-static void touch(int id) { if (connected(id)) dirty = 1; }
+/* every change to the connected tree is recorded (the node and its parent) for an incremental layout: dom_dirty() */
+#define MAXDIRTY 1024
+static int DI[MAXDIRTY], ndi, di_over;
+static uint32_t gen;
+static void touch(int id) {
+    if (!connected(id)) return;
+    dirty = 1; gen++;
+    for (int k = 0, a = id; k < 2 && a; k++, a = N[a].parent) {
+        int seen = 0;
+        for (int i = ndi > 8 ? ndi - 8 : 0; i < ndi; i++) if (DI[i] == a) seen = 1;      /* cheap dedupe of repeats */
+        if (seen) continue;
+        if (ndi < MAXDIRTY) DI[ndi++] = a; else di_over = 1;
+    }
+}
 
 static int in_list(const char *t, const char *const *l) { for (; *l; l++) if (!strcmp(t, *l)) return 1; return 0; }
 static const char *const VOIDS[] = { "br", "hr", "img", "input", "meta", "link", "area", "base", "col", "param", "source", "track", "wbr", "embed", 0 };
@@ -1595,7 +1608,7 @@ void js_reset(void) {
     cur_def = cur_script = rstate = idle = strikes = url_changed = depth = 0; scroll_req_y = -1; anchor_req[0] = 0;
     free(alert_text);
     alert_text = 0;
-    nscr = cur_scr = nt = 0;
+    nscr = cur_scr = nt = 0; ndi = di_over = 0; gen = 0;
     active = dirty = dead = killed = loaded = focus_req = pumps = 0;
     nav[0] = 0;
     live = 0;
@@ -1618,3 +1631,19 @@ int js_scroll_req(void) { int y = scroll_req_y; scroll_req_y = -1; return y; }  
 const char *js_anchor_req(void) { static char a[128]; if (!anchor_req[0]) return 0; strlcpy(a, anchor_req, sizeof a); anchor_req[0] = 0; return a; }   /* location.hash set: scroll to this anchor */
 const char *js_url_change(void) { static char u[URL_MAX]; if (!url_changed) return 0; url_changed = 0; strlcpy(u, page_url, sizeof u); return u; }   /* pushState/replaceState/hash: new address-bar URL */
 int js_submit_req(void) { int f = submit_req; submit_req = 0; return f; }                   /* form.submit(): the form node, consumed, or 0 */
+
+/* the tree for layout (browser.h): read-only accessors and the changes since the last dom_dirty() */
+int dom_first(int n) { return n > 0 && n < nn ? N[n].first : 0; }
+int dom_next(int n) { return n > 0 && n < nn ? N[n].next : 0; }
+int dom_parent(int n) { return n > 0 && n < nn ? N[n].parent : 0; }
+int dom_type(int n) { return n > 0 && n < nn ? N[n].type : 0; }
+const char *dom_tag(int n) { return n > 0 && n < nn ? N[n].tag : ""; }
+const char *dom_text(int n) { return n > 0 && n < nn && N[n].text ? N[n].text : ""; }
+const char *dom_attr(int n, const char *name) { return n > 0 && n < nn ? attr(n, name) : 0; }
+uint32_t dom_gen(void) { return gen; }
+int dom_dirty(int *ids, int max) {                     /* node ids whose content or children changed; -1 = too many, treat all as changed */
+    int r = di_over ? -1 : ndi < max ? ndi : -1;
+    if (r > 0) memcpy(ids, DI, r * sizeof *ids);
+    ndi = di_over = 0;
+    return r;
+}

@@ -258,6 +258,11 @@ int  js_scroll_req(void);                         /* window.scrollTo target (doc
 const char *js_anchor_req(void);                  /* location.hash was set: scroll to this anchor name (consumed), or NULL */
 const char *js_url_change(void);                  /* pushState/replaceState/hash changed the URL without a load (consumed), or NULL */
 void js_set_rect(int node, int x, int y, int w, int h);   /* layout -> JS: border box of a data-vjs element, document coords (getBoundingClientRect, offset*) */
+/* the JS node tree for layout (ids = data-vjs ids; 1 = document, 2 = <html>; types 1 element, 3 text, 8 comment, 9 document, 11 fragment) */
+int  dom_first(int n), dom_next(int n), dom_parent(int n), dom_type(int n);
+const char *dom_tag(int n), *dom_text(int n), *dom_attr(int n, const char *name);   /* attr: NULL if absent */
+uint32_t dom_gen(void);                           /* bumped by every change to the connected tree */
+int  dom_dirty(int *ids, int max);                /* ids whose attributes/text/children changed since the last call (each also marks its parent); -1 = overflow, assume all */
 int  js_submit_req(void);                         /* form.submit() was called: the form's node (consumed), or 0 */
 extern const char js_prelude[];
 extern const char js_prelude2[];                  /* web_js.c: URL, fetch, XHR, storage, observers, Intl ... (runs after js_prelude) */                   /* dom_js.c: the DOM classes over the natives */
