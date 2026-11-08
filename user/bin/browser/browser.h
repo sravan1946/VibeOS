@@ -84,6 +84,7 @@ void img_reset(void);                            /* new page */
 int  img_add_data(const char *url, const uint8_t *d, size_t n);   /* decode a body we already have */
 
 /* ---- html.c ---- */
+extern int doc_zoom;                             /* main.c: page zoom in percent (100 = normal); layout scales fonts, lengths and images by it */
 enum { C_TEXT, C_PASS, C_AREA, C_BTN, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT };
 struct ctl { uint8_t kind, sub, chk; int form, ord, item, node; uint32_t name, val; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits */
 struct opt { uint32_t lab, val; };

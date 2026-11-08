@@ -17,6 +17,7 @@
 #include "../benchutil.h"
 
 #define TB H_TOOLBAR       /* toolbar height */
+#define CT (TB + (ntabs > 1 ? H_TAB : 0))   /* top of the page: under the tab strip, which only shows with 2+ tabs */
 #define SB 12              /* scrollbar column */
 #define STH H_STATUS       /* status bar height */
 #define FB H_TOOLBAR       /* find bar height (when open) */
@@ -31,8 +32,17 @@ static struct { char *raw; size_t n; int html, have; } pg;
 static char cur_url[URL_MAX], pend_url[URL_MAX], addr[URL_MAX];
 static char status[200];
 static bool status_bad;
-static struct { char url[URL_MAX]; int scroll; } hist[HMAX];
+struct hent { char url[URL_MAX]; int scroll; };
+/* tabs: only the session history is kept per tab (hist/nhist/hcur point at the current one); switching reloads the page at its
+ * saved scroll. ponytail: background tabs hold no DOM, images or form state; keep a doc per tab if reloads on switch bother. */
+#define MAXTAB 8
+static struct tab { struct hent *h; int nh, hc; char title[40]; } tabs[MAXTAB];
+static int ntabs = 1, curtab;
+static struct hent *hist;
 static int nhist, hcur = -1;
+static char dl_toast[96];                    /* a finished download, shown as a toast next frame */
+static bool want_src;                        /* the next page loaded is shown as source (view-source:) */
+int doc_zoom = 100;                          /* page zoom in percent (Ctrl+= / Ctrl+-); html.c's layout scales by it */
 static struct fetch fe;
 static bool loading;
 static int pend_push, pend_restore = -1, hops, layout_w;
@@ -121,18 +131,19 @@ static const char HOME_HTML[] =
     "<li><a href=\"file:///home/Documents/js.html\">JavaScript demo</a> &ndash; counter, todo list, timer, fetch; <a href=\"file:///home/Documents/jstest.html\">JavaScript tests</a>"
     "<li><a href=\"file:///home/welcome.txt\">welcome.txt</a> &ndash; plain text in a mono font"
     "<li><a href=\"file:///home/\">/home</a> &ndash; a directory listing"
-    "<li><a href=\"about:blank\">about:blank</a>"
+    "<li><a href=\"about:bookmarks\">Bookmarks</a> &ndash; Ctrl+D adds the current page &middot; <a href=\"about:blank\">about:blank</a>"
     "</ul>"
     "<h2>Keys</h2>"
     "<blockquote>"
     "<b>Ctrl+L</b> address bar &middot; <b>Ctrl+R</b> or <b>F5</b> reload &middot; <b>Alt+&larr;</b> / <b>Alt+&rarr;</b> history<br>"
-    "<b>Space</b>, <b>PgDn</b>, <b>PgUp</b>, <b>Home</b>, <b>End</b>, arrows and the wheel scroll &middot; <b>Ctrl+F</b> find &middot; <b>Esc</b> stops loading &middot; <b>F12</b> console"
+    "<b>Space</b>, <b>PgDn</b>, <b>PgUp</b>, <b>Home</b>, <b>End</b>, arrows and the wheel scroll &middot; <b>Ctrl+F</b> find &middot; <b>Esc</b> stops loading &middot; <b>F12</b> console<br>"
+    "<b>Ctrl+T</b> / <b>Ctrl+W</b> / <b>Ctrl+Tab</b> tabs, middle-click a link for a background tab &middot; <b>Ctrl+D</b> bookmark &middot; <b>Ctrl+B</b> bookmarks &middot; <b>Ctrl+U</b> view source &middot; <b>Ctrl+=</b> / <b>Ctrl+-</b> / <b>Ctrl+0</b> zoom"
     "</blockquote>"
     "</body></html>";
 
 /* ---------- page lifecycle ---------- */
 static int view_w(void) { return win->w - SB; }
-static int view_h(void) { return win->h - TB - STH - (find_open ? FB : 0); }
+static int view_h(void) { return win->h - CT - STH - (find_open ? FB : 0); }
 static int find_x(void) { return SP_3; }
 static int find_y(void) { return win->h - STH - FB + (FB - H_SEARCH) / 2; }
 static int max_scroll(void) { int m = doc.height - view_h(); return m > 0 ? m : 0; }
@@ -356,6 +367,9 @@ static void load_file(const char *url) {
 
 /* ---------- http ---------- */
 static void load_url(const char *url);
+static void bm_del(int i);
+static void bookmarks_page(const char *url);
+static void download(const char *url, const char *ct, char *body, size_t n, int truncated);
 
 static void start_fetch(const char *url) {
     strlcpy(pend_url, url, sizeof pend_url);
@@ -380,7 +394,9 @@ static void finish_fetch(void) {
         url_resolve(pend_url, rs.loc, next, sizeof next);
         free(rs.body);
         if (++hops > MAX_REDIRECTS) { net_error(pend_url, "net:too many redirects"); return; }
+        bool ws = want_src;
         load_url(next);
+        want_src = ws && loading;
         return;
     }
     int html = -1;
@@ -396,14 +412,14 @@ static void finish_fetch(void) {
             say(false, "%d %s - %s", rs.status, rs.text, ct);
             return;
         }
-        unsupported(pend_url, ct, rs.blen); free(rs.body); return;
+        download(pend_url, ct, rs.body, rs.blen, rs.truncated); return;
     }
-    if (!strncmp(ct, "audio/", 6) || !strncmp(ct, "video/", 6)) { unsupported(pend_url, ct, rs.blen); free(rs.body); return; }
+    if (!strncmp(ct, "audio/", 6) || !strncmp(ct, "video/", 6)) { download(pend_url, ct, rs.body, rs.blen, rs.truncated); return; }
     if (strstr(ct, "html")) html = 1;
     else if (!ct[0]) { const char *s = rs.body; while (isspace((unsigned char)*s)) s++; html = *s == '<'; }
     else if (!strncmp(ct, "text/", 5) || strstr(ct, "json") || strstr(ct, "xml") || strstr(ct, "javascript")) html = 0;
     for (size_t i = 0; html < 0 || (i < rs.blen && i < 512); i++) {
-        if (html < 0 || !rs.body[i]) { unsupported(pend_url, ct[0] ? ct : "This content", rs.blen); free(rs.body); return; }
+        if (html < 0 || !rs.body[i]) { if (rs.body) download(pend_url, ct, rs.body, rs.blen, rs.truncated); else unsupported(pend_url, ct[0] ? ct : "This content", 0); return; }
     }
     if (rs.latin1) {                                    /* ISO-8859-1 / cp1252 -> UTF-8 */
         char *u = malloc(rs.blen * 2 + 1);
@@ -418,6 +434,14 @@ static void finish_fetch(void) {
         }
     }
     size_t n = rs.blen;
+    if (want_src) {                                     /* view-source: the same bytes as plain text */
+        char su[URL_MAX];
+        snprintf(su, sizeof su, "view-source:%s", pend_url);
+        want_src = false;
+        commit(su, rs.body, n, 0);
+        say(false, "Source of %s", pend_url);
+        return;
+    }
     commit(pend_url, rs.body, n, html);
     say(rs.status >= 400, "%d %s - %lu bytes%s", rs.status, rs.text, (unsigned long)n, rs.truncated ? " (truncated at 2 MiB)" : "");
 }
@@ -441,7 +465,14 @@ static void cancel_load(void) {
 }
 
 static void load_url(const char *url) {
-    if (url_is_web(url)) start_fetch(url);
+    want_src = false;
+    if (!strncmp(url, "view-source:", 12) && url_is_web(url + 12)) { start_fetch(url + 12); want_src = true; }
+    else if (url_is_web(url)) start_fetch(url);
+    else if (!strncmp(url, "about:bm-del?", 13)) {
+        bm_del(atoi(url + 13));
+        bookmarks_page("about:bookmarks");
+    }
+    else if (!strcmp(url, "about:bookmarks")) bookmarks_page(url);
     else if (!strncasecmp(url, "file:", 5)) load_file(url);
     else if (!strcmp(url, "about:home")) {
         struct sb b = { 0 };
@@ -494,7 +525,168 @@ static void follow(int link) {
     navigate(u, 1, -1);
 }
 
+/* ---------- tabs, bookmarks, downloads, view-source ---------- */
+static bool quit_req;
+
+static void tab_save(void) {
+    struct tab *t = &tabs[curtab];
+    if (hcur >= 0 && pg.have && !loading) hist[hcur].scroll = scroll;
+    t->nh = nhist; t->hc = hcur;
+    strlcpy(t->title, doc.title, sizeof t->title);
+}
+static void tab_load(int n) {
+    curtab = n; hist = tabs[n].h; nhist = tabs[n].nh; hcur = tabs[n].hc;
+    cancel_load();
+    cur_url[0] = 0;                                      /* so a #fragment URL isn't taken for "same page" */
+    if (hcur >= 0) navigate(hist[hcur].url, 0, hist[hcur].scroll); else navigate("about:home", 1, -1);
+}
+static void tab_new(const char *url, bool fg) {
+    if (ntabs == MAXTAB) { say(true, "Too many tabs"); return; }
+    struct hent *h = calloc(HMAX, sizeof *h);
+    if (!h) return;
+    tab_save();
+    struct tab *t = &tabs[ntabs];
+    memset(t, 0, sizeof *t);
+    t->h = h; t->nh = 1; t->hc = 0;
+    strlcpy(h[0].url, url, sizeof h[0].url);
+    strlcpy(t->title, url, sizeof t->title);
+    ntabs++;
+    if (fg) tab_load(ntabs - 1);
+}
+static void tab_close(int i) {
+    if (ntabs == 1) { quit_req = true; return; }
+    if (i == curtab) cancel_load();
+    free(tabs[i].h);
+    memmove(tabs + i, tabs + i + 1, (ntabs - i - 1) * sizeof *tabs);
+    ntabs--;
+    if (i == curtab) tab_load(i < ntabs ? i : ntabs - 1);
+    else if (i < curtab) curtab--;
+}
+static void tab_go(int n) { if (n == curtab || n < 0 || n >= ntabs) return; tab_save(); tab_load(n); }
+
+#define BMFILE "/home/.bookmarks"
+#define MAXBM 200
+static struct bm { char url[256], title[96]; } bms[MAXBM];
+static int nbm;
+static void bm_load(void) {
+    static char buf[48 << 10];
+    nbm = 0;
+    int fd = open(BMFILE, O_RDONLY);
+    if (fd < 0) return;
+    int n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return;
+    buf[n] = 0;
+    for (char *l = buf, *e; *l && nbm < MAXBM; l = e) {
+        e = l + strcspn(l, "\n");
+        if (*e) *e++ = 0;
+        char *t = strchr(l, '\t');
+        if (!t) continue;
+        *t++ = 0;
+        strlcpy(bms[nbm].url, l, sizeof bms[0].url);
+        strlcpy(bms[nbm++].title, t, sizeof bms[0].title);
+    }
+}
+static void bm_save(void) {
+    int fd = open(BMFILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    for (int i = 0; i < nbm; i++) {
+        char l[sizeof bms[0].url + sizeof bms[0].title + 4];
+        int n = snprintf(l, sizeof l, "%s\t%s\n", bms[i].url, bms[i].title);
+        write(fd, l, n);
+    }
+    close(fd);
+}
+static void bm_del(int i) {
+    bm_load();
+    if (i >= 0 && i < nbm) { memmove(bms + i, bms + i + 1, (--nbm - i) * sizeof *bms); bm_save(); }
+}
+static void bm_toggle(void) {                            /* Ctrl+D */
+    bm_load();
+    for (int i = 0; i < nbm; i++)
+        if (!strcmp(bms[i].url, cur_url)) {
+            memmove(bms + i, bms + i + 1, (--nbm - i) * sizeof *bms);
+            bm_save();
+            strlcpy(dl_toast, "Bookmark removed", sizeof dl_toast);
+            return;
+        }
+    if (nbm == MAXBM || !strncmp(cur_url, "about:", 6) || strlen(cur_url) >= sizeof bms[0].url) { say(true, "Can't bookmark this page"); return; }
+    strlcpy(bms[nbm].url, cur_url, sizeof bms[0].url);
+    strlcpy(bms[nbm].title, doc.title, sizeof bms[0].title);
+    for (char *c = bms[nbm].title; *c; c++) if (*c == '\t' || *c == '\n') *c = ' ';
+    nbm++;
+    bm_save();
+    strlcpy(dl_toast, "Bookmarked", sizeof dl_toast);
+}
+static void bookmarks_page(const char *url) {
+    bm_load();
+    struct sb b = { 0 };
+    sb_add(&b, "<html><head><title>Bookmarks</title></head>"); sb_body(&b); sb_add(&b, "<h1>Bookmarks</h1>");
+    if (!nbm) sb_add(&b, "<p>No bookmarks yet. Press Ctrl+D on a page to add it.</p>");
+    sb_add(&b, "<ul>");
+    for (int i = 0; i < nbm; i++) {
+        char n[24];
+        snprintf(n, sizeof n, "%d", i);
+        sb_add(&b, "<li><a href=\""); sb_esc(&b, bms[i].url); sb_add(&b, "\">"); sb_esc(&b, bms[i].title[0] ? bms[i].title : bms[i].url);
+        sb_add(&b, "</a> &ndash; <a href=\"about:bm-del?"); sb_add(&b, n); sb_add(&b, "\">remove</a>");
+    }
+    sb_add(&b, "</ul>" ); sb_add(&b, HOME_LINK); sb_add(&b, "</body></html>");
+    commit(url, b.p, b.n, 1);
+    internal = true;
+    say(false, "%d bookmarks", nbm);
+}
+
+/* a response we can't show: save it as ~/Downloads/NAME (the 2 MiB page cap applies, so big files are cut) */
+static void download(const char *url, const char *ct, char *body, size_t n, int truncated) {
+    mkdir("/home/Downloads", 0755);
+    char raw[URL_MAX], nm[96], path[160];
+    snprintf(raw, sizeof raw, "%.*s", (int)strcspn(base_name(url), "?#"), base_name(url));
+    url_unescape(raw, nm, sizeof nm);
+    for (char *c = nm; *c; c++) if (*c == '/' || *c < 32) *c = '_';
+    if (!nm[0] || !strcmp(nm, ".") || !strcmp(nm, "..")) strcpy(nm, "download");
+    char *dot = strrchr(nm, '.');
+    int stem = dot && dot != nm ? (int)(dot - nm) : (int)strlen(nm);
+    struct stat st;
+    snprintf(path, sizeof path, "/home/Downloads/%s", nm);
+    for (int k = 2; !stat(path, &st) && k < 100; k++) snprintf(path, sizeof path, "/home/Downloads/%.*s-%d%s", stem, nm, k, nm + stem);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    size_t put = 0;
+    while (fd >= 0 && put < n) { ssize_t w = write(fd, body + put, n - put); if (w <= 0) break; put += w; }
+    if (fd >= 0) close(fd);
+    free(body);
+    if (fd < 0 || put < n) { say(true, "Can't save %s", path); return; }
+    snprintf(dl_toast, sizeof dl_toast, "Saved %s to Downloads%s", strrchr(path, '/') + 1, truncated ? " (cut at 2 MiB)" : "");
+    say(false, "Downloaded %s (%s, %lu bytes)", path, ct[0] ? ct : "unknown type", (unsigned long)n);
+}
+
+static void view_source(void) {                          /* Ctrl+U */
+    if (!pg.have || !pg.raw || !pg.html || !strncmp(cur_url, "view-source:", 12)) { say(false, "Nothing to show the source of"); return; }
+    char u[URL_MAX];
+    snprintf(u, sizeof u, "view-source:%s", cur_url);
+    char *copy = malloc(pg.n + 1);
+    if (!copy) return;
+    memcpy(copy, pg.raw, pg.n); copy[pg.n] = 0;
+    if (hcur >= 0) hist[hcur].scroll = scroll;
+    pend_push = 1; pend_restore = -1;
+    commit(u, copy, pg.n, 0);
+    say(false, "Source of %s", u + 12);
+}
+
 static void relayout(void);
+static void zoom_by(int d) {
+    static const short Z[] = { 30, 50, 67, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300 };
+    int i = 0, n = sizeof Z / sizeof *Z;
+    if (!d) doc_zoom = 100;
+    else {
+        while (i < n - 1 && Z[i] < doc_zoom) i++;
+        if (d > 0 && Z[i] <= doc_zoom) i++;
+        if (d < 0 && i && Z[i] >= doc_zoom) i--;
+        doc_zoom = Z[i >= n ? n - 1 : i];
+    }
+    if (pg.have) relayout();
+    say(false, "Zoom %d%%", doc_zoom);
+}
+
 static void retheme(void) {                  /* EV_THEME: recolour our own pages */
     char *p = internal && pg.raw ? strstr(pg.raw, "<body bgcolor=\"#") : 0, t[80];
     if (!p) return;
@@ -556,7 +748,7 @@ static bool alert_box(struct ui *ui, const char *text) {
 
 /* F12: the last console lines over the bottom of the page */
 static void console_panel(struct ui *ui, int vw, int vh) {
-    int ph = vh / 3 < 120 ? 120 : vh / 3, y0 = TB + vh - ph, hh = H_TAB, rh = T_MONO->height + SP_1, rows = (ph - hh - SP_2) / rh, n = js_log_count();
+    int ph = vh / 3 < 120 ? 120 : vh / 3, y0 = CT + vh - ph, hh = H_TAB, rh = T_MONO->height + SP_1, rows = (ph - hh - SP_2) / rh, n = js_log_count();
     gfx_fill(ui->c, 0, y0, vw, ph, ui_th.base);
     gfx_hline(ui->c, 0, y0, vw, UI_LINE);
     gfx_hline(ui->c, 0, y0 + hh - 1, vw, UI_LINE);
@@ -624,7 +816,7 @@ static void bench(struct ui *ui, const char *arg) {
     blog("BROWSER %s load+layout %u us, %d items, height %d", arg, us(tsc() - t), doc.nit, doc.height);
     for (int pass = 0; pass < 2; pass++) {
         t = tsc();
-        for (int i = 0; i < 8; i++) { ui_clear(ui); doc_draw(ui, &doc, 0, TB, view_w(), view_h(), i * max_scroll() / 8, -1, &mk, -1, 0); }
+        for (int i = 0; i < 8; i++) { ui_clear(ui); doc_draw(ui, &doc, 0, CT, view_w(), view_h(), i * max_scroll() / 8, -1, &mk, -1, 0); }
         blog("BROWSER %s paint x8 %s %u us", arg, pass ? "warm" : "cold", us(tsc() - t));
     }
     
@@ -642,6 +834,8 @@ int main(int argc, char **argv) {
     char start[URL_MAX] = "about:home";
     if (argc > 2 && !strcmp(argv[1], "--bench")) { bench(&ui, argv[2]); return 0; }
     if (argc > 1) url_from_input(argv[1], start, sizeof start);
+    tabs[0].h = hist = calloc(HMAX, sizeof *hist);
+    if (!hist) return 1;
     navigate(start, 1, -1);
     char last_title[96] = "";
 
@@ -651,7 +845,7 @@ int main(int argc, char **argv) {
         if (scroll != target) timeout = 16;
         struct pollfd pf[2] = { { win->fd, POLLIN, 0 }, { fe.fd, POLLIN, 0 } };
         poll(pf, loading ? 2 : 1, timeout);
-        if (!ui_poll(&ui, 0)) break;
+        if (!ui_poll(&ui, 0) || quit_req) break;
         fetch_reap();
         if (loading) service_fetch();
         if (pg.have && img_pump()) img_dirty = true;
@@ -675,6 +869,17 @@ int main(int argc, char **argv) {
             else if (ctrl && (c == 'f' || k.ch == 6)) { find_open = true; ui.focus = ui_id(find_x(), find_y(), 240, H_SEARCH); fo = -1; }
             else if (k.key == KEY_F3 || (ctrl && (c == 'g' || k.ch == 7))) { if (find_open) find_go((k.mods & MOD_SHIFT) ? -1 : 1, vh, false); else handled = 0; }
             else if (k.key == KEY_F12) console_open = !console_open;
+            else if (ctrl && c == 't') { tab_new("about:home", true); ui.focus = aid; addr[0] = 0; }
+            else if (ctrl && c == 'w') { tab_close(curtab); ui.focus = 0; }
+            else if (ctrl && k.key == KEY_TAB) { tab_go((curtab + ((k.mods & MOD_SHIFT) ? ntabs - 1 : 1)) % ntabs); ui.focus = 0; }
+            else if (ctrl && k.key == KEY_PGDN) tab_go((curtab + 1) % ntabs);
+            else if (ctrl && k.key == KEY_PGUP) tab_go((curtab + ntabs - 1) % ntabs);
+            else if (ctrl && c == 'd') bm_toggle();
+            else if (ctrl && c == 'b') navigate("about:bookmarks", 1, -1);
+            else if (ctrl && c == 'u') view_source();
+            else if (ctrl && (k.key == '=' || k.key == '+')) zoom_by(1);
+            else if (ctrl && k.key == '-') zoom_by(-1);
+            else if (ctrl && k.key == '0') zoom_by(0);
             else if (k.key == KEY_ESC) {
                 if (sel_ci >= 0) sel_ci = -1;
                 else if (find_open) { find_open = false; mk.find = 0; }
@@ -710,15 +915,31 @@ int main(int argc, char **argv) {
             navigate(u, 1, -1);
         }
         if (loading) {                                   /* indeterminate progress on the toolbar's bottom edge */
+            if (fe.clen > 0 && fe.hdr_end && (long)fe.len > fe.hdr_end) {   /* length known: a real bar */
+                long got = (long)fe.len - fe.hdr_end;
+                gfx_round_fill(ui.c, 0, TB - SP_1, (int)((long long)W * (got > fe.clen ? fe.clen : got) / fe.clen) + 1, SP_1, R_1, ui_th.accent_line);
+            } else {
             int span = W * 3 / 10, px = (int)((uptime_ms() - load_t0) * (uint32_t)(W + span) / 1200 % (uint32_t)(W + span)) - span;
             gfx_round_fill(ui.c, px < 0 ? 0 : px, TB - SP_1, px < 0 ? span + px : span, SP_1, R_1, ui_th.accent_line);
+            }
         }
+
+        if (ntabs > 1) {                                 /* tab strip under the toolbar */
+            static char tn[MAXTAB][40];
+            const char *names[MAXTAB];
+            for (int i = 0; i < ntabs; i++) { strlcpy(tn[i], i == curtab ? doc.title : tabs[i].title, sizeof tn[i]); names[i] = tn[i]; }
+            int sel = curtab, r = ui_tabbar_ex(&ui, 0, TB, W, names, ntabs, &sel, UI_TAB_CLOSE | UI_TAB_NEW, 0);
+            if (r == UI_TAB_ADD) tab_new("about:home", true);
+            else if (r >= 0) tab_close(r);
+            else if (sel != curtab) tab_go(sel);
+        }
+        if (dl_toast[0]) { ui_toast(&ui, dl_toast, NULL); dl_toast[0] = 0; }
 
         /* content */
         int hover = -1;
         int fx = find_x(), fy = find_y(); uint32_t fid = ui_id(fx, fy, 240, H_SEARCH);
         bool modal = alert_msg != 0;
-        bool in_view = !modal && ui.mx >= 0 && ui.mx < vw && ui.my >= TB && ui.my < TB + vh;
+        bool in_view = !modal && ui.mx >= 0 && ui.mx < vw && ui.my >= CT && ui.my < CT + vh;
         if (ui.focus == aid) fo = -1;
         bool consumed = false;
         int px = 0, py = 0, pw = 0, prows = 0;
@@ -730,8 +951,8 @@ int main(int argc, char **argv) {
                 int no = doc.ct[sel_ci].no;
                 prows = no < 12 ? no : 12;
                 px = it->x; pw = it->w < 120 ? 120 : it->w;
-                py = TB + it->y - scroll + it->h;
-                if (py + prows * rh > H - STH) py = TB + it->y - scroll - prows * rh;
+                py = CT + it->y - scroll + it->h;
+                if (py + prows * rh > H - STH) py = CT + it->y - scroll - prows * rh;
                 bool inp = ui.mx >= px && ui.mx < px + pw && ui.my >= py && ui.my < py + prows * rh;
                 if (inp && ui.scroll) { sel_scroll += ui.scroll; ui.scroll = 0; }
                 if (sel_scroll > no - prows) sel_scroll = no - prows;
@@ -743,9 +964,9 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (in_view && sel_ci < 0) hover = doc_hit(&doc, ui.mx, ui.my - TB + scroll);
+        if (in_view && sel_ci < 0) hover = doc_hit(&doc, ui.mx, ui.my - CT + scroll);
         if (ui.pressed && !consumed && in_view) {
-            int dx = ui.mx, dy = ui.my - TB + scroll, ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
+            int dx = ui.mx, dy = ui.my - CT + scroll, ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
             fo = -1;
             mk.from_it = mk.to_it = -1;
             if (ci >= 0) {                                   /* the page sees the click first; preventDefault skips our part */
@@ -770,9 +991,9 @@ int main(int argc, char **argv) {
         }
         if (selecting) {
             if (ui.buttons & 1) {
-                int my = ui.my < TB ? TB : ui.my > TB + vh - 1 ? TB + vh - 1 : ui.my, i, ch;
-                if (ui.my < TB + 6) target -= 24; else if (ui.my > TB + vh - 6) target += 24;
-                if (doc_pos_at(&doc, ui.mx, my - TB + scroll, &i, &ch)) {
+                int my = ui.my < CT ? CT : ui.my > CT + vh - 1 ? CT + vh - 1 : ui.my, i, ch;
+                if (ui.my < CT + 6) target -= 24; else if (ui.my > CT + vh - 6) target += 24;
+                if (doc_pos_at(&doc, ui.mx, my - CT + scroll, &i, &ch)) {
                     if (i != anc_it || ch != anc_ch) sel_moved = true;
                     if (sel_moved) set_sel(anc_it, anc_ch, i, ch);
                 }
@@ -780,7 +1001,8 @@ int main(int argc, char **argv) {
         }
         char hover_url[URL_MAX];
         if (hover >= 0) url_resolve(cur_url, doc.link[hover], hover_url, sizeof hover_url);
-        if (ui.scroll && ui.my >= TB) target += ui.scroll * 64;
+        if (ui.mpressed && hover >= 0 && !modal) tab_new(hover_url, false);   /* middle-click: link in a background tab */
+        if (ui.scroll && ui.my >= CT) target += ui.scroll * 64;
         struct gui_event k;
         bool find_focus = find_open && ui.focus == fid;
         while (!modal && ui_key(&ui, &k)) {
@@ -857,7 +1079,7 @@ int main(int argc, char **argv) {
         if (al) { free(alert_msg); alert_msg = al; }
         const char *jn = js_nav();
         if (jn) { char u[URL_MAX]; strlcpy(u, jn, sizeof u); navigate(u, 1, -1); }
-        doc_draw(&ui, &doc, 0, TB, vw, vh, scroll, hover, &mk, fo, caret);
+        doc_draw(&ui, &doc, 0, CT, vw, vh, scroll, hover, &mk, fo, caret);
         if (sel_ci >= 0 && prows) {                      /* dropdown on top of the page */
             const struct ctl *c = &doc.ct[sel_ci];
             struct fstate *fsx = fs_get(&doc, sel_ci);
@@ -876,7 +1098,7 @@ int main(int argc, char **argv) {
             }
         }
         if (find_open) {                                 /* find bar between the page and the status bar */
-            int by = TB + vh, iy = by + (FB - H_CTL) / 2, bx = fx + 240 + SP_3;
+            int by = CT + vh, iy = by + (FB - H_CTL) / 2, bx = fx + 240 + SP_3;
             gfx_fill(ui.c, 0, by, W, FB, ui_th.window);
             gfx_hline(ui.c, 0, by, W, UI_LINE);
             ui_search(&ui, fx, fy, 240, needle, sizeof needle, "Find in page");
@@ -888,9 +1110,9 @@ int main(int argc, char **argv) {
             if (ui_icon_button(&ui, W - SP_3 - H_CTL, iy, ICON_CLOSE, 0, "Close \u00b7 Esc")) { find_open = false; mk.find = 0; ui.focus = 0; }
         }
         if (console_open) console_panel(&ui, vw, vh);
-        gfx_fill(ui.c, vw, TB, SB, vh, ui_th.window);
+        gfx_fill(ui.c, vw, CT, SB, vh, ui_th.window);
         int sp = scroll;
-        ui_vscroll(&ui, vw + 1, TB, vh, doc.height, vh, &sp);
+        ui_vscroll(&ui, vw + 1, CT, vh, doc.height, vh, &sp);
         if (sp != scroll) scroll = target = sp;
 
         /* status bar */
