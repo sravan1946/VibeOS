@@ -2476,7 +2476,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
     S.lh = ni.lh; S.vis = ni.vis; S.valign = ni.valign;
     if (S.flt || oof(&S)) { S.outer = OUT_BLOCK; if (S.inner == IN_INLINE) S.inner = IN_FLOW; }
     if (!pe && ((v = ATTR(dn, "id")) || (tag == T_A && (v = ATTR(dn, "name")))) && *v) S.aname = astr(v) + 1;
-    S.cb = cx->cb; S.dn = dn;
+    S.cb = cx->cb; S.dn = pe ? 0 : dn;
     if (li) { S.li = 1; S.mark = ni.nomark ? -1 : cx->cnt ? ++*cx->cnt : 1; S.lt = cp->v[P_LISTT]; }
 
     if (tag == T_BR) {
@@ -2628,6 +2628,11 @@ void doc_layout(struct doc *d, const char *src, size_t n, int is_html, int width
 #ifdef LT_DEBUG
     if (getenv("LT_DUMP")) dump(root, 0);
 #endif
+    if (js_active())                                          /* getBoundingClientRect() & co: the border boxes of the scripts' elements */
+        for (int i = 0; i < nb; i++) {
+            const struct bx *b = &B[i];
+            if (b->dn > 0 && b->node && b->inner != IN_TEXT && !b->anon && (b->w || b->h)) js_set_rect(b->node, b->x, b->y, b->w, b->h);
+        }
     int bot = 0;
     paint_box(root, 0, 0);
     (void)bot;

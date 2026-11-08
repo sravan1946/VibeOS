@@ -30,6 +30,8 @@ int img_type_ok(const char *m) { return 1; }
 int img_svg_inline(const char *s, size_t n, long c) { return -1; }
 const char *img_url(int i) { return ""; }
 int doc_zoom = 100;
+int js_active(void) { return 0; }
+void js_set_rect(int n, int x, int y, int w, int h) {}
 int sheet_pump(void) { return 0; }
 int sheet_busy(void) { return 0; }
 void sheet_reset(void) {}
