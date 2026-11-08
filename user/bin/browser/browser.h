@@ -193,8 +193,9 @@ struct form { uint32_t action; uint8_t post; int node; };
 #define FL_STRIKE 2
 #define FL_IMG 4
 #define FL_CTL 8
-struct item { int x, y; short w, h, clip; uint8_t font, flags; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
-struct decor { int x, y, w, h; color_t col; int it; short clip; uint8_t rad, ring; };   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */
+struct item { int x, y; short w, h, clip; uint8_t font, flags, fit; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
+struct decor { int x, y, w, h; color_t col; int it; short clip; uint8_t rad, ring;
+               int img; uint8_t rep, kx, ky, kw, kh; int px, py, sw, sh; };   /* img: background-image (image cache index + 1; col is then unused): repeat, position and size as k (K_PX/K_PCT[x100]/K_AUTO/K_COVER/K_CONTAIN) + value */   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */
 struct cliprect { int x, y, w, h; };
 struct anchor { char name[40]; int y; };
 struct doc {
