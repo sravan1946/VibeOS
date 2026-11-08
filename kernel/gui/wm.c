@@ -657,10 +657,22 @@ static bool has_ci(const char *h, const char *n) {
     return !*n;
 }
 
+/* match quality: 3 name starts with it, 2 a word of the name does, 1 name contains it, 0 only the description does, -1 none */
+static int l_score(const struct app *a, const char *q) {
+    if (!*q) return 0;
+    for (const char *h = a->name; *h; h++) {
+        int i = 0;
+        while (q[i] && h[i] && (h[i] | 32) == (q[i] | 32)) i++;
+        if (!q[i] && (h == a->name || h[-1] == ' ')) return h == a->name ? 3 : 2;
+    }
+    return has_ci(a->name, q) ? 1 : has_ci(a->desc, q) ? 0 : -1;
+}
+
 static void l_filter(void) {
     nhit = 0;
-    for (int i = 0; i < napps && nhit < (int)ARRAY_LEN(lhit); i++)
-        if (has_ci(apps[i].name, lq) || has_ci(apps[i].desc, lq)) lhit[nhit++] = i;
+    for (int sc = lq[0] ? 3 : 0; sc >= 0; sc--)         /* best matches first, otherwise list order */
+        for (int i = 0; i < napps && nhit < (int)ARRAY_LEN(lhit); i++)
+            if (l_score(&apps[i], lq) == sc) lhit[nhit++] = i;
     lsel = lq[0] && nhit ? 0 : -1;                      /* Enter takes the first match */
     ltop = 0;
 }
@@ -1385,6 +1397,7 @@ static void set_snap(int z) {
     snap_zone = z;
 }
 
+static void minimize(struct window *w);
 static void apply_snap(struct window *w, int z) {
     if (w->flags & WIN_FLAG_NORESIZE) return;
     if (!w->maximized) w->restore = (struct rect){ w->x, w->y, w->w, w->h };
@@ -2160,7 +2173,7 @@ static void key_event(const struct gui_event *ev) {
             if (ev->key == KEY_LEFT) { apply_snap(w, 1); return; }
             if (ev->key == KEY_RIGHT) { apply_snap(w, 2); return; }
             if (ev->key == KEY_UP) { apply_snap(w, 3); return; }
-            if (ev->key == KEY_DOWN) { if (w->maximized) toggle_max(w); return; }
+            if (ev->key == KEY_DOWN) { if (w->maximized) toggle_max(w); else minimize(w); return; }   /* restore, then minimise */
         }
         if ((mods & MOD_CTRL) && (mods & MOD_ALT) && (ev->key == 't' || ev->key == 'T')) { termwin_open(0); return; }
         if ((mods & MOD_ALT) && ev->key == KEY_TAB) { sw_start(mods & MOD_SHIFT); return; }
