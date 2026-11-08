@@ -68,6 +68,11 @@ static int random_read(struct vnode *v, uint32_t off, void *b, uint32_t n) {
     return n;
 }
 static int kmsg_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { return klog_read(b, off, n); }
+static int kmsg_write(struct vnode *v, uint32_t off, const void *b, uint32_t n) {   /* userland -> kernel log + serial */
+    char t[256];
+    for (uint32_t i = 0; i < n; ) { uint32_t k = n - i < sizeof t - 1 ? n - i : sizeof t - 1; memcpy(t, (const char *)b + i, k); t[k] = 0; kprintf("%s", t); i += k; }
+    return n;
+}
 static int screen_read(struct vnode *v, uint32_t off, void *b, uint32_t n) { return wm_screen_read(off, b, n); }
 static int notify_write(struct vnode *v, uint32_t off, const void *b, uint32_t n) { wm_notify(b, n); return n; }
 static int wallpaper_write(struct vnode *v, uint32_t off, const void *b, uint32_t n) { return wm_wallpaper_write(off, b, n); }
@@ -76,7 +81,7 @@ static int always_ready(struct vnode *v, int ev) { return ev & (POLLIN | POLLOUT
 static const struct vnode_ops null_ops = { .read = null_read, .write = sink_write, .poll = always_ready };
 static const struct vnode_ops zero_ops = { .read = zero_read, .write = sink_write, .poll = always_ready };
 static const struct vnode_ops random_ops = { .read = random_read, .write = sink_write, .poll = always_ready };
-static const struct vnode_ops kmsg_ops = { .read = kmsg_read, .poll = always_ready };
+static const struct vnode_ops kmsg_ops = { .read = kmsg_read, .write = kmsg_write, .poll = always_ready };
 static const struct vnode_ops screen_ops = { .read = screen_read, .poll = always_ready };
 static const struct vnode_ops notify_ops = { .write = notify_write, .poll = always_ready };
 static const struct vnode_ops wallpaper_ops = { .write = wallpaper_write, .truncate = null_truncate, .poll = always_ready };   /* see wm.c */

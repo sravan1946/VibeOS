@@ -16,6 +16,7 @@ steps:
   moveto:X,Y       move the pointer (absolute pixels, any display mode)   click / rclick / dclick / down / up
   drag:X0,Y0,X1,Y1 left-drag
   smoke            = wait for the desktop and take build/smoke.png
+  suites           = run root/home/runtests.sh (every in-VM suite) and check each summary line on serial
 The VM window opens on the desktop unless --headless (or VIBE_HEADLESS=1).
 Sound: an AC'97 card feeds -audiodev AUDIODEV, default wav,id=snd0,path=build/audio.wav (finalised when
 the VM quits; analyse it with tools/wavcheck.py). Override with --audiodev SPEC or VIBE_AUDIODEV, e.g.
@@ -173,6 +174,7 @@ def main(argv):
         elif a == "--pcap": pcap = True
         elif a == "--abs": absolute = True
         elif a == "smoke": steps += ["wait:[desktop] ready", f"shot:{B}/smoke.png"]
+        elif a == "suites": steps += ["wait:[desktop] ready", "sleep:1", "type:sh /home/runtests.sh > /dev/kmsg\\n", "wait:ALL-SUITES-DONE", "suites"]
         else: steps.append(a)
     vm = VM(headless, audiodev=audiodev, hostfwd=hostfwd, pcap=pcap, absolute=absolute)
     ok = True
@@ -191,6 +193,10 @@ def main(argv):
             elif kind == "key": vm.hmp("sendkey " + {"prtsc": "print"}.get(arg, arg))
             elif kind in ("keydown", "keyup"): vm.keyev(arg, kind == "keydown")
             elif kind == "sleep": time.sleep(float(arg))
+            elif kind == "suites":              # check the SUITE lines runtests.sh wrote to serial
+                for l in re.findall(r"^SUITE (.*?)\r?$", vm.serial(), re.M):
+                    bad = re.search(r"([1-9]\d*) failed|FAIL", l) or not re.search(r"\d+ passed|PASS", l)
+                    print(("FAIL: " if bad else "ok    ") + l); ok = ok and not bad
             elif kind == "shot": vm.shot(arg); print("screenshot:", arg)
             elif kind in ("mouse", "moveto"):   # absolute pixel target via relative PS/2 moves
                 x, y = (int(v) for v in arg.split(","))
