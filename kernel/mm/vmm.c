@@ -62,8 +62,9 @@ static uint32_t *pte_for(uint32_t dir, uint32_t va, bool create) {
 int vmm_map(uint32_t dir, uint32_t va, uint32_t pa, uint32_t flags) {
     uint32_t *pte = pte_for(dir, va, true);
     if (!pte) return -1;
+    uint32_t old = *pte;
     *pte = (pa & ~0xFFFu) | flags | PTE_P;
-    if (dir == read_cr3()) invlpg(va);
+    if ((old & PTE_P) && dir == read_cr3()) invlpg(va);      /* not-present entries are never cached in the TLB */
     return 0;
 }
 
@@ -84,6 +85,7 @@ int vmm_alloc_range(uint32_t dir, uint32_t va, uint32_t len, uint32_t flags) {
 
 void vmm_unmap_range(uint32_t dir, uint32_t va, uint32_t len, bool free_frames) {
     for (uint32_t a = ALIGN_DOWN(va, PAGE_SIZE); a < va + len; a += PAGE_SIZE) {
+        if (!(((uint32_t *)dir)[a >> 22] & PTE_P)) { a = (a | 0x3FFFFF) & ~0xFFFu; if (!(a + PAGE_SIZE)) break; continue; }   /* no page table: skip its 4 MiB */
         uint32_t *pte = pte_for(dir, a, false);
         if (!pte || !(*pte & PTE_P)) continue;
         if (free_frames && !(*pte & PTE_NOFREE)) pmm_free(*pte & ~0xFFFu);
