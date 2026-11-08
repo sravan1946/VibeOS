@@ -1,6 +1,6 @@
-/* fetch.c - HTTP/1.1 GET/POST over plain TCP or TLS (Connection: close). The child half does DNS+connect+read and
- * streams the raw response to stdout ("VBERR:kind:text" instead on failure); the parent half
- * collects it without ever blocking, then parses status, headers and chunked bodies. */
+/* fetch.c - HTTP/1.1 client, the parent half: starts /bin/vfetch (user/bin/vfetch, which does DNS + connect + TLS + read and
+ * streams the raw response to stdout, "VBERR:kind:text" instead on failure), collects the output without ever blocking,
+ * then parses status, headers and chunked bodies. */
 #include "browser.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,61 +12,8 @@
 #include <syscall.h>
 #include <ctype.h>
 #include <sys/socket.h>
-#include <tls.h>
 
 #define HDR_MAX 16384
-
-/* ---------- child ---------- */
-static void out_all(const void *p, size_t n) {
-    const char *c = p;
-    while (n) { ssize_t w = write(1, c, n); if (w <= 0) _exit(1); c += w; n -= w; }
-}
-
-static int fail(const char *kind, const char *msg) {
-    char b[200];
-    int n = snprintf(b, sizeof b, "VBERR:%s:%s", kind, msg);
-    out_all(b, n);
-    return 1;
-}
-
-int fetch_main(const char *url, const char *post) {
-    char host[128], path[URL_MAX];
-    int port;
-    if (url_split_http(url, host, sizeof host, &port, path, sizeof path) < 0) return fail("url", "bad URL");
-    uint32_t ip;
-    int rr = -1;
-    for (int t = 0; t < 3 && rr < 0; t++) {                /* the in-kernel resolver gives up after ~4.5 s: ask again on timeouts */
-        rr = resolve(host, &ip);
-        if (rr < 0 && errno != ETIMEDOUT) break;
-    }
-    if (rr < 0) return fail("dns", host);
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in sa = { AF_INET, htons(port), ip, { 0 } };
-    if (fd < 0 || connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) return fail("connect", fd < 0 ? strerror(errno) : "connection refused or timed out");
-    int https = !strncasecmp(url, "https:", 6);
-    struct tls *t = https ? tls_open(fd, host) : 0;
-    if (https && !t) return fail("tls", tls_error());
-    char req[URL_MAX + 400], hh[160];
-    if (port == (https ? 443 : 80)) snprintf(hh, sizeof hh, "%s", host); else snprintf(hh, sizeof hh, "%s:%d", host, port);
-    int rl = snprintf(req, sizeof req, "%s %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: VibeBrowser/1.0 (VibeOS)\r\n"
-                      "Accept: text/html,text/plain;q=0.9,image/png,image/jpeg,image/gif,image/bmp,*/*;q=0.5\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
-                      post ? "POST" : "GET", path, hh);
-    if (post) rl += snprintf(req + rl, sizeof req - rl, "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %d\r\n", (int)strlen(post));
-    rl += snprintf(req + rl, sizeof req - rl, "\r\n");
-    if (t ? tls_write(t, req, rl) != rl || (post && tls_write(t, post, strlen(post)) < 0)
-          : write(fd, req, rl) != rl || (post && write(fd, post, strlen(post)) != (ssize_t)strlen(post)))
-        return fail("send", t ? tls_error() : strerror(errno));
-    char buf[4096];
-    for (;;) {
-        struct pollfd pf = { fd, POLLIN, 0 };            /* TLS may hold decrypted bytes the fd doesn't show */
-        if (!t && poll(&pf, 1, 25000) <= 0) return 0;    /* parent has its own timeout */
-        ssize_t n = t ? tls_read(t, buf, sizeof buf) : read(fd, buf, sizeof buf);
-        if (n <= 0) break;
-        out_all(buf, n);
-    }
-    if (t) tls_close(t); else close(fd);
-    return 0;
-}
 
 /* ---------- parent ---------- */
 static int dying[8], ndying;
@@ -81,9 +28,9 @@ int fetch_start(struct fetch *f, const char *url, const char *post) {
     f->fd = -1; f->clen = -1;
     int p[2];
     if (pipe(p) < 0) return -1;
-    char *argv[] = { "/bin/browser", "--fetch", (char *)url, (char *)post, 0 };
+    char *argv[] = { "/bin/vfetch", (char *)url, (char *)post, 0 };
     struct spawn_opts o = { { -1, p[1], -1 }, 0, 0 };
-    f->pid = spawnve("/bin/browser", argv, environ, &o);
+    f->pid = spawnve("/bin/vfetch", argv, environ, &o);
     close(p[1]);
     if (f->pid < 0) { close(p[0]); return -1; }
     f->fd = p[0];

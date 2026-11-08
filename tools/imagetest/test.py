@@ -236,7 +236,7 @@ for (w, h) in ((64, 48), (101, 67)):
         check_jpeg(os.path.basename(p), p, Image.open(p))
 big = photoish(1280, 800, "RGB").convert("RGB"); p = os.path.join(tmp, "jbig.jpg"); big.save(p, quality=85); check_jpeg("big", p, Image.open(p))
 p = os.path.join(tmp, "jbig_p.jpg"); big.save(p, quality=85, progressive=True); check_jpeg("big progressive", p, Image.open(p))
-from PIL import ImageOps
+from PIL import ImageOps, ImageFilter
 for o in range(1, 9):                                  # EXIF orientation, applied like ImageOps.exif_transpose
     im = scene(40, 24)
     ex = Image.Exif(); ex[0x0112] = o
@@ -246,6 +246,31 @@ for o in range(1, 9):                                  # EXIF orientation, appli
     mm = b"Exif\0\0MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01" + struct.pack(">H", o) + b"\0\0\0\0\0\0"   # big-endian TIFF
     im.save(p, quality=95, exif=mm, subsampling=0)
     check_jpeg(f"orient{o}b", p, ImageOps.exif_transpose(Image.open(p)))
+
+# shrink-by-8 decode (image_decode_fit, used for thumbnails). Without chroma subsampling it is libjpeg's 1/8 scaled decode
+# exactly; 4:2:0 differs there (libjpeg gives chroma a 2x2 IDCT, we replicate block means), so it is checked against the 8x8
+# block means of the full decode on a soft-edged picture instead (mean diff, as chroma edges differ).
+_pics = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "root", "home", "Pictures")
+smooth = Image.open(os.path.join(_pics, "dunes.png")).convert("RGB").resize((1200, 720), Image.BICUBIC)    # a smooth, photo-like picture
+for name, sub, prog, orient, exact in (("fit_444", 0, False, 1, True), ("fit_422_p", 1, True, 1, True), ("fit_420", 2, False, 1, False),
+                                       ("fit_420_p", 2, True, 1, False), ("fit_420_o6", 2, False, 6, False)):
+    fp = os.path.join(tmp, name + ".jpg")
+    kw = {}
+    if orient != 1:
+        ex = Image.Exif(); ex[0x0112] = orient; kw["exif"] = ex.tobytes()
+    (photoish(400, 264, "RGB").convert("RGB") if exact else smooth).save(fp, quality=85, subsampling=sub, progressive=prog, **kw)
+    count += 1
+    args = ["16", "1" if exact else "-100"]    # exact: max diff 1; else mean diff <= 1 level
+    if exact:
+        ref = os.path.join(tmp, "ref8"); lj = Image.open(fp); lj.draft("RGB", (50, 33))      # libjpeg's own 1/8 scaled decode
+        ref_from(lj.convert("RGB"), ref); args.append(ref)
+    r = run("fit", fp, *args)
+    if r.returncode: fails += 1; print(f"FAIL fit {name}: {r.stdout.strip()} {r.stderr[:300]}")
+    else: print("fit", name, r.stdout.strip())
+g = scene(60, 40).convert("L"); fp = os.path.join(tmp, "fit_gray.jpg"); g.save(fp, quality=90)       # too small to shrink for want=16: identical to the full decode
+count += 1
+r = run("fit", fp, "16", "0")
+if r.returncode: fails += 1; print("FAIL fit small:", r.stdout.strip(), r.stderr[:300])
 
 # ---------- GIF ----------
 def gif_ref(path, out):

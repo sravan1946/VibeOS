@@ -3,6 +3,8 @@
  *   imagetest dec FILE REF TOL  same, but each colour channel may differ by up to TOL (JPEG)
  *   imagetest anim FILE REF  decode every frame of a GIF; REF is u32 w, h, n, then per frame u32 delay_ms + RGBA; exact
  *   imagetest enc REF OUT    PNG-encode REF (same layout) to OUT
+ *   imagetest fit FILE WANT MAXDIFF [REF]  (MAXDIFF < 0: limit the mean instead, in hundredths)  image_decode_fit(FILE, WANT) against REF (libjpeg's 1/8 scale decode, same layout as dec), or without it
+ *                                      against the 8x8 block means of the full decode (whole blocks only)
  *   imagetest fuzz FILE      decode many corrupted copies of FILE; the sanitizers catch bad accesses */
 #include "image.h"
 #include <stdio.h>
@@ -64,6 +66,42 @@ int main(int argc, char **argv) {
         free(d); free(ref);
         return 0;
     }
+    if ((argc == 5 || argc == 6) && !strcmp(argv[1], "fit")) {
+        size_t n;
+        uint8_t *d = slurp(argv[2], &n);
+        int want = atoi(argv[3]), maxd = atoi(argv[4]), worst = 0;
+        long sum = 0, cnt = 0;
+        struct image full, sm;
+        if (image_decode(d, n, &full) || image_decode_fit(d, n, &sm, want)) { printf("decode failed\n"); return 1; }
+        int shrunk = sm.w != full.w || sm.h != full.h;
+        if (shrunk && (sm.w != (full.w + 7) / 8 || sm.h != (full.h + 7) / 8)) { printf("fit size %dx%d from %dx%d\n", sm.w, sm.h, full.w, full.h); return 1; }
+        if (!shrunk && memcmp(sm.px, full.px, (size_t)sm.w * sm.h * 4)) { printf("unshrunk differs\n"); return 1; }
+        if ((full.w < full.h ? full.w : full.h) >> 3 >= want && !shrunk) { printf("should have shrunk\n"); return 1; }
+        if (shrunk && argc == 6) {
+            size_t rn;
+            uint8_t *ref = slurp(argv[5], &rn);
+            if ((int)rd32(ref) != sm.w || (int)rd32(ref + 4) != sm.h) { printf("size %dx%d, libjpeg %ux%u\n", sm.w, sm.h, rd32(ref), rd32(ref + 4)); return 1; }
+            for (size_t i = 0; i < (size_t)sm.w * sm.h; i++)
+                for (int c = 0; c < 3; c++) {
+                    int dd = abs((int)(sm.px[i] >> (16 - 8 * c) & 255) - (int)ref[8 + 4 * i + c]);
+                    if (dd > worst) worst = dd;
+                    sum += dd; cnt++;
+                }
+            free(ref);
+        } else
+        for (int by = 0; shrunk && by < full.h / 8; by++)
+            for (int bx = 0; bx < full.w / 8; bx++)
+                for (int sh = 0; sh < 24; sh += 8) {
+                    int acc = 0;
+                    for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) acc += full.px[(by * 8 + y) * full.w + bx * 8 + x] >> sh & 255;
+                    int dd = abs((acc + 32) / 64 - (int)(sm.px[by * sm.w + bx] >> sh & 255));
+                    if (dd > worst) worst = dd;
+                    sum += dd; cnt++;
+                }
+        printf("%s: %dx%d -> %dx%d, max diff %d, mean %.2f\n", shrunk ? "shrunk" : "full", full.w, full.h, sm.w, sm.h, worst, cnt ? (double)sum / cnt : 0.0);
+        image_free(&full); image_free(&sm); free(d);
+        return maxd < 0 ? (cnt ? sum * 100 > -(long)maxd * cnt : 0) : worst > maxd;
+    }
     if (argc == 4 && !strcmp(argv[1], "enc")) {
         size_t rn, on;
         uint8_t *ref = slurp(argv[2], &rn);
@@ -88,6 +126,7 @@ int main(int argc, char **argv) {
             for (int k = 0, nk = 1 + rand() % 8; k < nk; k++) m[rand() % n] = rand();
             struct image im;
             if (!image_decode(m, len, &im)) image_free(&im);
+            if (!image_decode_fit(m, len, &im, 16)) image_free(&im);
             struct image_anim a;
             if (!image_decode_anim(m, len, &a)) image_anim_free(&a);
         }

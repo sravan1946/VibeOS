@@ -33,29 +33,53 @@ static const struct prim D_PAWN[]   = { P(0) };
 static const struct prim *SHAPE[7] = { 0, PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING };
 static const struct prim *DETAIL[7] = { 0, D_PAWN, D_KNIGHT, D_BISHOP, D_ROOK, D_QUEEN, D_KING };
 
-static int inside(const struct prim *p, float x, float y) {
-    if (p->k == 'c') { float dx = x - p->v[0], dy = y - p->v[1]; return dx * dx + dy * dy <= p->v[2] * p->v[2]; }
-    if (p->k == 'e') { float dx = (x - p->v[0]) / p->v[2], dy = (y - p->v[1]) / p->v[3]; return dx * dx + dy * dy <= 1; }
-    int in = 0, n = p->n;
-    for (int i = 0, j = n - 1; i < n; j = i++) {
+/* What one sample row v sees of a primitive: a circle/ellipse keeps its dy term, a polygon the x where each edge that
+ * straddles v crosses it (same float expressions as a per-point test, but computed once per row instead of per sample). */
+struct span { char k; int n; float c, r2, x[20]; const struct prim *p; };
+
+static void span_row(const struct prim *p, float v, struct span *s) {
+    s->k = p->k; s->p = p; s->n = 0;
+    if (p->k == 'c') { float dy = v - p->v[1]; s->c = dy * dy; s->r2 = p->v[2] * p->v[2]; s->n = dy * dy <= s->r2; return; }
+    if (p->k == 'e') { float dy = (v - p->v[1]) / p->v[3]; s->c = dy * dy; s->n = dy * dy <= 1; return; }
+    for (int i = 0, j = p->n - 1; i < p->n; j = i++) {
         float xi = p->v[2 * i], yi = p->v[2 * i + 1], xj = p->v[2 * j], yj = p->v[2 * j + 1];
-        if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) in = !in;
+        if ((yi > v) != (yj > v)) s->x[s->n++] = (xj - xi) * (v - yi) / (yj - yi) + xi;
     }
+}
+
+static int span_in(const struct span *s, float u) {
+    if (!s->n) return 0;
+    if (s->k == 'c') { float dx = u - s->p->v[0]; return dx * dx + s->c <= s->r2; }
+    if (s->k == 'e') { float dx = (u - s->p->v[0]) / s->p->v[2]; return dx * dx + s->c <= 1; }
+    int in = 0;
+    for (int i = 0; i < s->n; i++) if (u < s->x[i]) in = !in;
     return in;
 }
 
 static void coverage(const struct prim *list, int S, unsigned char *out) {
     memset(out, 0, S * S);
-    for (int y = 0; y < S; y++)
-        for (int x = 0; x < S; x++) {
-            int hit = 0;
-            for (int sy = 0; sy < 3; sy++)
-                for (int sx = 0; sx < 3; sx++) {
-                    float u = (x + (sx + 0.5f) / 3) * 100.0f / S, v = (y + (sy + 0.5f) / 3) * 100.0f / S;
-                    for (const struct prim *p = list; p->n; p++) if (inside(p, u, v)) { hit++; break; }
-                }
-            out[y * S + x] = hit * 255 / 9;
+    int np = 0;
+    struct span sp[8];
+    for (const struct prim *p = list; p->n && np < 8; p++) np++;
+    if (!np) return;
+    int *hit = malloc(S * sizeof *hit);
+    float *ux = malloc(3 * S * sizeof *ux);                 /* the sample columns' x, once */
+    if (!hit || !ux) { free(hit); free(ux); return; }
+    for (int x = 0; x < S; x++) for (int sx = 0; sx < 3; sx++) ux[3 * x + sx] = (x + (sx + 0.5f) / 3) * 100.0f / S;
+    for (int y = 0; y < S; y++) {
+        memset(hit, 0, S * sizeof *hit);                /* samples that landed inside, per pixel column */
+        for (int sy = 0; sy < 3; sy++) {
+            float v = (y + (sy + 0.5f) / 3) * 100.0f / S;
+            int any = 0;
+            for (int i = 0; i < np; i++) { span_row(list + i, v, &sp[i]); any |= sp[i].n; }
+            if (!any) continue;
+            for (int x = 0; x < S; x++)
+                for (int sx = 0; sx < 3; sx++)
+                    for (int i = 0; i < np; i++) if (span_in(&sp[i], ux[3 * x + sx])) { hit[x]++; break; }
         }
+        for (int x = 0; x < S; x++) out[y * S + x] = hit[x] * 255 / 9;
+    }
+    free(hit); free(ux);
 }
 
 static uint32_t *sets[2][13];
@@ -65,11 +89,23 @@ void pieces_build(int set, int S) {
     if (set_size[set] == S) return;
     for (int i = 0; i < 13; i++) { free(sets[set][i]); sets[set][i] = NULL; }
     set_size[set] = S;
-    unsigned char *cov = malloc(S * S), *det = malloc(S * S);
+    unsigned char *cov = malloc(S * S), *det = malloc(S * S), *mx = malloc(S * S), *grown = malloc(S * S);
     int r = S >= 48 ? 2 : 1;
     for (int t = 1; t <= 6; t++) {
         coverage(SHAPE[t], S, cov);
         coverage(DETAIL[t], S, det);
+        for (int y = 0; y < S; y++)                         /* the outline reaches r pixels out: max coverage in the (2r+1)^2 window, as two 1-D passes */
+            for (int x = 0; x < S; x++) {
+                int m = cov[y * S + x];
+                for (int dx = -r; dx <= r; dx++) if (x + dx >= 0 && x + dx < S && cov[y * S + x + dx] > m) m = cov[y * S + x + dx];
+                mx[y * S + x] = m;
+            }
+        for (int y = 0; y < S; y++)
+            for (int x = 0; x < S; x++) {
+                int m = mx[y * S + x];
+                for (int dy = -r; dy <= r; dy++) if (y + dy >= 0 && y + dy < S && mx[(y + dy) * S + x] > m) m = mx[(y + dy) * S + x];
+                grown[y * S + x] = m;
+            }
         for (int white = 0; white < 2; white++) {
             uint32_t *px = malloc(S * S * 4);
             /* neutral ivory and graphite; the outline is dark on both, the detail strokes light on black */
@@ -77,12 +113,7 @@ void pieces_build(int set, int S) {
             int line = white ? 0x26272B : 0x111214, dline = white ? 0x26272B : 0xC9C5BC;
             for (int y = 0; y < S; y++)
                 for (int x = 0; x < S; x++) {
-                    int a = cov[y * S + x], oa = a;
-                    for (int dy = -r; dy <= r; dy++)
-                        for (int dx = -r; dx <= r; dx++) {
-                            int xx = x + dx, yy = y + dy;
-                            if (xx >= 0 && yy >= 0 && xx < S && yy < S && cov[yy * S + xx] > oa) oa = cov[yy * S + xx];
-                        }
+                    int a = cov[y * S + x], oa = grown[y * S + x];
                     uint32_t fc = fill;
                     int d = det[y * S + x];
                     if (d > a) d = a;
@@ -99,7 +130,7 @@ void pieces_build(int set, int S) {
             sets[set][white ? t : 6 + t] = px;
         }
     }
-    free(cov); free(det);
+    free(cov); free(det); free(mx); free(grown);
 }
 
 const uint32_t *piece_sprite(int set, int piece) {

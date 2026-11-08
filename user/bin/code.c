@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <syscall.h>
+#include "benchutil.h"
 
 #define MAX_FILE (1 << 20)
 #define MAX_TABS 16
@@ -165,8 +166,9 @@ struct doc {
     bool modified;
     int top, hx;                       /* first visible line, horizontal pixel scroll */
     int lang;
-    int *lines, nlines, lcap;          /* line start offsets, rebuilt lazily */
-    unsigned char *lst;                /* highlighter state at each line start */
+    int *lines, nlines, lcap, lst_cap;  /* line start offsets, rebuilt lazily */
+    unsigned char *lst;                /* highlighter state at each line start; lst[0..hl_n) is valid, the rest is filled on demand (hl_upto) */
+    int hl_n, dpos;                    /* dpos: lowest byte offset edited since the last reindex */
     bool dirty;
     unsigned ver;                      /* bumped on every edit (find cache) */
     struct edit *undo, *redo; int nundo, ucap, nredo, rcap;
@@ -189,27 +191,36 @@ static int lang_of(const char *p) {
     return L_TEXT;
 }
 
+static void touch(struct doc *x, int pos) { x->dirty = true; if (pos < x->dpos) x->dpos = pos; }
+
 static void reindex(struct doc *x) {
     if (!x->dirty && x->lines) return;
-    static unsigned char scol[4096];
     x->dirty = false;
-    int nl = 1;
-    for (int i = 0; i < x->len; i++) if (x->buf[i] == '\n') nl++;
-    if (nl > x->lcap) {
-        x->lcap = nl + 256;
-        x->lines = realloc(x->lines, x->lcap * sizeof *x->lines);
-        x->lst = realloc(x->lst, x->lcap);
-    }
     int n = 0;
+    if (!x->lines) x->lines = malloc((x->lcap = 256) * sizeof *x->lines);
     x->lines[n++] = 0;
-    for (int i = 0; i < x->len; i++) if (x->buf[i] == '\n') x->lines[n++] = i + 1;
-    x->nlines = nl;
-    int st = 0;
-    for (int l = 0; l < nl; l++) {
-        x->lst[l] = st;
-        int s = x->lines[l], e = l + 1 < nl ? x->lines[l + 1] - 1 : x->len, len = e - s;
-        st = hl_line(x->lang, x->buf + s, len > 4096 ? 4096 : len, st, scol);
+    for (const char *p = x->buf, *e = p + x->len; (p = memchr(p, '\n', e - p)); ) {          /* one pass; the table grows as needed */
+        if (n == x->lcap) { x->lcap *= 2; x->lines = realloc(x->lines, x->lcap * sizeof *x->lines); }
+        x->lines[n++] = ++p - x->buf;
     }
+    x->nlines = n;
+    if (n > x->lst_cap) { x->lst_cap = x->lcap; x->lst = realloc(x->lst, x->lst_cap); }
+    int dp = x->dpos > x->len ? x->len : x->dpos, lo = 0, hi = n - 1;      /* the line holding the first edit: everything above it is unchanged */
+    while (lo < hi) { int mid = (lo + hi + 1) / 2; if (x->lines[mid] <= dp) lo = mid; else hi = mid - 1; }
+    if (x->hl_n > lo + 1) x->hl_n = lo + 1;
+    x->dpos = 1 << 30;
+}
+
+/* make lst[0..l] valid: the state at a line's start is the state its predecessor ended in */
+static int hl_upto(struct doc *x, int l) {
+    static unsigned char scol[4096];
+    reindex(x);
+    if (!x->hl_n) { x->lst[0] = 0; x->hl_n = 1; }
+    for (; x->hl_n <= l; x->hl_n++) {
+        int k = x->hl_n - 1, s = x->lines[k], e = k + 1 < x->nlines ? x->lines[k + 1] - 1 : x->len, len = e - s;
+        x->lst[k + 1] = hl_line(x->lang, x->buf + s, len > 4096 ? 4096 : len, x->lst[k], scol);
+    }
+    return x->lst[l];
 }
 
 static int line_of(struct doc *x, int off) {
@@ -242,7 +253,7 @@ static struct doc *doc_new(const char *path) {
     x->cap = 4096;
     x->buf = malloc(x->cap);
     x->buf[0] = 0;
-    x->dirty = true;
+    x->dirty = true;                   /* (dpos 0: nothing is indexed yet) */
     x->lang = L_C;                     /* untitled buffers start as C */
     if (path) { snprintf(x->path, sizeof x->path, "%s", path); x->lang = lang_of(path); }
     return x;
@@ -258,12 +269,19 @@ static void doc_free(struct doc *x) {
 
 /* the one place the text changes: replaces [pos, pos+ndel) by ins */
 static void raw_replace(struct doc *x, int pos, int ndel, const char *ins, int nins) {
+    bool flat = !x->dirty && x->lines && !memchr(x->buf + pos, '\n', ndel) && !memchr(ins, '\n', nins);   /* no line breaks come or go: just shift the table */
     if (x->len - ndel + nins + 1 > x->cap) { x->cap = (x->len - ndel + nins + 1) * 2; x->buf = realloc(x->buf, x->cap); }
     memmove(x->buf + pos + nins, x->buf + pos + ndel, x->len - pos - ndel);
     memcpy(x->buf + pos, ins, nins);
     x->len += nins - ndel;
     x->buf[x->len] = 0;
-    x->modified = x->dirty = true;
+    x->modified = true;
+    if (flat) {
+        int lo = 0, hi = x->nlines - 1;
+        while (lo < hi) { int mid = (lo + hi + 1) / 2; if (x->lines[mid] <= pos) lo = mid; else hi = mid - 1; }
+        for (int i = lo + 1; i < x->nlines; i++) x->lines[i] += nins - ndel;
+        if (x->hl_n > lo + 1) x->hl_n = lo + 1;
+    } else touch(x, pos);
     x->ver++;
 }
 
@@ -352,11 +370,11 @@ static bool doc_load(struct doc *x, const char *p) {
         if (x->len >= MAX_FILE) { say(true, "%s", "Opened the first 1 MiB only"); break; }
     }
     close(fd);
-    for (int i = 0; i < x->len; i++) if (x->buf[i] == '\r') { memmove(x->buf + i, x->buf + i + 1, x->len - i - 1); x->len--; i--; }
+    { int o = 0; for (int i = 0; i < x->len; i++) if (x->buf[i] != '\r') x->buf[o++] = x->buf[i]; x->len = o; }   /* CRLF -> LF in one pass */
     x->buf[x->len] = 0;
     x->cur = x->anchor = 0;
     x->modified = false;
-    x->dirty = true;
+    touch(x, 0);
     return true;
 }
 
@@ -372,7 +390,7 @@ static bool doc_save(struct doc *x, const char *p) {
     close(fd);
     if (p != x->path) snprintf(x->path, sizeof x->path, "%s", p);
     x->lang = lang_of(x->path);
-    x->dirty = true;
+    touch(x, 0);                       /* the language may have changed: highlight again from the top */
     x->modified = false;
     return true;
 }
@@ -1087,7 +1105,24 @@ static void request_close_tab(int i) {
     else close_doc(i);
 }
 
+/* `code --bench FILE`: open + index, then 20 one-character edits in the middle with a reindex after each (typing in a big file) */
+static void bench(const char *path) {
+    struct doc *x = doc_new(path);
+    uint64_t t = tsc();
+    doc_load(x, path);
+    blog("CODE %s load %u us, %d bytes", path, us(tsc() - t), x->len);
+    t = tsc(); reindex(x);
+    blog("CODE %s first index %u us, %d lines", path, us(tsc() - t), x->nlines);
+    t = tsc();
+    for (int i = 0; i < 20; i++) { raw_replace(x, x->len / 2, 0, "x", 1); reindex(x); }
+    blog("CODE %s edit+reindex %u us each", path, us(tsc() - t) / 20);
+    t = tsc();
+    for (int i = 0; i < 20; i++) { raw_replace(x, 10, 0, "x", 1); reindex(x); }
+    blog("CODE %s edit-at-top+reindex %u us each", path, us(tsc() - t) / 20);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 2 && !strcmp(argv[1], "--bench")) { bench(argv[2]); return 0; }
     struct sysinfo si = { 0 };
     sysinfo(&si);                                          /* default size, shrunk to fit small screens (1024x768) */
     int dw = si.screen_w && si.screen_w - 2 * SP_5 < 1080 ? (int)si.screen_w - 2 * SP_5 : 1080;
@@ -1382,7 +1417,7 @@ int main(int argc, char **argv) {
                 }
                 unsigned char col[4096];
                 int n = e - s > 4096 ? 4096 : e - s;
-                hl_line(d->lang, d->buf + s, n, d->lst[l], col);
+                hl_line(d->lang, d->buf + s, n, hl_upto(d, l), col);
                 int vc = 0;
                 for (int j = s; j < e; j++) {
                     if (d->buf[j] == '\t') { vc = (vc / TAB + 1) * TAB; continue; }

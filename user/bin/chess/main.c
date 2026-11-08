@@ -136,7 +136,7 @@ int main(int argc, char **argv) {
     for (;;) {
         bool ai_turn = !over && cur_side() != human && nply < MAXPLY;
         bool animating = anim.from >= 0 && uptime_ms() - anim.t0 < ANIM_MS;
-        if (!ui_poll(&ui, animating ? 16 : ai_turn ? 0 : 500)) break;
+        if (!ui_poll(&ui, animating ? 16 : ai_turn ? 0 : -1)) break;
         int W = w->w, H = w->h;
         cell = (W - PANEL_W - 3 * SP_5) / 8;
         if ((H - HEAD - 2 * SP_5) / 8 < cell) cell = (H - HEAD - 2 * SP_5) / 8;

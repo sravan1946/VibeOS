@@ -105,7 +105,7 @@ static void scan(const char *dir) {
 static void make_thumb(struct wpe *w) {
     w->tried = true;
     struct image im;
-    if (image_load(w->path, &im) < 0) return;
+    if (image_load_fit(w->path, &im, TW > TH ? TW : TH) < 0) return;      /* a big JPEG comes back shrunk by 8 */
     if ((w->thumb = malloc(TW * TH * 4))) {
         float k = (float)TW / im.w > (float)TH / im.h ? (float)TW / im.w : (float)TH / im.h;
         image_sample(&im, w->thumb, TW, TH, TW, im.w / 2.0f - TW / (2 * k), im.h / 2.0f - TH / (2 * k), k, 1);

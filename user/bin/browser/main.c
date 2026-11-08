@@ -14,6 +14,7 @@
 #include <syscall.h>
 #include <design.h>
 #include <icons.h>
+#include "../benchutil.h"
 
 #define TB H_TOOLBAR       /* toolbar height */
 #define SB 12              /* scrollbar column */
@@ -614,16 +615,32 @@ static void find_go(int dir, int vh, bool from_view) {
     } else mk.find_it = -1;
 }
 
+/* `browser --bench URL`: load + layout, paint at 8 scroll offsets, relayout at two widths; prints to /dev/kmsg */
+static void bench(struct ui *ui, const char *arg) {
+    char u[URL_MAX];
+    url_from_input(arg, u, sizeof u);
+    uint64_t t = tsc();
+    navigate(u, 1, -1);
+    blog("BROWSER %s load+layout %u us, %d items, height %d", arg, us(tsc() - t), doc.nit, doc.height);
+    for (int pass = 0; pass < 2; pass++) {
+        t = tsc();
+        for (int i = 0; i < 8; i++) { ui_clear(ui); doc_draw(ui, &doc, 0, TB, view_w(), view_h(), i * max_scroll() / 8, -1, &mk, -1, 0); }
+        blog("BROWSER %s paint x8 %s %u us", arg, pass ? "warm" : "cold", us(tsc() - t));
+    }
+    
+    for (int w = 0; w < 4; w++) { t = tsc(); doc_layout(&doc, pg.raw, pg.n, pg.html, w & 1 ? 700 : view_w(), cur_url); blog("BROWSER %s relayout w=%d %u us", arg, w & 1 ? 700 : view_w(), us(tsc() - t)); }
+}
+
 /* ---------- main loop ---------- */
 static void drop_key(struct ui *ui, int i) { memmove(ui->keys + i, ui->keys + i + 1, (--ui->nkeys - i) * sizeof ui->keys[0]); }
 
 int main(int argc, char **argv) {
-    if (argc >= 3 && !strcmp(argv[1], "--fetch")) return fetch_main(argv[2], argc > 3 ? argv[3] : 0);
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;
     ui_init(&ui, win);
     char start[URL_MAX] = "about:home";
+    if (argc > 2 && !strcmp(argv[1], "--bench")) { bench(&ui, argv[2]); return 0; }
     if (argc > 1) url_from_input(argv[1], start, sizeof start);
     navigate(start, 1, -1);
     char last_title[96] = "";

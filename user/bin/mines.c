@@ -160,7 +160,7 @@ int main(void) {
     ui_init(&ui, w);
     srand((unsigned)uptime_ms());
     for (;;) {
-        if (!ui_poll(&ui, 200)) break;
+        if (!ui_poll(&ui, state == PLAY ? (int)(1000 - ((uint32_t)uptime_ms() - t_start) % 1000) : -1)) break;   /* the timer shown ticks once a second */
         if (w->w != win_w() || w->h != win_h()) continue;     /* wait for EV_RESIZE after a level switch */
         uint32_t now = (uint32_t)uptime_ms();
         int bx = bx0(), by = TOPY;

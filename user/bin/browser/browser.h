@@ -17,7 +17,7 @@ void url_unescape(const char *s, char *out, int cap);          /* %XX -> byte */
 void url_strip_frag(char *url);                                /* in place */
 void url_file_path(const char *url, char *out, int cap);       /* file: URL -> filesystem path */
 
-/* ---- fetch.c: HTTP runs in a child process (/bin/browser --fetch URL) so DNS and connect
+/* ---- fetch.c: HTTP runs in a child process (/bin/vfetch URL, a small binary of its own) so DNS and connect
  * never block the UI; the parent polls the pipe next to the window fd. ---- */
 struct fetch {
     int pid, fd;
@@ -32,7 +32,7 @@ struct response {
     char *body; size_t blen;       /* malloc'd, NUL-terminated; caller frees */
     int truncated, latin1;
 };
-int  fetch_main(const char *url, const char *post);   /* the child; post = form body for a POST, or NULL */
+int  fetch_main(const char *url, const char *post);   /* the child (user/bin/vfetch); post = form body for a POST, or NULL */
 int  fetch_start(struct fetch *f, const char *url, const char *post);
 int  fetch_pump(struct fetch *f);                 /* 0 running, 1 finished, -1 failed */
 void fetch_cancel(struct fetch *f);

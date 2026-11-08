@@ -315,7 +315,7 @@ int main(void) {
     reset();
     state = PAUSED;
     for (;;) {
-        if (!ui_poll(&ui, state == PLAY || state == CLEARING ? 16 : 100)) break;
+        if (!ui_poll(&ui, state == PLAY || state == CLEARING ? 16 : flash_msg[0] && uptime_ms() - flash_t < 900 ? 40 : -1)) break;   /* idle: wait for input */
         uint32_t now = (uint32_t)uptime_ms();
         if (!ui.focused) {                         /* lost focus: drop held keys, pause */
             memset(dirdown, 0, sizeof dirdown);

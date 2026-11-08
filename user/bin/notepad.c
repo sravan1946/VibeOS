@@ -143,7 +143,7 @@ static bool load(const char *p) {
         if (len >= MAX_FILE) { say(true, "%s", "Opened the first 1 MiB only"); break; }
     }
     close(fd);
-    for (int i = 0; i < len; i++) if (buf[i] == '\r') { memmove(buf + i, buf + i + 1, len - i - 1); len--; i--; }
+    { int o = 0; for (int i = 0; i < len; i++) if (buf[i] != '\r') buf[o++] = buf[i]; len = o; }   /* CRLF -> LF in one pass */
     buf[len] = 0;
     cur = anchor = 0;
     top = hx = 0;

@@ -16,6 +16,7 @@
 #include <syscall.h>
 #include "image.h"
 #include "adec.h"
+#include "../benchutil.h"
 
 #define W 780
 #define H 480
@@ -247,7 +248,27 @@ static int track_list(struct ui *ui, const int *idx, int n, int playing_pos, int
     return act;
 }
 
+/* `music --bench FILE...`: open each file and decode all of it; prints open time and decode speed (x real time) */
+static void bench(char **files, int n) {
+    static int16_t buf[CHUNK * 2];
+    for (int i = 0; i < n; i++) {
+        const char *err; struct adec_tags tg;
+        uint64_t t = tsc();
+        struct adec *a = adec_open(files[i], &tg, &err);
+        uint32_t open_us = us(tsc() - t);
+        if (!a) { blog("MUSIC %s: %s", files[i], err); continue; }
+        long frames = 0; int g;
+        t = tsc();
+        while ((g = adec_read(a, buf, CHUNK)) > 0) frames += g;
+        uint32_t dec_us = us(tsc() - t);
+        blog("MUSIC %s: open %u us, %s, decoded %ld frames (%d ms) in %u us = %u.%ux real time", files[i], open_us, adec_info(a), frames, (int)(frames * 1000 / AUDIO_RATE), dec_us,
+             (uint32_t)((uint64_t)frames * 1000000 / AUDIO_RATE / (dec_us ? dec_us : 1)), (uint32_t)((uint64_t)frames * 10000000 / AUDIO_RATE / (dec_us ? dec_us : 1) % 10));
+        adec_close(a);
+    }
+}
+
 int main(int argc, char **argv) {
+    if (argc > 2 && !strcmp(argv[1], "--bench")) { bench(argv + 2, argc - 2); return 0; }
     srand(uptime_ms());
     rescan();
     for (int i = 1; i < argc; i++) lib_add(argv[i]);

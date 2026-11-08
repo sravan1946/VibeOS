@@ -18,6 +18,7 @@
 #include <fsutil.h>
 #include <pthread.h>
 #include "image.h"
+#include "benchutil.h"
 
 #define MAX_ENT 2048
 #define HIST_MAX 32
@@ -119,7 +120,7 @@ static bool thumb_make(void) {
     snprintf(t->path, sizeof t->path, "%s", want);
     t->mtime = want_mtime; t->size = want_size; t->use = tick_ms;
     struct image im;
-    if (image_load(want, &im) == 0) {
+    if (image_load_fit(want, &im, TH) == 0) {          /* a big JPEG comes back shrunk by 8 (block means): the thumbnail is a box average anyway */
         float sc = (float)TH / (im.w > im.h ? im.w : im.h);
         if (sc > 1) sc = 1;
         int tw = (int)(im.w * sc), th = (int)(im.h * sc);
@@ -1128,7 +1129,25 @@ static int crumbs(struct ui *ui, int x, int y, int maxw) {
     return x + (tot < maxw ? tot : maxw);
 }
 
+/* `files --bench DIR`: list DIR, then make every image's thumbnail; spans go to /dev/kmsg */
+static void bench(const char *dir) {
+    uint64_t t = tsc();
+    go(dir, true);
+    blog("FILES %s list %u us, %d entries", dir, us(tsc() - t), nents);
+    t = tsc();
+    uint32_t worst = 0; int n = 0;
+    for (int i = 0; i < nents && n < NTHUMB; i++) {
+        if (ents[i].kind != FK_IMAGE) continue;
+        char p[PATH_MAX]; join(p, cwd, ents[i].name);
+        thumb_get(p, ents[i].mtime, ents[i].size);
+        uint64_t t1 = tsc(); thumb_make(); uint32_t d = us(tsc() - t1); if (d > worst) worst = d; n++;
+    }
+    blog("FILES %s thumbnails %d in %u us (worst %u us)", dir, n, us(tsc() - t), worst);
+    t = tsc(); for (int i = 0; i < 20; i++) sig_of(cwd); blog("FILES %s sig_of %u us", dir, us(tsc() - t) / 20);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 2 && !strcmp(argv[1], "--bench")) { bench(argv[2]); return 0; }
     struct gui_window *w = gui_window_create("Files", 920, 600, 0);
     if (!w) { perror("files"); return 1; }
     struct ui ui;
@@ -1172,12 +1191,14 @@ int main(int argc, char **argv) {
             if (kc == KEY_LSHIFT || kc == KEY_RSHIFT) mods &= ~MOD_SHIFT;
             if (kc == KEY_LALT || kc == KEY_RALT) mods &= ~MOD_ALT;
         }
+        bool changed = false;
         if (tick_ms - last_tick >= 1000) {                       /* notice changes made by other programs */
             last_tick = tick_ms;
-            if (sig_of(cwd) != dir_sig && !dragging && !banding) refresh(true);
+            if (sig_of(cwd) != dir_sig && !dragging && !banding) { refresh(true); changed = true; }
             int tn = fs_trash_count();
-            if (tn != trash_n) { trash_n = tn; if (intrash) refresh(true); }
+            if (tn != trash_n) { trash_n = tn; changed = true; if (intrash) refresh(true); }
         }
+        if (ui.timeout && !changed && !thumb_busy && !J.active && !pend && !drag_clear) continue;   /* only the 1 s check woke us and nothing changed: skip the redraw */
         if (J.active && J.done) job_finish();
         if (ui_toast_action(&ui)) do_undo();
         if (J.active && J.ask && !J.answer && (mode == M_NONE || mode == M_MENU)) { mode = M_CONFLICT; cf_first = true; cf_all = false; }
