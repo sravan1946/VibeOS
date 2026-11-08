@@ -48,6 +48,15 @@ static int ntabs = 1, curtab;
 static struct hent *hist;
 static int nhist, hcur = -1;
 static char dl_toast[96];                    /* a finished download, shown as a toast next frame */
+/* downloads: a response that isn't a page (octet-stream, zip, pdf, audio/video, Content-Disposition: attachment) streams to ~/Downloads as it
+ * arrives, so size is no object; about:downloads lists them */
+struct dlrec { char name[64], path[128]; long size, total; int state; };   /* state: 0 done, 1 running, 2 failed or cancelled */
+static struct dlrec dls[40];
+static int ndl;
+static struct { int fd, rec, tried; long got, total; } dl = { -1 };
+static void dl_try(void);
+static int dl_service(int r);
+static void dl_abort(const char *why);
 static bool want_src;                        /* the next page loaded is shown as source (view-source:) */
 int doc_zoom = 100;                          /* page zoom in percent (Ctrl+= / Ctrl+-); html.c's layout scales by it */
 static struct fetch fe;
@@ -138,7 +147,7 @@ static const char HOME_HTML[] =
     "<li><a href=\"file:///home/Documents/js.html\">JavaScript demo</a> &ndash; counter, todo list, timer, fetch; <a href=\"file:///home/Documents/jstest.html\">JavaScript tests</a>"
     "<li><a href=\"file:///home/welcome.txt\">welcome.txt</a> &ndash; plain text in a mono font"
     "<li><a href=\"file:///home/\">/home</a> &ndash; a directory listing"
-    "<li><a href=\"about:bookmarks\">Bookmarks</a> &ndash; Ctrl+D adds the current page &middot; <a href=\"about:blank\">about:blank</a>"
+    "<li><a href=\"about:bookmarks\">Bookmarks</a> &ndash; Ctrl+D adds the current page &middot; <a href=\"about:downloads\">Downloads</a> (Ctrl+J) &middot; <a href=\"about:blank\">about:blank</a>"
     "</ul>"
     "<h2>Keys</h2>"
     "<blockquote>"
@@ -382,9 +391,11 @@ static void load_file(const char *url) {
 static void load_url(const char *url);
 static void bm_del(int i);
 static void bookmarks_page(const char *url);
+static void downloads_page(const char *url);
 static void download(const char *url, const char *ct, char *body, size_t n, int truncated);
 
 static void start_fetch(const char *url) {
+    dl.tried = 0;
     strlcpy(pend_url, url, sizeof pend_url);
     const char *pb = has_post ? post_body : 0;
     was_post = has_post;
@@ -452,6 +463,8 @@ static void finish_fetch(void) {
 static void service_fetch(void) {
     int r = fetch_pump(&fe);
     uint32_t now = uptime_ms();
+    if (!dl.tried && fe.hdr_end && r == 0) dl_try();
+    if (dl.fd >= 0 && dl_service(r)) return;
     if (r == 0) {
         if (now - fe.last > TIMEOUT_MS) { fetch_cancel(&fe); loading = false; net_error(pend_url, "timeout:"); }
         else if (fe.len) say(false, "Loading... %lu KB", (unsigned long)(fe.len / 1024));
@@ -463,6 +476,7 @@ static void service_fetch(void) {
 
 static void cancel_load(void) {
     if (!loading) return;
+    if (dl.fd >= 0) dl_abort("Download cancelled");
     fetch_cancel(&fe);
     loading = false;
 }
@@ -476,6 +490,7 @@ static void load_url(const char *url) {
         bookmarks_page("about:bookmarks");
     }
     else if (!strcmp(url, "about:bookmarks")) bookmarks_page(url);
+    else if (!strcmp(url, "about:downloads")) downloads_page(url);
     else if (!strncasecmp(url, "file:", 5)) load_file(url);
     else if (!strcmp(url, "about:home")) {
         struct sb b = { 0 };
@@ -671,27 +686,121 @@ static void bookmarks_page(const char *url) {
     say(false, "%d bookmarks", nbm);
 }
 
-/* a response we can't show: save it as ~/Downloads/NAME (the 2 MiB page cap applies, so big files are cut) */
-static void download(const char *url, const char *ct, char *body, size_t n, int truncated) {
+/* where a download goes: ~/Downloads/NAME (NAME from Content-Disposition, else the URL; "-2", "-3" ... before the extension if taken) */
+static int dl_open(const char *url, const char *cd, char *path, int pcap, char *name, int ncap) {
     mkdir("/home/Downloads", 0755);
-    char raw[URL_MAX], nm[96], path[160];
-    snprintf(raw, sizeof raw, "%.*s", (int)strcspn(base_name(url), "?#"), base_name(url));
-    url_unescape(raw, nm, sizeof nm);
-    for (char *c = nm; *c; c++) if (*c == '/' || *c < 32) *c = '_';
+    char raw[URL_MAX], nm[96] = "";
+    const char *f = cd ? strstr(cd, "filename=") : 0;
+    if (f) {                                             /* filename="x" or filename=x (filename*=... is left alone) */
+        f += 9;
+        int q = *f == '"';
+        snprintf(raw, sizeof raw, "%.*s", (int)strcspn(f + q, q ? "\"" : ";"), f + q);
+        url_unescape(raw, nm, sizeof nm);
+    }
+    if (!nm[0]) {
+        snprintf(raw, sizeof raw, "%.*s", (int)strcspn(base_name(url), "?#"), base_name(url));
+        url_unescape(raw, nm, sizeof nm);
+    }
+    for (char *c = nm; *c; c++) if (*c == '/' || *c == '\\' || *c < 32) *c = '_';
     if (!nm[0] || !strcmp(nm, ".") || !strcmp(nm, "..")) strcpy(nm, "download");
     char *dot = strrchr(nm, '.');
     int stem = dot && dot != nm ? (int)(dot - nm) : (int)strlen(nm);
     struct stat st;
-    snprintf(path, sizeof path, "/home/Downloads/%s", nm);
-    for (int k = 2; !stat(path, &st) && k < 100; k++) snprintf(path, sizeof path, "/home/Downloads/%.*s-%d%s", stem, nm, k, nm + stem);
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    snprintf(path, pcap, "/home/Downloads/%s", nm);
+    for (int k = 2; !stat(path, &st) && k < 100; k++) snprintf(path, pcap, "/home/Downloads/%.*s-%d%s", stem, nm, k, nm + stem);
+    strlcpy(name, strrchr(path, '/') + 1, ncap);
+    return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+}
+static int dl_record(const char *name, const char *path) {
+    if (ndl == (int)(sizeof dls / sizeof *dls)) { memmove(dls, dls + 1, sizeof dls - sizeof *dls); ndl--; }
+    struct dlrec *r = &dls[ndl];
+    memset(r, 0, sizeof *r);
+    strlcpy(r->name, name, sizeof r->name); strlcpy(r->path, path, sizeof r->path);
+    return ndl++;
+}
+
+/* a body that is already complete in memory and not showable (or the streaming path wasn't possible) */
+static void download(const char *url, const char *ct, char *body, size_t n, int truncated) {
+    char path[128], name[64];
+    int fd = dl_open(url, 0, path, sizeof path, name, sizeof name), rec = dl_record(name, path);
     size_t put = 0;
     while (fd >= 0 && put < n) { ssize_t w = write(fd, body + put, n - put); if (w <= 0) break; put += w; }
     if (fd >= 0) close(fd);
     free(body);
-    if (fd < 0 || put < n) { say(true, "Can't save %s", path); return; }
-    snprintf(dl_toast, sizeof dl_toast, "Saved %s to Downloads%s", strrchr(path, '/') + 1, truncated ? " (cut at 2 MiB)" : "");
+    dls[rec].size = dls[rec].total = put;
+    if (fd < 0 || put < n) { dls[rec].state = 2; say(true, "Can't save %s", path); return; }
+    snprintf(dl_toast, sizeof dl_toast, "Saved %s to Downloads%s", name, truncated ? " (cut: the response was over its size limit)" : "");
+    if (!pg.have) { pend_push = 1; pend_restore = -1; downloads_page("about:downloads"); }
     say(false, "Downloaded %s (%s, %lu bytes)", path, ct[0] ? ct : "unknown type", (unsigned long)n);
+}
+
+/* headers are in and the response is still coming: if it is a file rather than a page, start streaming it to disk */
+static void dl_try(void) {
+    dl.tried = 1;
+    char ct[96] = "", cd[256] = "", ce[32] = "";
+    fetch_hdr(&fe, "content-type", ct, sizeof ct);
+    fetch_hdr(&fe, "content-disposition", cd, sizeof cd);
+    fetch_hdr(&fe, "content-encoding", ce, sizeof ce);
+    for (char *c = ct; *c; c++) *c = tolower((unsigned char)*c);
+    int attach = !strncasecmp(cd, "attachment", 10);
+    int file = attach || !strncmp(ct, "audio/", 6) || !strncmp(ct, "video/", 6) ||
+               (!strncmp(ct, "application/", 12) && !strstr(ct, "json") && !strstr(ct, "xml") && !strstr(ct, "javascript") && !strstr(ct, "xhtml") && !strstr(ct, "html"));
+    if (!file || fe.status < 200 || fe.status > 299 || fe.chunked || (ce[0] && strcasecmp(ce, "identity"))) return;   /* chunked / compressed: the buffered path handles it */
+    char path[128], name[64];
+    int fd = dl_open(pend_url, cd, path, sizeof path, name, sizeof name);
+    if (fd < 0) return;
+    dl.fd = fd; dl.got = 0; dl.total = fe.clen; dl.rec = dl_record(name, path);
+    dls[dl.rec].state = 1; dls[dl.rec].total = fe.clen;
+}
+static void dl_stop(int state) {
+    if (dl.fd >= 0) close(dl.fd);
+    dl.fd = -1;
+    dls[dl.rec].state = state; dls[dl.rec].size = dl.got;
+    if (state == 2) unlink(dls[dl.rec].path);
+}
+static void dl_abort(const char *why) { dl_stop(2); say(false, "%s", why); }
+/* r: what fetch_pump said. Returns 1 when the load is over (the caller must not go on) */
+static int dl_service(int r) {
+    size_t bl = fe.len - fe.hdr_end;
+    for (size_t put = 0; put < bl; ) {
+        ssize_t w = write(dl.fd, fe.buf + fe.hdr_end + put, bl - put);
+        if (w <= 0) { fetch_cancel(&fe); loading = false; dl_stop(2); say(true, "Can't write %s", dls[dl.rec].path); return 1; }
+        put += w;
+    }
+    dl.got += bl;
+    fe.len = fe.hdr_end;                                    /* the headers stay, the body goes to disk: memory stays flat */
+    if (r < 0 || (r == 0 && uptime_ms() - fe.last > TIMEOUT_MS)) { fetch_cancel(&fe); loading = false; dl_stop(2); say(true, "Download of %s failed", dls[dl.rec].name); return 1; }
+    if (r == 1) {
+        fetch_cancel(&fe); loading = false;
+        dl_stop(0);
+        snprintf(dl_toast, sizeof dl_toast, "Saved %s to Downloads (%ld KB)", dls[dl.rec].name, dl.got / 1024);
+        if (!pg.have) { pend_push = 1; pend_restore = -1; downloads_page("about:downloads"); }   /* nothing on screen: show the list */
+        say(false, "Downloaded %s", dls[dl.rec].path);
+        return 1;
+    }
+    if (dl.total > 0) say(false, "Downloading %s: %ld of %ld KB (%d%%)", dls[dl.rec].name, dl.got / 1024, dl.total / 1024, (int)(dl.got * 100 / dl.total));
+    else say(false, "Downloading %s: %ld KB", dls[dl.rec].name, dl.got / 1024);
+    dls[dl.rec].size = dl.got;
+    return 0;
+}
+static void downloads_page(const char *url) {
+    struct sb b = { 0 };
+    sb_add(&b, "<html><head><title>Downloads</title></head>"); sb_body(&b); sb_add(&b, "<h1>Downloads</h1>");
+    if (!ndl) sb_add(&b, "<p>Nothing downloaded yet. Files that aren't pages are saved to <a href=\"file:///home/Downloads/\">Downloads</a>.</p>");
+    sb_add(&b, "<ul>");
+    for (int i = ndl - 1; i >= 0; i--) {
+        char t[64], u[200];
+        snprintf(u, sizeof u, "file://%s", dls[i].path);
+        sb_add(&b, "<li>");
+        if (dls[i].state == 0) { sb_add(&b, "<a href=\""); sb_esc(&b, u); sb_add(&b, "\">"); sb_esc(&b, dls[i].name); sb_add(&b, "</a>"); }
+        else sb_esc(&b, dls[i].name);
+        snprintf(t, sizeof t, " &ndash; %ld KB%s", dls[i].size / 1024, dls[i].state == 1 ? " so far, downloading..." : dls[i].state == 2 ? " &ndash; failed or cancelled" : "");
+        sb_add(&b, t);
+    }
+    sb_add(&b, "</ul><p><a href=\"file:///home/Downloads/\">Open the Downloads folder</a></p>"); sb_add(&b, HOME_LINK); sb_add(&b, "</body></html>");
+    commit(url, b.p, b.n, 1);
+    internal = true;
+    say(false, "%d downloads", ndl);
 }
 
 static void view_source(void) {                          /* Ctrl+U */
@@ -950,6 +1059,7 @@ int main(int argc, char **argv) {
             else if (ctrl && k.key == KEY_PGUP) tab_go((curtab + ntabs - 1) % ntabs);
             else if (ctrl && c == 'd') bm_toggle();
             else if (ctrl && c == 'b') navigate("about:bookmarks", 1, -1);
+            else if (ctrl && c == 'j') navigate("about:downloads", 1, -1);
             else if (ctrl && c == 'u') view_source();
             else if (ctrl && (k.key == '=' || k.key == '+')) zoom_by(1);
             else if (ctrl && k.key == '-') zoom_by(-1);
@@ -989,9 +1099,9 @@ int main(int argc, char **argv) {
             navigate(u, 1, -1);
         }
         if (loading) {                                   /* indeterminate progress on the toolbar's bottom edge */
-            if (fe.clen > 0 && fe.hdr_end && (long)fe.len > fe.hdr_end) {   /* length known: a real bar */
-                long got = (long)fe.len - fe.hdr_end;
-                gfx_round_fill(ui.c, 0, TB - SP_1, (int)((long long)W * (got > fe.clen ? fe.clen : got) / fe.clen) + 1, SP_1, R_1, ui_th.accent_line);
+            long got = dl.fd >= 0 ? dl.got : (long)fe.len - fe.hdr_end, tot = dl.fd >= 0 ? dl.total : fe.clen;
+            if (tot > 0 && fe.hdr_end && got > 0) {   /* length known: a real bar */
+                gfx_round_fill(ui.c, 0, TB - SP_1, (int)((long long)W * (got > tot ? tot : got) / tot) + 1, SP_1, R_1, ui_th.accent_line);
             } else {
             int span = W * 3 / 10, px = (int)((uptime_ms() - load_t0) * (uint32_t)(W + span) / 1200 % (uint32_t)(W + span)) - span;
             gfx_round_fill(ui.c, px < 0 ? 0 : px, TB - SP_1, px < 0 ? span + px : span, SP_1, R_1, ui_th.accent_line);

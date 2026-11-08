@@ -225,6 +225,11 @@ static int chunks_done(const unsigned char *b, size_t n) {
     }
 }
 
+/* a response header of the data read so far (once the headers are complete): 1 = found */
+int fetch_hdr(const struct fetch *f, const char *name, char *out, int cap) {
+    return f->hdr_end ? hdr_get((const char *)f->buf, f->hdr_end, name, out, cap) : 0;
+}
+
 int fetch_pump(struct fetch *f) {
     int eof = f->ready;
     for (int rounds = 0; rounds < 64 && !f->ready; rounds++) {

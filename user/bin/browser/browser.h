@@ -51,6 +51,7 @@ int  fetch_start(struct fetch *f, const char *url, const char *post);
  * Content-Length, Connection, Accept-Encoding, Referer, Origin are ours and ignored), body/blen (may hold NULs; blen 0 = no body,
  * but method POST/PUT then sends an empty one). Cookies are sent and stored by vfetch as for any page. 0 / -1 */
 int  fetch_start_req(struct fetch *f, const char *url, const char *method, const char *hdrs, const char *body, size_t blen);
+int  fetch_hdr(const struct fetch *f, const char *name, char *out, int cap);   /* header value once fe->hdr_end is set */
 int  fetch_pump(struct fetch *f);                 /* 0 running, 1 finished, -1 failed */
 void fetch_cancel(struct fetch *f);
 void fetch_reap(void);                            /* collect killed children */
