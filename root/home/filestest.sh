@@ -70,6 +70,17 @@ t df-default-only-real 2 "$(df | wc -l)"
 t df-h-unit yes "$(df -h / | awk 'NR == 2 && $2 ~ /[MG]$/ { print "yes" }')"
 df /nonexistent >/dev/null 2>&1; t df-missing 1 $?
 df -z >/dev/null 2>&1; t df-usage 1 $?
+# ---- what Files' Undo relies on: trash / restore round trips, emptying a nested tree (fs_trash_empty_x)
+mkdir -p d/n/m; echo deep > d/n/m/f
+trash d/n
+t undo-trash-gone no "$([ -e d/n ] && echo yes || echo no)"
+trash -r n > /dev/null
+t undo-trash-back deep "$(cat d/n/m/f)"
+trash d/n
+t undo-restore-retrash yes "$([ -e $TD/files/n/m/f ] && echo yes || echo no)"
+trash -e
+t empty-nested-files "" "$(ls $TD/files)"
+t empty-nested-info "" "$(ls $TD/info)"
 
 rm -rf $T
 echo "$pass passed, $fail failed"
