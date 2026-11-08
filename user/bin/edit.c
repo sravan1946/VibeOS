@@ -1,5 +1,6 @@
 /* edit [file] : small nano-like editor.
  *   ^S save   ^Q quit   ^F find (Enter on empty = repeat)   ^G goto line   ^K cut line   ^U paste   ^A/^E line start/end
+ *   ^Z undo   ^Y redo (typing and deleting in a run count as one step)
  *   arrows, Home/End, PgUp/PgDn, Del, Tab (spaces).  C syntax colours for *.c / *.h. */
 #include <tui.h>
 #include <ctype.h>
@@ -224,7 +225,7 @@ static void draw(struct sb *o) {
     }
     sb_printf(o, "\x1b[%d;1H\x1b[0m\x1b[K", rows - 1);
     if (msg[0]) sb_printf(o, "\x1b[1;38;2;255;214;130m %.*s\x1b[0m", cols - 2, msg);
-    static const char *const help[][2] = { { "^S", "Save" }, { "^Q", "Quit" }, { "^F", "Find" }, { "^G", "Goto" }, { "^K", "Cut" }, { "^U", "Paste" } };
+    static const char *const help[][2] = { { "^S", "Save" }, { "^Q", "Quit" }, { "^F", "Find" }, { "^G", "Goto" }, { "^K", "Cut" }, { "^U", "Paste" }, { "^Z", "Undo" } };
     sb_printf(o, "\x1b[%d;1H\x1b[0m", rows);
     for (unsigned h = 0; h < sizeof help / sizeof *help; h++)
         sb_printf(o, "\x1b[7m%s\x1b[27m %s  ", help[h][0], help[h][1]);
@@ -284,6 +285,60 @@ static void newline(void) {
     dirty = 1;
 }
 
+/* ---- undo: whole-buffer snapshots ("text\n" per line + cursor), taken before an edit that isn't a continuation of
+ * the previous one. ponytail: O(file size) per step and 64 steps deep; a piece table / op log would scale to huge files. */
+struct snap { char *t; int n, cx, cy; };
+#define NSNAP 64
+static struct snap un[NSNAP], re[NSNAP];
+static int nun, nre, lastkind;
+
+static void snap_take(struct snap *sn) {
+    int n = 0;
+    for (int i = 0; i < nl; i++) n += L[i].n + 1;
+    sn->t = malloc(n + 1);
+    char *p = sn->t;
+    if (!p) { sn->n = -1; return; }
+    for (int i = 0; i < nl; i++) { memcpy(p, L[i].s, L[i].n); p += L[i].n; *p++ = '\n'; }
+    sn->n = n; sn->cx = cx; sn->cy = cy;
+}
+
+static void snap_put(const struct snap *sn) {
+    while (nl) row_delete_line(nl - 1);
+    for (int a = 0, i = 0; i < sn->n; i++)
+        if (sn->t[i] == '\n') { row_insert_line(nl, sn->t + a, i - a); a = i + 1; }
+    if (!nl) row_insert_line(0, "", 0);
+    cy = sn->cy; cx = sn->cx;
+}
+
+static void stack_push(struct snap *st, int *n, struct snap *sn) {
+    if (sn->n < 0) return;
+    if (*n == NSNAP) { free(st[0].t); memmove(st, st + 1, (NSNAP - 1) * sizeof *st); (*n)--; }
+    st[(*n)++] = *sn;
+}
+
+/* kind: 0 = a step of its own, else edits of the same kind in a row share one snapshot (typing, backspacing) */
+static void undo_mark(int kind) {
+    if (kind && kind == lastkind) return;
+    lastkind = kind;
+    struct snap sn;
+    snap_take(&sn);
+    stack_push(un, &nun, &sn);
+    while (nre) free(re[--nre].t);
+}
+
+static void undo_redo(struct snap *from, int *nfrom, struct snap *to, int *nto, const char *what) {
+    lastkind = 0;
+    if (!*nfrom) { snprintf(msg, sizeof msg, "Nothing to %s", what); return; }
+    struct snap cur;
+    snap_take(&cur);
+    stack_push(to, nto, &cur);
+    struct snap sn = from[--*nfrom];
+    snap_put(&sn);
+    free(sn.t);
+    dirty = 1;
+    snprintf(msg, sizeof msg, "%s", what[0] == 'u' ? "Undone" : "Redone");
+}
+
 static void clamp(void) {
     if (cy < 0) cy = 0;
     if (cy >= nl) cy = nl - 1;
@@ -322,6 +377,12 @@ int main(int argc, char **argv) {
         msg[0] = 0;
         if (k != CTRL('f')) mlen = 0;
         struct line *l = &L[cy];
+        if (k == CTRL('z')) { undo_redo(un, &nun, re, &nre, "undo"); clamp(); continue; }
+        if (k == CTRL('y')) { undo_redo(re, &nre, un, &nun, "redo"); clamp(); continue; }
+        if (k == 8 || k == TK_DEL) undo_mark(2);
+        else if ((k >= 32 && k < 256 && k != 127) || k == '\t') undo_mark(1);
+        else if (k == 10 || k == CTRL('k') || (k == CTRL('u') && cutbuf)) undo_mark(0);
+        else lastkind = 0;                                  /* movement, find, save...: the next edit starts a new step */
         switch (k) {
         case TK_EOF: tui_leave(); return 1;
         case KEY_UP: cy--; break;
