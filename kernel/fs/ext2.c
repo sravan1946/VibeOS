@@ -6,7 +6,8 @@
  * waited a second; the idle loop flushes the rest (ext2_flush_dirty), so a quiet system is on disk within
  * about a millisecond of its last write and sync/shutdown flush explicitly.  Many small writes, creates and
  * unlinks therefore cost a few disk commands instead of several each.  Reads load up to 64 KiB of
- * physically contiguous file blocks per command.  Vnodes are cached per inode in fs->nodes. */
+ * physically contiguous file blocks per command.  Vnodes are cached per inode in fs->nodes; a small
+ * name -> inode cache (dentry) answers repeated lookups without scanning the directory. */
 #include "vfs.h"
 
 #define EXT2_MAGIC   0xEF53
@@ -59,6 +60,11 @@ struct e2_de {
 
 struct cbuf { uint32_t blk; uint8_t dirty; uint8_t *data; struct cbuf *hnext, *lprev, *lnext; };
 
+/* dentry cache: direct-mapped, positive entries only, names up to DC_NAME bytes (longer ones just aren't cached) */
+#define DC_N    2048
+#define DC_NAME 39
+struct dent { uint32_t dir, ino; uint8_t len; char name[DC_NAME]; };
+
 struct e2node;
 struct e2fs {
     struct blockdev *dev;
@@ -75,6 +81,7 @@ struct e2fs {
     uint64_t dirty_since;                     /* ticks_ms when ndirty went 0 -> 1 */
     uint8_t *db, *stage, *rstage;             /* scratch: one directory block; RUN_BYTES to gather writes, RUN_BYTES for read-ahead */
     struct e2fs *next;
+    struct dent dc[DC_N];
 };
 
 struct e2node {
@@ -333,11 +340,22 @@ static int inode_loc(struct e2fs *fs, uint32_t ino, uint32_t *blk, uint32_t *off
     return 0;
 }
 
+/* inode-table block blk: if it isn't cached, load up to IT_AHEAD table blocks from it in one command (a cold stat in a
+ * directory or a burst of creates would otherwise pay one ~150 us disk read per 8 inodes) */
+#define IT_AHEAD 16
+static struct cbuf *iblk(struct e2fs *fs, uint32_t ino, uint32_t blk) {
+    if (!cfind(fs, blk)) {
+        uint32_t tend = fs->gd[(ino - 1) / fs->ipg].inode_table + (fs->ipg * fs->isize + fs->bs - 1) / fs->bs;
+        cload_run(fs, blk, MIN(IT_AHEAD, tend - blk));
+    }
+    return cget(fs, blk, true);
+}
+
 static int read_inode(struct e2fs *fs, uint32_t ino, struct e2_inode *di) {
     uint32_t blk, off;
     int r = inode_loc(fs, ino, &blk, &off);
     if (r < 0) return r;
-    struct cbuf *c = cget(fs, blk, true);
+    struct cbuf *c = iblk(fs, ino, blk);
     if (!c) return -EIO;
     memcpy(di, c->data + off, sizeof *di);
     return 0;
@@ -347,7 +365,7 @@ static int write_inode(struct e2fs *fs, uint32_t ino, const struct e2_inode *di)
     uint32_t blk, off;
     int r = inode_loc(fs, ino, &blk, &off);
     if (r < 0) return r;
-    struct cbuf *c = cget(fs, blk, true);
+    struct cbuf *c = iblk(fs, ino, blk);
     if (!c) return -EIO;
     memcpy(c->data + off, di, sizeof *di);
     cdirty(fs, c);
@@ -595,19 +613,43 @@ static int dir_blk(struct e2node *d, uint32_t lb, uint32_t *pb, void *buf) {
     return *pb ? bread(d->fs, *pb, buf) : -EIO;
 }
 
+/* directory block lb in place in the cache (valid until the next cget); NULL if unreadable or a hole */
+static uint8_t *dir_ptr(struct e2node *d, uint32_t lb, uint32_t *pb, struct cbuf **c) {
+    if (bmap(d, lb, 0, pb) < 0 || !*pb) return NULL;
+    if (blk_ok(d->fs, *pb) && !cfind(d->fs, *pb)) read_ahead(d, lb, *pb);   /* a cold big directory: one command, not one per block */
+    return bptr(d->fs, *pb, c);
+}
+
+static struct dent *dc_slot(struct e2fs *fs, uint32_t dir, const char *name, uint32_t len) {
+    uint32_t h = dir * 2654435761u;
+    for (uint32_t i = 0; i < len; i++) h = (h ^ (uint8_t)name[i]) * 16777619u;
+    return &fs->dc[(h ^ h >> 15) % DC_N];
+}
+static void dc_put(struct e2fs *fs, uint32_t dir, const char *name, uint32_t len, uint32_t ino) {
+    if (len > DC_NAME) return;
+    struct dent *e = dc_slot(fs, dir, name, len);
+    e->dir = dir; e->ino = ino; e->len = len; memcpy(e->name, name, len);
+}
+static void dc_drop(struct e2fs *fs, uint32_t dir, const char *name, uint32_t len) {
+    if (len > DC_NAME) return;
+    struct dent *e = dc_slot(fs, dir, name, len);
+    if (e->dir == dir && e->len == len && !memcmp(e->name, name, len)) e->dir = 0;
+}
+
 /* find name; *prev = offset of the previous entry in the same block or -1 */
 static int dir_find(struct e2node *d, const char *name, uint32_t nlen, uint32_t *ino,
                     uint32_t *lb, uint32_t *off, uint32_t *prev) {
     struct e2fs *fs = d->fs;
     uint32_t nb = d->di.size / fs->bs, pb;
     for (uint32_t b = 0; b < nb; b++) {
-        int r = dir_blk(d, b, &pb, fs->db);
-        if (r < 0) return r;
+        uint8_t *buf = dir_ptr(d, b, &pb, NULL);
+        if (!buf) return -EIO;
         uint32_t p = -1;
+        int r;
         for (uint32_t o = 0, rl; o < fs->bs; p = o, o += rl) {
-            if ((r = de_ok(fs, fs->db, o)) < 0) return r;
+            if ((r = de_ok(fs, buf, o)) < 0) return r;
             rl = r;
-            struct e2_de *de = (struct e2_de *)(fs->db + o);
+            struct e2_de *de = (struct e2_de *)(buf + o);
             if (de->ino && de->name_len == nlen && !memcmp(de->name, name, nlen)) {
                 *ino = de->ino; *lb = b; *off = o; *prev = p;
                 return 0;
@@ -625,24 +667,28 @@ static void de_fill(struct e2_de *de, uint32_t ino, uint8_t type, const char *na
 static int dir_add(struct e2node *d, const char *name, uint32_t nlen, uint32_t ino, uint8_t type) {
     struct e2fs *fs = d->fs;
     uint32_t need = ALIGN_UP(8 + nlen, 4), nb = d->di.size / fs->bs, pb;
+    dc_drop(fs, d->v.ino, name, nlen);
     for (uint32_t b = 0; b < nb; b++) {
-        int r = dir_blk(d, b, &pb, fs->db);
-        if (r < 0) return r;
+        struct cbuf *c;
+        uint8_t *buf = dir_ptr(d, b, &pb, &c);
+        if (!buf) return -EIO;
+        int r;
         for (uint32_t o = 0, rl; o < fs->bs; o += rl) {
-            if ((r = de_ok(fs, fs->db, o)) < 0) return r;
+            if ((r = de_ok(fs, buf, o)) < 0) return r;
             rl = r;
-            struct e2_de *de = (struct e2_de *)(fs->db + o);
+            struct e2_de *de = (struct e2_de *)(buf + o);
             uint32_t used = de->ino ? ALIGN_UP(8 + de->name_len, 4) : 0;
             if (rl - used < need) continue;
             if (used) {                              /* split the slack */
-                struct e2_de *ne = (struct e2_de *)(fs->db + o + used);
+                struct e2_de *ne = (struct e2_de *)(buf + o + used);
                 ne->rec_len = rl - used;
                 de->rec_len = used;
                 de = ne;
             }
             de_fill(de, ino, type, name, nlen);
             d->di.flags &= ~INDEX_FL;
-            return bwrite(fs, pb, fs->db);
+            cdirty(fs, c);
+            return 0;
         }
     }
     int r = bmap(d, nb, 1, &pb);                     /* directory full: add a block */
@@ -664,6 +710,7 @@ static int dir_remove(struct e2node *d, uint32_t lb, uint32_t off, uint32_t prev
     int r = dir_blk(d, lb, &pb, fs->db);
     if (r < 0) return r;
     struct e2_de *de = (struct e2_de *)(fs->db + off);
+    dc_drop(fs, d->v.ino, de->name, de->name_len);
     if (prev != (uint32_t)-1) ((struct e2_de *)(fs->db + prev))->rec_len += de->rec_len;
     else de->ino = 0;
     d->di.flags &= ~INDEX_FL;
@@ -676,6 +723,7 @@ static int dir_setino(struct e2node *d, uint32_t lb, uint32_t off, uint32_t ino,
     int r = dir_blk(d, lb, &pb, fs->db);
     if (r < 0) return r;
     struct e2_de *de = (struct e2_de *)(fs->db + off);
+    dc_drop(fs, d->v.ino, de->name, de->name_len);
     de->ino = ino;
     if (fs->ft) de->type = type;
     return bwrite(fs, pb, fs->db);
@@ -686,12 +734,13 @@ static int dir_empty(struct e2node *d) {
     struct e2fs *fs = d->fs;
     uint32_t nb = d->di.size / fs->bs, pb;
     for (uint32_t b = 0; b < nb; b++) {
-        int r = dir_blk(d, b, &pb, fs->db);
-        if (r < 0) return r;
+        uint8_t *buf = dir_ptr(d, b, &pb, NULL);
+        if (!buf) return -EIO;
+        int r;
         for (uint32_t o = 0, rl; o < fs->bs; o += rl) {
-            if ((r = de_ok(fs, fs->db, o)) < 0) return r;
+            if ((r = de_ok(fs, buf, o)) < 0) return r;
             rl = r;
-            struct e2_de *de = (struct e2_de *)(fs->db + o);
+            struct e2_de *de = (struct e2_de *)(buf + o);
             if (de->ino && !((de->name_len == 1 && de->name[0] == '.') ||
                              (de->name_len == 2 && de->name[0] == '.' && de->name[1] == '.')))
                 return 0;
@@ -707,16 +756,17 @@ static int e2_readdir(struct vnode *dv, uint32_t *cookie, struct dirent *out) {
     for (;;) {
         uint32_t c = *cookie, lb = c / fs->bs, bo = c % fs->bs, pb, o, rl = 0;
         if (c >= d->di.size) return 0;
-        int r = dir_blk(d, lb, &pb, fs->db);
-        if (r < 0) return r;
+        uint8_t *buf = dir_ptr(d, lb, &pb, NULL);
+        if (!buf) return -EIO;
+        int r;
         for (o = 0; o < fs->bs; o += rl) {          /* resync to an entry boundary */
-            if ((r = de_ok(fs, fs->db, o)) < 0) return r;
+            if ((r = de_ok(fs, buf, o)) < 0) return r;
             rl = r;
             if (o >= bo) break;
         }
         if (o >= fs->bs) { *cookie = (lb + 1) * fs->bs; continue; }
         *cookie = lb * fs->bs + o + rl;
-        struct e2_de *de = (struct e2_de *)(fs->db + o);
+        struct e2_de *de = (struct e2_de *)(buf + o);
         if (!de->ino) continue;
         out->d_ino = de->ino;
         out->d_type = DT_UNKNOWN;
@@ -744,9 +794,16 @@ static int e2_lookup(struct vnode *dv, const char *name, struct vnode **out) {
     if (!S_ISDIR(d->di.mode)) return -ENOTDIR;
     int l = check_name(name);
     if (l < 0) return l;
+    struct e2fs *fs = d->fs;
+    struct dent *e = l <= DC_NAME ? dc_slot(fs, d->v.ino, name, l) : NULL;
+    if (e && e->dir == d->v.ino && e->len == l && !memcmp(e->name, name, l) && iget(fs, e->ino, &n) >= 0) {
+        *out = &n->v;
+        return 0;
+    }
     int r = dir_find(d, name, l, &ino, &lb, &off, &prev);
     if (r < 0) return r;
-    if ((r = iget(d->fs, ino, &n)) < 0) return r;
+    if ((r = iget(fs, ino, &n)) < 0) return r;
+    dc_put(fs, d->v.ino, name, l, ino);
     *out = &n->v;
     return 0;
 }
@@ -787,7 +844,7 @@ static int e2_create(struct vnode *dv, const char *name, uint32_t mode, struct v
     if (isdir) d->di.links++;
     touch(d);
     node_flush(d);
-    if ((r = iget(fs, ino, &n)) >= 0) *out = &n->v;
+    if ((r = iget(fs, ino, &n)) >= 0) { *out = &n->v; dc_put(fs, d->v.ino, name, l, ino); }
     settle(fs);
     return r;
 fail:
@@ -910,6 +967,7 @@ static void e2_release(struct vnode *v) {
     for (pp = &fs->nodes; *pp; pp = &(*pp)->next)
         if (*pp == n) { *pp = n->next; break; }
     if (!n->di.links) {
+        memset(fs->dc, 0, sizeof fs->dc);            /* the inode number gets reused: nothing cached may point at it */
         uint32_t t = n->di.mode & S_IFMT;
         if (t == S_IFREG || t == S_IFDIR || (t == S_IFLNK_ && n->di.blocks)) trunc_from(n, 0);
         n->di.size = 0;
