@@ -54,7 +54,7 @@ check('getElementsByClassName', document.getElementsByClassName('x y').length, 1
 check('getElementsByTagName', document.getElementsByTagName('li').length >= 3, true);
 check('matches/closest', [$('#list li').matches('.x'), $('b').closest('p').id], [true, 'p1']);
 check('parentNode/siblings', [$('#list').firstElementChild.nextElementSibling.textContent, $('b').parentNode.id], ['two', 'p1']);
-check('bad selector throws', (() => { try { document.querySelector('a:hover'); return 'no'; } catch (e) { return e.name; } })(), 'SyntaxError');
+check('bad selector throws', (() => { try { document.querySelector('a['); return 'no'; } catch (e) { return e.name; } })(), 'SyntaxError');
 
 // ---- changing the tree ----
 const div = document.createElement('div');

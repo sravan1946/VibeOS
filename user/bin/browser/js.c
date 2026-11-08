@@ -483,42 +483,28 @@ static void mark_started(int id) {
 
 static void clear_children(int id) { while (N[id].first) unlink_node(N[id].first); }
 
-/* ---------- selectors (css.c's matcher over an element stack) ---------- */
-static void fill_el(struct el *e, int id) {
-    const char *v;
-    memset(e, 0, sizeof *e);
-    strlcpy(e->name, N[id].tag, sizeof e->name);
-    if ((v = attr(id, "id"))) strlcpy(e->id, v, sizeof e->id);
-    if ((v = attr(id, "class"))) strlcpy(e->cls, v, sizeof e->cls);
-    int k = 0;                                           /* attribute selectors need the pairs (css.c at_find) */
-    for (int i = 0; i < N[id].na; i++) {
-        const char *an = N[id].an[i];
-        if (!strcmp(an, "style")) continue;                                               /* long, and never selected on */
-        int need = 3 + strlen(an) + strlen(N[id].av[i]);
-        if (k + need >= (int)sizeof e->at) continue;                                      /* (el.at is 80 bytes: the rest is left out) */
-        k += snprintf(e->at + k, sizeof e->at - k, "\1%s\2%s", an, N[id].av[i]);
-    }
-    e->first = 1;
-    for (int p = N[id].prev; p; p = N[p].prev) if (N[p].type == 1) { e->first = 0; break; }
-    e->js = id;
+/* ---------- selectors and computed style: css.c walks this tree through the css_dom callbacks (elements only) ---------- */
+static int cd_parent(int n) { int p = N[n].parent; return p && N[p].type == 1 ? p : 0; }
+static int cd_prev(int n) { for (n = N[n].prev; n; n = N[n].prev) if (N[n].type == 1) return n; return 0; }
+static int cd_next(int n) { for (n = N[n].next; n; n = N[n].next) if (N[n].type == 1) return n; return 0; }
+static int cd_first(int n) { for (n = N[n].first; n; n = N[n].next) if (N[n].type == 1) return n; return 0; }
+static const char *cd_tag(int n) { return N[n].tag; }
+static const char *cd_attr(int n, const char *name) { return attr(n, name); }
+static int cd_state(int n) {
+    int st = 0;
+    if (attr(n, "disabled")) st |= CS_DISABLED;
+    if (!strcmp(N[n].tag, "a") && attr(n, "href")) st |= CS_LINK;
+    if (N[n].has_chk ? N[n].chk : attr(n, "checked") != 0) st |= CS_CHECKED;
+    return st;
 }
+static int cd_has_text(int n) { for (int c = N[n].first; c; c = N[c].next) if (N[c].type == 3 && N[c].text[0]) return 1; return 0; }
+static const struct css_dom CDOM = { cd_parent, cd_prev, cd_next, cd_first, cd_tag, cd_attr, cd_state, cd_has_text };
 
-static struct el ST[64];
-static int path_to(int id) {                             /* ST[0..n) = element ancestors of id, id last */
-    int ids[512], k = 0, n = 0;
-    for (int a = id; a && k < 512; a = N[a].parent) if (N[a].type == 1) ids[k++] = a;
-    if (k > 64) k = 64;
-    while (k) fill_el(&ST[n++], ids[--k]);
-    return n;
-}
-
-static void qsa_walk(int id, int depth, const char *sel, JSValue arr, uint32_t *cnt, int first) {
+static void qsa_walk(int id, const char *sel, JSValue arr, uint32_t *cnt, int first) {
     for (int c = N[id].first; c && !(first && *cnt); c = N[c].next) {
         if (N[c].type != 1) continue;
-        int d = depth < 64 ? depth : 63;
-        fill_el(&ST[d], c);
-        if (css_match(sel, ST, d + 1) == 1) JS_SetPropertyUint32(ctx, arr, (*cnt)++, JS_NewInt32(ctx, c));
-        qsa_walk(c, d + 1, sel, arr, cnt, first);
+        if (css_match_node(sel, c) == 1) JS_SetPropertyUint32(ctx, arr, (*cnt)++, JS_NewInt32(ctx, c));
+        qsa_walk(c, sel, arr, cnt, first);
     }
 }
 
@@ -739,19 +725,17 @@ NATIVE(n_clone) { int id = ARGID(0); int r = id ? clone(id, JS_ToBool(c, argv[1]
 NATIVE(n_qsa) {
     int root = ARGID(0), first = JS_ToBool(c, argv[2]);
     CSTR(sel, 1);
-    struct el probe;
-    memset(&probe, 0, sizeof probe);
-    if (css_match(sel, &probe, 1) < 0) { JSValue e = JS_ThrowSyntaxError(c, "'%s' is not a selector this browser understands", sel); JS_FreeCString(c, sel); return e; }
+    if (css_match_node(sel, 2) < 0) { JSValue e = JS_ThrowSyntaxError(c, "'%s' is not a valid selector", sel); JS_FreeCString(c, sel); return e; }
     JSValue a = JS_NewArray(c);
     uint32_t cnt = 0;
-    if (root) qsa_walk(root, root == 1 ? 0 : path_to(root), sel, a, &cnt, first);
+    if (root) qsa_walk(root, sel, a, &cnt, first);
     JS_FreeCString(c, sel);
     return a;
 }
 NATIVE(n_matches) {
     int id = ARGID(0);
     CSTR(sel, 1);
-    int r = id && N[id].type == 1 ? css_match(sel, ST, path_to(id)) : 0;
+    int r = id && N[id].type == 1 ? css_match_node(sel, id) : 0;
     JS_FreeCString(c, sel);
     return r < 0 ? JS_ThrowSyntaxError(c, "unsupported selector") : JS_NewBool(c, r);
 }
@@ -977,27 +961,58 @@ NATIVE(n_rect) {
     return a;
 }
 NATIVE(n_media) { CSTR(q, 0); css_viewport(vw); int r = css_media(q); JS_FreeCString(c, q); return JS_NewBool(c, r); }
-/* the cascade for an element (stylesheets + style=""), as [display, color, bg, bold, align, width, height, font-size, ...] */
+/* computed style of an element, as an object of CSS strings (css_compute down the ancestor chain: UA sheet, author sheets, style="") */
+static void put_len(JSContext *c, JSValue o, const char *name, const struct cprops *p, int prop) {
+    char b[24];
+    if (p->k[prop] == K_AUTO) strlcpy(b, "auto", sizeof b);
+    else snprintf(b, sizeof b, "%dpx", css_len(p, prop, 0));
+    JS_SetPropertyStr(c, o, name, str(b));
+}
+static void put_col(JSContext *c, JSValue o, const char *name, uint32_t col) {
+    char b[40];
+    int a = col >> 24;
+    if (a == 255) snprintf(b, sizeof b, "rgb(%d, %d, %d)", (col >> 16) & 255, (col >> 8) & 255, col & 255);
+    else snprintf(b, sizeof b, "rgba(%d, %d, %d, %d.%02d)", (col >> 16) & 255, (col >> 8) & 255, col & 255, a / 255, a * 100 / 255 % 100);
+    JS_SetPropertyStr(c, o, name, str(b));
+}
 NATIVE(n_computed) {
-    int id = ARGID(0);
+    int id = ARGID(0), chain[128], n = 0;
     JSValue o = JS_NewObject(c);
     if (!id || N[id].type != 1) return o;
-    struct cprops cp;
-    memset(&cp, 0, sizeof cp);
-    css_cascade(ST, path_to(id), attr(id, "style"), &cp);
-    static const struct { int p; const char *n; } PR[] = { { P_COLOR, "color" }, { P_BG, "backgroundColor" }, { P_BOLD, "fontWeight" },
-        { P_ALIGN, "textAlign" }, { P_MT, "marginTop" }, { P_MR, "marginRight" }, { P_MB, "marginBottom" }, { P_ML, "marginLeft" },
-        { P_PT, "paddingTop" }, { P_PR, "paddingRight" }, { P_PB, "paddingBottom" }, { P_PL, "paddingLeft" }, { P_DISPLAY, "display" },
-        { P_WIDTH, "width" }, { P_HEIGHT, "height" }, { P_FSIZE, "fontSize" }, { P_BWT, "borderTopWidth" } };
-    if (cp.set & ((uint64_t)1 << P_DISPLAY)) {
-        int dv = cp.v[P_DISPLAY];
-        JS_SetPropertyStr(c, o, "displayName", str(dv == D_NONE ? "none" : dv == D_BLOCK ? "block" : dv == D_INLINE ? "inline" : ""));
-    }
-    for (unsigned i = 0; i < sizeof PR / sizeof *PR; i++) {
-        int p = PR[i].p;
-        if (!(cp.set & ((uint64_t)1 << p))) continue;
-        JS_SetPropertyStr(c, o, PR[i].n, JS_NewInt32(c, cp.k[p] == K_AUTO ? -1 : cp.k[p] == K_PCT ? -2 - cp.v[p] : cp.v[p]));
-    }
+    for (int a = id; a && n < 128; a = cd_parent(a)) chain[n++] = a;
+    css_dom_set(&CDOM);
+    css_base(page_url);
+    static struct cprops cp[2];
+    int cur = 0;
+    for (int i = n - 1; i >= 0; i--) { css_compute(chain[i], PE_NONE, i == n - 1 ? 0 : &cp[cur ^ 1], &cp[cur]); if (i) cur ^= 1; }
+    const struct cprops *p = &cp[cur];
+    static const char *const DN[] = { "", "none", "block", "inline", "inline-block", "flex", "inline-flex", "grid", "inline-grid", "table", "inline-table", "table-row",
+        "table-cell", "table-row-group", "table-header-group", "table-footer-group", "table-column", "table-column-group", "table-caption", "list-item", "contents" };
+    int dv = p->v[P_DISPLAY];
+    JS_SetPropertyStr(c, o, "display", str(dv > 0 && dv < (int)(sizeof DN / sizeof *DN) ? DN[dv] : "inline"));
+    static const char *const POS[] = { "static", "relative", "absolute", "fixed", "sticky" };
+    JS_SetPropertyStr(c, o, "position", str(p->v[P_POSITION] >= 0 && p->v[P_POSITION] < 5 ? POS[p->v[P_POSITION]] : "static"));
+    JS_SetPropertyStr(c, o, "float", str(p->v[P_FLOAT] == FLT_LEFT ? "left" : p->v[P_FLOAT] == FLT_RIGHT ? "right" : "none"));
+    JS_SetPropertyStr(c, o, "visibility", str(p->v[P_VISIB] ? "hidden" : "visible"));
+    static const char *const OVN[] = { "visible", "hidden", "scroll", "auto", "clip" };
+    JS_SetPropertyStr(c, o, "overflow", str(p->v[P_OVX] >= 0 && p->v[P_OVX] < 5 ? OVN[p->v[P_OVX]] : "visible"));
+    char b[24];
+    snprintf(b, sizeof b, "%d.%02d", p->v[P_OPACITY] / 255, p->v[P_OPACITY] * 100 / 255 % 100);
+    JS_SetPropertyStr(c, o, "opacity", str(p->v[P_OPACITY] >= 255 ? "1" : b));
+    put_col(c, o, "color", p->v[P_COLOR]);
+    put_col(c, o, "background-color", p->v[P_BG]);
+    JS_SetPropertyStr(c, o, "text-align", str(p->v[P_ALIGN] == TA_CENTER ? "center" : p->v[P_ALIGN] == TA_RIGHT ? "right" : p->v[P_ALIGN] == TA_JUSTIFY ? "justify" : "left"));
+    snprintf(b, sizeof b, "%d", p->v[P_FWEIGHT] ? p->v[P_FWEIGHT] : p->v[P_BOLD] ? 700 : 400);
+    JS_SetPropertyStr(c, o, "font-weight", str(b));
+    snprintf(b, sizeof b, "%dpx", css_len(p, P_FSIZE, 0));
+    JS_SetPropertyStr(c, o, "font-size", str(b));
+    static const struct { int p; const char *n; } LN[] = { { P_MT, "margin-top" }, { P_MR, "margin-right" }, { P_MB, "margin-bottom" }, { P_ML, "margin-left" },
+        { P_PT, "padding-top" }, { P_PR, "padding-right" }, { P_PB, "padding-bottom" }, { P_PL, "padding-left" }, { P_BWT, "border-top-width" },
+        { P_BWR, "border-right-width" }, { P_BWB, "border-bottom-width" }, { P_BWL, "border-left-width" }, { P_WIDTH, "width" }, { P_HEIGHT, "height" },
+        { P_TOP, "top" }, { P_LEFT, "left" }, { P_RIGHT, "right" }, { P_BOTTOM, "bottom" } };
+    for (unsigned i = 0; i < sizeof LN / sizeof *LN; i++) put_len(c, o, LN[i].n, p, LN[i].p);
+    if (p->k[P_ZINDEX] == K_AUTO) JS_SetPropertyStr(c, o, "z-index", str("auto"));
+    else { snprintf(b, sizeof b, "%d", p->v[P_ZINDEX]); JS_SetPropertyStr(c, o, "z-index", str(b)); }
     return o;
 }
 /* small per-origin files under ~/.config/browser (localStorage); name is sanitised */
@@ -1330,6 +1345,7 @@ int js_page(const char *src, size_t n, const char *url) {
     ctx = JS_NewContext(rt);
     if (!ctx) { JS_FreeRuntime(rt); rt = 0; return 0; }
     strlcpy(page_url, url, sizeof page_url);
+    css_dom_set(&CDOM);
     new_node(0, 0);                                        /* id 0 = null */
     new_node(9, 0);                                        /* 1 document */
     insert_before(1, new_node(1, "html"), 0);              /* 2 */

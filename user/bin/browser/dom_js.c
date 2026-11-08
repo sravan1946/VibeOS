@@ -208,6 +208,8 @@ const ListProto = Object.create(Array.prototype, {
     [Symbol.toStringTag]: { value: 'NodeList' },
 });
 const coll = a => Object.setPrototypeOf(a, ListProto);
+for (const n of ['NodeList', 'HTMLCollection', 'HTMLOptionsCollection', 'HTMLFormControlsCollection']) g[n] = Object.assign(function () { throw new TypeError('Illegal constructor'); }, { prototype: ListProto });
+g.CSSStyleDeclaration = function CSSStyleDeclaration() {}; g.NamedNodeMap = function NamedNodeMap() {}; g.Window = function Window() {};
 V.coll = coll;
 
 // ---------- mutation observers ----------
@@ -1096,21 +1098,14 @@ const rgb = c => { const a = c >>> 24; return a === 0 && c === 0 ? 'rgba(0, 0, 0
 function computedStyle(e) {
     const base = new Map();
     if (e && e.nodeType === 1) {
-        const tag = e.localName, c = d.computed(e.__id);
-        base.set('display', c.displayName || (NONE.has(tag) || e.hasAttribute('hidden') ? 'none' : tag === 'li' ? 'list-item' : tag === 'table' ? 'table' : tag === 'img' || tag === 'input' || tag === 'button' || tag === 'select' || tag === 'textarea' ? 'inline-block' : BLOCKISH.has(tag) ? 'block' : 'inline'));
-        for (const [k, v] of [['visibility', 'visible'], ['position', 'static'], ['float', 'none'], ['overflow', 'visible'], ['opacity', '1'], ['cursor', 'auto'], ['z-index', 'auto'], ['box-sizing', 'content-box'],
-                ['font-family', 'sans-serif'], ['font-style', 'normal'], ['line-height', 'normal'], ['white-space', 'normal'], ['text-decoration', 'none'], ['transform', 'none'], ['transition', 'all 0s ease 0s'], ['animation-name', 'none'], ['pointer-events', 'auto'], ['content', 'normal']]) base.set(k, v);
-        for (const [k, p] of [['marginTop', 'margin-top'], ['marginRight', 'margin-right'], ['marginBottom', 'margin-bottom'], ['marginLeft', 'margin-left'], ['paddingTop', 'padding-top'], ['paddingRight', 'padding-right'], ['paddingBottom', 'padding-bottom'], ['paddingLeft', 'padding-left'], ['borderTopWidth', 'border-top-width']])
-            base.set(p, c[k] !== undefined ? px(c[k]) : '0px');
-        base.set('color', c.color !== undefined ? rgb(c.color) : 'rgb(0, 0, 0)');
-        base.set('background-color', c.backgroundColor !== undefined ? rgb(c.backgroundColor) : 'rgba(0, 0, 0, 0)');
-        base.set('font-weight', c.fontWeight ? '700' : /^(h[1-6]|b|strong|th)$/.test(tag) ? '700' : '400');
-        base.set('font-size', c.fontSize !== undefined ? px(c.fontSize) : /^h1$/.test(tag) ? '32px' : '16px');
-        base.set('text-align', ['left', 'center', 'right'][c.textAlign] || 'start');
+        const c = d.computed(e.__id);
+        for (const k of Object.keys(c)) base.set(k, c[k]);
+        for (const [k, v] of [['font-family', 'sans-serif'], ['font-style', 'normal'], ['line-height', 'normal'], ['white-space', 'normal'], ['text-decoration', 'none'], ['transform', 'none'], ['transition', 'all 0s ease 0s'],
+                ['animation-name', 'none'], ['pointer-events', 'auto'], ['content', 'normal'], ['cursor', 'auto'], ['box-sizing', 'content-box']]) base.set(k, v);
         const r = rectOf(e);
-        base.set('width', c.width !== undefined && c.width >= 0 ? px(c.width) : r.w + 'px');
-        base.set('height', c.height !== undefined && c.height >= 0 ? px(c.height) : r.h + 'px');
-        for (const [k, v] of parseStyle(e.getAttribute('style') || '')) if (!(k === 'color' || k === 'background-color') || !/^(#|[a-z]+$)/i.test(v)) base.set(k, v.replace(/\s*!important$/, ''));
+        if (base.get('width') === 'auto' && r.w) base.set('width', r.w + 'px');
+        if (base.get('height') === 'auto' && r.h) base.set('height', r.h + 'px');
+        for (const [k, v] of parseStyle(e.getAttribute('style') || '')) if (!/^(color|background-color|display|width|height)$/.test(k) || !base.has(k)) base.set(k, v.replace(/\s*!important$/, ''));
     }
     const api = { getPropertyValue: n => base.get(String(n).toLowerCase()) || '', getPropertyPriority: () => '', item: i => [...base.keys()][i] || '', setProperty() {}, removeProperty() { return ''; } };
     return new Proxy({}, {
