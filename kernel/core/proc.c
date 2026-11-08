@@ -396,11 +396,16 @@ int proc_kill(int pid, int sig) {
     if (sig == SIGCONT) { do_cont(t->proc); t->sig_pending &= ~(1u << SIGSTOP | 1u << SIGTSTP); }
     if (sig == 0 || ignored(t, sig)) return 0;
     if (sig == SIGSTOP || sig == SIGTSTP) t->sig_pending &= ~(1u << SIGCONT);
-    if ((sig == SIGSTOP || (sig == SIGTSTP && !t->proc->sig_handler[sig])) && t == t->proc && t->state == PS_BLOCKED) {
-        /* asleep in a syscall: park it on the stop channel instead of EINTR-ing it, so a read resumes after fg */
-        if (!t->stopped) do_stop(t, sig);
-        t->chan = &t->stopped; t->wake_at = 0;
-        return 0;
+    if ((sig == SIGSTOP || (sig == SIGTSTP && !t->proc->sig_handler[sig])) && t == t->proc) {
+        uint32_t f = irq_save();                     /* an IRQ wakeup between the check and the park would lose the stop */
+        if (t->state == PS_BLOCKED) {
+            /* asleep in a syscall: park it on the stop channel instead of EINTR-ing it, so a read resumes after fg */
+            if (!t->stopped) do_stop(t, sig);
+            t->chan = &t->stopped; t->wake_at = 0;
+            irq_restore(f);
+            return 0;
+        }
+        irq_restore(f);
     }
     t->sig_pending |= 1u << sig;
     if (t->state == PS_BLOCKED && sig_deliverable(t)) t->state = PS_READY;
