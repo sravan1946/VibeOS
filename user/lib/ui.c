@@ -686,6 +686,10 @@ static bool del_sel(struct ui *ui, char *buf) {
 }
 static bool word_ch(char c) { return c == '_' || (uint8_t)c >= 0x80 || (c >= '0' && c <= '9') || ((c | 32) >= 'a' && (c | 32) <= 'z'); }
 
+/* start of the word before i / end of the word after i (Ctrl+Left/Right, Ctrl+Backspace/Delete) */
+static int word_prev(const char *s, int i) { while (i > 0 && !word_ch(s[i - 1])) i--; while (i > 0 && word_ch(s[i - 1])) i--; return i; }
+static int word_next(const char *s, int i) { while (s[i] && !word_ch(s[i])) i++; while (s[i] && word_ch(s[i])) i++; return i; }
+
 static bool edit(struct ui *ui, char *buf, int cap) {
     int *cr = &ui->caret, n = strlen(buf), lo, hi;
     bool enter = false;
@@ -696,10 +700,10 @@ static bool edit(struct ui *ui, char *buf, int cap) {
         int eat = 1, kc = k.key;
         bool ctrl = k.mods & MOD_CTRL, shift = k.mods & MOD_SHIFT, sel = sel_span(ui, &lo, &hi), move = false;
         if (kc == KEY_ENTER) enter = true;
-        else if (kc == KEY_BACKSPACE) { if (!del_sel(ui, buf) && *cr) { int p = prev_cp(buf, *cr); memmove(buf + p, buf + *cr, strlen(buf + *cr) + 1); *cr = p; } }
-        else if (kc == KEY_DELETE) { if (!del_sel(ui, buf)) { int q = next_cp(buf, *cr); memmove(buf + *cr, buf + q, strlen(buf + q) + 1); } }
-        else if (kc == KEY_LEFT) { move = true; *cr = sel && !shift ? lo : prev_cp(buf, *cr); }
-        else if (kc == KEY_RIGHT) { move = true; *cr = sel && !shift ? hi : next_cp(buf, *cr); }
+        else if (kc == KEY_BACKSPACE) { if (!del_sel(ui, buf) && *cr) { int p = ctrl ? word_prev(buf, *cr) : prev_cp(buf, *cr); memmove(buf + p, buf + *cr, strlen(buf + *cr) + 1); *cr = p; } }
+        else if (kc == KEY_DELETE) { if (!del_sel(ui, buf)) { int q = ctrl ? word_next(buf, *cr) : next_cp(buf, *cr); memmove(buf + *cr, buf + q, strlen(buf + q) + 1); } }
+        else if (kc == KEY_LEFT) { move = true; *cr = ctrl ? word_prev(buf, *cr) : sel && !shift ? lo : prev_cp(buf, *cr); }
+        else if (kc == KEY_RIGHT) { move = true; *cr = ctrl ? word_next(buf, *cr) : sel && !shift ? hi : next_cp(buf, *cr); }
         else if (kc == KEY_HOME) { move = true; *cr = 0; }
         else if (kc == KEY_END) { move = true; *cr = strlen(buf); }
         else if (k.ch == 21) { buf[0] = 0; *cr = 0; }                       /* ^U */
