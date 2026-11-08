@@ -1440,8 +1440,36 @@ static char *sync_get(const char *url, size_t *len) {
     return 0;
 }
 
+static JSValue imap = JS_UNDEFINED;                        /* <script type=importmap> "imports" (the first one; scopes are ignored) */
 static char *mod_norm(JSContext *c, const char *base, const char *name, void *op) {
     char out[URL_MAX];
+    if (!JS_IsUndefined(imap)) {
+        JSValue v = JS_GetPropertyStr(c, imap, name);
+        const char *t = JS_IsString(v) ? JS_ToCString(c, v) : 0;
+        JS_FreeValue(c, v);
+        char tmp[URL_MAX];
+        if (!t) {                                          /* "pkg/": a prefix mapping */
+            JSPropertyEnum *tab;
+            uint32_t n;
+            if (JS_GetOwnPropertyNames(c, &tab, &n, imap, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+                size_t best = 0;
+                for (uint32_t i = 0; i < n; i++) {
+                    const char *k = JS_AtomToCString(c, tab[i].atom);
+                    size_t kl = k ? strlen(k) : 0;
+                    if (kl > best && k[kl - 1] == '/' && !strncmp(name, k, kl)) {
+                        JSValue pv = JS_GetPropertyStr(c, imap, k);
+                        const char *pt = JS_IsString(pv) ? JS_ToCString(c, pv) : 0;
+                        if (pt) { snprintf(tmp, sizeof tmp, "%s%s", pt, name + kl); best = kl; JS_FreeCString(c, pt); }
+                        JS_FreeValue(c, pv);
+                    }
+                    JS_FreeCString(c, k);
+                }
+                for (uint32_t i = 0; i < n; i++) JS_FreeAtom(c, tab[i].atom);
+                js_free(c, tab);
+                if (best) name = tmp;
+            }
+        } else { strlcpy(tmp, t, sizeof tmp); JS_FreeCString(c, t); name = tmp; base = page_url; }
+    }
     url_resolve(base, name, out, sizeof out);
     url_strip_frag(out);
     return js_strdup(c, out);
@@ -1464,6 +1492,17 @@ static void add_script(int id, int where) {                /* where: 0 parser, 1
     N[id].started = 1;
     const char *ty = attr(id, "type"), *src = attr(id, "src");
     int module = ty && !strcasecmp(ty, "module");
+    if (ty && !strcasecmp(ty, "importmap")) {
+        struct buf mb = { 0 };
+        text_of(&mb, id);
+        if (mb.p && JS_IsUndefined(imap) && ctx) {
+            JSValue j = JS_ParseJSON(ctx, mb.p, mb.n, "<importmap>");
+            if (!JS_IsException(j)) { imap = JS_GetPropertyStr(ctx, j, "imports"); if (!JS_IsObject(imap)) { JS_FreeValue(ctx, imap); imap = JS_UNDEFINED; } JS_FreeValue(ctx, j); }
+            else JS_FreeValue(ctx, JS_GetException(ctx));
+        }
+        free(mb.p);
+        return;
+    }
     if (ty && *ty && !module && !ci_has(ty, "javascript") && !ci_has(ty, "ecmascript")) return;
     struct buf b = { 0 };
     if (!(src && *src)) { text_of(&b, id); if (!b.n) { free(b.p); return; } free(b.p); }
@@ -1587,6 +1626,7 @@ void js_reset(void) {
     for (int i = 0; i < nfq; i++) free(FQ[i].post);
     nfq = 0;
     if (ctx) {
+        JS_FreeValue(ctx, imap); imap = JS_UNDEFINED;
         JS_FreeValue(ctx, fn_dispatch); JS_FreeValue(ctx, fn_fire); JS_FreeValue(ctx, fn_fetch);
         JS_FreeContext(ctx);
         JS_FreeRuntime(rt);

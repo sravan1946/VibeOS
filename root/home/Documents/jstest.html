@@ -19,6 +19,8 @@
 <script src="jstest-dyn.js"></script>
 <script defer src="jstest-defer.js"></script>
 <script async src="jstest-async.js"></script>
+<script type="importmap">{"imports":{"mapped":"./jstest-mod2.js","pre/":"./"}}</script>
+<script type="module">import { twice } from "mapped"; import { half as h2 } from "pre/jstest-mod.js"; window.mapRes = twice(4) + h2(2);</script>
 <script type="module">import { half } from './jstest-mod.js'; window.modResult = half(84); window.order.push('module');</script>
 <script>window.order.push('inline2'); document.write('<i id="written">w</i>'); window.rsAtParse = document.readyState;
 document.addEventListener('DOMContentLoaded', () => window.order.push('DCL')); window.addEventListener('load', () => window.order.push('load'));</script>
@@ -276,6 +278,7 @@ const t0 = performance.now();
     check('script load order (defer < module < DCL < load; dynamic src ran in place)', [window.order.filter(x => x !== 'async'), window.order.includes('async'), window.dynCurrent, window.rsAtDefer, window.modResult],
           [['inline1', 'dyn', 'inline2', 'defer', 'module', 'DCL', 'load'], true, 'jstest-dyn.js', 'interactive', 42]);
     check('readyState complete', document.readyState, 'complete');
+    check('import maps', window.mapRes, 9);
     let winLoads = 0; const wl = () => winLoads++; addEventListener('load', wl, true);
     await new Promise(res => { const s = document.createElement('script'); s.src = 'jstest-dyn2.js'; s.onload = res; s.onerror = res; document.head.appendChild(s); });
     check('dynamic external script + onload', window.dyn2, 1);

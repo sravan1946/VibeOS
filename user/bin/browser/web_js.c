@@ -311,7 +311,7 @@ function fetch(input, init) {
             done = true;
             if (err !== null) return rej(new TypeError('Failed to fetch (' + err + ': ' + req.url + ')'));
             const r = new Response(m === 'HEAD' ? '' : body, { status, statusText: text });
-            hdrFill(r.headers, hd); if (ct && !r.headers.has('content-type')) r.headers.set('content-type', ct); r.url = url; r.redirected = url !== req.url;
+            r.headers.delete('content-type'); hdrFill(r.headers, hd); if (ct && !r.headers.has('content-type')) r.headers.set('content-type', ct); r.url = url; r.redirected = url !== req.url;
             res(r);
         }, m, hdrStr(hs));
     });
