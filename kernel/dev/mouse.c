@@ -79,8 +79,10 @@ static void mouse_irq(struct regs *r) {
 void mouse_init(int w, int h) {
     scr_w = w; scr_h = h; mx = w / 2; my = h / 2;
     wait_in(); outb(0x64, 0xA8);                /* enable aux */
+    uint32_t fl = irq_save();                   /* with IRQ1 live its handler eats the reply and wait_out spins its whole timeout (~0.7 s) */
     wait_in(); outb(0x64, 0x20); wait_out();
     uint8_t cfg = inb(0x60) | 2;                /* IRQ12 on */
+    irq_restore(fl);
     cfg &= ~0x20;
     wait_in(); outb(0x64, 0x60); wait_in(); outb(0x60, cfg);
     aux_write(0xF6);                            /* defaults */

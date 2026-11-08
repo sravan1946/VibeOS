@@ -388,8 +388,10 @@ dlopen fail. See `third_party/quickjs/README.vibeos`.
 ## Testing
 
 * `tools/filestest/vm.sh` is the visible-VM walkthrough of Files, the desktop icons and the trash (real pointer events, `--abs`); `tools/filestest/run.sh` tests `fsutil.c` on the host and `/home/filestest.sh` checks `open -w` and `trash` inside VibeOS.
-* `tools/vmtest.py` boots the image in QEMU and drives it through the monitor: type text, send
-  keys, move/click/drag the mouse, wait for serial output, take screenshots.
+* `tools/vmtest.py` boots the image in QEMU and drives it through QMP: type text (~1.6 ms/char), send
+  keys, move/click/drag the mouse, wait for serial output, take screenshots. `--autostart LINE` (and the `suites`
+  preset) hands the kernel an autostart through QEMU fw_cfg (`opt/vibeos/autostart`, `kernel/dev/fwcfg.c`) so a
+  command can start at boot with no typing and no disk edit.
 * Sound is captured to `build/audio.wav` (`--audiodev` / `VIBE_AUDIODEV` to override) and checked with `tools/wavcheck.py`.
 * `/etc/autostart` lists what the desktop opens at boot (`shell`, `term ARGV`, `run ARGV`).
 * Host-side unit tests: `tools/ext2test` (filesystem vs `e2fsck`), `tools/termtest`

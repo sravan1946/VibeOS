@@ -2420,12 +2420,14 @@ static int wm_thread(void *arg) {
     return 0;
 }
 
-/* /etc/autostart: "term ARGV..." opens a terminal running ARGV (kept open after
+char *fwcfg_read(const char *name, uint32_t *size);
+
+/* /etc/autostart (or the QEMU fw_cfg file opt/vibeos/autostart, which wins: tools/vmtest.py's way in): "term ARGV..." opens a terminal running ARGV (kept open after
  * exit), "run ARGV..." starts a GUI app, "shell" opens an interactive terminal.
  * No file: one shell. */
 static void autostart(void) {
     void *data; uint32_t size;
-    if (vfs_read_all("/etc/autostart", &data, &size) < 0) { termwin_open(0); return; }
+    if (!(data = fwcfg_read("opt/vibeos/autostart", &size)) && vfs_read_all("/etc/autostart", &data, &size) < 0) { termwin_open(0); return; }
     for (char *s = data; *s; ) {
         char *line = s;
         while (*s && *s != '\n') s++;
@@ -2511,11 +2513,11 @@ void wm_init(void) {
     mouse_sink = irq_mouse;
     key_sink = irq_key;
     wm_damage(0, 0, SW, SH);
-    if (snap) { no_present = true; compose(); no_present = false; crossfade(snap, 32, 30); big_free(snap, SW, SH); }
+    if (snap) { no_present = true; compose(); no_present = false; crossfade(snap, 64, 16); big_free(snap, SW, SH); }
     kthread_create("compositor", wm_thread, 0);
     kthread_create("chime", chime, 0);
     autostart();
     struct vnode *dv;
     if (vfs_lookup("/", "/bin/desktop", &dv) == 0) { vnode_put(dv); wm_spawn_app("/bin/desktop", 0); }     /* desktop icons */
-    kprintf("[desktop] ready\n");
+    kprintf("[desktop] ready (%u ms)\n", (uint32_t)ticks_ms);
 }

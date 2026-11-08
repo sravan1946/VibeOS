@@ -1,5 +1,7 @@
-# runtests.sh - every in-VM suite, one summary line each; tools/vmtest.py `suites` sends this to /dev/kmsg (serial)
-r() { echo "SUITE $*: $("$@" 2>/dev/null | tail -1)"; }
+# runtests.sh - every in-VM suite, one summary line each, on the terminal and in the kernel log (serial). tools/vmtest.py
+# `suites` starts it from the kernel's fw_cfg autostart; the lines go to /dev/kmsg (writable) from here, so nothing is redirected
+o() { echo "$*"; echo "$*" > /dev/kmsg; }
+r() { o "SUITE $*: $("$@" 2>/dev/null | tee /tmp/suite.out | tail -1)"; grep '^FAIL' /tmp/suite.out > /dev/kmsg; }   # failing checks follow the summary
 r proctest
 r memtest
 r sigtest
@@ -10,4 +12,4 @@ r sh /home/maketest.sh
 r python /home/projects/pytest.py
 r lua /home/projects/luatest.lua
 r qjs /home/projects/test.js
-echo ALL-SUITES-DONE
+o ALL-SUITES-DONE

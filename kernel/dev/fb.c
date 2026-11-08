@@ -25,8 +25,6 @@ static bool st_bad;
 #define G (theme_get(0))
 #define BAR_W 240
 
-static bool irqs_on(void) { uint32_t f; __asm__ volatile("pushf; pop %0" : "=r"(f)); return f & 0x200; }
-
 static void splash_draw_status(void) {
     int y = fb.h / 2 + 36;
     gfx_fill(&fb, 0, y, fb.w, T_CAPTION->height, G->base);
@@ -35,14 +33,11 @@ static void splash_draw_status(void) {
 }
 
 void splash_progress(int pct) {
-    if (!splash_on) return;
-    int x = (fb.w - BAR_W) / 2, y = fb.h / 2 + 16;
-    for (; splash_pct <= pct; splash_pct++) {          /* sweep so jumps animate a little */
-        gfx_round_fill(&fb, x, y, BAR_W, 4, R_1, G->line);
-        gfx_round_fill(&fb, x, y, imax(4, BAR_W * splash_pct / 100), 4, R_1, G->accent);
-        uint64_t until = ticks_ms + 3;
-        while (ticks_ms < until && irqs_on()) hlt();
-    }
+    if (!splash_on || pct < splash_pct) return;
+    int x = (fb.w - BAR_W) / 2, y = fb.h / 2 + 16;     /* no per-percent sweep delay: it cost ~300 ms of every boot */
+    gfx_round_fill(&fb, x, y, BAR_W, 4, R_1, G->line);
+    gfx_round_fill(&fb, x, y, imax(4, BAR_W * pct / 100), 4, R_1, G->accent);
+    splash_pct = pct + 1;
 }
 
 static void splash_init(void) {
