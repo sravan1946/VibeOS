@@ -1279,14 +1279,13 @@ struct window *wm_create(const char *title, int x, int y, int w, int h, int flag
     }
     struct window *win = kzalloc(sizeof *win);
     if (!win) return 0;
-    /* ponytail: every window gets a full-screen-sized buffer (stride = SW) so resizing
-     * never reallocates. ~4 MiB per window at 1280x800; fine for a dozen windows. A display
-     * mode change only ever grows it (wm_set_mode). */
-    win->buf_frames = (uint32_t)SW * SH * 4 / PAGE_SIZE + 1;
+    /* the buffer fits the window (stride = w); the first time it outgrows it (resize, maximise, snap, mode
+     * change) buf_grow moves it to a full-screen one, and buffers never shrink afterwards (see wm_set_mode) */
+    win->buf_frames = (uint32_t)w * h * 4 / PAGE_SIZE + 1;
     uint32_t pa = pmm_alloc_contig(win->buf_frames);
     if (!pa) { kfree(win); return 0; }
     win->buf = (uint32_t *)pa;
-    memset32(win->buf, flags & WIN_FLAG_DESKTOP ? 0 : TH.term.bg, (size_t)SW * h);
+    memset32(win->buf, flags & WIN_FLAG_DESKTOP ? 0 : TH.term.bg, (size_t)w * h);
     win->id = next_id++;
     win->ws = flags & WIN_FLAG_FRAMELESS ? -1 : cur_ws;
     win->born = ticks_ms;
@@ -1316,7 +1315,7 @@ struct window *wm_create(const char *title, int x, int y, int w, int h, int flag
     }
     win->x = x; win->y = y;
     strlcpy(win->title, title, sizeof win->title);
-    canvas_init(&win->canvas, win->buf, w, h, SW);
+    canvas_init(&win->canvas, win->buf, w, h, w);
     win->visible = true;
     uint32_t f = irq_save();
     raise(win);
@@ -1356,7 +1355,54 @@ void wm_set_title(struct window *w, const char *t) {
     wm_damage(0, TB_Y, SW, WM_TASKBAR_H);
 }
 
+/* ---- window buffers: stride >= width, capacity (buf_frames) >= stride * height, grow-only ---- */
+static bool buf_fits(struct window *w, int cw, int ch) {
+    return w->canvas.stride >= cw && (uint64_t)w->canvas.stride * ch * 4 <= (uint64_t)w->buf_frames * PAGE_SIZE;
+}
+
+/* the owner's mapping grows in place (map_into_owner's slot), so the pages after it must be unmapped */
+static bool va_room(struct window *w, uint32_t frames) {
+    struct task *o = w->user_va ? task_find(w->owner_pid) : 0;
+    if (!o || o->dir != w->owner_dir) return true;
+    for (uint32_t k = w->buf_frames; k < frames; k++)
+        if (vmm_translate(w->owner_dir, w->user_va + k * PAGE_SIZE)) return false;
+    return true;
+}
+
+/* move w to nb (frames, row stride `stride`): same user address, contents kept, then the client hears the new stride */
+static void buf_swap(struct window *w, uint32_t *nb, uint32_t frames, int stride) {
+    memset32(nb, w->flags & WIN_FLAG_DESKTOP ? 0 : TH.term.bg, (size_t)frames * PAGE_SIZE / 4);
+    for (int y = 0; y < w->h; y++) memcpy(nb + (size_t)y * stride, w->buf + (size_t)y * w->canvas.stride, w->w * 4);
+    if (w->user_va) {
+        struct task *o = task_find(w->owner_pid);
+        if (o && o->dir == w->owner_dir) {
+            vmm_unmap_range(w->owner_dir, w->user_va, w->buf_frames * PAGE_SIZE, false);
+            for (uint32_t k = 0; k < frames; k++)
+                vmm_map(w->owner_dir, w->user_va + k * PAGE_SIZE, (uint32_t)nb + k * PAGE_SIZE, PTE_U | PTE_W | PTE_NOFREE);
+        }
+    }
+    pmm_free_contig((uint32_t)w->buf, w->buf_frames);
+    w->buf = nb; w->buf_frames = frames;
+    canvas_init(&w->canvas, w->buf, w->w, w->h, stride);
+    struct gui_event e = { .type = EV_RESIZE, .x = stride, .w = w->w, .h = w->h };   /* x = new stride */
+    send(w, &e);
+}
+
+/* make room for a cw x ch window: straight to screen size, so it never reallocates again; false if that failed */
+static bool buf_grow(struct window *w, int cw, int ch) {
+    if (buf_fits(w, cw, ch)) return true;
+    uint32_t frames = MAX(SCREEN_FRAMES(SW, SH), w->buf_frames);
+    uint32_t *nb = va_room(w, frames) ? (uint32_t *)pmm_alloc_contig(frames) : 0;
+    if (!nb) return false;
+    buf_swap(w, nb, frames, SW);
+    return true;
+}
+
 static void set_geometry(struct window *w, int x, int y, int cw, int ch) {
+    if (!buf_grow(w, cw, ch)) {                           /* no memory or address room: stay within what the buffer holds */
+        cw = imin(cw, w->canvas.stride);
+        ch = imin(ch, (int)((uint64_t)w->buf_frames * PAGE_SIZE / 4 / w->canvas.stride));
+    }
     damage_window(w);
     bool resized = cw != w->w || ch != w->h;
     w->x = x; w->y = y; w->w = cw; w->h = ch;
@@ -2263,10 +2309,10 @@ static struct window *win_from_fd(int fd) {
 }
 
 static int map_into_owner(struct window *w) {
-    uint32_t len = w->buf_frames * PAGE_SIZE;
-    for (uint32_t va = 0xA0000000u; va + len <= 0xB0000000u; va += 0x01000000u) {   /* 16 MiB slots: room to regrow */
+    uint32_t step = (SCREEN_FRAMES(SW, SH) * PAGE_SIZE + 0xFFFFFF) & ~0xFFFFFFu;   /* 16 MiB slots, each big enough to regrow to a full screen */
+    for (uint32_t va = 0xA0000000u; va + step <= 0xB0000000u; va += step) {
         bool free = true;
-        for (uint32_t a = va; a < va + len; a += 0x100000) if (vmm_translate(current->dir, a)) { free = false; break; }
+        for (uint32_t a = va; a < va + step; a += 0x100000) if (vmm_translate(current->dir, a)) { free = false; break; }
         if (!free) continue;
         for (uint32_t i = 0; i < w->buf_frames; i++)
             if (vmm_map(current->dir, va + i * PAGE_SIZE, (uint32_t)w->buf + i * PAGE_SIZE, PTE_U | PTE_W | PTE_NOFREE) < 0)
@@ -2377,8 +2423,9 @@ int wm_set_mode(int nw, int nh) {
         /* ponytail: buffers only grow (stride >= width, capacity >= stride * height). A client may be
          * mid-frame with the old stride, so shrinking could fault it; closing the window frees it. */
         uint32_t frames = MAX(SCREEN_FRAMES(nw, nh), w->buf_frames);
-        if (w->canvas.stride >= nw && (uint64_t)w->canvas.stride * nh * 4 <= (uint64_t)w->buf_frames * PAGE_SIZE) continue;
-        if (!(rg[n].buf = (uint32_t *)pmm_alloc_contig(frames))) goto fail;
+        bool full = w->maximized || (w->flags & WIN_FLAG_DESKTOP);   /* the rest only shrink to fit (fit_rect) */
+        if (buf_fits(w, full ? nw : w->w, full ? nh : w->h)) continue;
+        if (!va_room(w, frames) || !(rg[n].buf = (uint32_t *)pmm_alloc_contig(frames))) goto fail;
         rg[n].frames = frames;
     }
     if ((r = display_mode(nw, nh)) < 0) goto fail;
@@ -2397,21 +2444,7 @@ int wm_set_mode(int nw, int nh) {
     for (int i = 0; i < n; i++) {
         struct window *w = rg[i].w;
         if (rg[i].buf) {                                  /* move to the bigger buffer, same user address */
-            int os = w->canvas.stride;
-            for (int y = 0; y < w->h; y++) memcpy(rg[i].buf + y * SW, w->buf + y * os, w->w * 4);
-            if (w->user_va) {
-                struct task *o = task_find(w->owner_pid);
-                if (o && o->dir == w->owner_dir) {
-                    vmm_unmap_range(w->owner_dir, w->user_va, w->buf_frames * PAGE_SIZE, false);
-                    for (uint32_t k = 0; k < rg[i].frames; k++)   /* the 16 MiB slot is ours (map_into_owner) */
-                        vmm_map(w->owner_dir, w->user_va + k * PAGE_SIZE, (uint32_t)rg[i].buf + k * PAGE_SIZE, PTE_U | PTE_W | PTE_NOFREE);
-                }
-            }
-            pmm_free_contig((uint32_t)w->buf, w->buf_frames);
-            w->buf = rg[i].buf; w->buf_frames = rg[i].frames;
-            canvas_init(&w->canvas, w->buf, w->w, w->h, SW);
-            struct gui_event e = { .type = EV_RESIZE, .x = SW, .w = w->w, .h = w->h };   /* x = new stride */
-            send(w, &e);
+            buf_swap(w, rg[i].buf, rg[i].frames, SW);
         }
         bool nores = w->flags & WIN_FLAG_NORESIZE;
         if (w->flags & WIN_FLAG_DESKTOP) { set_geometry(w, 0, 0, SW, TB_Y); continue; }
