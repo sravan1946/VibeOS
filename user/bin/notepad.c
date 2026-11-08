@@ -95,10 +95,11 @@ static void sel_range(int *lo, int *hi) { *lo = cur < anchor ? cur : anchor; *hi
 struct edit { int pos, ndel, nins, grp; char *del, *ins; };
 static struct edit *undo, *redo;
 static int nundo, ucap, nredo, rcap, grp, grp_ctr, lastop;
+static int save_at;                            /* nundo when the file was last saved/loaded; -1 = no longer reachable by undo/redo */
 static unsigned ver;                           /* bumped on every edit (find stats cache) */
 
 static void free_edits(struct edit *e, int n) { for (int i = 0; i < n; i++) { free(e[i].del); free(e[i].ins); } }
-static void clear_history(void) { free_edits(undo, nundo); free_edits(redo, nredo); nundo = nredo = 0; lastop = 0; }
+static void clear_history(void) { free_edits(undo, nundo); free_edits(redo, nredo); nundo = nredo = 0; lastop = 0; save_at = 0; }
 static void push_edit(struct edit **a, int *n, int *c, struct edit e) {
     if (*n == *c) { *c = *c ? *c * 2 : 64; *a = realloc(*a, *c * sizeof **a); }
     (*a)[(*n)++] = e;
@@ -116,14 +117,16 @@ static void raw_replace(int pos, int ndel, const char *ins, int nins) {
 }
 
 static void rec(int pos, int ndel, const char *ins, int nins) {
+    if (save_at > nundo) save_at = -1;             /* redo history holding the saved state is dropped */
     free_edits(redo, nredo);
     nredo = 0;
     struct edit e = { pos, ndel, nins, grp, malloc(ndel + 1), malloc(nins + 1) };
     memcpy(e.del, buf + pos, ndel);
     memcpy(e.ins, ins, nins);
-    if (nundo >= 4000) { free_edits(undo, 100); memmove(undo, undo + 100, (nundo - 100) * sizeof *undo); nundo -= 100; }
+    if (nundo >= 4000) { free_edits(undo, 100); memmove(undo, undo + 100, (nundo - 100) * sizeof *undo); nundo -= 100; if (save_at >= 0) save_at = save_at >= 100 ? save_at - 100 : -1; }
     push_edit(&undo, &nundo, &ucap, e);
     raw_replace(pos, ndel, ins, nins);
+    modified = nundo != save_at;
     cur = anchor = pos + nins;
 }
 
@@ -140,6 +143,7 @@ static void undo_redo(bool re) {
     }
     anchor = cur;
     lastop = 0;
+    modified = nundo != save_at;
 }
 
 static void del_range(int lo, int hi) { if (hi > lo) rec(lo, hi - lo, "", 0); }
@@ -266,6 +270,7 @@ static bool save(const char *p) {
     close(fd);
     snprintf(path, sizeof path, "%s", p);
     modified = false;
+    save_at = nundo;
     say(false, "Saved \u201c%s\u201d", base(p));
     return true;
 }
