@@ -638,7 +638,7 @@ int main(int argc, char **argv) {
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;
-    ui_init(&ui, win);
+    ui_init(&ui, win); ui.own_w = true;
     char start[URL_MAX] = "about:home";
     if (argc > 2 && !strcmp(argv[1], "--bench")) { bench(&ui, argv[2]); return 0; }
     if (argc > 1) url_from_input(argv[1], start, sizeof start);

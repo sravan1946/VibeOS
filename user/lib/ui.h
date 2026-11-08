@@ -92,6 +92,7 @@ struct ui {
     uint32_t pop_t0, pop_t1, toast_t0; bool pop_out;              /* overlay motion: opened, closed (fading out) */
     uint32_t ring_id, ring_old, ring_t;                           /* the focus ring shown, and the one fading out */
     int drag_off;
+    bool own_w;                     /* the app uses Ctrl+W itself (closes a tab): ui_poll leaves it alone; Ctrl+Q always closes */
     int force;                      /* widget gallery only: draw as UI_F_HOVER | UI_F_PRESS | UI_F_FOCUS */
 };
 enum { UI_F_HOVER = 1, UI_F_PRESS = 2, UI_F_FOCUS = 4 };

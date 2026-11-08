@@ -104,6 +104,13 @@ static void scan(const char *dir) {
 /* thumbnail of an image, covering TW x TH; made when the card first scrolls into view */
 static void make_thumb(struct wpe *w) {
     w->tried = true;
+    if (w->proc) {                                                          /* procedural: render it now (proc = index + 1) */
+        if (!(w->thumb = malloc(TW * TH * 4))) return;
+        struct canvas tc;
+        canvas_init(&tc, w->thumb, TW, TH, TW);
+        wallpaper_render(&tc, w->proc - 1);
+        return;
+    }
     struct image im;
     if (image_load_fit(w->path, &im, TW > TH ? TW : TH) < 0) return;      /* a big JPEG comes back shrunk by 8 */
     if ((w->thumb = malloc(TW * TH * 4))) {
@@ -202,11 +209,7 @@ int main(void) {
         strlcpy(e->label, wallpaper_name(i), sizeof e->label);
         strlcpy(e->path, wallpaper_name(i), sizeof e->path);
         e->label[0] &= ~0x20;
-        e->proc = 1; e->tried = true;
-        if (!(e->thumb = malloc(TW * TH * 4))) continue;
-        struct canvas tc;
-        canvas_init(&tc, e->thumb, TW, TH, TW);
-        wallpaper_render(&tc, i);
+        e->proc = i + 1;                                           /* rendered when its card first scrolls into view: ~10 ms off the launch */
     }
     scan("/usr/share/wallpapers");
     scan("/home/Pictures");
@@ -224,6 +227,8 @@ int main(void) {
     do {
         struct canvas *c = ui.c;
         if (ui.themed || ui.pressed || ui.nkeys) gui_theme_state(&ts);
+        for (int i = 0; i < ui.nkeys; i++)                  /* Ctrl+F: back to the search box */
+            if ((ui.keys[i].mods & MOD_CTRL) && (ui.keys[i].key | 0x20) == 'f') { ui.focus = ui_id(SP_3, SP_3, W_SIDEBAR - 2 * SP_3, H_SEARCH); ui.kbd = true; break; }
         ui_clear(&ui);
         /* ---- sidebar: search, then the pages that match it ---- */
         ui_sidebar(&ui, 0, 0, W_SIDEBAR, H);
