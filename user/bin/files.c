@@ -18,6 +18,7 @@
 #include <fsutil.h>
 #include <pthread.h>
 #include "image.h"
+#include "benchutil.h"
 
 #define MAX_ENT 2048
 #define HIST_MAX 32
@@ -1128,7 +1129,25 @@ static int crumbs(struct ui *ui, int x, int y, int maxw) {
     return x + (tot < maxw ? tot : maxw);
 }
 
+/* `files --bench DIR`: list DIR, then make every image's thumbnail; spans go to /dev/kmsg */
+static void bench(const char *dir) {
+    uint64_t t = tsc();
+    go(dir, true);
+    blog("FILES %s list %u us, %d entries", dir, us(tsc() - t), nents);
+    t = tsc();
+    uint32_t worst = 0; int n = 0;
+    for (int i = 0; i < nents && n < NTHUMB; i++) {
+        if (ents[i].kind != FK_IMAGE) continue;
+        char p[PATH_MAX]; join(p, cwd, ents[i].name);
+        thumb_get(p, ents[i].mtime, ents[i].size);
+        uint64_t t1 = tsc(); thumb_make(); uint32_t d = us(tsc() - t1); if (d > worst) worst = d; n++;
+    }
+    blog("FILES %s thumbnails %d in %u us (worst %u us)", dir, n, us(tsc() - t), worst);
+    t = tsc(); for (int i = 0; i < 20; i++) sig_of(cwd); blog("FILES %s sig_of %u us", dir, us(tsc() - t) / 20);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 2 && !strcmp(argv[1], "--bench")) { bench(argv[2]); return 0; }
     struct gui_window *w = gui_window_create("Files", 920, 600, 0);
     if (!w) { perror("files"); return 1; }
     struct ui ui;
