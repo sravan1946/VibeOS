@@ -79,6 +79,8 @@ int main(int argc, char **argv) {
             t = tsc(); image_sample(&im, dst, dw, dh, dw, 0, 0, k, 1); uint32_t f = us(tsc() - t);
             t = tsc(); image_sample(&im, dst, 64, 64, 64, 0, 0, 64.0f / (a.w > a.h ? a.w : a.h), 1); uint32_t th = us(tsc() - t);
             say("IMAGE %s %dx%d frames=%d decode %u us, fit-sample %u us, thumb-sample %u us\n", argv[i], a.w, a.h, a.n, d, f, th);
+            struct image fi; t = tsc(); int ok = image_load_fit(argv[i], &fi, 48) == 0; uint32_t fd = us(tsc() - t);
+            if (ok) { t = tsc(); image_sample(&fi, dst, 48, 48, 48, 0, 0, 48.0f / (fi.w > fi.h ? fi.w : fi.h), 1); say("IMAGE %s thumbnail via load_fit: decode %u us (%dx%d) + sample %u us\n", argv[i], fd, fi.w, fi.h, us(tsc() - t)); image_free(&fi); }
             free(dst); image_anim_free(&a);
         }
         return 0;

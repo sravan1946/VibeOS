@@ -24,6 +24,11 @@ void image_anim_free(struct image_anim *a);
 /* the codecs behind image_decode: JPEG (baseline + progressive, EXIF orientation applied) and GIF (maxf frames, 0 = all) */
 int  jpeg_decode(const uint8_t *d, size_t n, struct image *im);
 int  gif_decode(const uint8_t *d, size_t n, int maxf, struct image_anim *a);
+/* like image_decode / image_load, for a picture that will be shown no bigger than want x want: a JPEG whose long side is
+ * at least 8 * want comes back shrunk by 8 (block means, much faster); everything else decodes normally */
+int  image_decode_fit(const uint8_t *data, size_t n, struct image *im, int want);
+int  image_load_fit(const char *path, struct image *im, int want);
+int  jpeg_decode_fit(const uint8_t *d, size_t n, struct image *im, int want);
 
 /* malloc'd PNG (RGB if fully opaque, else RGBA) with LZ77 + fixed Huffman; caller frees. NULL on OOM. */
 uint8_t *image_png_encode(const uint32_t *px, int w, int h, size_t *len);

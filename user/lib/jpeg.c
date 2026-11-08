@@ -3,7 +3,9 @@
  * 4:1:1), restart intervals, EXIF orientation. The IDCT is the integer 13-bit "islow" butterfly; 2:1 chroma is
  * upsampled with the usual triangle filter, so output stays within a level or two of libjpeg. Truncated or corrupt
  * entropy data decodes as far as it goes (the rest stays mid-grey). Not supported: arithmetic coding, 12-bit,
- * lossless, CMYK/YCCK. */
+ * lossless, CMYK/YCCK.
+ * jpeg_decode_fit() can shrink by 8 while decoding (each 8x8 block becomes its DC mean; progressive AC scans are skipped),
+ * for thumbnails of big pictures. */
 #include "image.h"
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +34,7 @@ struct jd {
     uint16_t qt[4][64];
     struct jhuff dc[4], ac[4];
     int w, h, nc, prog, hmax, vmax, mcux, mcuy, ri, eobrun, adobe, orient, err, sof;
+    int want, dc8;                      /* dc8: decode 1/8 size (blocks -> DC mean) because the picture is >= 8 * want on its long side */
     struct jcomp c[3];
 };
 
@@ -251,7 +254,8 @@ static void scan(struct jd *j, int ns, struct jcomp **cs, int ss, int se, int ah
                         else {
                             int blk[64] = { 0 };
                             block_base(j, c, blk);
-                            idct_put(blk, c->pl + (size_t)by * 8 * c->pw + bx * 8, c->pw);
+                            if (j->dc8) c->pl[(size_t)by * c->pw + bx] = px8(DESC(blk[0], 3) + 128);
+                            else idct_put(blk, c->pl + (size_t)by * 8 * c->pw + bx * 8, c->pw);
                         }
                     }
             }
@@ -292,6 +296,7 @@ static int do_sof(struct jd *j, const uint8_t *p, int n, int prog) {
         if (c->h > j->hmax) j->hmax = c->h;
         if (c->v > j->vmax) j->vmax = c->v;
     }
+    if (j->want && (j->w > j->h ? j->w : j->h) >> 3 >= j->want) j->dc8 = 1;
     j->mcux = (j->w + 8 * j->hmax - 1) / (8 * j->hmax);
     j->mcuy = (j->h + 8 * j->vmax - 1) / (8 * j->vmax);
     for (int i = 0; i < j->nc; i++) {
@@ -300,11 +305,13 @@ static int do_sof(struct jd *j, const uint8_t *p, int n, int prog) {
         c->cw = (j->w * c->h + j->hmax - 1) / j->hmax;
         c->ch = (j->h * c->v + j->vmax - 1) / j->vmax;
         c->bw = j->mcux * c->h; c->bh = j->mcuy * c->v; c->pw = c->bw * 8;
-        c->pl = malloc((size_t)c->pw * c->bh * 8);
+        if (j->dc8) { c->pw = c->bw; c->cw = (c->cw + 7) >> 3; c->ch = (c->ch + 7) >> 3; }   /* one sample per block */
+        c->pl = malloc((size_t)c->pw * c->bh * (j->dc8 ? 1 : 8));
         if (!c->pl) return -1;
-        memset(c->pl, 128, (size_t)c->pw * c->bh * 8);
+        memset(c->pl, 128, (size_t)c->pw * c->bh * (j->dc8 ? 1 : 8));
         if (prog && !(c->co = calloc((size_t)c->bw * c->bh * 64, 2))) return -1;
     }
+    if (j->dc8) { j->w = (j->w + 7) >> 3; j->h = (j->h + 7) >> 3; }
     j->sof = 1;
     return 0;
 }
@@ -330,6 +337,7 @@ static int do_sos(struct jd *j, const uint8_t *p, int n) {
         int dc = !j->prog || (ss == 0 && ah == 0), ac = !j->prog || ss > 0;
         if ((dc && !j->dc[cs[i]->td].ok) || (ac && !j->ac[cs[i]->ta].ok)) return -1;
     }
+    if (j->dc8 && j->prog && ss > 0) return 0;                  /* the AC scans don't matter at 1/8: the marker loop steps over their data */
     j->acc = 0; j->nb = 0; j->marker = 0; j->pad = 0;
     scan(j, ns, cs, ss, se, ah, al);
     return 0;
@@ -371,8 +379,8 @@ static const uint8_t *up_row(struct jd *j, struct jcomp *c, int y, uint8_t *buf)
     int hs = j->hmax / c->h, vs = j->vmax / c->v;
     const uint8_t *r = c->pl + (size_t)(y / vs) * c->pw;
     if (hs == 1 && vs == 1) return r;
-    if (hs == 2 && vs == 1) { up_h2v1(r, c->cw, buf); return buf; }
-    if (hs == 2 && vs == 2) {
+    if (hs == 2 && vs == 1 && !j->dc8) { up_h2v1(r, c->cw, buf); return buf; }          /* (libjpeg replicates chroma at 1/8 too) */
+    if (hs == 2 && vs == 2 && !j->dc8) {
         int r2 = clampi((y & 1) ? (y >> 1) + 1 : (y >> 1) - 1, 0, c->ch - 1);
         up_h2v2(r, c->pl + (size_t)r2 * c->pw, c->cw, buf);
         return buf;
@@ -445,11 +453,11 @@ static void orient(struct image *im, int o) {
     im->px = np; im->w = sw; im->h = o >= 5 ? w : h;
 }
 
-int jpeg_decode(const uint8_t *d, size_t n, struct image *im) {
+int jpeg_decode_fit(const uint8_t *d, size_t n, struct image *im, int want) {
     if (n < 4 || d[0] != 0xFF || d[1] != 0xD8) return -1;
     struct jd *j = calloc(1, sizeof *j);
     if (!j) return -1;
-    j->d = d; j->n = n; j->pos = 2; j->orient = 1; j->adobe = -1;
+    j->d = d; j->n = n; j->pos = 2; j->orient = 1; j->adobe = -1; j->want = want;
     int rc = -1, scans = 0;
     for (;;) {
         while (j->pos < n && d[j->pos] != 0xFF) j->pos++;
@@ -498,6 +506,7 @@ int jpeg_decode(const uint8_t *d, size_t n, struct image *im) {
             for (int by = 0; by < c->bh; by++)
                 for (int bx = 0; bx < c->bw; bx++) {
                     const int16_t *co = c->co + ((size_t)by * c->bw + bx) * 64;
+                    if (j->dc8) { c->pl[(size_t)by * c->pw + bx] = px8(DESC(clampi(co[0] * c->q[0], -2047, 2047), 3) + 128); continue; }
                     int blk[64];
                     for (int k = 0; k < 64; k++) blk[k] = clampi(co[k] * c->q[k], -2047, 2047);
                     idct_put(blk, c->pl + (size_t)by * 8 * c->pw + bx * 8, c->pw);
@@ -510,3 +519,5 @@ out:
     free(j);
     return rc;
 }
+
+int jpeg_decode(const uint8_t *d, size_t n, struct image *im) { return jpeg_decode_fit(d, n, im, 0); }

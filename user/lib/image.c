@@ -387,6 +387,11 @@ static int ppm_decode(const uint8_t *d, size_t n, struct image *im) {     /* bin
     return 0;
 }
 
+int image_decode_fit(const uint8_t *d, size_t n, struct image *im, int want) {
+    if (n >= 3 && d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF) { im->w = im->h = 0; im->px = NULL; return jpeg_decode_fit(d, n, im, want); }
+    return image_decode(d, n, im);
+}
+
 int image_decode(const uint8_t *d, size_t n, struct image *im) {
     im->w = im->h = 0; im->px = NULL;
     if (n >= 8 && !memcmp(d, "\x89PNG\r\n\x1a\n", 8)) return png_decode(d, n, im);
@@ -440,6 +445,15 @@ int image_load(const char *path, struct image *im) {
     uint8_t *b = slurp(path, &len);
     if (!b) return -1;
     int rc = image_decode(b, len, im);
+    free(b);
+    return rc;
+}
+
+int image_load_fit(const char *path, struct image *im, int want) {
+    size_t len;
+    uint8_t *b = slurp(path, &len);
+    if (!b) return -1;
+    int rc = image_decode_fit(b, len, im, want);
     free(b);
     return rc;
 }
