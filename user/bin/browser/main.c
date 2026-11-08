@@ -744,10 +744,19 @@ int main(int argc, char **argv) {
             }
         }
         if (in_view && sel_ci < 0) hover = doc_hit(&doc, ui.mx, ui.my - TB + scroll);
+        if (js_active()) {                                   /* mouseover/out on node changes, mousemove, mouseup */
+            static int pnode, pmx = -1, pmy = -1, pbtn;
+            int dx = ui.mx, dy = ui.my - TB + scroll, nn = in_view && sel_ci < 0 ? doc_node_at(&doc, dx, dy) : 0;
+            if (nn != pnode) { if (pnode) js_event(pnode, "mouseout", 0, dx, dy); if (nn) js_event(nn, "mouseover", 0, dx, dy); pnode = nn; }
+            if (in_view && (ui.mx != pmx || ui.my != pmy)) { pmx = ui.mx; pmy = ui.my; js_event(nn, "mousemove", 0, dx, dy); }
+            if (pbtn && !(ui.buttons & 1)) js_event(nn, "mouseup", 0, dx, dy);
+            pbtn = ui.buttons & 1;
+        }
         if (ui.pressed && !consumed && in_view) {
             int dx = ui.mx, dy = ui.my - TB + scroll, ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
             fo = -1;
             mk.from_it = mk.to_it = -1;
+            js_event(node, "mousedown", 0, dx, dy);
             if (ci >= 0) {                                   /* the page sees the click first; preventDefault skips our part */
                 const struct ctl *c = &doc.ct[ci];
                 const struct item *it = ctl_item(ci);
@@ -816,6 +825,7 @@ int main(int argc, char **argv) {
                     int enter = ctl_key(&doc, ci, &k, &caret);
                     if (before && fs->val && strcmp(before, fs->val)) js_event(node, "input", 0, 0, 0);
                     free(before);
+                    js_event(node, "keyup", &k, 0, 0);
                     if (enter) submit(-1, doc.ct[ci].form);
                 }
                 continue;
@@ -850,13 +860,29 @@ int main(int argc, char **argv) {
             if (!step) step = d > 0 ? 1 : -1;
             scroll += step;
         }
+        js_viewport(scroll, vw, vh);
+        { static int last_scroll, last_vw, last_vh;
+          if (scroll != last_scroll) { last_scroll = scroll; js_event(1, "scroll", 0, 0, 0); }
+          if (vw != last_vw || vh != last_vh) { if (last_vw) js_event(0, "resize", 0, 0, 0); last_vw = vw; last_vh = vh; } }
         if (pg.have && js_pump()) js_relayout();           /* scripts, timers, fetches; one relayout per frame */
+        { int sy = js_scroll_req(); if (sy >= 0) { target = sy; clamp_scroll(); }
+          const char *an = js_anchor_req(); int ay2;
+          if (an && (!*an ? (ay2 = 0, 1) : (ay2 = doc_anchor(&doc, an)) >= 0)) { target = ay2 > 8 ? ay2 - 8 : 0; clamp_scroll(); }
+          const char *uc = js_url_change();
+          if (uc) { strlcpy(cur_url, uc, sizeof cur_url); if (hcur >= 0) strlcpy(hist[hcur].url, uc, sizeof hist[0].url); }
+          int sf = js_submit_req();
+          if (sf) for (int i = 0; i < doc.nfm; i++) if (doc.fm[i].node == sf) { char u[URL_MAX], body[sizeof post_body];
+              int post = form_submit(&doc, i, -1, cur_url, u, sizeof u, body, sizeof body);
+              if (post && url_is_web(u)) { strlcpy(post_body, body, sizeof post_body); has_post = true; }
+              navigate(u, 1, -1); has_post = false; break; } }
         int fr = js_focus_req(), fci = ctl_by_node(fr);
         if (fci >= 0) { fo = doc.ct[fci].ord; caret = fs_get(&doc, fci)->val ? strlen(fs_get(&doc, fci)->val) : 0; }
         char *al = js_alert();
         if (al) { free(alert_msg); alert_msg = al; }
         const char *jn = js_nav();
-        if (jn) { char u[URL_MAX]; strlcpy(u, jn, sizeof u); navigate(u, 1, -1); }
+        if (jn && !strcmp(jn, "vibe:back")) go_hist(-1);
+        else if (jn && !strcmp(jn, "vibe:forward")) go_hist(1);
+        else if (jn) { char u[URL_MAX]; strlcpy(u, jn, sizeof u); navigate(u, 1, -1); }
         doc_draw(&ui, &doc, 0, TB, vw, vh, scroll, hover, &mk, fo, caret);
         if (sel_ci >= 0 && prows) {                      /* dropdown on top of the page */
             const struct ctl *c = &doc.ct[sel_ci];

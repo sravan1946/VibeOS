@@ -21,16 +21,17 @@
 #include <syscall.h>
 #include <sys/stat.h>
 
-#define RUN_MS 5000
+#define RUN_MS 10000
 #define MAXNODES 200000
 #define MAXT 256
-#define MAXF 4
-#define MAXSCR 256
+#define MAXF 6
+#define MAXSCR 512
+#define MAXDYN 64
 #define NLOG 64
 
 struct node {
-    uint8_t type;                 /* 1 element, 3 text, 9 document, 11 fragment */
-    uint8_t has_val, has_chk, chk;   /* control state set by a script or synced from form.c */
+    uint8_t type;                 /* 1 element, 3 text, 8 comment, 9 document, 11 fragment */
+    uint8_t has_val, has_chk, chk, started;   /* started: a <script> that has run (or been taken) */   /* control state set by a script or synced from form.c */
     char tag[16];                 /* lower case */
     char *text;                   /* text node data */
     char **an, **av; int na;      /* attributes */
@@ -49,15 +50,27 @@ static uint32_t deadline;
 static char page_url[URL_MAX], nav[URL_MAX];
 static char *alert_text;
 
-static int scr[MAXSCR], nscr, cur_scr;
-static struct { int node; char *body; int state; } sload;       /* external script being fetched: 1 loading, 2 ready, 3 failed */
+/* scripts: S = parser order (sync and defer/module entries, document.write'd ones spliced in after the running one),
+ * D = async and dynamically inserted ones, which run whenever their download lands. mode 0 sync, 1 defer, 2 async;
+ * state 0 idle, 1 downloading, 2 ready, 3 failed, 4 done */
+struct scr { int node, mode, state, module, fid, rel; char *body, *url; };   /* rel: an async parser script waits until the parser (cur_scr) has got this far */
+static struct scr S[MAXSCR], D[MAXDYN];
+static int nscr, cur_scr, cur_def, cur_script, rstate, idle, strikes, url_changed, scroll_req_y = -1, vscroll, vw = 900, vh = 580;
+static char anchor_req[128];
+static int submit_req;
+static char *sync_get(const char *url, size_t *len);
+static void add_script(int id, int where);
+static void scan_scripts(int id, int where);
+static void exec_entry(struct scr *e);
+static char *mod_norm(JSContext *c, const char *base, const char *name, void *op);
+static JSModuleDef *mod_load(JSContext *c, const char *name, void *op);
 
 static struct { int id, every; uint32_t due; } T[MAXT];
 static int nt, next_tid = 1;
 
 /* fetch() and <script src>: helper processes like page loads (fetch.c); file: URLs are read on the next pump */
-static struct jf { int id, used, hops, script; struct fetch f; char url[URL_MAX]; int file; const char *fail; } F[MAXF];
-static struct { int id; char url[URL_MAX]; int script; } FQ[64];   /* waiting for a slot */
+static struct jf { int id, used, hops, script; struct fetch f; char url[URL_MAX]; int file; const char *fail; char *post; } F[MAXF];
+static struct { int id; char url[URL_MAX]; int script; char *post; } FQ[64];   /* waiting for a slot */
 static int nfq, next_fid = 1;
 
 static struct { char t[200]; int kind; } LOG[NLOG];
@@ -74,6 +87,9 @@ static void jlog(int kind, const char *fmt, ...) {
     if (nlog == NLOG) { memmove(LOG, LOG + 1, (NLOG - 1) * sizeof *LOG); nlog--; }
     strlcpy(LOG[nlog].t, b, sizeof LOG[0].t);
     LOG[nlog++].kind = kind;
+    static int kfd = -2;                                   /* /dev/kmsg = serial: tests read the page's verdict there */
+    if (kfd == -2) kfd = open("/dev/kmsg", O_WRONLY);
+    if (kfd >= 0) { char l[240]; int k = snprintf(l, sizeof l, "[js%d] %s\n", kind, b); write(kfd, l, k); }
     browser_status(kind == 2, "%s%s", kind == 2 ? "JS: " : "console: ", b);
 }
 int js_log_count(void) { return nlog; }
@@ -167,8 +183,8 @@ static void touch(int id) { if (connected(id)) dirty = 1; }
 
 static int in_list(const char *t, const char *const *l) { for (; *l; l++) if (!strcmp(t, *l)) return 1; return 0; }
 static const char *const VOIDS[] = { "br", "hr", "img", "input", "meta", "link", "area", "base", "col", "param", "source", "track", "wbr", "embed", 0 };
-static const char *const RAWS[] = { "script", "style", "textarea", "title", "xmp", 0 };   /* content up to </name> is text */
-static const char *const HEADS[] = { "title", "style", "meta", "link", "script", "base", 0 };
+static const char *const RAWS[] = { "script", "style", "textarea", "title", "xmp", "noscript", 0 };   /* content up to </name> is text */
+static const char *const HEADS[] = { "title", "style", "meta", "link", "script", "base", "noscript", 0 };
 static const char *const PCLOSE[] = { "address", "article", "aside", "blockquote", "center", "details", "div", "dl", "fieldset",
     "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "main", "menu", "nav", "ol",
     "p", "pre", "section", "table", "ul", "li", "dd", "dt", 0 };
@@ -320,6 +336,8 @@ static void parse_html(int root, const char *s, size_t n, int frag) {
         if (i + 4 <= n && !strncmp(s + i, "<!--", 4)) {
             size_t j = i + 4;
             while (j + 3 <= n && strncmp(s + j, "-->", 3)) j++;
+            int id = new_node(8, 0);                       /* comment node (kept for innerHTML/outerHTML and createComment users) */
+            if (id) { N[id].text = strndup(s + i + 4, j > i + 4 ? j - i - 4 : 0); insert_before(top(), id, 0); }
             i = j + 3 <= n ? j + 3 : n;
             continue;
         }
@@ -398,6 +416,7 @@ static void esc(struct buf *b, const char *s, int quote) {
 
 static void text_of(struct buf *b, int id) {
     if (N[id].type == 3) { puts_(b, N[id].text); return; }
+    if (N[id].type == 8) return;
     for (int c = N[id].first; c; c = N[c].next) text_of(b, c);
 }
 
@@ -405,14 +424,15 @@ static struct { int on, want, i; } SEL;                  /* serialising a <selec
 
 static void ser(struct buf *b, int id, int lay) {
     struct node *x = &N[id];
+    if (x->type == 8) { if (!lay) { puts_(b, "<!--"); puts_(b, x->text); puts_(b, "-->"); } return; }
     if (x->type == 3) {
         int p = x->parent;
-        if (p && N[p].type == 1 && (!strcmp(N[p].tag, "script") || !strcmp(N[p].tag, "style") || !strcmp(N[p].tag, "xmp"))) puts_(b, x->text);
+        if (p && N[p].type == 1 && (!strcmp(N[p].tag, "script") || !strcmp(N[p].tag, "style") || !strcmp(N[p].tag, "xmp") || !strcmp(N[p].tag, "noscript"))) puts_(b, x->text);
         else esc(b, x->text, 0);
         return;
     }
     if (x->type != 1) { for (int c = x->first; c; c = N[c].next) ser(b, c, lay); return; }
-    if (lay && !strcmp(x->tag, "script")) return;
+    if (lay && (!strcmp(x->tag, "script") || !strcmp(x->tag, "noscript"))) return;   /* scripting is on: <noscript> shows nothing */
     char t[24];
     int input = !strcmp(x->tag, "input"), opt = !strcmp(x->tag, "option"), area = !strcmp(x->tag, "textarea");
     puts_(b, "<"); puts_(b, x->tag);
@@ -451,9 +471,14 @@ static int clone(int id, int deep) {
     if (!c) return 0;
     struct node *x = &N[id];
     if (x->text) N[c].text = sdup(x->text);
+    N[c].started = x->started;
     for (int i = 0; i < x->na; i++) set_attr(c, x->an[i], x->av[i]);
     if (deep) for (int k = N[id].first; k; k = N[k].next) { int cc = clone(k, 1); if (cc) insert_before(c, cc, 0); }
     return c;
+}
+
+static void mark_started(int id) {
+    for (int c = N[id].first; c; c = N[c].next) if (N[c].type == 1) { if (!strcmp(N[c].tag, "script")) N[c].started = 1; else mark_started(c); }
 }
 
 static void clear_children(int id) { while (N[id].first) unlink_node(N[id].first); }
@@ -465,6 +490,16 @@ static void fill_el(struct el *e, int id) {
     strlcpy(e->name, N[id].tag, sizeof e->name);
     if ((v = attr(id, "id"))) strlcpy(e->id, v, sizeof e->id);
     if ((v = attr(id, "class"))) strlcpy(e->cls, v, sizeof e->cls);
+    int k = 0;                                           /* attribute selectors need the pairs (css.c at_find) */
+    for (int i = 0; i < N[id].na; i++) {
+        const char *an = N[id].an[i];
+        if (!strcmp(an, "style")) continue;                                               /* long, and never selected on */
+        int need = 3 + strlen(an) + strlen(N[id].av[i]);
+        if (k + need >= (int)sizeof e->at) continue;                                      /* (el.at is 80 bytes: the rest is left out) */
+        k += snprintf(e->at + k, sizeof e->at - k, "\1%s\2%s", an, N[id].av[i]);
+    }
+    e->first = 1;
+    for (int p = N[id].prev; p; p = N[p].prev) if (N[p].type == 1) { e->first = 0; break; }
     e->js = id;
 }
 
@@ -493,6 +528,16 @@ static int by_id(int id, const char *want) {
         const char *v = attr(c, "id");
         if (v && !strcmp(v, want)) return c;
         int r = by_id(c, want);
+        if (r) return r;
+    }
+    return 0;
+}
+
+static int by_tag(int id, const char *tag) {
+    for (int c = N[id].first; c; c = N[c].next) {
+        if (N[c].type != 1) continue;
+        if (!strcmp(N[c].tag, tag)) return c;
+        int r = by_tag(c, tag);
         if (r) return r;
     }
     return 0;
@@ -573,7 +618,7 @@ static JSValue take(char *s) { JSValue v = str(s); free(s); return v; }
 #define CSTR(var, i) const char *var = JS_ToCString(c, argv[i]); if (!var) return JS_EXCEPTION
 
 NATIVE(n_type) { int id = ARGID(0); return JS_NewInt32(c, id ? N[id].type : 0); }
-NATIVE(n_tag) { int id = ARGID(0); return str(id ? (N[id].type == 3 ? "#text" : N[id].type == 9 ? "#document" : N[id].type == 11 ? "#document-fragment" : N[id].tag) : ""); }
+NATIVE(n_tag) { int id = ARGID(0); return str(id ? (N[id].type == 3 ? "#text" : N[id].type == 8 ? "#comment" : N[id].type == 9 ? "#document" : N[id].type == 11 ? "#document-fragment" : N[id].tag) : ""); }
 NATIVE(n_parent) { int id = ARGID(0); return JS_NewInt32(c, id ? N[id].parent : 0); }
 NATIVE(n_first) { int id = ARGID(0); return JS_NewInt32(c, id ? N[id].first : 0); }
 NATIVE(n_last) { int id = ARGID(0); return JS_NewInt32(c, id ? N[id].last : 0); }
@@ -612,6 +657,7 @@ NATIVE(n_attrs) {
 NATIVE(n_text) {
     int id = ARGID(0);
     if (!id) return str("");
+    if (N[id].type == 8) return str(N[id].text);
     struct buf b = { 0 };
     text_of(&b, id);
     return b.p ? take(b.p) : str("");
@@ -621,7 +667,7 @@ NATIVE(n_set_text) {
     if (!id) return JS_UNDEFINED;
     CSTR(s, 1);
     int t1 = N[id].first && N[id].first == N[id].last && N[N[id].first].type == 3 && *s ? N[id].first : 0;
-    if (N[id].type == 3 || t1) {                           /* reuse the text node: a ticking clock mustn't eat node ids */
+    if (N[id].type == 3 || N[id].type == 8 || t1) {                           /* reuse the text node: a ticking clock mustn't eat node ids */
         int t = t1 ? t1 : id;
         if (strcmp(N[t].text, s)) { free(N[t].text); N[t].text = sdup(s); touch(t); }
     } else {
@@ -643,7 +689,7 @@ NATIVE(n_html) {
 }
 NATIVE(n_set_html) {
     int id = ARGID(0);
-    if (!id || N[id].type == 3) return JS_UNDEFINED;
+    if (!id || N[id].type == 3 || N[id].type == 8) return JS_UNDEFINED;
     size_t l;
     const char *s = JS_ToCStringLen(c, &l, argv[1]);
     if (!s) return JS_EXCEPTION;
@@ -651,6 +697,7 @@ NATIVE(n_set_html) {
     int body = P.body;
     parse_html(id, s, l, 1);
     P.body = body;
+    mark_started(id);                                      /* scripts from innerHTML never run */
     JS_FreeCString(c, s);
     touch(id);
     return JS_UNDEFINED;
@@ -670,13 +717,14 @@ NATIVE(n_create_text) {
 NATIVE(n_create_frag) { int id = new_node(11, 0); return id ? JS_NewInt32(c, id) : JS_ThrowInternalError(c, "too many DOM nodes"); }
 NATIVE(n_insert) {
     int p = ARGID(0), ch = ARGID(1), ref = ARGID(2);
-    if (!p || !ch || N[p].type == 3) return JS_ThrowTypeError(c, "insert: not a node");
+    if (!p || !ch || N[p].type == 3 || N[p].type == 8) return JS_ThrowTypeError(c, "HierarchyRequestError: this node can't have children");
     for (int a = p; a; a = N[a].parent) if (a == ch) return JS_ThrowTypeError(c, "HierarchyRequestError: the new child contains the parent");
     if (ref && N[ref].parent != p) return JS_ThrowTypeError(c, "NotFoundError: the reference node is not a child of this node");
     if (ch == 1 || ch == ref) return JS_UNDEFINED;
     touch(ch);                                             /* leaving the document dirties it too */
-    if (N[ch].type == 11) while (N[ch].first) insert_before(p, N[ch].first, ref);
-    else insert_before(p, ch, ref);
+    int live_p = connected(p);
+    if (N[ch].type == 11) while (N[ch].first) { int k = N[ch].first; insert_before(p, k, ref); if (live_p) scan_scripts(k, 2); }
+    else { insert_before(p, ch, ref); if (live_p) scan_scripts(ch, 2); }
     touch(p);
     return JS_UNDEFINED;
 }
@@ -760,7 +808,9 @@ NATIVE(n_url) { return str(page_url); }
 NATIVE(n_resolve) {
     char out[URL_MAX];
     CSTR(u, 0);
-    url_resolve(page_url, u, out, sizeof out);
+    const char *bs = argc > 1 && !JS_IsUndefined(argv[1]) ? JS_ToCString(c, argv[1]) : 0;
+    url_resolve(bs ? bs : page_url, u, out, sizeof out);
+    JS_FreeCString(c, bs);
     JS_FreeCString(c, u);
     return str(out);
 }
@@ -804,15 +854,174 @@ NATIVE(n_clear) {
 }
 NATIVE(n_now) { return JS_NewFloat64(c, uptime_ms()); }
 
-static int fetch_queue(const char *url, int script);
+static int fetch_queue(const char *url, int script, const char *post);
 NATIVE(n_fetch) {
     CSTR(u, 0);
     char abs[URL_MAX];
     url_resolve(page_url, u, abs, sizeof abs);
     url_strip_frag(abs);
     JS_FreeCString(c, u);
-    int id = fetch_queue(abs, 0);
+    const char *post = JS_IsNull(argv[1]) || JS_IsUndefined(argv[1]) ? 0 : JS_ToCString(c, argv[1]);
+    int id = fetch_queue(abs, 0, post);
+    JS_FreeCString(c, post);
     return id < 0 ? JS_ThrowRangeError(c, "too many fetches in flight") : JS_NewInt32(c, id);
+}
+
+NATIVE(n_create_comment) {
+    CSTR(s, 0);
+    int id = new_node(8, 0);
+    if (id) N[id].text = sdup(s);
+    JS_FreeCString(c, s);
+    return id ? JS_NewInt32(c, id) : JS_ThrowInternalError(c, "too many DOM nodes");
+}
+/* document.write: while the parser "is" at a script, the text goes in right after it (and any <script> in it runs next);
+ * afterwards it is appended to <body> (ponytail: no real document.open() reparse) */
+NATIVE(n_docwrite) {
+    size_t l;
+    const char *src = JS_ToCStringLen(c, &l, argv[0]);
+    if (!src) return JS_EXCEPTION;
+    int frag = new_node(11, 0);
+    if (frag) {
+        int body = P.body;
+        parse_html(frag, src, l, 1);
+        P.body = body;
+        int at = cur_script && !loaded && N[cur_script].parent ? cur_script : 0;
+        int p = at ? N[at].parent : by_tag(1, "body"), ref = at ? N[at].next : 0;
+        if (!p) p = 2;
+        while (N[frag].first) { int k = N[frag].first; insert_before(p, k, ref); scan_scripts(k, 1); }
+        touch(p);
+    }
+    JS_FreeCString(c, src);
+    return JS_UNDEFINED;
+}
+NATIVE(n_hit) { int32_t x = 0, y = 0; JS_ToInt32(c, &x, argv[0]); JS_ToInt32(c, &y, argv[1]); return JS_NewInt32(c, live ? doc_node_at(live, x, y + vscroll) : 0); }
+NATIVE(n_submit) { submit_req = ARGID(0); return JS_UNDEFINED; }
+NATIVE(n_sync_get) {
+    CSTR(u, 0);
+    char abs[URL_MAX];
+    url_resolve(page_url, u, abs, sizeof abs);
+    url_strip_frag(abs);
+    JS_FreeCString(c, u);
+    size_t l = 0;
+    char *b = sync_get(abs, &l);
+    if (!b) return JS_NULL;
+    JSValue v = JS_NewStringLen(c, b, l);
+    free(b);
+    return v;
+}
+NATIVE(n_cur_script) { return JS_NewInt32(c, cur_script); }
+NATIVE(n_ready) { return JS_NewInt32(c, rstate); }
+NATIVE(n_set_url) {                                        /* pushState / replaceState / #hash: the page URL changes, no load */
+    CSTR(u, 0);
+    char out[URL_MAX];
+    url_resolve(page_url, u, out, sizeof out);
+    JS_FreeCString(c, u);
+    strlcpy(page_url, out, sizeof page_url);
+    url_changed = 1;
+    const char *h = strchr(out, '#');
+    if (JS_ToBool(c, argv[1])) strlcpy(anchor_req, h ? h + 1 : "", sizeof anchor_req);
+    return JS_UNDEFINED;
+}
+NATIVE(n_scroll_to) { double y = 0; JS_ToFloat64(c, &y, argv[1]); scroll_req_y = y < 0 ? 0 : (int)y; return JS_UNDEFINED; }
+NATIVE(n_view) { JSValue a = JS_NewArray(c); JS_SetPropertyUint32(c, a, 0, JS_NewInt32(c, vscroll)); JS_SetPropertyUint32(c, a, 1, JS_NewInt32(c, vw)); JS_SetPropertyUint32(c, a, 2, JS_NewInt32(c, vh)); return a; }
+/* layout publishes border boxes here after each layout (js_set_rect); until it does (or for a node it skipped) a node's
+ * box is the union of the display items inside it: text extents, and an empty element has none */
+static int (*RC)[4], nrc, rc_set;                   /* RC[node] = {x, y, w, h}; w < 0 = unset */
+void js_set_rect(int node, int x, int y, int w, int h) {
+    if (node <= 0 || node >= nn) return;
+    if (node >= nrc) {
+        int n2 = nn + 256;
+        int (*r)[4] = realloc(RC, n2 * sizeof *RC);
+        if (!r) return;
+        for (int i = nrc; i < n2; i++) r[i][2] = -1;
+        RC = r; nrc = n2;
+    }
+    RC[node][0] = x; RC[node][1] = y; RC[node][2] = w; RC[node][3] = h; rc_set = 1;
+}
+NATIVE(n_rect) {
+    int id = ARGID(0), x0 = 1 << 30, y0 = 1 << 30, x1 = -1, y1 = -1;
+    JSValue a = JS_NewArray(c);
+    if (id && id < nrc && RC[id][2] >= 0) {
+        for (int i = 0; i < 4; i++) JS_SetPropertyUint32(c, a, i, JS_NewInt32(c, RC[id][i]));
+        return a;
+    }
+    if (id && live && N[id].type != 9)
+        for (int i = 0; i < live->nit; i++) {
+            const struct item *it = &live->it[i];
+            int a_ = it->node;
+            while (a_ && a_ != id) a_ = N[a_].parent;
+            if (!a_ || !it->node) continue;
+            if (it->x < x0) x0 = it->x;
+            if (it->y < y0) y0 = it->y;
+            if (it->x + it->w > x1) x1 = it->x + it->w;
+            if (it->y + it->h > y1) y1 = it->y + it->h;
+        }
+    if (id && live && N[id].type == 9) { x0 = y0 = 0; x1 = vw; y1 = live->height; }
+    if (x1 < 0) x0 = y0 = x1 = y1 = 0;
+    int v[4] = { x0, y0, x1 - x0, y1 - y0 };
+    for (int i = 0; i < 4; i++) JS_SetPropertyUint32(c, a, i, JS_NewInt32(c, v[i]));
+    return a;
+}
+NATIVE(n_media) { CSTR(q, 0); css_viewport(vw); int r = css_media(q); JS_FreeCString(c, q); return JS_NewBool(c, r); }
+/* the cascade for an element (stylesheets + style=""), as [display, color, bg, bold, align, width, height, font-size, ...] */
+NATIVE(n_computed) {
+    int id = ARGID(0);
+    JSValue o = JS_NewObject(c);
+    if (!id || N[id].type != 1) return o;
+    struct cprops cp;
+    memset(&cp, 0, sizeof cp);
+    css_cascade(ST, path_to(id), attr(id, "style"), &cp);
+    static const struct { int p; const char *n; } PR[] = { { P_COLOR, "color" }, { P_BG, "backgroundColor" }, { P_BOLD, "fontWeight" },
+        { P_ALIGN, "textAlign" }, { P_MT, "marginTop" }, { P_MR, "marginRight" }, { P_MB, "marginBottom" }, { P_ML, "marginLeft" },
+        { P_PT, "paddingTop" }, { P_PR, "paddingRight" }, { P_PB, "paddingBottom" }, { P_PL, "paddingLeft" }, { P_DISPLAY, "display" },
+        { P_WIDTH, "width" }, { P_HEIGHT, "height" }, { P_FSIZE, "fontSize" }, { P_BWT, "borderTopWidth" } };
+    if (cp.set & ((uint64_t)1 << P_DISPLAY)) {
+        int dv = cp.v[P_DISPLAY];
+        JS_SetPropertyStr(c, o, "displayName", str(dv == D_NONE ? "none" : dv == D_BLOCK ? "block" : dv == D_INLINE ? "inline" : ""));
+    }
+    for (unsigned i = 0; i < sizeof PR / sizeof *PR; i++) {
+        int p = PR[i].p;
+        if (!(cp.set & ((uint64_t)1 << p))) continue;
+        JS_SetPropertyStr(c, o, PR[i].n, JS_NewInt32(c, cp.k[p] == K_AUTO ? -1 : cp.k[p] == K_PCT ? -2 - cp.v[p] : cp.v[p]));
+    }
+    return o;
+}
+/* small per-origin files under ~/.config/browser (localStorage); name is sanitised */
+static void store_path(const char *name, char *out, int cap, int mk) {
+    const char *h = getenv("HOME");
+    char dir[200], safe[100];
+    int k = 0;
+    for (; name[k] && k < 99; k++) safe[k] = isalnum((unsigned char)name[k]) || name[k] == '.' || name[k] == '-' ? name[k] : '_';
+    safe[k] = 0;
+    snprintf(dir, sizeof dir, "%s/.config", h && *h ? h : "/home");
+    if (mk) { mkdir(dir, 0755); strlcat(dir, "/browser", sizeof dir); mkdir(dir, 0755); } else strlcat(dir, "/browser", sizeof dir);
+    snprintf(out, cap, "%s/%s", dir, safe);
+}
+NATIVE(n_load) {
+    CSTR(n, 0);
+    char path[300];
+    store_path(n, path, sizeof path, 0);
+    JS_FreeCString(c, n);
+    int fd = open(path, O_RDONLY);
+    struct stat st;
+    if (fd < 0) return JS_NULL;
+    char *b = fstat(fd, &st) == 0 && st.st_size < (1 << 20) ? malloc(st.st_size + 1) : 0;
+    ssize_t got = b ? read(fd, b, st.st_size) : -1;
+    close(fd);
+    if (!b) return JS_NULL;
+    if (got < 0) got = 0;
+    b[got] = 0;
+    return take(b);
+}
+NATIVE(n_save) {
+    CSTR(n, 0);
+    CSTR(v, 1);
+    char path[300];
+    store_path(n, path, sizeof path, 1);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { write(fd, v, strlen(v)); close(fd); }
+    JS_FreeCString(c, n); JS_FreeCString(c, v);
+    return JS_UNDEFINED;
 }
 
 static const JSCFunctionListEntry NATIVES[] = {
@@ -828,7 +1037,11 @@ static const JSCFunctionListEntry NATIVES[] = {
     JS_CFUNC_DEF("setChecked", 2, n_set_checked), JS_CFUNC_DEF("selIndex", 1, n_sel_index), JS_CFUNC_DEF("setSelIndex", 2, n_set_sel_index),
     JS_CFUNC_DEF("focus", 1, n_focus), JS_CFUNC_DEF("url", 0, n_url), JS_CFUNC_DEF("navigate", 1, n_navigate), JS_CFUNC_DEF("resolve", 1, n_resolve),
     JS_CFUNC_DEF("alert", 1, n_alert), JS_CFUNC_DEF("log", 2, n_log), JS_CFUNC_DEF("timer", 2, n_timer),
-    JS_CFUNC_DEF("clear", 1, n_clear), JS_CFUNC_DEF("now", 0, n_now), JS_CFUNC_DEF("fetch", 1, n_fetch),
+    JS_CFUNC_DEF("clear", 1, n_clear), JS_CFUNC_DEF("now", 0, n_now), JS_CFUNC_DEF("fetch", 2, n_fetch),
+    JS_CFUNC_DEF("createComment", 1, n_create_comment), JS_CFUNC_DEF("docwrite", 1, n_docwrite), JS_CFUNC_DEF("curScript", 0, n_cur_script),
+    JS_CFUNC_DEF("ready", 0, n_ready), JS_CFUNC_DEF("setUrl", 2, n_set_url), JS_CFUNC_DEF("scrollTo", 2, n_scroll_to),
+    JS_CFUNC_DEF("view", 0, n_view), JS_CFUNC_DEF("rect", 1, n_rect), JS_CFUNC_DEF("media", 1, n_media),
+    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
 };
 
 /* ---------- running JS ---------- */
@@ -837,13 +1050,14 @@ static int on_interrupt(JSRuntime *r, void *op) {
     return 0;
 }
 
-static void enter(void) { deadline = uptime_ms() + RUN_MS; }
+static int depth;                                          /* nested entries (a script inserted by a script) share the outer budget */
+static void enter(void) { if (depth++ == 0) { deadline = uptime_ms() + RUN_MS; if (!dead) killed = 0; } }
 
 static void report(JSContext *c) {
     JSValue e = JS_GetException(c);
     if (killed) {
-        if (!dead) jlog(2, "a script ran for more than %d s and was stopped; scripts on this page are now off", RUN_MS / 1000);
-        dead = 1; nt = 0;
+        if (++strikes >= 3) { jlog(2, "scripts on this page ran too long three times and are now off"); dead = 1; nt = 0; }
+        else jlog(2, "a script ran for more than %d s and was stopped", RUN_MS / 1000);
         JS_FreeValue(c, e);
         return;
     }
@@ -865,21 +1079,43 @@ static void report(JSContext *c) {
     JS_FreeValue(c, e);
 }
 
+static void flush_rejections(void);
 static void leave(JSValue r) {
     if (JS_IsException(r)) report(ctx);
     JS_FreeValue(ctx, r);
     JSContext *c;
+    if (--depth > 0) return;
+    depth = 0;
     for (int k = 0; !dead && k < 100000; k++) {          /* promise jobs, same budget */
         int ret = JS_ExecutePendingJob(rt, &c);
         if (ret <= 0) { if (ret < 0) report(c); if (ret == 0) break; }
     }
+    flush_rejections();
 }
 
+/* a rejection nobody handled by the end of the microtask checkpoint (a handler attached right after is fine, as in browsers) */
+static struct { JSValue p, reason; } RJ[16];
+static int nrj;
 static void on_reject(JSContext *c, JSValueConst p, JSValueConst reason, JS_BOOL handled, void *op) {
-    if (handled || killed) return;
-    const char *m = JS_ToCString(c, reason);
-    jlog(2, "Uncaught (in promise) %s", m ? m : "");
-    JS_FreeCString(c, m);
+    if (killed) return;
+    if (handled) {
+        for (int i = 0; i < nrj; i++)
+            if (JS_VALUE_GET_PTR(RJ[i].p) == JS_VALUE_GET_PTR(p)) { JS_FreeValue(c, RJ[i].p); JS_FreeValue(c, RJ[i].reason); RJ[i] = RJ[--nrj]; break; }
+        return;
+    }
+    if (nrj < 16) { RJ[nrj].p = JS_DupValue(c, p); RJ[nrj].reason = JS_DupValue(c, reason); nrj++; }
+}
+static void flush_rejections(void) {
+    while (nrj) {
+        nrj--;
+        JSValue rs = RJ[nrj].reason;
+        const char *m = JS_ToCString(ctx, rs);
+        JSValue st = JS_IsError(ctx, rs) ? JS_GetPropertyStr(ctx, rs, "stack") : JS_UNDEFINED;
+        const char *sk = JS_IsUndefined(st) ? 0 : JS_ToCString(ctx, st);
+        jlog(2, "Uncaught (in promise) %s%s%.60s", m ? m : "", sk ? " " : "", sk ? sk : "");
+        JS_FreeCString(ctx, m); JS_FreeCString(ctx, sk); JS_FreeValue(ctx, st);
+        JS_FreeValue(ctx, RJ[nrj].p); JS_FreeValue(ctx, rs);
+    }
 }
 
 static void call(JSValue fn, int argc, JSValue *argv) {
@@ -912,6 +1148,12 @@ int js_event(int node, const char *type, const struct gui_event *k, int x, int y
         else if (k->key >= KEY_F1 && k->key <= KEY_F12) { snprintf(ch, sizeof ch, "F%d", k->key - KEY_F1 + 1); code = 112 + k->key - KEY_F1; }
         else if (k->ch >= 32 && k->ch < 127) { ch[0] = k->ch; ch[1] = 0; code = toupper(k->ch); }
         else if (k->key > 0 && k->key < 127) { ch[0] = k->key; ch[1] = 0; code = toupper(k->key); }
+        char kcode[16];
+        if (key[0] && !key[1] && isalpha((unsigned char)key[0])) snprintf(kcode, sizeof kcode, "Key%c", toupper((unsigned char)key[0]));
+        else if (key[0] && !key[1] && isdigit((unsigned char)key[0])) snprintf(kcode, sizeof kcode, "Digit%c", key[0]);
+        else if (key[0] == ' ') strlcpy(kcode, "Space", sizeof kcode);
+        else strlcpy(kcode, key, sizeof kcode);
+        JS_SetPropertyStr(ctx, o, "code", str(kcode));
         JS_SetPropertyStr(ctx, o, "key", str(key));
         JS_SetPropertyStr(ctx, o, "keyCode", JS_NewInt32(ctx, code));
         JS_SetPropertyStr(ctx, o, "which", JS_NewInt32(ctx, code));
@@ -920,8 +1162,10 @@ int js_event(int node, const char *type, const struct gui_event *k, int x, int y
         JS_SetPropertyStr(ctx, o, "altKey", JS_NewBool(ctx, k->mods & MOD_ALT));
         JS_SetPropertyStr(ctx, o, "metaKey", JS_NewBool(ctx, k->mods & MOD_SUPER));
     }
-    JS_SetPropertyStr(ctx, o, "clientX", JS_NewInt32(ctx, x));
-    JS_SetPropertyStr(ctx, o, "clientY", JS_NewInt32(ctx, y));
+    JS_SetPropertyStr(ctx, o, "clientX", JS_NewInt32(ctx, x));         /* x, y are document coordinates */
+    JS_SetPropertyStr(ctx, o, "clientY", JS_NewInt32(ctx, y - vscroll));
+    JS_SetPropertyStr(ctx, o, "pageX", JS_NewInt32(ctx, x));
+    JS_SetPropertyStr(ctx, o, "pageY", JS_NewInt32(ctx, y));
     JSValue argv[3] = { JS_NewInt32(ctx, node), str(type), o };
     enter();
     JSValue r = JS_Call(ctx, fn_dispatch, JS_UNDEFINED, 3, argv);
@@ -932,12 +1176,18 @@ int js_event(int node, const char *type, const struct gui_event *k, int x, int y
 }
 
 /* ---------- fetches ---------- */
+static struct scr *scr_by_fid(int id) {
+    for (int i = 0; i < nscr; i++) if (S[i].fid == id && S[i].state == 1) return &S[i];
+    for (int i = 0; i < MAXDYN; i++) if (D[i].fid == id && D[i].state == 1) return &D[i];
+    return 0;
+}
 static void deliver(int id, int script, int status, const char *text, const char *ctype, const char *body, size_t blen, const char *err, const char *url) {
     if (script) {
-        if (sload.state != 1) return;
-        if (err || status >= 400) { jlog(2, "failed to load script %s: %s", url, err ? err : text); sload.state = 3; return; }
-        sload.body = strndup(body ? body : "", blen);
-        sload.state = sload.body ? 2 : 3;
+        struct scr *e = scr_by_fid(id);
+        if (!e || e->state != 1) return;
+        if (err || status >= 400) { jlog(2, "failed to load script %s: %s", url, err ? err : text); e->state = 3; return; }
+        e->body = strndup(body ? body : "", blen);
+        e->state = e->body ? 2 : 3;
         return;
     }
     if (dead) return;
@@ -946,21 +1196,22 @@ static void deliver(int id, int script, int status, const char *text, const char
     call(fn_fetch, 7, argv);
 }
 
-static int slot_start(struct jf *f, int id, const char *url, int script) {
+static int slot_start(struct jf *f, int id, const char *url, int script, char *post) {   /* takes post */
     memset(f, 0, sizeof *f);
-    f->id = id; f->script = script;
+    f->id = id; f->script = script; f->post = post;
     strlcpy(f->url, url, sizeof f->url);
     if (!url_is_web(url)) { f->used = 1; f->file = 1; return 0; }       /* read on the next pump */
     f->used = 1;
-    if (fetch_start(&f->f, url, 0) < 0) f->fail = "the network helper didn't start";
+    if (fetch_start(&f->f, url, post) < 0) f->fail = "the network helper didn't start";
     return 0;
 }
 
-static int fetch_queue(const char *url, int script) {
+static int fetch_queue(const char *url, int script, const char *post) {
     int id = next_fid++;
-    for (int i = 0; i < MAXF; i++) if (!F[i].used) { slot_start(&F[i], id, url, script); return id; }
-    if (nfq == 64) return -1;
-    FQ[nfq].id = id; FQ[nfq].script = script; strlcpy(FQ[nfq].url, url, sizeof FQ[0].url); nfq++;
+    char *pd = post ? strdup(post) : 0;
+    for (int i = 0; i < MAXF; i++) if (!F[i].used) { slot_start(&F[i], id, url, script, pd); return id; }
+    if (nfq == 64) { free(pd); return -1; }
+    FQ[nfq].id = id; FQ[nfq].script = script; FQ[nfq].post = pd; strlcpy(FQ[nfq].url, url, sizeof FQ[0].url); nfq++;
     return id;
 }
 
@@ -1000,15 +1251,16 @@ static void pump_fetches(void) {
             url_resolve(f->url, rs.loc, next, sizeof next);
             int hops = f->hops + 1;
             free(rs.body);
-            slot_start(f, f->id, next, f->script);
+            char *pd = rs.status == 307 || rs.status == 308 ? f->post : (free(f->post), (char *)0);
+            slot_start(f, f->id, next, f->script, pd);
             f->hops = hops;
             continue;
         }
         deliver(f->id, f->script, rs.status, rs.text, rs.ctype, rs.body, rs.blen, rs.err[0] ? rs.err : 0, f->url);
-        free(rs.body);
+        free(rs.body); free(f->post); f->post = 0;
     }
     for (int i = 0; i < MAXF && nfq && active; i++)
-        if (!F[i].used) { slot_start(&F[i], FQ[0].id, FQ[0].url, FQ[0].script); memmove(FQ, FQ + 1, --nfq * sizeof *FQ); }
+        if (!F[i].used) { slot_start(&F[i], FQ[0].id, FQ[0].url, FQ[0].script, FQ[0].post); memmove(FQ, FQ + 1, --nfq * sizeof *FQ); }
 }
 
 int js_busy(void) {
@@ -1031,12 +1283,9 @@ static int uses_js(const char *s, size_t n) {
     return 0;
 }
 
-static void collect_scripts(int id) {
-    for (int c = N[id].first; c; c = N[c].next) {
-        if (N[c].type != 1) continue;
-        if (!strcmp(N[c].tag, "script") && nscr < MAXSCR) scr[nscr++] = c;
-        else collect_scripts(c);
-    }
+static void scan_scripts(int id, int where) {
+    if (N[id].type == 1 && !strcmp(N[id].tag, "script")) { if (!N[id].started) add_script(id, where); return; }
+    for (int c = N[id].first; c; c = N[c].next) if (N[c].type == 1) scan_scripts(c, where);
 }
 
 static JSValue global_fn(const char *name) {
@@ -1053,6 +1302,7 @@ int js_page(const char *src, size_t n, const char *url) {
     JS_SetMemoryLimit(rt, 64u << 20);
     JS_SetMaxStackSize(rt, 1u << 20);
     JS_SetInterruptHandler(rt, on_interrupt, 0);
+    JS_SetModuleLoaderFunc(rt, mod_norm, mod_load, 0);
     JS_SetHostPromiseRejectionTracker(rt, on_reject, 0);
     ctx = JS_NewContext(rt);
     if (!ctx) { JS_FreeRuntime(rt); rt = 0; return 0; }
@@ -1062,16 +1312,22 @@ int js_page(const char *src, size_t n, const char *url) {
     insert_before(1, new_node(1, "html"), 0);              /* 2 */
     insert_before(2, new_node(1, "head"), 0);              /* 3 */
     parse_html(1, src, n, 0);
-    collect_scripts(1);
     JSValue g = JS_GetGlobalObject(ctx), d = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, d, NATIVES, sizeof NATIVES / sizeof *NATIVES);
     JS_SetPropertyStr(ctx, g, "__d", d);
     JS_FreeValue(ctx, g);
     active = 1;
+    scan_scripts(1, 0);
     enter();
     JSValue r = JS_Eval(ctx, js_prelude, strlen(js_prelude), "<dom>", JS_EVAL_TYPE_GLOBAL);
     if (JS_IsException(r)) { report(ctx); dead = 1; }
     JS_FreeValue(ctx, r);
+    if (!dead) {
+        r = JS_Eval(ctx, js_prelude2, strlen(js_prelude2), "<web>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(r)) { report(ctx); dead = 1; }
+        JS_FreeValue(ctx, r);
+    }
+    depth = 0;
     fn_dispatch = global_fn("__dispatch"); fn_fire = global_fn("__fire"); fn_fetch = global_fn("__fetchDone");
     return 1;
 }
@@ -1081,36 +1337,160 @@ static int ci_has(const char *h, const char *nd) {
     return 0;
 }
 
-static void run_scripts(void) {
-    while (cur_scr < nscr && !dead && active) {
-        int id = scr[cur_scr];
-        const char *ty = attr(id, "type"), *src = attr(id, "src");
-        int module = ty && !strcasecmp(ty, "module");
-        if (ty && *ty && !module && !ci_has(ty, "javascript") && !ci_has(ty, "ecmascript")) { cur_scr++; continue; }
-        char name[URL_MAX];
-        if (src && *src) {
-            url_resolve(page_url, src, name, sizeof name);
-            if (sload.node != id) { sload.node = id; sload.state = 1; sload.body = 0; if (fetch_queue(name, 1) < 0) sload.state = 3; }
-            if (sload.state == 1) return;                  /* still loading: later scripts wait */
-            if (sload.state == 2) run_script(sload.body, strlen(sload.body), name, module);
-            free(sload.body); sload.body = 0;
-        } else {
-            struct buf b = { 0 };
-            text_of(&b, id);
-            const char *sl = strrchr(page_url, '/');
-            snprintf(name, sizeof name, "%s (inline #%d)", sl && sl[1] ? sl + 1 : page_url, cur_scr + 1);
-            if (b.p) run_script(b.p, b.n, name, module);
-            free(b.p);
+static void fire(int node, const char *type) {            /* script load/error events */
+    JSValue a[3] = { JS_NewInt32(ctx, node), str(type), JS_UNDEFINED };
+    call(fn_dispatch, 3, a);
+}
+
+/* blocking GET for module imports (QuickJS wants the source back from the loader); ponytail: freezes the page for the download */
+static char *sync_get(const char *url, size_t *len) {
+    char cur[URL_MAX];
+    strlcpy(cur, url, sizeof cur);
+    for (int hop = 0; hop < 6; hop++) {
+        if (!url_is_web(cur)) {
+            struct jf f;
+            memset(&f, 0, sizeof f);
+            strlcpy(f.url, cur, sizeof f.url);
+            char path[PATH_MAX];
+            url_file_path(cur, path, sizeof path);
+            int fd = open(path, O_RDONLY);
+            struct stat st;
+            char *b = 0;
+            size_t got = 0;
+            if (fd >= 0 && fstat(fd, &st) == 0 && !S_ISDIR(st.st_mode) && (b = malloc(st.st_size + 1))) {
+                ssize_t r;
+                while (got < (size_t)st.st_size && (r = read(fd, b + got, st.st_size - got)) > 0) got += r;
+                b[got] = 0;
+            }
+            if (fd >= 0) close(fd);
+            *len = got;
+            return b;
         }
+        struct fetch f;
+        if (fetch_start(&f, cur, 0) < 0) return 0;
+        uint32_t t0 = uptime_ms();
+        int r;
+        while ((r = fetch_pump(&f)) == 0 && uptime_ms() - t0 < 20000) usleep(4000);
+        if (r <= 0) { fetch_cancel(&f); return 0; }
+        struct response rs;
+        fetch_finish(&f, &rs);
+        if (!rs.err[0] && rs.status >= 300 && rs.status < 400 && rs.loc[0]) { url_resolve(cur, rs.loc, cur, sizeof cur); free(rs.body); continue; }
+        if (rs.err[0] || rs.status >= 400) { free(rs.body); return 0; }
+        *len = rs.blen;
+        return rs.body;
+    }
+    return 0;
+}
+
+static char *mod_norm(JSContext *c, const char *base, const char *name, void *op) {
+    char out[URL_MAX];
+    url_resolve(base, name, out, sizeof out);
+    url_strip_frag(out);
+    return js_strdup(c, out);
+}
+
+static JSModuleDef *mod_load(JSContext *c, const char *name, void *op) {
+    size_t l;
+    char *b = sync_get(name, &l);
+    if (!b) { JS_ThrowReferenceError(c, "could not load module %s", name); return 0; }
+    JSValue v = JS_Eval(c, b, l, name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    free(b);
+    if (JS_IsException(v)) return 0;
+    JSModuleDef *m = JS_VALUE_GET_PTR(v);
+    JS_FreeValue(c, v);
+    return m;
+}
+
+/* queue (or, for an inline dynamic script, run) a <script> element once */
+static void add_script(int id, int where) {                /* where: 0 parser, 1 document.write, 2 inserted by a script */
+    N[id].started = 1;
+    const char *ty = attr(id, "type"), *src = attr(id, "src");
+    int module = ty && !strcasecmp(ty, "module");
+    if (ty && *ty && !module && !ci_has(ty, "javascript") && !ci_has(ty, "ecmascript")) return;
+    struct buf b = { 0 };
+    if (!(src && *src)) { text_of(&b, id); if (!b.n) { free(b.p); return; } free(b.p); }
+    struct scr e = { id, 0, src && *src ? 1 : 2, module, 0, where == 0 ? nscr : 0, 0, 0 };
+    if (src && *src) { char u[URL_MAX]; url_resolve(page_url, src, u, sizeof u); e.url = strdup(u); }
+    if (where == 2 || (e.url && attr(id, "async"))) e.mode = 2;
+    else if (module || (e.url && attr(id, "defer"))) e.mode = 1;
+    struct scr *slot;
+    if (e.mode == 2) {
+        int i = 0;
+        while (i < MAXDYN && D[i].state && D[i].state != 4) i++;
+        if (i == MAXDYN) { free(e.url); jlog(2, "too many scripts at once"); return; }
+        slot = &D[i];
+    } else {
+        if (nscr == MAXSCR) { free(e.url); return; }
+        int at = where == 1 ? cur_scr + 1 : nscr;
+        memmove(S + at + 1, S + at, (nscr - at) * sizeof *S);
+        nscr++;
+        slot = &S[at];
+    }
+    *slot = e;
+    if (e.url) { slot->fid = fetch_queue(e.url, 1, 0); if (slot->fid < 0) slot->state = 3; }
+    idle = 0;
+    if (where == 2 && !e.url && ctx && !dead) exec_entry(slot);       /* inline: runs at once, as jQuery's globalEval etc. expect */
+}
+
+static void exec_entry(struct scr *e) {                    /* state 2 or 3: run it / report it, then done */
+    struct scr c = *e;
+    e->state = 4; e->body = 0; e->url = 0;
+    if (c.state == 2) {
+        struct buf b = { 0 };
+        const char *code = c.body;
+        size_t n = c.body ? strlen(c.body) : 0;
+        if (!code) { text_of(&b, c.node); code = b.p; n = b.n; }
+        char name[URL_MAX];
+        if (c.url) strlcpy(name, c.url, sizeof name);
+        else if (c.module) strlcpy(name, page_url, sizeof name);
+        else { const char *sl = strrchr(page_url, '/'); snprintf(name, sizeof name, "%s (inline script)", sl && sl[1] ? sl + 1 : page_url); }
+        cur_script = c.module ? 0 : c.node;
+        if (code) run_script(code, n, name, c.module);
+        cur_script = 0;
+        free(b.p);
+        if (c.url) fire(c.node, "load");
+    } else fire(c.node, "error");
+    free(c.body); free(c.url);
+}
+
+static void set_ready(int st, const char *ev) {
+    rstate = st;
+    if (ev) { JSValue a[3] = { JS_NewInt32(ctx, 1), str(ev), JS_UNDEFINED }; call(fn_dispatch, 3, a); }
+}
+
+static void run_scripts(void) {
+    if (!active || dead) return;
+    for (int i = 0; i < MAXDYN && !dead; i++) if ((D[i].state == 2 || D[i].state == 3) && cur_scr >= D[i].rel) exec_entry(&D[i]);
+    idle = 0;
+    while (!dead && active && cur_scr < nscr) {                /* parser-blocking scripts, in order */
+        struct scr *e = &S[cur_scr];
+        if (e->mode == 1 || e->state == 4) { cur_scr++; continue; }
+        if (e->state == 1) { idle = 1; return; }               /* still loading: later scripts wait */
+        if (e->state == 0) e->state = 2;
+        exec_entry(e);
         cur_scr++;
     }
-    if (cur_scr == nscr && !loaded && !dead && active) {
+    if (dead || !active) return;
+    if (rstate == 0) set_ready(1, "readystatechange");
+    for (; cur_def < nscr && !dead; ) {                        /* defer / module scripts */
+        struct scr *e = &S[cur_def];
+        if (e->mode != 1 || e->state == 4) { cur_def++; continue; }
+        if (e->state == 1) { idle = 1; return; }
+        if (e->state == 0) e->state = 2;
+        exec_entry(e);
+        cur_def++;
+    }
+    if (!loaded && !dead) {
         loaded = 1;
-        JSValue a1[3] = { JS_NewInt32(ctx, 1), str("DOMContentLoaded"), JS_UNDEFINED };
-        call(fn_dispatch, 3, a1);
+        fire(1, "DOMContentLoaded");
+    }
+    for (int i = 0; i < MAXDYN; i++) if (D[i].state == 1) { idle = 1; return; }     /* load waits for async scripts */
+    if (rstate < 2 && !dead) {
+        set_ready(2, "readystatechange");
         JSValue a2[3] = { JS_NewInt32(ctx, 0), str("load"), JS_UNDEFINED };
         call(fn_dispatch, 3, a2);
     }
+    idle = 1;
 }
 
 int js_pump(void) {
@@ -1136,7 +1516,7 @@ int js_pump(void) {
 }
 
 int js_timeout(void) {
-    if (active && !dead && !loaded && sload.state != 1) return 0;   /* scripts still to run */
+    if (active && !dead && !idle) return 0;                 /* scripts still to run */
     if (!active || dead || !nt) return -1;
     uint32_t now = uptime_ms();
     int best = 1 << 30;
@@ -1145,7 +1525,8 @@ int js_timeout(void) {
 }
 
 void js_reset(void) {
-    for (int i = 0; i < MAXF; i++) if (F[i].used) { if (!F[i].file) fetch_cancel(&F[i].f); F[i].used = 0; }
+    for (int i = 0; i < MAXF; i++) if (F[i].used) { if (!F[i].file) fetch_cancel(&F[i].f); F[i].used = 0; free(F[i].post); F[i].post = 0; }
+    for (int i = 0; i < nfq; i++) free(FQ[i].post);
     nfq = 0;
     if (ctx) {
         JS_FreeValue(ctx, fn_dispatch); JS_FreeValue(ctx, fn_fire); JS_FreeValue(ctx, fn_fetch);
@@ -1162,8 +1543,11 @@ void js_reset(void) {
     }
     free(N);
     N = 0; nn = ncap = 0;
-    free(sload.body);
-    memset(&sload, 0, sizeof sload);
+    free(RC); RC = 0; nrc = rc_set = 0;
+    for (int i = 0; i < nscr; i++) { free(S[i].body); free(S[i].url); }
+    for (int i = 0; i < MAXDYN; i++) { free(D[i].body); free(D[i].url); }
+    memset(S, 0, sizeof S); memset(D, 0, sizeof D);
+    cur_def = cur_script = rstate = idle = strikes = url_changed = depth = 0; scroll_req_y = -1; anchor_req[0] = 0;
     free(alert_text);
     alert_text = 0;
     nscr = cur_scr = nt = 0;
@@ -1182,3 +1566,10 @@ const char *js_nav(void) {
 }
 int js_focus_req(void) { int f = focus_req; focus_req = 0; return f; }
 char *js_alert(void) { char *a = alert_text; alert_text = 0; return a; }
+
+/* main.c tells scripts about the viewport (window.scrollY/innerWidth, getBoundingClientRect) and picks up what they ask for */
+void js_viewport(int scroll, int w, int h) { vscroll = scroll; vw = w; vh = h; }
+int js_scroll_req(void) { int y = scroll_req_y; scroll_req_y = -1; return y; }                 /* window.scrollTo: document y, or -1 */
+const char *js_anchor_req(void) { static char a[128]; if (!anchor_req[0]) return 0; strlcpy(a, anchor_req, sizeof a); anchor_req[0] = 0; return a; }   /* location.hash set: scroll to this anchor */
+const char *js_url_change(void) { static char u[URL_MAX]; if (!url_changed) return 0; url_changed = 0; strlcpy(u, page_url, sizeof u); return u; }   /* pushState/replaceState/hash: new address-bar URL */
+int js_submit_req(void) { int f = submit_req; submit_req = 0; return f; }                   /* form.submit(): the form node, consumed, or 0 */

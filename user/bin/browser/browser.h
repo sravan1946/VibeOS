@@ -151,5 +151,12 @@ int  js_focus_req(void);                          /* element.focus() target (con
 char *js_alert(void);                             /* pending alert() text (malloc'd, consumed), or NULL */
 int  js_log_count(void);                          /* console lines (oldest first) */
 const char *js_log_line(int i, int *kind);        /* kind: 0 log, 1 warn, 2 error */
-extern const char js_prelude[];                   /* dom_js.c: the DOM classes over the natives */
+void js_viewport(int scroll, int w, int h);       /* the window's scroll offset and viewport size (window.scrollY, innerWidth, rects) */
+int  js_scroll_req(void);                         /* window.scrollTo target (document y), consumed, or -1 */
+const char *js_anchor_req(void);                  /* location.hash was set: scroll to this anchor name (consumed), or NULL */
+const char *js_url_change(void);                  /* pushState/replaceState/hash changed the URL without a load (consumed), or NULL */
+void js_set_rect(int node, int x, int y, int w, int h);   /* layout -> JS: border box of a data-vjs element, document coords (getBoundingClientRect, offset*) */
+int  js_submit_req(void);                         /* form.submit() was called: the form's node (consumed), or 0 */
+extern const char js_prelude[];
+extern const char js_prelude2[];                  /* web_js.c: URL, fetch, XHR, storage, observers, Intl ... (runs after js_prelude) */                   /* dom_js.c: the DOM classes over the natives */
 void browser_status(int bad, const char *fmt, ...);   /* main.c: the status bar */
