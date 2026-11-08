@@ -37,6 +37,7 @@ struct node {
     char **an, **av; int na;      /* attributes */
     char *val; int sel;           /* value / selectedIndex (select: has_val means sel is set) */
     int parent, first, last, next, prev;
+    int shadow, host; uint8_t smode;   /* element: its shadow root (a type-11 node); shadow root: its host, mode 1 open / 2 closed */
 };
 static struct node *N;
 static int nn, ncap;
@@ -178,7 +179,38 @@ static int del_attr(int id, const char *name) {
     return 0;
 }
 
-static int connected(int id) { while (id && id != 1) id = N[id].parent; return id == 1; }
+/* shadow trees hang off their host (not the host's child list): "up" crosses from a shadow root to its host */
+static int up(int id) { int p = N[id].parent; return !p && N[id].type == 11 && N[id].host ? N[id].host : p; }
+static int connected(int id) { while (id && id != 1) id = up(id); return id == 1; }
+static int is_slot(int n) { return N[n].type == 1 && !strcmp(N[n].tag, "slot"); }
+static const char *slot_name(int n) { const char *v = N[n].type == 1 ? attr(n, "slot") : 0; return v ? v : ""; }
+/* the light children of `host` that slot `sl` (in host's shadow tree) receives: same slot= name, first slot of that name */
+static int first_slot(int id, const char *name) {
+    for (int c = N[id].first; c; c = N[c].next) {
+        if (N[c].type != 1) continue;
+        if (is_slot(c)) { const char *v = attr(c, "name"); if (!strcmp(v ? v : "", name)) return c; }
+        int r = first_slot(c, name);
+        if (r) return r;
+    }
+    return 0;
+}
+static int assigned(int sl, int *out, int max) {
+    int root = sl;
+    while (N[root].parent) root = N[root].parent;
+    int n = 0, host = N[root].type == 11 ? N[root].host : 0;
+    const char *nm = attr(sl, "name");
+    if (!host || first_slot(root, nm ? nm : "") != sl) return 0;
+    for (int c = N[host].first; c && n < max; c = N[c].next) if (!strcmp(slot_name(c), nm ? nm : "") && (N[c].type == 1 || N[c].type == 3)) out[n++] = c;
+    return n;
+}
+/* composed children (what is rendered): a host shows its shadow tree, a slot its assigned nodes (or its fallback content) */
+static int cchildren(int p, int *buf, int max) {
+    int n = 0;
+    if (N[p].type == 1 && N[p].shadow) { for (int c = N[N[p].shadow].first; c && n < max; c = N[c].next) buf[n++] = c; return n; }
+    if (is_slot(p)) { n = assigned(p, buf, max); if (n) return n; }
+    for (int c = N[p].first; c && n < max; c = N[c].next) buf[n++] = c;
+    return n;
+}
 /* every change to the connected tree is recorded (the node and its parent) for an incremental layout: dom_dirty() */
 #define MAXDIRTY 1024
 static int DI[MAXDIRTY], ndi, di_over;
@@ -186,7 +218,7 @@ static uint32_t gen;
 static void touch(int id) {
     if (!connected(id)) return;
     dirty = 1; gen++;
-    for (int k = 0, a = id; k < 2 && a; k++, a = N[a].parent) {
+    for (int k = 0, a = id; k < 2 && a; k++, a = up(a)) {
         int seen = 0;
         for (int i = ndi > 8 ? ndi - 8 : 0; i < ndi; i++) if (DI[i] == a) seen = 1;      /* cheap dedupe of repeats */
         if (seen) continue;
@@ -323,6 +355,12 @@ static int start_tag(const char *name, const char *ap, const char *ae) {
     int id = new_node(1, name);
     if (!id) return 0;
     parse_attrs_into(id, ap, ae);
+    const char *sm = !strcmp(name, "template") ? attr(id, "shadowrootmode") : 0;
+    if (sm && N[parent].type == 1 && !N[parent].shadow && parent == top() && P.n < 256) {   /* <template shadowrootmode>: the parent's shadow root */
+        int sr = new_node(11, "template");
+        if (sr) { N[sr].host = parent; N[parent].shadow = sr; N[sr].smode = !strcmp(sm, "closed") ? 2 : 1; P.st[P.n++] = sr; }
+        return 0;
+    }
     insert_before(parent, id, 0);
     if (!in_list(name, VOIDS) && !in_list(name, RAWS) && parent == top() && P.n < 256) P.st[P.n++] = id;
     return id;
@@ -435,6 +473,7 @@ static void text_of(struct buf *b, int id) {
 
 static struct { int on, want, i; } SEL;                  /* serialising a <select> whose choice a script/the user made */
 
+static int shadow_scope;                                  /* host id while serialising a shadow tree that holds a <style> */
 static void ser(struct buf *b, int id, int lay) {
     struct node *x = &N[id];
     if (x->type == 8) { if (!lay) { puts_(b, "<!--"); puts_(b, x->text); puts_(b, "-->"); } return; }
@@ -445,11 +484,12 @@ static void ser(struct buf *b, int id, int lay) {
         return;
     }
     if (x->type != 1) { for (int c = x->first; c; c = N[c].next) ser(b, c, lay); return; }
-    if (lay && (!strcmp(x->tag, "script") || !strcmp(x->tag, "noscript"))) return;   /* scripting is on: <noscript> shows nothing */
+    if (lay && (!strcmp(x->tag, "script") || !strcmp(x->tag, "noscript") || !strcmp(x->tag, "template"))) return;   /* scripting is on: <noscript> shows nothing */
     char t[24];
     int input = !strcmp(x->tag, "input"), opt = !strcmp(x->tag, "option"), area = !strcmp(x->tag, "textarea");
     puts_(b, "<"); puts_(b, x->tag);
     if (lay) { snprintf(t, sizeof t, " data-vjs=\"%d\"", id); puts_(b, t); }
+    if (lay && shadow_scope && !strcmp(x->tag, "style")) { snprintf(t, sizeof t, " data-vscope=\"%d\"", shadow_scope); puts_(b, t); }
     for (int i = 0; i < x->na; i++) {
         const char *n = x->an[i];
         if (lay && ((input && x->has_val && !strcmp(n, "value")) || (input && x->has_chk && !strcmp(n, "checked")) ||
@@ -466,6 +506,15 @@ static void ser(struct buf *b, int id, int lay) {
     int sel = !strcmp(x->tag, "select") && x->has_val;
     if (sel) { SEL.on = 1; SEL.want = x->sel; SEL.i = 0; }
     if (lay && area && x->has_val) esc(b, x->val ? x->val : "", 0);
+    else if (lay && (x->shadow || is_slot(id))) {
+        int kids[512], n = cchildren(id, kids, 512);
+        if (x->shadow) {                                   /* a style in the shadow tree is scoped to the host (data-vscope = host id) */
+            snprintf(t, sizeof t, "%d", id);
+            for (int i = 0; i < n; i++) if (N[kids[i]].type == 1 && !strcmp(N[kids[i]].tag, "style")) shadow_scope = id;
+        }
+        for (int i = 0; i < n; i++) ser(b, kids[i], lay);
+        shadow_scope = 0;
+    }
     else for (int c = x->first; c; c = N[c].next) ser(b, c, lay);
     if (sel) SEL.on = 0;
     puts_(b, "</"); puts_(b, x->tag); puts_(b, ">");
@@ -926,6 +975,28 @@ NATIVE(n_sync_get) {
 NATIVE(n_ua) { return str(BROWSER_UA); }
 NATIVE(n_cookie_get) { char b[4096]; cookie_get(page_url, b, sizeof b); return str(b); }
 NATIVE(n_cookie_set) { CSTR(v, 0); cookie_set(page_url, v); JS_FreeCString(c, v); return JS_UNDEFINED; }
+NATIVE(n_attach_shadow) {
+    int h = ARGID(0), mode = 1;
+    JS_ToInt32(c, &mode, argv[1]);
+    if (!h || N[h].type != 1) return JS_NewInt32(c, 0);
+    if (N[h].shadow) return JS_ThrowTypeError(c, "NotSupportedError: this element already has a shadow root");
+    int sr = new_node(11, "template");
+    if (!sr) return JS_ThrowInternalError(c, "too many DOM nodes");
+    N[sr].host = h; N[sr].smode = mode; N[h].shadow = sr;
+    touch(h);
+    return JS_NewInt32(c, sr);
+}
+NATIVE(n_shadow) { int h = ARGID(0); return JS_NewInt32(c, h && N[h].shadow ? N[h].shadow : 0); }
+NATIVE(n_host) { int s_ = ARGID(0); return JS_NewInt32(c, s_ && N[s_].type == 11 ? N[s_].host : 0); }
+NATIVE(n_smode) { int s_ = ARGID(0); return JS_NewInt32(c, s_ ? N[s_].smode : 0); }
+NATIVE(n_assigned) {
+    int sl = ARGID(0), buf[512];
+    JSValue a = JS_NewArray(c);
+    int n = sl && is_slot(sl) ? assigned(sl, buf, 512) : 0;
+    for (int i = 0; i < n; i++) JS_SetPropertyUint32(c, a, i, JS_NewInt32(c, buf[i]));
+    return a;
+}
+NATIVE(n_connected) { int id = ARGID(0); return JS_NewBool(c, id && connected(id)); }
 NATIVE(n_cur_script) { return JS_NewInt32(c, cur_script); }
 NATIVE(n_ready) { return JS_NewInt32(c, rstate); }
 NATIVE(n_set_url) {                                        /* pushState / replaceState / #hash: the page URL changes, no load */
@@ -1089,7 +1160,7 @@ static const JSCFunctionListEntry NATIVES[] = {
     JS_CFUNC_DEF("createComment", 1, n_create_comment), JS_CFUNC_DEF("docwrite", 1, n_docwrite), JS_CFUNC_DEF("curScript", 0, n_cur_script),
     JS_CFUNC_DEF("ready", 0, n_ready), JS_CFUNC_DEF("setUrl", 2, n_set_url), JS_CFUNC_DEF("scrollTo", 2, n_scroll_to),
     JS_CFUNC_DEF("view", 0, n_view), JS_CFUNC_DEF("rect", 1, n_rect), JS_CFUNC_DEF("media", 1, n_media),
-    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
+    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
 };
 
 /* ---------- running JS ---------- */
@@ -1179,9 +1250,19 @@ static void call(JSValue fn, int argc, JSValue *argv) {
     leave(r);
 }
 
+/* import.meta.url (webpack's "automatic publicPath", relative lookups) = the module's own URL */
+static void set_meta(JSContext *c, JSValueConst compiled, const char *name) {
+    if (JS_VALUE_GET_TAG(compiled) != JS_TAG_MODULE) return;
+    JSValue meta = JS_GetImportMeta(c, JS_VALUE_GET_PTR(compiled));
+    if (!JS_IsException(meta)) { JS_SetPropertyStr(c, meta, "url", JS_NewString(c, name)); JS_SetPropertyStr(c, meta, "main", JS_FALSE); }
+    JS_FreeValue(c, meta);
+}
 static void run_script(const char *src, size_t n, const char *name, int module) {
     enter();
-    leave(JS_Eval(ctx, src, n, name, module ? JS_EVAL_TYPE_MODULE : JS_EVAL_TYPE_GLOBAL));
+    if (!module) { leave(JS_Eval(ctx, src, n, name, JS_EVAL_TYPE_GLOBAL)); return; }
+    JSValue f = JS_Eval(ctx, src, n, name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (!JS_IsException(f)) { set_meta(ctx, f, name); f = JS_EvalFunction(ctx, f); }
+    leave(f);
 }
 
 int js_event(int node, const char *type, const struct gui_event *k, int x, int y) {
@@ -1488,6 +1569,7 @@ static JSModuleDef *mod_load(JSContext *c, const char *name, void *op) {
     JSValue v = JS_Eval(c, b, l, name, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
     free(b);
     if (JS_IsException(v)) return 0;
+    set_meta(c, v, name);
     JSModuleDef *m = JS_VALUE_GET_PTR(v);
     JS_FreeValue(c, v);
     return m;
@@ -1679,9 +1761,34 @@ const char *js_url_change(void) { static char u[URL_MAX]; if (!url_changed) retu
 int js_submit_req(void) { int f = submit_req; submit_req = 0; return f; }                   /* form.submit(): the form node, consumed, or 0 */
 
 /* the tree for layout (browser.h): read-only accessors and the changes since the last dom_dirty() */
-int dom_first(int n) { return n > 0 && n < nn ? N[n].first : 0; }
-int dom_next(int n) { return n > 0 && n < nn ? N[n].next : 0; }
-int dom_parent(int n) { return n > 0 && n < nn ? N[n].parent : 0; }
+/* the composed tree (shadow roots and slots resolved): what layout draws. Light children of a host that no slot takes are not in it. */
+static int cparent(int n) {
+    int p = N[n].parent;
+    if (!p) return 0;
+    if (N[p].type == 11) return N[p].host;                          /* child of a shadow root: the host is its parent */
+    if (N[p].type == 1 && N[p].shadow) {                            /* a light child of a host: the slot that takes it, else not rendered */
+        for (int sl = first_slot(N[p].shadow, slot_name(n)); sl; ) { int buf[512], k = assigned(sl, buf, 512); for (int i = 0; i < k; i++) if (buf[i] == n) return sl; break; }
+        return 0;
+    }
+    return p;
+}
+int dom_parent(int n) { return n > 0 && n < nn ? cparent(n) : 0; }
+int dom_first(int n) {
+    if (n <= 0 || n >= nn) return 0;
+    if (N[n].type == 1 && (N[n].shadow || is_slot(n))) { int buf[512]; return cchildren(n, buf, 512) ? buf[0] : 0; }
+    return N[n].first;
+}
+int dom_next(int n) {
+    if (n <= 0 || n >= nn) return 0;
+    int p = N[n].parent;
+    if (p && N[p].type == 1 && !N[p].shadow && !is_slot(p) && !(N[cparent(n)].type == 1 && is_slot(cparent(n)))) return N[n].next;
+    int q = cparent(n), buf[512];
+    if (!q) return 0;
+    int k = cchildren(q, buf, 512);
+    for (int i = 0; i + 1 < k; i++) if (buf[i] == n) return buf[i + 1];
+    return 0;
+}
+int dom_shadow_host(int n) { while (n && N[n].parent) n = N[n].parent; return n > 0 && n < nn && N[n].type == 11 ? N[n].host : 0; }   /* the host whose shadow tree holds n, or 0 */
 int dom_type(int n) { return n > 0 && n < nn ? N[n].type : 0; }
 const char *dom_tag(int n) { return n > 0 && n < nn ? N[n].tag : ""; }
 const char *dom_text(int n) { return n > 0 && n < nn && N[n].text ? N[n].text : ""; }
@@ -1693,3 +1800,19 @@ int dom_dirty(int *ids, int max) {                     /* node ids whose content
     ndi = di_over = 0;
     return r;
 }
+
+/* attribute enumeration and live control state for layout */
+int dom_nattr(int n) { return n > 0 && n < nn && N[n].type == 1 ? N[n].na : 0; }
+int dom_attr_at(int n, int i, const char **name, const char **value) {
+    if (n <= 0 || n >= nn || i < 0 || i >= N[n].na) return 0;
+    *name = N[n].an[i]; *value = N[n].av[i];
+    return 1;
+}
+const char *dom_ctl_value(int n) {                       /* current value of an input/textarea/select (script or user changes included); valid until the next call */
+    static char *v;
+    free(v);
+    v = n > 0 && n < nn ? value_of(n) : 0;
+    return v ? v : "";
+}
+int dom_ctl_checked(int n) { return n > 0 && n < nn && (N[n].has_chk ? N[n].chk : attr(n, "checked") != 0); }
+int dom_ctl_sel(int n) { return n > 0 && n < nn ? sel_index(n) : -1; }       /* <select>: selected option index */

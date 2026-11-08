@@ -295,9 +295,14 @@ const char *js_anchor_req(void);                  /* location.hash was set: scro
 const char *js_url_change(void);                  /* pushState/replaceState/hash changed the URL without a load (consumed), or NULL */
 void js_set_rect(int node, int x, int y, int w, int h);   /* layout -> JS: border box of a data-vjs element, document coords (getBoundingClientRect, offset*) */
 /* the JS node tree for layout (ids = data-vjs ids; 1 = document, 2 = <html>; types 1 element, 3 text, 8 comment, 9 document, 11 fragment) */
-int  dom_first(int n), dom_next(int n), dom_parent(int n), dom_type(int n);
+int  dom_first(int n), dom_next(int n), dom_parent(int n), dom_type(int n);   /* the COMPOSED tree: a shadow host's children are its shadow root's, a <slot>'s are the nodes it takes (or its fallback) */
+int  dom_shadow_host(int n);                      /* the host whose shadow tree contains n (for scoping <style> in it), or 0 */
 const char *dom_tag(int n), *dom_text(int n), *dom_attr(int n, const char *name);   /* attr: NULL if absent */
 uint32_t dom_gen(void);                           /* bumped by every change to the connected tree */
+int  dom_nattr(int n);                            /* number of attributes of an element */
+int  dom_attr_at(int n, int i, const char **name, const char **value);   /* attribute i (names lower case): 1 = ok */
+const char *dom_ctl_value(int n);                 /* live value of an input/textarea/select; valid until the next call */
+int  dom_ctl_checked(int n), dom_ctl_sel(int n);  /* checkbox/radio state; <select> selected index */
 int  dom_dirty(int *ids, int max);                /* ids whose attributes/text/children changed since the last call (each also marks its parent); -1 = overflow, assume all */
 int  js_submit_req(void);                         /* form.submit() was called: the form's node (consumed), or 0 */
 extern const char js_prelude[];
