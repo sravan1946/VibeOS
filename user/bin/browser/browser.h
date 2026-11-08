@@ -39,25 +39,78 @@ void fetch_cancel(struct fetch *f);
 void fetch_reap(void);                            /* collect killed children */
 void fetch_finish(struct fetch *f, struct response *r);   /* consumes f->buf */
 
-/* ---- css.c: <style>/style="" -> per-element property set ---- */
+/* ---- css.c: stylesheets -> computed style. Two entry points:
+ *  - css_compute(): the DOM-tree API (LAYOUT). Fills EVERY property of `struct cprops` with its computed value
+ *    (inheritance, initial values, em/rem/vw resolved, var(), user-agent defaults, ::before/::after).
+ *  - css_cascade(): legacy streaming entry (html.c today): only what the author sheets declare, in the old encoding. ---- */
 enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB, P_PL, P_DISPLAY, P_DECO,
        P_BWT, P_BWR, P_BWB, P_BWL, P_BCT, P_BCR, P_BCB, P_BCL, P_WIDTH, P_MAXW, P_HEIGHT, P_FSIZE, P_MONO, P_ITALIC, P_LIST,
-       P_VALIGN, P_COLLAPSE, P_SPACING, P_N };   /* the last three are for tables; P_N must stay <= 32 (cprops.set is a bitmask) */
-enum { K_PX, K_PCT, K_AUTO };                    /* value kinds; colours are K_PX with the colour in v (0 = transparent) */
-enum { D_NONE = 1, D_BLOCK, D_INLINE };
-struct cprops { uint32_t set; int v[P_N]; uint8_t k[P_N]; };
-struct el { char name[16], id[32], cls[64]; int tag, js; char at[80]; short nkids; uint8_t first; };   /* one open element, for selector matching; js: DOM node id;
+       P_VALIGN, P_COLLAPSE, P_SPACING,   /* 0..31: the legacy ones (cprops.set is a bitmask over these only) */
+       P_MINW, P_MINH, P_MAXH, P_TOP, P_RIGHT, P_BOTTOM, P_LEFT,       /* inset: px/%/auto */
+       P_POSITION, P_FLOAT, P_CLEAR, P_ZINDEX, P_OVX, P_OVY, P_BOXSZ, P_VISIB, P_OPACITY, P_DIR,
+       P_RTL, P_RTR, P_RBR, P_RBL,                                     /* border-radius corners (px or %) */
+       P_BSTT, P_BSTR, P_BSTB, P_BSTL,                                 /* border styles BS_* */
+       P_BGIMG, P_BGREP, P_BGPX, P_BGPY, P_BGSW, P_BGSH,
+       P_FLEXDIR, P_FLEXWRAP, P_JUSTC, P_ALIGNI, P_ALIGNC, P_ALIGNS, P_JUSTI, P_JUSTS, P_FGROW, P_FSHRINK, P_FBASIS, P_ORDER, P_RGAP, P_CGAP,
+       P_GCOLS, P_GROWS, P_GFLOW, P_GACOLS, P_GAROWS, P_GCS, P_GCE, P_GRS, P_GRE, P_GAREAS, P_GAREA,
+       P_WS, P_TT, P_LH, P_LS, P_WSP, P_TIND, P_TOVF, P_WBRK, P_FWEIGHT, P_FAMILY, P_VAOFF, P_SPACINGY,
+       P_LISTT, P_LISTP, P_TBLAY, P_CURSOR, P_PEV, P_CONTENT, P_OBJFIT, P_ASPECT,
+       P_N };
+/* value kinds. K_PX also carries every keyword/enum/colour (value in v). Lengths: K_PX px, K_PCT percent*100, K_CALC compiled
+ * calc()/min()/max()/clamp() with a percentage inside (resolve with css_len()). Never read p->v of a length directly: css_len(). */
+enum { K_PX, K_PCT, K_AUTO, K_CALC, K_NUM /* number*100 (line-height factor) */, K_STR /* v = css_str() id */, K_NONE, K_FIT, K_MINC, K_MAXC,
+       K_COVER, K_CONTAIN, K_SPAN /* grid line span */, K_GRAD /* gradient text in css_str(v) */,
+       K_INHERIT, K_INITIAL, K_UNSET, K_EM, K_REM, K_CALCS, K_RAW, K_CUR };   /* the last ones only exist inside the engine */
+enum { D_NONE = 1, D_BLOCK, D_INLINE, D_INLINE_BLOCK, D_FLEX, D_INLINE_FLEX, D_GRID, D_INLINE_GRID, D_TABLE, D_INLINE_TABLE, D_TABLE_ROW,
+       D_TABLE_CELL, D_TABLE_ROWGROUP, D_TABLE_HEADER, D_TABLE_FOOTER, D_TABLE_COL, D_TABLE_COLGROUP, D_TABLE_CAPTION, D_LIST_ITEM, D_CONTENTS };
+enum { POS_STATIC, POS_RELATIVE, POS_ABSOLUTE, POS_FIXED, POS_STICKY };
+enum { FLT_NONE, FLT_LEFT, FLT_RIGHT };            /* P_FLOAT; P_CLEAR: 0 none, 1 left, 2 right, 3 both */
+enum { OV_VISIBLE, OV_HIDDEN, OV_SCROLL, OV_AUTO, OV_CLIP };
+enum { BS_NONE, BS_SOLID, BS_DASHED, BS_DOTTED, BS_DOUBLE, BS_GROOVE, BS_RIDGE, BS_INSET, BS_OUTSET };
+enum { AL_NORMAL, AL_START, AL_END, AL_CENTER, AL_BETWEEN, AL_AROUND, AL_EVENLY, AL_STRETCH, AL_BASELINE };   /* justify-/align-* */
+enum { WS_NORMAL, WS_NOWRAP, WS_PRE, WS_PRE_WRAP, WS_PRE_LINE, WS_BREAK_SPACES };
+enum { TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY };  /* P_ALIGN */
+enum { VA_BASELINE, VA_TOP, VA_MIDDLE, VA_BOTTOM, VA_TEXT_TOP, VA_TEXT_BOTTOM, VA_SUB, VA_SUPER };   /* P_VALIGN (+ P_VAOFF px for lengths) */
+enum { FAM_SANS, FAM_SERIF, FAM_MONO };
+enum { LT_DISC, LT_CIRCLE, LT_SQUARE, LT_DECIMAL, LT_ZERO, LT_LALPHA, LT_UALPHA, LT_LROMAN, LT_UROMAN, LT_LGREEK, LT_NONE };
+enum { REP_REPEAT, REP_X, REP_Y, REP_NONE };
+enum { DECO_UNDERLINE = 1, DECO_LINETHROUGH = 2, DECO_OVERLINE = 4 };
+enum { PE_NONE, PE_BEFORE, PE_AFTER };
+enum { CS_HOVER = 1, CS_FOCUS = 2, CS_ACTIVE = 4, CS_CHECKED = 8, CS_DISABLED = 16, CS_LINK = 32, CS_VISITED = 64, CS_FOCUSWITHIN = 128 };
+/* cprops.set (legacy css_cascade only): bit p set = property p declared */
+struct cprops { uint32_t set; int v[P_N]; uint8_t k[P_N]; uint32_t bloom[2]; int vars; };   /* bloom/vars: ancestor filter + custom properties, carried to children */
+struct el { char name[16], id[32], cls[64]; int tag, js; char at[240]; short nkids; uint8_t first; };   /* legacy: one open element, for selector matching; js: DOM node id;
                                                   at: "\1name\2value" pairs (only filled when css_attrs()); first: no earlier sibling element */
+/* The matcher sees the document through these callbacks; nodes are small ints, 0 = none. Elements only (no text nodes). */
+struct css_dom {
+    int (*parent)(int n);                         /* parent element, 0 at the root (<html>) */
+    int (*prev)(int n), (*next)(int n);           /* previous / next sibling ELEMENT */
+    int (*first)(int n);                          /* first child ELEMENT */
+    const char *(*tag)(int n);                    /* lowercase local name */
+    const char *(*attr)(int n, const char *name); /* value or NULL if absent ("id", "class", "style" too; name is lowercase) */
+    int (*state)(int n);                          /* CS_* bits */
+    int (*has_text)(int n);                       /* 1 if n has a non-empty text child (for :empty) */
+};
+void css_dom_set(const struct css_dom *d);        /* before css_compute / css_match_node */
+void css_initial(struct cprops *out);             /* the initial values (root's "parent") */
+/* node's computed style in *out. parent = the parent element's computed style (NULL for <html>). pe = PE_BEFORE/PE_AFTER computes the pseudo-element
+ * (parent = the element's own style); returns 1 if it generates a box (content other than none; out->v[P_CONTENT] is css_str() text). */
+int  css_compute(int node, int pe, const struct cprops *parent, struct cprops *out);
+int  css_len(const struct cprops *p, int prop, int base);      /* a length property in px: px, % of base, calc(); auto/none -> 0 */
+const char *css_str(int id);                      /* text of a K_STR value (grid track lists, content, url of background-image) */
+int  css_match_node(const char *sel, int node);   /* matches()/closest()/querySelector for the css_dom tree: 1/0, -1 = unparsable */
+void css_base(const char *base);                  /* base URL for url() in style="" attributes */
+void css_viewport(int w);                         /* window width for @media and vw units */
+void css_viewport_size(int w, int h);             /* ... and height */
 void css_reset(void);
-void css_add(const char *s, size_t n);           /* append a stylesheet */
-void css_add_from(const char *s, size_t n, const char *base);   /* same; base resolves @import (0 = none) */
-void css_viewport(int w);                        /* window width for @media (min-width) and friends */
+void css_add(const char *s, size_t n);           /* append a stylesheet (author origin, in document order) */
+void css_add_from(const char *s, size_t n, const char *base);   /* same; base resolves @import and url() (0 = none) */
 int  css_media(const char *q);                   /* media query list (a media="" attribute): 1 = applies on screen */
-int  css_attrs(void);                            /* some rule uses an attribute selector: elements need el.at */
+int  css_attrs(void);                            /* legacy: some rule uses an attribute selector: elements need el.at */
 int  css_any(void);
-void css_cascade(const struct el *st, int n, const char *style, struct cprops *out);   /* st[n-1] is the subject */
-int  css_color(const char *s, color_t *out, int legacy);   /* names, #rgb, #rrggbb, rgb()/rgba(); legacy: bare hex too */
-int  css_match(const char *sel, const struct el *st, int n);   /* selector list vs st[n-1]: 1/0, -1 = nothing parsable */
+void css_cascade(const struct el *st, int n, const char *style, struct cprops *out);   /* legacy; st[n-1] is the subject */
+int  css_color(const char *s, color_t *out, int legacy);   /* any CSS colour (alpha in the top byte; transparent = 0); legacy: bare hex too */
+int  css_match(const char *sel, const struct el *st, int n);   /* legacy: selector list vs st[n-1]: 1/0, -1 = nothing parsable */
 
 /* ---- sheet.c: external stylesheets (<link rel=stylesheet>, @import): one fetch each, kept until the next page ---- */
 const char *sheet_get(const char *url, size_t *len);   /* the text once loaded; NULL while loading or failed (queues on first use) */
