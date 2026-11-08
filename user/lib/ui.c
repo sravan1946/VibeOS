@@ -1085,7 +1085,7 @@ static void fade_end(struct ui *ui, int a) {
     struct canvas *c = ui->c;
     for (int j = 0; j < fr.h; j++) {
         uint32_t *o = c->px + (fr.y + j) * c->stride + fr.x, *u = fbuf + j * fr.w;
-        for (int i = 0; i < fr.w; i++) o[i] = mix(u[i], o[i], a);
+        for (int i = 0; i < fr.w; i++) if (o[i] != u[i]) o[i] = mix(u[i], o[i], a);   /* mix(p, p) is p */
     }
 }
 #define OV_PAD (3 * (ELEV[E2].blur / 2) + ELEV[E2].dy)          /* an E2 shadow's reach */

@@ -19,6 +19,29 @@ uint32_t rtc_now(void);
 
 static struct canvas bb, wall;          /* back buffer, wallpaper */
 static int SW, SH;
+/* make KEXTRA=-DGFXSTAT: per-phase rdtsc spans of compose(), one summary line on serial per second of activity (tools/gfxbench.py) */
+#ifdef GFXSTAT
+static uint64_t st_ph[6], st_sub[4], st_t0, st_c0; static uint32_t st_n, st_px, st_a;
+static inline uint64_t tsc(void) { uint32_t l, h; __asm__ volatile("rdtsc" : "=a"(l), "=d"(h)); return (uint64_t)h << 32 | l; }
+#define STS(i, t0) do { st_sub[i] += tsc() - (t0); } while (0)
+#define ST(i) do { uint64_t t_ = tsc(); st_ph[i] += t_ - st_l; st_l = t_; } while (0)
+static void st_dump(void) {
+    uint64_t now = tsc(), dc = now - st_c0, dt = ticks_ms - st_t0;
+    if (!st_n || dt < 1000) return;
+    uint64_t tot = 0;
+    for (int i = 0; i < 6; i++) tot += st_ph[i];
+    kprintf("GFXSTAT frames=%u/%ums busy=%u.%u%% kcyc/frame=%u [wall=%u win=%u (shadow=%u client=%u) ovl=%u cur=%u pres=%u] px/frame=%u anim=%u\n", st_n, (uint32_t)dt,
+            (uint32_t)(tot * 1000 / dc / 10), (uint32_t)(tot * 1000 / dc % 10), (uint32_t)(tot / st_n / 1000), (uint32_t)(st_ph[0] / st_n / 1000),
+            (uint32_t)(st_ph[1] / st_n / 1000), (uint32_t)(st_sub[0] / st_n / 1000), (uint32_t)(st_sub[1] / st_n / 1000), (uint32_t)(st_ph[2] / st_n / 1000),
+            (uint32_t)(st_ph[3] / st_n / 1000), (uint32_t)(st_ph[4] / st_n / 1000), st_px / st_n, st_a);
+    for (int i = 0; i < 6; i++) st_ph[i] = 0;
+    for (int i = 0; i < 4; i++) st_sub[i] = 0;
+    st_n = st_px = st_a = 0; st_t0 = ticks_ms; st_c0 = now;
+}
+#else
+#define ST(i) ((void)0)
+#define STS(i, t0) ((void)0)
+#endif
 static struct window *wins, *focused;
 static int next_id = 1;
 static bool running;
@@ -244,7 +267,7 @@ static bool fade_begin(struct canvas *c, struct rect r, int pad) {
 static void fade_end(int a) {
     for (int y = fade_r.y; y < fade_r.y + fade_r.h; y++) {
         uint32_t *o = &bb.px[y * SW], *u = &under[y * SW];
-        for (int x = fade_r.x; x < fade_r.x + fade_r.w; x++) o[x] = mix(u[x], o[x], a);
+        for (int x = fade_r.x; x < fade_r.x + fade_r.w; x++) if (o[x] != u[x]) o[x] = mix(u[x], o[x], a);   /* mix(p, p) is p */
     }
 }
 
@@ -283,7 +306,11 @@ static void draw_frame(struct canvas *c, struct window *w) {
     gfx_rrect_fill(c, r.x, r.y, r.w, WM_TITLE_H, RADII(rad, rad, 0, 0), foc ? TH.window : TH.base);
     if (rad)   /* anti-aliased bottom corners in the client's own corner colour; the client blit leaves them out */
         gfx_rrect_fill(c, r.x, r.y + r.h - rad, r.w, rad, RADII(0, 0, rad, rad), 0xFF000000u | w->buf[(w->h - 1) * w->canvas.stride]);
+#ifdef GFXSTAT
+    uint64_t b0_ = tsc();
+#endif
     blit_client(c, w, rad);
+    STS(1, b0_);
     gfx_ring_out(c, r.x, r.y, r.w, r.h, rad, TH.ring);
     if (foc && ALPHA(TH.hilite)) gfx_hline(c, r.x + rad, r.y, r.w - 2 * rad, TH.hilite);
     icon(c, w->icon, ICON_SM, r.x + SP_4, r.y + (WM_TITLE_H - ICON_SM) / 2, TH.text2);
@@ -315,12 +342,19 @@ static void draw_window(struct canvas *c, struct window *w) {
         int x0 = imax(c->cx0, w->x), x1 = imin(c->cx1, w->x + w->w), y0 = imax(c->cy0, w->y), y1 = imin(c->cy1, w->y + w->h);
         for (int y = y0; y < y1; y++) {
             uint32_t *d = &c->px[y * c->stride], *s = &w->buf[(y - w->y) * w->canvas.stride - w->x];
-            for (int x = x0; x < x1; x++) if (s[x]) d[x] = blend(d[x], s[x]);
+            for (int x = x0; x < x1; x++) {
+                if (!s[x]) { while (x + 4 < x1 && !(s[x + 1] | s[x + 2] | s[x + 3] | s[x + 4])) x += 4; continue; }   /* mostly empty: hop over 4 at once */
+                d[x] = blend(d[x], s[x]);
+            }
         }
         return;
     }
     int lv = w == focused ? E3 : E2;
+#ifdef GFXSTAT
+    uint64_t s0_ = tsc();
+#endif
     gfx_elev(c, r.x, r.y, r.w, r.h, w->flags & WIN_FLAG_FRAMELESS ? 0 : win_r(w), lv, TH.elev[lv]);
+    STS(0, s0_);
     if (w->flags & WIN_FLAG_FRAMELESS) { gfx_blit(c, w->x, w->y, w->buf, w->w, w->h, w->canvas.stride); return; }
     draw_frame(c, w);
 }
@@ -337,6 +371,8 @@ static void draw_window_open(struct canvas *c, struct window *w, int e) {
         /* shrink in place about the centre: rows and columns are walked outward, so every source pixel (further out)
          * is read before it is overwritten; sources outside R are the backdrop */
         int maxk = imax(cy - R.y, R.y + R.h - cy) + 1;
+        static int16_t cmap[8192];                       /* cx + (x - cx) * 1024 / s per column, once instead of per pixel */
+        for (int x = R.x; x < R.x + R.w; x++) cmap[x] = cx + (x - cx) * 1024 / s;
         for (int k = 0; k < maxk; k++)
             for (int side = 0; side < 2; side++) {
                 int y = side ? cy + k : cy - 1 - k;
@@ -344,8 +380,8 @@ static void draw_window_open(struct canvas *c, struct window *w, int e) {
                 int sy = cy + (y - cy) * 1024 / s;
                 bool in = sy >= R.y && sy < R.y + R.h;
                 uint32_t *d = &bb.px[y * SW], *u = &under[y * SW], *src = &bb.px[(in ? sy : y) * SW];
-                for (int x = imax(cx, R.x); x < R.x + R.w; x++) { int sx = cx + (x - cx) * 1024 / s; d[x] = in && sx < R.x + R.w ? src[sx] : u[x]; }
-                for (int x = imin(cx - 1, R.x + R.w - 1); x >= R.x; x--) { int sx = cx + (x - cx) * 1024 / s; d[x] = in && sx >= R.x ? src[sx] : u[x]; }
+                for (int x = imax(cx, R.x); x < R.x + R.w; x++) { int sx = cmap[x]; d[x] = in && sx < R.x + R.w ? src[sx] : u[x]; }
+                for (int x = imin(cx - 1, R.x + R.w - 1); x >= R.x; x--) { int sx = cmap[x]; d[x] = in && sx >= R.x ? src[sx] : u[x]; }
             }
     }
     fade_end(e);
@@ -388,11 +424,14 @@ static void draw_ghost(struct canvas *c) {
     struct rect r = gh.r;
     int cx = r.x + r.w / 2, cy = r.y + r.h / 2, w = r.w * s / 1024, h = r.h * s / 1024, x = cx - w / 2, y = cy - h / 2;
     gfx_elev(c, x, y, w, h, gh.rad, gh.lv, TH.elev[gh.lv] * a / 256);
+    int xa = imax(x, c->cx0), xb = imin(x + w, c->cx1);
+    static int16_t cmap[8192];                           /* source column per screen column, once per frame */
+    for (int xx = xa; xx < xb; xx++) cmap[xx] = imin(r.w - 1, imax(0, cx + (xx - cx) * 1024 / s - r.x));
     for (int yy = imax(y, c->cy0); yy < imin(y + h, c->cy1); yy++) {
         const uint32_t *src = &gh.px[imax(0, imin(r.h - 1, cy + (yy - cy) * 1024 / s - r.y)) * r.w];
         uint32_t *o = &c->px[yy * c->stride];
-        for (int xx = imax(x, c->cx0); xx < imin(x + w, c->cx1); xx++) {
-            uint32_t p = src[imin(r.w - 1, imax(0, cx + (xx - cx) * 1024 / s - r.x))];
+        for (int xx = xa; xx < xb; xx++) {
+            uint32_t p = src[cmap[xx]];
             if (p) o[xx] = mix(o[xx], p, a);
         }
     }
@@ -1088,6 +1127,8 @@ static void draw_switcher(struct canvas *c) {
 
 static bool no_present;
 
+
+
 /* returns true while something is animating */
 static bool compose(void) {
     uint32_t f = irq_save();
@@ -1095,12 +1136,37 @@ static bool compose(void) {
     dirty.w = 0;
     irq_restore(f);
     if (!d.w) return false;
+#ifdef GFXSTAT
+    uint64_t st_l = tsc();
+    if (!st_n) { st_t0 = ticks_ms; st_c0 = st_l; }
+    st_n++; st_px += d.w * d.h;
+#endif
     animating = false;
     struct canvas c = bb;
     canvas_clip(&c, d.x, d.y, d.w, d.h);
-    for (int y = d.y; y < d.y + d.h; y++)
-        memcpy(&bb.px[y * SW + d.x], &wall.px[y * SW + d.x], d.w * 4);
+    /* occlusion: a settled window's client pixels (the rows above its rounded bottom corners) overwrite whatever is under them,
+     * so the wallpaper isn't copied there, and if one of them covers all of d, nothing below it is drawn at all */
+    struct rect hid = { 0, 0, 0, 0 };
+    struct window *cover = 0;
+    if (!snap_zone)
+        for (struct window *w = wins; w; w = w->next) {
+            if (!shown(w) || (w->flags & (WIN_FLAG_FRAMELESS | WIN_FLAG_DESKTOP)) || ticks_ms - w->born < (uint32_t)(theme_anim ? D_SLOW : D_REDUCED)) continue;
+            int x0 = imax(d.x, w->x), y0 = imax(d.y, w->y), x1 = imin(d.x + d.w, w->x + w->w), y1 = imin(d.y + d.h, w->y + w->h - win_r(w));
+            if (x0 >= x1 || y0 >= y1) continue;
+            if ((x1 - x0) * (y1 - y0) > hid.w * hid.h) hid = (struct rect){ x0, y0, x1 - x0, y1 - y0 };
+            if (x0 == d.x && y0 == d.y && x1 == d.x + d.w && y1 == d.y + d.h) cover = w;   /* the last (topmost) one that covers d */
+        }
+    for (int y = d.y; y < d.y + d.h; y++) {
+        uint32_t *o = &bb.px[y * SW], *wp = &wall.px[y * SW];
+        if (y < hid.y || y >= hid.y + hid.h) memcpy(&o[d.x], &wp[d.x], d.w * 4);
+        else {
+            memcpy(&o[d.x], &wp[d.x], (hid.x - d.x) * 4);
+            memcpy(&o[hid.x + hid.w], &wp[hid.x + hid.w], (d.x + d.w - hid.x - hid.w) * 4);
+        }
+    }
+    ST(0);
     for (struct window *w = wins; w; w = w->next) {
+        if (cover) { if (w != cover) continue; cover = 0; }
         if (!shown(w)) continue;
         if (w == drag_win && snap_zone) draw_snap(&c);   /* under the window being dragged */
         if (!(w->flags & WIN_FLAG_FRAMELESS) && ticks_ms - w->born < (uint32_t)(theme_anim ? D_SLOW : D_REDUCED)) {
@@ -1110,6 +1176,7 @@ static bool compose(void) {
         } else draw_window(&c, w);
     }
     draw_ghost(&c);
+    ST(1);
     if (d.y + d.h > TB_Y) draw_taskbar(&c);
     if (tip_on) draw_tip(&c);
     if (menu_open || lov.out) draw_launcher(&c);
@@ -1118,10 +1185,16 @@ static bool compose(void) {
     if (cn_open || cov.out) draw_center(&c);
     draw_toasts(&c);
     if (sw_open || sov.out) draw_switcher(&c);
+    ST(2);
     draw_cursor(&c);
+    ST(3);
     if (!no_present)
         for (int y = d.y; y < d.y + d.h; y++)
             memcpy(&fb.px[y * fb.stride + d.x], &bb.px[y * SW + d.x], d.w * 4);
+    ST(4);
+#ifdef GFXSTAT
+    st_a += animating;
+#endif
     return animating;
 }
 
@@ -2411,7 +2484,11 @@ static int wm_thread(void *arg) {
             if (menu_open && ticks_ms - l_typed < D_CARET_IDLE + 250) l_damage();   /* the search caret blinks */
         }
         if (tip_due()) { tip_on = true; wm_damage(0, TB_Y - 3 * H_PANEL, SW, 3 * H_PANEL); }
-        if (compose()) {                                 /* animating: pace frames, let apps run */
+        bool an = compose();
+#ifdef GFXSTAT
+        st_dump();
+#endif
+        if (an) {                                        /* animating: pace frames, let apps run */
             uint32_t f2 = irq_save();
             sleep_on(&wm_chan, 12);
             irq_restore(f2);
