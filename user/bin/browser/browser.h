@@ -293,6 +293,10 @@ void js_set_rect(int node, int x, int y, int w, int h);   /* layout -> JS: borde
 int  dom_first(int n), dom_next(int n), dom_parent(int n), dom_type(int n);
 const char *dom_tag(int n), *dom_text(int n), *dom_attr(int n, const char *name);   /* attr: NULL if absent */
 uint32_t dom_gen(void);                           /* bumped by every change to the connected tree */
+int  dom_nattr(int n);                            /* number of attributes of an element */
+int  dom_attr_at(int n, int i, const char **name, const char **value);   /* attribute i (names lower case): 1 = ok */
+const char *dom_ctl_value(int n);                 /* live value of an input/textarea/select; valid until the next call */
+int  dom_ctl_checked(int n), dom_ctl_sel(int n);  /* checkbox/radio state; <select> selected index */
 int  dom_dirty(int *ids, int max);                /* ids whose attributes/text/children changed since the last call (each also marks its parent); -1 = overflow, assume all */
 int  js_submit_req(void);                         /* form.submit() was called: the form's node (consumed), or 0 */
 extern const char js_prelude[];

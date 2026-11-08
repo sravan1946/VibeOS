@@ -1704,3 +1704,19 @@ int dom_dirty(int *ids, int max) {                     /* node ids whose content
     ndi = di_over = 0;
     return r;
 }
+
+/* attribute enumeration and live control state for layout */
+int dom_nattr(int n) { return n > 0 && n < nn && N[n].type == 1 ? N[n].na : 0; }
+int dom_attr_at(int n, int i, const char **name, const char **value) {
+    if (n <= 0 || n >= nn || i < 0 || i >= N[n].na) return 0;
+    *name = N[n].an[i]; *value = N[n].av[i];
+    return 1;
+}
+const char *dom_ctl_value(int n) {                       /* current value of an input/textarea/select (script or user changes included); valid until the next call */
+    static char *v;
+    free(v);
+    v = n > 0 && n < nn ? value_of(n) : 0;
+    return v ? v : "";
+}
+int dom_ctl_checked(int n) { return n > 0 && n < nn && (N[n].has_chk ? N[n].chk : attr(n, "checked") != 0); }
+int dom_ctl_sel(int n) { return n > 0 && n < nn ? sel_index(n) : -1; }       /* <select>: selected option index */
