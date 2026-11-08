@@ -81,12 +81,16 @@ def pixel_rain(path):
     return m
 
 def cover(path):
-    im = Image.new("RGB", (128, 128))
+    """Low Tide: a low sun over flat bands of sea and sand, muted greys and one warm tone (sits with Graphite)"""
+    S, k = 184, 4                                   # the Music app shows 184x184; drawn 4x and box-filtered
+    im = Image.new("RGB", (S * k, S * k), (0x2B, 0x2D, 0x31))
     d = ImageDraw.Draw(im)
-    for y in range(128): d.line([(0, y), (127, y)], fill=(int(30 + y * 0.5), int(20 + y * 0.4), int(90 + y * 1.1)))
-    for i, r in enumerate((54, 40, 26, 12)): d.ellipse((64 - r, 70 - r, 64 + r, 70 + r), outline=(255, 150 + i * 25, 200), width=3)
-    d.rectangle((0, 0, 127, 127), outline=(255, 255, 255))
-    im.quantize(32).save(path, optimize=True)
+    d.ellipse((96 * k, 58 * k, 132 * k, 94 * k), fill=(0xB9, 0x9A, 0x6C))
+    for y, col in ((92, (0x3C, 0x45, 0x4D)), (112, (0x34, 0x3C, 0x44)), (130, (0x2E, 0x35, 0x3C)), (146, (0x6E, 0x63, 0x55)), (162, (0x5C, 0x53, 0x48))):
+        d.rectangle((0, y * k, S * k, S * k), fill=col)
+    for y, x0, x1 in ((100, 40, 86), (120, 104, 150), (138, 28, 62)):    # glints on the water
+        d.rectangle((x0 * k, y * k, x1 * k, y * k + 3), fill=(0x8E, 0x86, 0x78))
+    im.resize((S, S), Image.BOX).quantize(32).save(path, optimize=True)
 
 def ff(*a): subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *a], check=True)
 

@@ -124,7 +124,7 @@ static void draw_keys(struct ui *ui) {
             if (!blk && s % 12 == 0) {
                 char n[8];
                 snprintf(n, sizeof n, "C%d", oct + s / 12);
-                gfx_text_center(c, T_CAPTION, x, KY + h - SP_7 - 20, w, n, RGB(0x6E, 0x70, 0x76));
+                gfx_text_center(c, T_CAPTION, x, KY + h - SP_7 - 20, w, n, RGB(0x5A, 0x5C, 0x62));
             }
         }
 }

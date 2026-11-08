@@ -102,7 +102,7 @@ try:
         a, meta = ours(os.path.join(music, name))
         r = ref(os.path.join(music, name), 44100)
         s = snr(a, r, range(-3, 4) if name.endswith("ogg") else range(1198, 1210))   # ffmpeg trims the MP3 encoder delay (1105 samples at 44.1 kHz); we play it, so the resampling phase differs by a fraction of a sample (hence the lower bar)
-        check(name, meta["title"] == title and meta["artist"] == "VibeOS" and (int(meta["art"]) > 1000) == art and s > 30,
+        check(name, meta["title"] == title and meta["artist"] == "VibeOS" and (int(meta["art"]) > 100) == art and s > 30,
               f"title {meta['title']!r} artist {meta['artist']!r} art {meta['art']} B, snr {s:.1f} dB, {meta['len_ms']} ms")
     # junk must fail cleanly
     open(f"{tmp}/junk.mp3", "wb").write(os.urandom(5000))

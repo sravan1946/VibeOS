@@ -154,7 +154,7 @@ static bool match(const char *name, const char *q) {
 static void build_order(void) {
     nord = 0;
     if (!ord) ord = malloc(MAX_ENT * sizeof *ord);
-    for (int i = 0; i < nents; i++) if (match(ents[i].name, qbox)) ord[nord++] = i;
+    for (int i = 0; i < nents; i++) { if (match(ents[i].name, qbox)) ord[nord++] = i; else ents[i].sel = false; }   /* a filtered-out item can't stay selected (the status bar and actions index through ord) */
     snprintf(qlast, sizeof qlast, "%s", qbox);
     if (anchor >= nord) anchor = -1;
     if (cur >= nord) cur = -1;
