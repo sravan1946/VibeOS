@@ -20,7 +20,7 @@
 #include "image.h"
 #include "benchutil.h"
 
-#define MAX_ENT 2048
+#define MAX_ENT 16384                 /* ponytail: fixed arrays (ents ~2 MB, only touched as filled); a bigger folder shows its first 16384 */
 #define HIST_MAX 32
 #define TB_H H_TOOLBAR
 #define SB_H H_STATUS
@@ -174,8 +174,9 @@ static void refresh(bool keepsel) {
     char (*sv)[96] = NULL;
     int nsv = 0;
     if (keepsel) {
-        sv = malloc(256 * sizeof *sv);
-        for (int i = 0; sv && i < nents && nsv < 256; i++) if (ents[i].sel) snprintf(sv[nsv++], 96, "%s", ents[i].name);
+        sv = malloc(nents * sizeof *sv + 1);                  /* every selected name: Select all must survive a refresh */
+        for (int i = 0; sv && i < nents; i++) if (ents[i].sel) snprintf(sv[nsv++], 96, "%s", ents[i].name);
+        if (sv) qsort(sv, nsv, 96, (int (*)(const void *, const void *))strcmp);
     }
     for (int i = 0; i < nents; i++) free(ents[i].orig);
     nents = 0;
@@ -206,7 +207,7 @@ static void refresh(bool keepsel) {
             uint32_t when = 0;
             if (fs_trash_info(e->name, o, sizeof o, &when) == 0) { e->orig = strdup(o); e->mtime = when; }
         }
-        for (int k = 0; k < nsv; k++) if (!strcmp(sv[k], e->name)) e->sel = true;
+        if (nsv && bsearch(e->name, sv, nsv, 96, (int (*)(const void *, const void *))strcmp)) e->sel = true;
     }
     if (d) closedir(d);
     free(sv);
