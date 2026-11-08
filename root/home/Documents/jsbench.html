@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html><head><title>JS mutation benchmark</title>
+<style>li { margin: 0; padding: 1px 4px } li.on { background: #fd8; font-weight: bold } #o { color: #060 }</style></head>
+<body><p id="o">running...</p><ul id="l"></ul>
+<script>
+// a 5000-item list; every frame a script toggles a class on one item. Prints frames/s (the page's rAF loop is paced by relayout cost).
+const l = document.getElementById('l');
+for (let i = 0; i < 5000; i++) { const li = document.createElement('li'); li.textContent = 'item number ' + i + ' with a little text'; l.appendChild(li); }
+let frames = 0, t0 = 0, i = 0;
+function tick(t) {
+    if (!t0) t0 = t;
+    l.children[i % 5000].classList.toggle('on'); i += 7; frames++;
+    if (t - t0 < 5000) requestAnimationFrame(tick);
+    else { const fps = (frames * 1000 / (t - t0)).toFixed(1); document.getElementById('o').textContent = 'JSBENCH ' + fps + ' frames/s'; console.log('JSBENCH ' + fps + ' frames/s (' + frames + ' frames)'); }
+}
+setTimeout(() => requestAnimationFrame(tick), 500);
+</script></body></html>

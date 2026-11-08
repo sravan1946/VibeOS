@@ -631,19 +631,23 @@ NATIVE(n_get_attr) {
     JS_FreeCString(c, n);
     return v ? str(v) : JS_NULL;
 }
+/* attributes that never change what is drawn: no relayout for them */
+static int paints(const char *n) {
+    return strncmp(n, "data-", 5) && strncmp(n, "aria-", 5) && strncmp(n, "on", 2) && strcmp(n, "role") && strcmp(n, "tabindex") && strcmp(n, "title") && strcmp(n, "autocomplete") && strcmp(n, "nonce");
+}
 NATIVE(n_set_attr) {
     int id = ARGID(0);
     if (!id || N[id].type != 1) return JS_UNDEFINED;
     CSTR(n, 1);
     const char *v = JS_ToCString(c, argv[2]);
-    if (v && set_attr(id, n, v)) touch(id);
+    if (v && set_attr(id, n, v) && paints(n)) touch(id);
     JS_FreeCString(c, n); JS_FreeCString(c, v);
     return JS_UNDEFINED;
 }
 NATIVE(n_del_attr) {
     int id = ARGID(0);
     CSTR(n, 1);
-    if (id && del_attr(id, n)) touch(id);
+    if (id && del_attr(id, n) && paints(n)) touch(id);
     JS_FreeCString(c, n);
     return JS_UNDEFINED;
 }
