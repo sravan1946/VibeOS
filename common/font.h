@@ -29,3 +29,8 @@ extern const struct font font_mono_bold;
 extern const struct font font_ui;
 extern const struct font font_ui_bold;
 extern const struct font font_big;
+extern const struct font bfont_ui;
+extern const struct font bfont_ui_bold;
+extern const struct font bfont_title;
+extern const struct font bfont_mono;
+extern const struct font bfont_mono_bold;

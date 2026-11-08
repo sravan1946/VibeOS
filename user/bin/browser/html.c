@@ -280,6 +280,11 @@ static void text_ws(int c) {
 }
 
 static void text_char(const char *u, int ul) {
+    if (ul > 1) {                                           /* invisible format characters take no room */
+        uint32_t cp;
+        utf8_decode(u, ul, &cp);
+        if (cp == 0xAD || (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x202A && cp <= 0x202E) || cp == 0x2060 || cp == 0xFEFF) return;
+    }
     if (S.pre) { L.skip_nl = 0; pre_char(u, ul); return; }
     if (L.wn + ul >= (int)sizeof L.wb) flush_word();
     memcpy(L.wb + L.wn, u, ul);
@@ -287,19 +292,7 @@ static void text_char(const char *u, int ul) {
 }
 
 /* ---------- entities ---------- */
-static const struct { const char *n; uint32_t cp; } ENT[] = {
-    { "amp", '&' }, { "lt", '<' }, { "gt", '>' }, { "quot", '"' }, { "apos", '\'' }, { "nbsp", ' ' },
-    { "copy", 0xA9 }, { "reg", 0xAE }, { "trade", 0x2122 }, { "hellip", 0x2026 }, { "mdash", 0x2014 },
-    { "ndash", 0x2013 }, { "lsquo", 0x2018 }, { "rsquo", 0x2019 }, { "ldquo", 0x201C }, { "rdquo", 0x201D },
-    { "laquo", 0xAB }, { "raquo", 0xBB }, { "bull", 0x2022 }, { "middot", 0xB7 }, { "deg", 0xB0 },
-    { "times", 0xD7 }, { "divide", 0xF7 }, { "plusmn", 0xB1 }, { "sect", 0xA7 }, { "para", 0xB6 },
-    { "larr", 0x2190 }, { "rarr", 0x2192 }, { "uarr", 0x2191 }, { "darr", 0x2193 }, { "harr", 0x2194 },
-    { "euro", 0x20AC }, { "pound", 0xA3 }, { "yen", 0xA5 }, { "cent", 0xA2 }, { "micro", 0xB5 },
-    { "frac12", 0xBD }, { "frac14", 0xBC }, { "frac34", 0xBE }, { "eacute", 0xE9 }, { "egrave", 0xE8 },
-    { "agrave", 0xE0 }, { "uuml", 0xFC }, { "ouml", 0xF6 }, { "auml", 0xE4 }, { "szlig", 0xDF },
-    { "ccedil", 0xE7 }, { "ntilde", 0xF1 }, { "iexcl", 0xA1 }, { "iquest", 0xBF }, { "ne", 0x2260 },
-    { "le", 0x2264 }, { "ge", 0x2265 }, { "infin", 0x221E },
-};
+uint32_t ent_lookup(const char *s, int n);   /* entities.c: the full HTML table */
 
 static int utf8_put(uint32_t cp, char *o) {
     if (cp < 0x80) { o[0] = cp; return 1; }
@@ -321,18 +314,17 @@ static int ent_decode(const char *s, int n, char *o, int *used) {
             v = v * (hex ? 16 : 10) + (isdigit((unsigned char)s[i]) ? s[i] - '0' : (s[i] | 32) - 'a' + 10);
         if (!dg) return 0;
         if (i < n && s[i] == ';') i++;
+        static const uint16_t W1252[32] = { 0x20AC, 0xFFFD, 0x201A, 0x192, 0x201E, 0x2026, 0x2020, 0x2021, 0x2C6, 0x2030, 0x160, 0x2039, 0x152, 0xFFFD, 0x17D, 0xFFFD,
+            0xFFFD, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x2DC, 0x2122, 0x161, 0x203A, 0x153, 0xFFFD, 0x17E, 0x178 };
         cp = v;
+        if (cp >= 0x80 && cp < 0xA0) cp = W1252[cp - 0x80];     /* numeric references in 0x80..0x9F are Windows-1252, as browsers do */
         if (cp == 0xA0 || cp < 32) cp = ' ';
-        else if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) || (cp >= 0x80 && cp < 0xA0)) cp = 0xFFFD;
+        else if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD;
     } else {
         int j = i;
-        while (j < n && j - i < 10 && isalnum((unsigned char)s[j])) j++;
+        while (j < n && j - i < 33 && isalnum((unsigned char)s[j])) j++;
         if (j >= n || s[j] != ';' || j == i) return 0;
-        unsigned k;
-        for (k = 0; k < sizeof ENT / sizeof *ENT; k++)
-            if ((int)strlen(ENT[k].n) == j - i && !strncmp(ENT[k].n, s + i, j - i)) break;
-        if (k == sizeof ENT / sizeof *ENT) return 0;
-        cp = ENT[k].cp;
+        if (!(cp = ent_lookup(s + i, j - i))) return 0;
         i = j + 1;
     }
     *used = i;

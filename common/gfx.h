@@ -67,7 +67,7 @@ void gfx_blit_premul(struct canvas *c, int x, int y, const uint32_t *src, int w,
 void gfx_blit_scaled(struct canvas *c, int x, int y, int dw, int dh, const uint32_t *src, int sw, int sh, int stride);
 
 int  gfx_char(struct canvas *c, const struct font *f, int x, int y, uint32_t cp, color_t col);  /* codepoint; returns advance */
-const struct glyph *font_glyph(const struct font *f, uint32_t cp);   /* '?' if the font lacks it */
+const struct glyph *font_glyph(const struct font *f, uint32_t cp);   /* the wide faces' missing-glyph box, else '?' */
 int  utf8_decode(const char *s, int n, uint32_t *cp);                 /* bytes consumed, >= 1 */
 /* proportional faces use a 1/64 px pen (glyph adv64), monospaced ones whole-pixel cells; returns the advance */
 int  gfx_text(struct canvas *c, const struct font *f, int x, int y, const char *s, color_t col);

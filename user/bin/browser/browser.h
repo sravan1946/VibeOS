@@ -5,6 +5,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* the browser's faces have wide glyph coverage and a box for what is still missing (common/fontsw.c) */
+#define font_ui bfont_ui
+#define font_ui_bold bfont_ui_bold
+#define font_title bfont_title
+#define font_mono bfont_mono
+#define font_mono_bold bfont_mono_bold
+
 #define MAX_PAGE (2u << 20)      /* body bytes kept per page */
 #define URL_MAX  1024
 
