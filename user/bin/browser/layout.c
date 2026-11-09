@@ -3009,6 +3009,13 @@ static void layout_do(struct doc *d, const char *src, size_t n, int mode, int wi
     lay_abs_for(-1);
     PH("layout");
     d->height = B[root].y + B[root].h + 24;
+    for (int i = 0; i < nabs; i++) {                          /* abs boxes add to the scrollable height unless an overflow clip or a fixed box holds them */
+        const struct bx *c = &B[ABS[i]];
+        if (c->pos != POS_ABS || c->vis) continue;
+        int p = c->par;
+        while (p >= 0 && (!B[p].ovf || p == root || B[p].par == root) && B[p].pos != POS_FIXED) p = B[p].par;   /* html/body overflow goes to the viewport */
+        if (p < 0 && c->y + c->h + 24 > d->height) d->height = c->y + c->h + 24;
+    }
 #ifdef LT_DEBUG
     if (getenv("LT_DUMP")) dump(root, 0);
 #endif

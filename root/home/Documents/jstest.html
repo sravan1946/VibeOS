@@ -365,6 +365,21 @@ const t0 = performance.now();
     { let n = 0; const rs = new ReadableStream({ pull(c) { n < 3 ? c.enqueue('ab'[n++ % 2] || 'x') : c.close(); } }); const up = new TransformStream({ transform: (v, c) => c.enqueue(v.toUpperCase() + '!') }); const out = []; for await (const v of rs.pipeThrough(up)) out.push(v);
       let late; const rs2 = new ReadableStream({ start(c) { late = c; } }); setTimeout(() => { late.enqueue(7); late.close(); }, 5); const r2 = rs2.getReader(); const a = await r2.read(), b = await r2.read();
       check('streams', [out.join(''), a.value, b.done], ['A!B!A!', 7, true]); }
+    { const u = document.createElement('div'); u.innerHTML = '<i></i><b></b><i></i>'; const f = u.childNodes, h = document.createDocumentFragment(); let n = 0; while (f.length && n++ < 10) h.appendChild(f[0]);
+      const g = u.getElementsByTagName('i'); u.innerHTML = '<i></i>'; check('live NodeList/HTMLCollection', [n, h.childNodes.length, g.length, u.children.length], [3, 3, 1, 1]); }
+    { document.body.insertAdjacentHTML('beforeend', '<nav id=js3n><div class=a><span class=b></span></div></nav>'); const n = document.getElementById('js3n');
+      check(':scope in queries', [!!n.querySelector(':scope > .a > .b'), n.querySelectorAll(':scope > .b').length, n.firstChild.matches(':scope > .a')], [true, 0, false]); n.remove(); }
+    { const d = new Date(Date.UTC(2026, 10, 8, 22, 54, 50)); check('Intl', [Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(d), d.toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }),
+      new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).formatToParts(d).map(x => x.type).join(), ['b', 'a', 'C'].sort(new Intl.Collator('en').compare).join(), 'a'.localeCompare('B')], ['Nov 8', '5:54 PM', 'month,literal,day', 'a,b,C', -1]); }
+    { const e = document.createElement('div'); document.body.appendChild(e); const a = e.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 50, fill: 'forwards' }); await a.finished; check('Element.animate finishes with its end frame', [a.playState, e.style.opacity], ['finished', '1']); e.remove(); }
+    { const r = await (await fetch('data:text/plain;base64,' + btoa('x'.repeat(3000)))).text(); check('fetch of a long data: URL', r.length, 3000); }
+    { const st = document.createElement('style'); document.head.appendChild(st); const sh = st.sheet, r = sh.cssRules[sh.insertRule('.js3q{}', 0)]; r.style.setProperty('--x', '5'); r.style.backgroundColor = 'red';
+      check('CSSOM rule.style', [r.style.getPropertyValue('--x'), r.style.backgroundColor, r.cssText.includes('background-color: red')], ['5', 'red', true]); st.remove(); }
+    { const sc = document.createElement('script'); sc.src = URL.createObjectURL(new Blob(['window.js3blob = 41 + 1;'], { type: 'text/javascript' })); document.head.appendChild(sc); await new Promise(r => setTimeout(r, 300)); check('blob: script', window.js3blob, 42); }
+    { const e = document.createElement('div'); e.style.cssText = 'width:123px;height:45px'; document.body.appendChild(e); check('geometry right after a DOM change', [e.offsetWidth, e.offsetHeight, Math.round(e.getBoundingClientRect().height)], [123, 45, 45]); e.remove(); }
+    { const far = document.createElement('div'); far.style.cssText = 'position:absolute;top:30000px;height:20px;width:20px'; const near = document.createElement('div'); near.style.cssText = 'height:10px;width:10px'; document.body.prepend(near); document.body.append(far);
+      const got = []; const io = new IntersectionObserver(es => es.forEach(e => got.push((e.target === far ? 'far' : 'near') + ':' + e.isIntersecting))); io.observe(far); io.observe(near);
+      await new Promise(r => setTimeout(r, 400)); const s0 = got.join(); scrollTo(0, 29900); await new Promise(r => setTimeout(r, 700)); scrollTo(0, 0); check('IntersectionObserver reports real visibility', [s0, got.includes('far:true')], ['far:false,near:true', true]); io.disconnect(); far.remove(); near.remove(); }
     const s = document.getElementById('summary');
     s.textContent = fail ? `${pass} passed, ${fail} FAILED` : `all ${pass} tests passed`;
     s.className = fail ? 'fail' : 'pass';

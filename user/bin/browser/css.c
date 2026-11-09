@@ -2732,3 +2732,11 @@ void css_stats_top(void) {
     }
 }
 #endif
+
+/* the resolved value of the custom property `name` (with its "--") in a computed style, or NULL when it isn't set (getPropertyValue('--x')) */
+const char *css_custom(const struct cprops *p, const char *name) {
+    int i = cv_lookup(p->vars, intern(name, strlen(name)));
+    if (!i) return 0;
+    int v = cv_value(i, 0);
+    return v < 0 ? 0 : STR(v);
+}

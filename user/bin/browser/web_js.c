@@ -450,16 +450,56 @@ def(g, { Storage: function Storage() {} });
 Object.defineProperties(g, { localStorage: { get() { return ls; }, configurable: true }, sessionStorage: { get() { return ss; }, configurable: true } });
 
 // ---------- cookies: the shared jar (cookie.c), as document.cookie sees it ----------
+g.__blobText = u => { const b = blobs.get(u); return b ? String(b.__s) : undefined; };
 def(g, { __cookieGet: () => d.cookieGet(), __cookieSet: s => d.cookieSet(s) });
 
 // ---------- observers, media ----------
+// IntersectionObserver against the real geometry: an entry on observe() and whenever a target crosses the viewport (or the root's box) or one of
+// the thresholds. Re-checked on scroll/resize and every 250 ms while anything is observed (layout changes have no event).
+const IOS = new Set();
+let ioTimer = 0;
+function ioCheckAll() { for (const io of [...IOS]) io.__check(); if (!IOS.size && ioTimer) { clearInterval(ioTimer); ioTimer = 0; } }
 class IntersectionObserver {
-    constructor(cb, o) { this.__cb = cb; this.root = o && o.root || null; this.rootMargin = o && o.rootMargin || '0px'; this.thresholds = [0]; this.__els = new Set(); }
-    observe(e) {
-        if (this.__els.has(e)) return; this.__els.add(e);
-        setTimeout(() => { if (!this.__els.has(e)) return; const r = e.getBoundingClientRect(); try { this.__cb([{ target: e, isIntersecting: true, intersectionRatio: 1, boundingClientRect: r, intersectionRect: r, rootBounds: null, time: performance.now() }], this); } catch (x) { report(x); } }, 0);
+    constructor(cb, o = {}) {
+        if (typeof cb !== 'function') throw new TypeError("Failed to construct 'IntersectionObserver': The callback provided as parameter 1 is not a function.");
+        this.__cb = cb; this.root = o.root || null; this.rootMargin = o.rootMargin || '0px';
+        const t = o.threshold === undefined ? [0] : [].concat(o.threshold); this.thresholds = t.map(Number).sort((a, b) => a - b);
+        const m = String(this.rootMargin).trim().split(/\s+/).map(x => x.endsWith('%') ? [parseFloat(x), 1] : [parseFloat(x) || 0, 0]);
+        this.__m = [m[0] || [0, 0], m[1] || m[0] || [0, 0], m[2] || m[0] || [0, 0], m[3] || m[1] || m[0] || [0, 0]];
+        this.__t = new Map(); this.__q = [];
     }
-    unobserve(e) { this.__els.delete(e); } disconnect() { this.__els.clear(); } takeRecords() { return []; }
+    __bounds() {
+        const r = this.root && this.root.getBoundingClientRect ? this.root.getBoundingClientRect() : new D.DOMRect(0, 0, innerWidth, innerHeight), m = this.__m;
+        const e = (v, base) => v[1] ? base * v[0] / 100 : v[0];
+        const l = r.left - e(m[3], r.width), t = r.top - e(m[0], r.height);
+        return new D.DOMRect(l, t, r.right + e(m[1], r.width) - l, r.bottom + e(m[2], r.height) - t);
+    }
+    __check() {
+        if (!this.__t.size) return;
+        const rb = this.__bounds(), out = [];
+        for (const [e, prev] of this.__t) {
+            const r = e.getBoundingClientRect(), connected = e.isConnected;
+            const x0 = Math.max(r.left, rb.left), y0 = Math.max(r.top, rb.top), x1 = Math.min(r.right, rb.right), y1 = Math.min(r.bottom, rb.bottom);
+            const w = x1 - x0, h = y1 - y0, area = r.width * r.height;
+            const inter = connected && (w > 0 && h > 0 || (w >= 0 && h >= 0 && (r.width > 0 || r.height > 0) && area === 0));
+            const ratio = !inter ? 0 : area > 0 ? Math.min(1, (w * h) / area) : 1;
+            let idx = 0; if (inter) for (const th of this.thresholds) if (ratio >= th) idx++;
+            if (prev.idx === idx && prev.ii === inter) continue;
+            prev.idx = idx; prev.ii = inter;
+            const ir = inter ? new D.DOMRect(x0, y0, Math.max(0, w), Math.max(0, h)) : new D.DOMRect(0, 0, 0, 0);
+            out.push({ target: e, isIntersecting: inter, intersectionRatio: ratio, boundingClientRect: r, intersectionRect: ir, rootBounds: this.root ? null : rb, time: performance.now() });
+        }
+        if (out.length) try { this.__cb(out, this); } catch (x) { report(x); }
+    }
+    observe(e) {
+        if (this.__t.has(e)) return;
+        this.__t.set(e, { idx: -1, ii: null }); IOS.add(this);
+        if (!ioTimer) { ioTimer = setInterval(ioCheckAll, 250); g.addEventListener('scroll', ioCheckAll, { passive: true }); g.addEventListener('resize', ioCheckAll); }
+        setTimeout(() => this.__check(), 0);
+    }
+    unobserve(e) { this.__t.delete(e); if (!this.__t.size) IOS.delete(this); }
+    disconnect() { this.__t.clear(); IOS.delete(this); }
+    takeRecords() { return []; }
 }
 class ResizeObserver {
     constructor(cb) { this.__cb = cb; this.__els = new Set(); }
@@ -496,7 +536,9 @@ def(g, { navigator: { userAgent: d.ua(), appName: 'Netscape', appVersion: '5.0 (
     clipboard: { writeText: () => Promise.resolve(), readText: () => Promise.resolve(''), write: () => Promise.resolve(), read: () => Promise.resolve([]) },
     permissions: { query: () => Promise.resolve({ state: 'denied', addEventListener() {} }) }, sendBeacon: () => true, vibrate: () => false, share: undefined,
     connection: { effectiveType: '4g', downlink: 10, rtt: 50, saveData: false, addEventListener() {} }, userAgentData: undefined, getBattery: undefined,
-    registerProtocolHandler() {}, javaEnabled: () => false } });
+    registerProtocolHandler() {}, javaEnabled: () => false,
+    serviceWorker: { controller: null, ready: new Promise(() => {}), register: () => Promise.reject(new DOMException('Service workers are not available here', 'SecurityError')), getRegistration: () => Promise.resolve(undefined), getRegistrations: () => Promise.resolve([]), addEventListener() {}, removeEventListener() {}, startMessages() {} },
+    storage: { estimate: () => Promise.resolve({ quota: 0, usage: 0 }), persist: () => Promise.resolve(false), persisted: () => Promise.resolve(false) } } });
 def(g, { screen: { width: 1280, height: 800, availWidth: 1280, availHeight: 760, colorDepth: 24, pixelDepth: 24, availLeft: 0, availTop: 0, orientation: { type: 'landscape-primary', angle: 0, addEventListener() {} } },
     visualViewport: Object.assign(new D.EventTarget(), { get width() { return innerWidth; }, get height() { return innerHeight; }, scale: 1, offsetLeft: 0, offsetTop: 0, pageLeft: 0, get pageTop() { return scrollY; } }),
     Notification: Object.assign(function Notification() {}, { permission: 'denied', requestPermission: () => Promise.resolve('denied') }),
@@ -559,12 +601,33 @@ function splitRules(t) {
     }
     return out;
 }
-const mkRule = (r, sh) => { const i = r.indexOf('{'), sel = i < 0 ? r : r.slice(0, i).trim(), body = i < 0 ? '' : r.slice(i + 1, r.lastIndexOf('}')); const o = { cssText: r, selectorText: sel, parentStyleSheet: sh, type: sel[0] === '@' ? 4 : 1, style: { cssText: body.trim() } }; if (sel[0] === '@') { o.conditionText = sel.replace(/^@\w+\s*/, ''); o.cssRules = splitRules(body).map(x => mkRule(x, sh)); } return o; };
+// rule.style: a declaration block that writes back to the rule (and so the sheet's <style>), with camelCase property access
+function ruleStyle(rule, body) {
+    const m = new Map(), kebab = k => k.startsWith('--') ? k : k.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
+    const parse = t => { m.clear(); let dp = 0, q = '', st = 0; const one = e => { const x = t.slice(st, e), i = x.indexOf(':'); if (i > 0) { const k = x.slice(0, i).trim(); m.set(k.startsWith('--') ? k : k.toLowerCase(), x.slice(i + 1).trim()); } st = e + 1; };
+        for (let i = 0; i < t.length; i++) { const c = t[i]; if (q) { if (c === '\\') i++; else if (c === q) q = ''; } else if (c === '"' || c === "'") q = c; else if (c === '(') dp++; else if (c === ')') dp--; else if (c === ';' && dp <= 0) one(i); } one(t.length); };
+    const text = () => [...m].map(([k, v]) => k + ': ' + v + ';').join(' ');
+    const sync = () => { rule.cssText = rule.selectorText + ' { ' + text() + ' }'; const sh = rule.parentStyleSheet; if (sh && sh.__sync) sh.__sync(); };
+    parse(body);
+    const api = {
+        getPropertyValue: n => { const v = m.get(kebab(String(n))); return v === undefined ? '' : v.replace(/\s*!important$/, ''); },
+        getPropertyPriority: n => /!important$/.test(m.get(kebab(String(n))) || '') ? 'important' : '',
+        setProperty(n, v, p) { n = kebab(String(n)); if (v == null || v === '') m.delete(n); else m.set(n, String(v) + (p === 'important' ? ' !important' : '')); sync(); },
+        removeProperty(n) { n = kebab(String(n)); const o = m.get(n) || ''; m.delete(n); sync(); return o; },
+        item: i => [...m.keys()][i] || '', parentRule: rule,
+        get length() { return m.size; }, get cssText() { return text(); }, set cssText(v) { parse(String(v)); sync(); },
+    };
+    return new Proxy(api, {
+        get(t, k) { if (typeof k === 'symbol' || k in t) return Reflect.get(t, k); const v = m.get(kebab(k)); return v === undefined ? '' : v.replace(/\s*!important$/, ''); },
+        set(t, k, v) { if (k === 'cssText') t.cssText = v; else if (typeof k === 'string') t.setProperty(k, v); return true; },
+    });
+}
+const mkRule = (r, sh) => { const i = r.indexOf('{'), sel = i < 0 ? r : r.slice(0, i).trim(), body = i < 0 ? '' : r.slice(i + 1, r.lastIndexOf('}')); const o = { cssText: r, selectorText: sel, parentStyleSheet: sh, type: sel[0] === '@' ? 4 : 1 }; o.style = sel[0] === '@' ? { cssText: body.trim() } : ruleStyle(o, body); if (sel[0] === '@') { o.conditionText = sel.replace(/^@\w+\s*/, ''); o.cssRules = splitRules(body).map(x => mkRule(x, sh)); } return o; };
 class CSSStyleSheet {
     constructor(o) { this.__o = o || null; this.__r = null; this.disabled = false; this.href = null; this.ownerNode = o || null; this.media = { mediaText: '' }; this.type = 'text/css'; }
     get cssRules() { if (!this.__r) this.__r = this.__o ? splitRules(this.__o.textContent).map(x => mkRule(x, this)) : []; return this.__r; }
     get rules() { return this.cssRules; }
-    __sync() { if (this.__o) this.__o.textContent = this.__r.map(x => x.cssText).join('\n'); }
+    __sync() { if (this.__o) this.__o.textContent = this.cssRules.map(x => x.cssText).join('\n'); }
     insertRule(r, i = 0) {
         const L = this.cssRules.length; r = String(r).trim();
         if (i > L || i < 0) throw new DOMException('Failed to execute \'insertRule\' on \'CSSStyleSheet\': The index provided is larger than the number of rules.', 'IndexSizeError');
@@ -696,11 +759,23 @@ class NumberFormat {
     static supportedLocalesOf(l) { return [].concat(l || []); }
 }
 const MON = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'], DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const TZ = { 'America/New_York': [-300, 'us'], 'America/Detroit': [-300, 'us'], 'America/Toronto': [-300, 'us'], 'America/Chicago': [-360, 'us'], 'America/Denver': [-420, 'us'], 'America/Phoenix': [-420], 'America/Los_Angeles': [-480, 'us'], 'America/Vancouver': [-480, 'us'], 'America/Anchorage': [-540, 'us'], 'Pacific/Honolulu': [-600], 'America/Sao_Paulo': [-180], 'Europe/London': [0, 'eu'], 'Europe/Dublin': [0, 'eu'], 'Europe/Lisbon': [0, 'eu'], 'Europe/Paris': [60, 'eu'], 'Europe/Berlin': [60, 'eu'], 'Europe/Madrid': [60, 'eu'], 'Europe/Rome': [60, 'eu'], 'Europe/Amsterdam': [60, 'eu'], 'Europe/Zurich': [60, 'eu'], 'Europe/Stockholm': [60, 'eu'], 'Europe/Athens': [120, 'eu'], 'Europe/Helsinki': [120, 'eu'], 'Europe/Kiev': [120, 'eu'], 'Europe/Istanbul': [180], 'Europe/Moscow': [180], 'Asia/Dubai': [240], 'Asia/Kolkata': [330], 'Asia/Calcutta': [330], 'Asia/Dhaka': [360], 'Asia/Bangkok': [420], 'Asia/Shanghai': [480], 'Asia/Hong_Kong': [480], 'Asia/Singapore': [480], 'Asia/Tokyo': [540], 'Asia/Seoul': [540], 'Australia/Sydney': [600, 'au'], 'Australia/Melbourne': [600, 'au'], 'Pacific/Auckland': [720, 'nz'] };
+const nthSun = (y, m, n) => { const d = new Date(Date.UTC(y, m, 1)); const first = (7 - d.getUTCDay()) % 7 + 1; return n > 0 ? first + 7 * (n - 1) : (() => { const l = new Date(Date.UTC(y, m + 1, 0)); return l.getUTCDate() - l.getUTCDay(); })(); };
+function tzOffset(tz, t) {                        // minutes east of UTC at instant t (ms) for the zone, or null when unknown (= use the host's)
+    if (!tz || /^(UTC|GMT|Etc\/UTC|Etc\/GMT)$/i.test(tz)) return tz ? 0 : null;
+    const z = TZ[tz]; if (!z) return null;
+    let off = z[0]; const y = new Date(t).getUTCFullYear();
+    if (z[1] === 'us') { const a = Date.UTC(y, 2, nthSun(y, 2, 2), 2 - off / 60), b = Date.UTC(y, 10, nthSun(y, 10, 1), 2 - (off + 60) / 60); if (t >= a && t < b) off += 60; }
+    else if (z[1] === 'eu') { const a = Date.UTC(y, 2, nthSun(y, 2, -1), 1), b = Date.UTC(y, 9, nthSun(y, 9, -1), 1); if (t >= a && t < b) off += 60; }
+    else if (z[1] === 'au') { const a = Date.UTC(y, 3, nthSun(y, 3, 1), 3 - (off + 60) / 60), b = Date.UTC(y, 9, nthSun(y, 9, 1), 2 - off / 60); if (t < a || t >= b) off += 60; }
+    else if (z[1] === 'nz') { const a = Date.UTC(y, 3, nthSun(y, 3, 1), 3 - (off + 60) / 60), b = Date.UTC(y, 8, nthSun(y, 8, -1), 2 - off / 60); if (t < a || t >= b) off += 60; }
+    return off;
+}
 class DateTimeFormat {
     constructor(loc, o = {}) { this.o = o; }
     format(dt) {
         dt = dt === undefined ? new Date() : new Date(dt);
-        const o = this.o, utc = o.timeZone === 'UTC', G = k => utc ? dt['getUTC' + k]() : dt['get' + k](), p2 = n => String(n).padStart(2, '0');
+        const o = this.o, off = tzOffset(o.timeZone, dt.getTime()), sh = off === null ? null : new Date(dt.getTime() + off * 60000), G = k => sh ? sh['getUTC' + k]() : dt['get' + k](), p2 = n => String(n).padStart(2, '0');
         const hasD = o.year || o.month || o.day || o.weekday || o.dateStyle, hasT = o.hour || o.minute || o.second || o.timeStyle;
         const parts = [];
         if (hasD || !hasT) {
@@ -722,25 +797,78 @@ class DateTimeFormat {
         }
         return parts.join(', ');
     }
-    formatToParts(dt) { return [{ type: 'literal', value: this.format(dt) }]; }
+    formatToParts(dt) {
+        const o = this.o, str = this.format(dt), out = [], hasD = o.year || o.month || o.day || o.weekday || o.dateStyle, hasT = o.hour || o.minute || o.second || o.timeStyle;
+        const nm = o.month === 'long' || o.month === 'short' || o.dateStyle === 'long' || o.dateStyle === 'full' || o.dateStyle === 'medium';
+        const order = [];
+        if (hasD || !hasT) { if (o.weekday || o.dateStyle === 'full') order.push('weekday'); if (nm) order.push('month', 'day', 'year'); else order.push('month', 'day', 'year'); }
+        if (hasT) order.push('hour', 'minute', 'second', 'dayPeriod');
+        const re = /([A-Za-z]+|\d+)|([^A-Za-z\d]+)/g; let m, seq = 0, seenH = false;
+        const used = { weekday: !!(o.weekday || o.dateStyle === 'full'), month: !hasD ? !hasT : !!(o.month || o.dateStyle), day: !hasD ? !hasT : !!(o.day || o.dateStyle), year: !hasD ? !hasT : !!(o.year || o.dateStyle) };
+        const types = [];
+        for (const t of order) if (t in used ? used[t] : true) types.push(t);
+        // the pieces come out in the order of `types`, except that a month name that starts the string comes before the day
+        while ((m = re.exec(str))) {
+            if (m[2]) { out.push({ type: 'literal', value: m[2] }); continue; }
+            let t = types[seq++];
+            if (m[1] === 'AM' || m[1] === 'PM') t = 'dayPeriod';
+            if (t === 'second' && !(o.second || o.timeStyle === 'medium' || o.timeStyle === 'long')) t = 'dayPeriod';
+            out.push({ type: t || 'literal', value: m[1] });
+        }
+        return out;
+    }
     formatRange(a, b) { return this.format(a) + ' – ' + this.format(b); }
     resolvedOptions() { return Object.assign({ locale: 'en-US', calendar: 'gregory', numberingSystem: 'latn', timeZone: 'UTC' }, this.o); }
     static supportedLocalesOf(l) { return [].concat(l || []); }
 }
-class Collator { constructor(l, o = {}) { this.o = o; } compare = (a, b) => { a = String(a); b = String(b); if (this.o.numeric) { const x = a.split(/(\d+)/), y = b.split(/(\d+)/); for (let i = 0; i < Math.min(x.length, y.length); i++) { if (x[i] !== y[i]) { if (i % 2) return x[i] - y[i]; break; } } } return this.o.sensitivity === 'base' || this.o.sensitivity === 'accent' ? a.toLowerCase().localeCompare(b.toLowerCase()) : a.localeCompare(b); }; resolvedOptions() { return { locale: 'en-US' }; } }
+class Collator { constructor(l, o = {}) { this.o = o; } compare = (a, b) => { a = String(a); b = String(b); if (this.o.numeric) { const x = a.split(/(\d+)/), y = b.split(/(\d+)/); for (let i = 0; i < Math.min(x.length, y.length); i++) { if (x[i] !== y[i]) { if (i % 2) return x[i] - y[i]; break; } } } return a.localeCompare(b, undefined, this.o); }; resolvedOptions() { return { locale: 'en-US' }; } }
 class PluralRules { constructor(l, o = {}) { this.o = o; } select(n) { if (this.o.type === 'ordinal') { const a = n % 10, b = n % 100; return a === 1 && b !== 11 ? 'one' : a === 2 && b !== 12 ? 'two' : a === 3 && b !== 13 ? 'few' : 'other'; } return n === 1 ? 'one' : 'other'; } resolvedOptions() { return { locale: 'en-US' }; } }
 class RelativeTimeFormat { constructor(l, o = {}) { this.o = o; } format(v, u) { u = String(u).replace(/s$/, ''); const a = Math.abs(v); if (this.o.numeric === 'auto' && a <= 1) { const w = { day: ['yesterday', 'today', 'tomorrow'], year: ['last year', 'this year', 'next year'], month: ['last month', 'this month', 'next month'], week: ['last week', 'this week', 'next week'] }[u]; if (w) return w[v + 1]; } const s = a + ' ' + u + (a === 1 ? '' : 's'); return v < 0 || Object.is(v, -0) ? s + ' ago' : 'in ' + s; } }
 class ListFormat { constructor(l, o = {}) { this.o = o; } format(l) { l = [...l]; const w = this.o.type === 'disjunction' ? 'or' : 'and'; return l.length < 3 ? l.join(' ' + w + ' ') : l.slice(0, -1).join(', ') + ', ' + w + ' ' + l[l.length - 1]; } }
 class Segmenter { constructor(l, o = {}) { this.o = o; } segment(s) { const g_ = this.o.granularity === 'word' ? s.match(/\w+|\W/g) || [] : Array.from(String(s)); let i = 0; return g_.map(x => { const r = { segment: x, index: i, input: s, isWordLike: /\w/.test(x) }; i += x.length; return r; }); } }
 class Locale { constructor(t) { this.baseName = this.language = String(t).split('-')[0]; this.toString = () => String(t); } }
-def(g, { Intl: { NumberFormat, DateTimeFormat, Collator, PluralRules, RelativeTimeFormat, ListFormat, Segmenter, Locale, getCanonicalLocales: l => [].concat(l || []), supportedValuesOf: () => [], DisplayNames: class DisplayNames { of(c) { return c; } } } });
-if (!Date.prototype.toLocaleDateString || Date.prototype.toLocaleDateString.length === 0) { /* QuickJS has these; Intl-based options below override only when given */ }
-{ const ols = Date.prototype.toLocaleDateString, olt = Date.prototype.toLocaleTimeString, olx = Date.prototype.toLocaleString;
-  Date.prototype.toLocaleDateString = function (l, o) { return o ? new DateTimeFormat(l, Object.assign({}, o)).format(this) : ols.call(this); };
-  Date.prototype.toLocaleTimeString = function (l, o) { return o ? new DateTimeFormat(l, Object.assign({ hour: 'numeric', minute: 'numeric' }, o)).format(this) : olt.call(this); };
-  Date.prototype.toLocaleString = function (l, o) { return o ? new DateTimeFormat(l, o.dateStyle || o.timeStyle || o.hour || o.year || o.month ? o : Object.assign({ year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }, o)).format(this) : olx.call(this); };
-  const onl = Number.prototype.toLocaleString;
-  Number.prototype.toLocaleString = function (l, o) { return new NumberFormat(l, o).format(this); }; void onl; }
+const callable = C => { const f = function (...a) { return new C(...a); }; f.prototype = C.prototype; Object.defineProperty(f, 'name', { value: C.name }); f.supportedLocalesOf = l => [].concat(l || []); return f; };   // Intl.X() works without `new`
+const TZOFF = { '-480': 'America/Los_Angeles', '-420': 'America/Denver', '-360': 'America/Chicago', '-300': 'America/New_York', 0: 'UTC', 60: 'Europe/Paris', 120: 'Europe/Athens', 180: 'Europe/Moscow', 330: 'Asia/Calcutta', 480: 'Asia/Shanghai', 540: 'Asia/Tokyo', 600: 'Australia/Sydney' };
+const localTZ = () => { const o = -new Date().getTimezoneOffset(); return TZOFF[o] || 'UTC'; };
+Object.assign(DateTimeFormat.prototype, { resolvedOptions() { return Object.assign({ locale: 'en-US', calendar: 'gregory', numberingSystem: 'latn', timeZone: localTZ() }, this.o); } });
+def(g, { Intl: { NumberFormat: callable(NumberFormat), DateTimeFormat: callable(DateTimeFormat), Collator: callable(Collator), PluralRules: callable(PluralRules), RelativeTimeFormat: callable(RelativeTimeFormat), ListFormat: callable(ListFormat), Segmenter, Locale, getCanonicalLocales: l => [].concat(l || []), supportedValuesOf: () => [], DisplayNames: class DisplayNames { of(c) { return c; } } } });
+{ const DT = o => Object.assign({}, o), DEFD = { year: 'numeric', month: 'numeric', day: 'numeric' }, DEFT = { hour: 'numeric', minute: '2-digit', second: '2-digit' };
+  const has = (o, ks) => o && ks.some(k => o[k]);
+  const dkeys = ['year', 'month', 'day', 'weekday', 'dateStyle'], tkeys = ['hour', 'minute', 'second', 'timeStyle', 'dayPeriod'];
+  Date.prototype.toLocaleDateString = function (l, o) { return new DateTimeFormat(l, has(o, dkeys) ? DT(o) : Object.assign({}, DEFD, o)).format(this); };
+  Date.prototype.toLocaleTimeString = function (l, o) { return new DateTimeFormat(l, has(o, tkeys) ? DT(o) : Object.assign({}, DEFT, o)).format(this); };
+  Date.prototype.toLocaleString = function (l, o) { return new DateTimeFormat(l, has(o, dkeys) || has(o, tkeys) ? DT(o) : Object.assign({}, DEFD, DEFT, o)).format(this); };
+  Number.prototype.toLocaleString = function (l, o) { return new NumberFormat(l, o).format(this); };
+  // ICU-like order: punctuation < digits < letters, then letters ignoring case/accents, then lower before upper
+  const base = c => c.normalize('NFD').replace(/[\u0300-\u036f]/g, ''), cls = c => /[0-9]/.test(c) ? 1 : /[a-z]/i.test(c) || c.charCodeAt(0) > 127 ? 2 : 0;
+  String.prototype.localeCompare = function (b, l, o) {
+    const x = base(String(this)), y = base(String(b)), sens = o && o.sensitivity;
+    if (o && o.numeric) { const p = x.split(/(\d+)/), q = y.split(/(\d+)/); for (let i = 0; i < Math.min(p.length, q.length); i++) if (p[i] !== q[i] && i % 2) return Math.sign(p[i] - q[i]); }
+    for (let i = 0, n = Math.min(x.length, y.length); i < n; i++) {
+      const a = x[i], c = y[i];
+      if (a.toLowerCase() === c.toLowerCase()) continue;
+      const ka = cls(a), kc = cls(c);
+      if (ka !== kc) return ka < kc ? -1 : 1;
+      return a.toLowerCase() < c.toLowerCase() ? -1 : 1;
+    }
+    if (x.length !== y.length) return x.length < y.length ? -1 : 1;
+    if (sens === 'base' || sens === 'accent') return 0;
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] === x[i].toLowerCase() ? -1 : 1;
+    return 0;
+  };
+}
+
+// ---------- interface objects scripts probe (instanceof, window[name].prototype) or construct, without engines behind them ----------
+{
+    const iface = (name, base) => { if (g[name] !== undefined) return g[name]; const f = { [name]: class extends (base || Object) { constructor() { throw new TypeError('Illegal constructor'); } } }[name]; def(g, { [name]: f }); return f; };
+    iface('ProcessingInstruction', D.CharacterData); iface('DOMImplementation'); iface('DOMStringMap'); iface('DOMStringList'); iface('CustomElementRegistry'); iface('MediaQueryList', D.EventTarget);
+    iface('PerformanceEntry'); iface('PerformanceMark', g.PerformanceEntry); iface('PerformanceMeasure', g.PerformanceEntry); iface('PerformanceNavigationTiming', g.PerformanceEntry); iface('PerformanceResourceTiming', g.PerformanceEntry);
+    iface('FileList'); iface('DataTransfer'); iface('MessagePort', D.EventTarget); iface('ServiceWorker', D.EventTarget); iface('DocumentTimeline'); iface('KeyframeEffect'); iface('Lock'); iface('LockManager');
+    for (const n of ['MediaQueryListEvent', 'BeforeUnloadEvent', 'CompositionEvent', 'SubmitEvent', 'FormDataEvent', 'PageTransitionEvent', 'SecurityPolicyViolationEvent']) if (g[n] === undefined) def(g, { [n]: { [n]: class extends D.Event { constructor(t, o) { super(t, o); if (o) Object.assign(this, o); } } }[n] });
+    if (g.DOMRectReadOnly === undefined) def(g, { DOMRectReadOnly: D.DOMRect });
+    for (const [n, o] of [['History', g.history], ['Location', g.location], ['Navigator', g.navigator], ['Screen', g.screen]]) { const f = { [n]: function () { throw new TypeError('Illegal constructor'); } }[n]; if (g[n] === undefined) def(g, { [n]: f }); try { if (o) Object.setPrototypeOf(o, g[n].prototype); } catch (e) {} }
+    if (g.Audio === undefined) def(g, { Audio: Object.assign(function Audio(src) { const a = document.createElement('audio'); if (src !== undefined) a.src = src; return a; }, { prototype: D.HTMLAudioElement.prototype }) });
+}
 
 // ---------- unhandled rejections are logged by the host; window.onerror is wired in dom_js.c ----------
 delete g.__d;

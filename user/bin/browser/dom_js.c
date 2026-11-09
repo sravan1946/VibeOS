@@ -209,6 +209,18 @@ const ListProto = Object.create(Array.prototype, {
     [Symbol.toStringTag]: { value: 'NodeList' },
 });
 const coll = a => Object.setPrototypeOf(a, ListProto);
+// a live NodeList/HTMLCollection: re-evaluated when the tree changed (loops like `while (list.length) frag.appendChild(list[0])` rely on it)
+const isIdx = k => typeof k === 'string' && k.length > 0 && k.length < 10 && k.charCodeAt(0) >= 48 && k.charCodeAt(0) <= 57 && String(k >>> 0) === k;
+function live(compute) {
+    let g = -1, arr = [];
+    const cur = () => { const n = d.gen(); if (n !== g) { arr = compute(); g = n; } return arr; };
+    return new Proxy(coll([]), {
+        get(t, k, r) { if (k === 'length') return cur().length; if (isIdx(k)) return cur()[k]; return Reflect.get(t, k, r); },
+        has(t, k) { return isIdx(k) ? k < cur().length : k in t; },
+        ownKeys(t) { const a = cur(), r = []; for (let i = 0; i < a.length; i++) r.push(String(i)); r.push('length'); return r; },
+        getOwnPropertyDescriptor(t, k) { if (isIdx(k)) { const a = cur(); return k < a.length ? { value: a[k], writable: false, enumerable: true, configurable: true } : undefined; } return Reflect.getOwnPropertyDescriptor(t, k); },
+    });
+}
 for (const n of ['NodeList', 'HTMLCollection', 'HTMLOptionsCollection', 'HTMLFormControlsCollection']) g[n] = Object.assign(function () { throw new TypeError('Illegal constructor'); }, { prototype: ListProto });
 g.CSSStyleDeclaration = function CSSStyleDeclaration() {}; g.NamedNodeMap = function NamedNodeMap() {}; g.Window = function Window() {};
 V.coll = coll;
@@ -219,13 +231,11 @@ function record(rec) {
     if (!OBS.size) return;
     for (const o of OBS) {
         const opt = o.__opt;
+        if (rec.type === 'attributes' ? !(opt.attributes || opt.attributeFilter || opt.attributeOldValue) || (opt.attributeFilter && !opt.attributeFilter.includes(rec.attributeName))
+            : rec.type === 'childList' ? !opt.childList : !(opt.characterData || opt.characterDataOldValue)) continue;    // cheap option checks before any tree walk
         for (const t of o.__targets) {
             const hit = rec.target === t || (opt.subtree && t.contains(rec.target));
             if (!hit) continue;
-            if (rec.type === 'attributes' && !(opt.attributes || opt.attributeFilter || opt.attributeOldValue)) continue;
-            if (rec.type === 'attributes' && opt.attributeFilter && !opt.attributeFilter.includes(rec.attributeName)) continue;
-            if (rec.type === 'childList' && !opt.childList) continue;
-            if (rec.type === 'characterData' && !(opt.characterData || opt.characterDataOldValue)) continue;
             o.__q.push(Object.assign({ addedNodes: coll([]), removedNodes: coll([]), previousSibling: null, nextSibling: null, attributeName: null, oldValue: null }, rec));
             if (!o.__sched) { o.__sched = true; Promise.resolve().then(() => { o.__sched = false; const q = o.__q.splice(0); if (q.length) try { o.__cb(q, o); } catch (e) { report(e); } }); }
             break;
@@ -278,6 +288,34 @@ function connectedCallbacks(n, name) {
     rec(n);
 }
 
+class Animation extends EventTarget {
+    constructor(el, kf, o) {
+        super();
+        this.effect = { target: el, getTiming: () => o, getComputedTiming: () => o }; this.id = o.id || ''; this.playState = 'running'; this.pending = false;
+        this.onfinish = null; this.oncancel = null; this.currentTime = 0; this.playbackRate = 1; this.timeline = null;
+        this.__el = el; this.__kf = kf; this.__fill = o.fill === 'forwards' || o.fill === 'both';
+        this.finished = new Promise((res, rej) => { this.__res = res; this.__rej = rej; }); this.finished.catch(() => {}); this.ready = Promise.resolve(this);
+        const dur = Math.min(Math.max(+o.duration || 0, 0), 600) * Math.max(+o.iterations || 1, 1) + Math.max(+o.delay || 0, 0);
+        this.__t = timer(() => this.finish(), isFinite(dur) ? dur : 600, [], false);
+    }
+    __last() {
+        const k = this.__kf, r = {};
+        if (Array.isArray(k)) { for (const f of k) if (f) Object.assign(r, f); }
+        else if (k) for (const p in k) { const v = k[p]; r[p] = Array.isArray(v) ? v[v.length - 1] : v; }
+        return r;
+    }
+    finish() {
+        if (this.playState === 'finished' || this.playState === 'idle') return;
+        this.playState = 'finished'; clear(this.__t);
+        if (this.__fill) { const f = this.__last(), st = this.__el.style; for (const p in f) if (p !== 'offset' && p !== 'easing' && p !== 'composite') try { st[p === 'cssFloat' ? 'float' : p] = f[p]; } catch (e) {} }
+        this.__res(this);
+        const ev = new Event('finish'); ev.currentTime = this.currentTime; ev.timelineTime = null;
+        if (typeof this.onfinish === 'function') try { this.onfinish(ev); } catch (e) { report(e); }
+        this.dispatchEvent(ev);
+    }
+    cancel() { if (this.playState === 'idle') return; this.playState = 'idle'; clear(this.__t); const ev = new Event('cancel'); if (typeof this.oncancel === 'function') try { this.oncancel(ev); } catch (e) { report(e); } this.dispatchEvent(ev); }
+    play() {} pause() {} reverse() {} updatePlaybackRate() {} persist() {} commitStyles() {}
+}
 class Node extends EventTarget {
     get nodeType() { return d.type(this.__id); }
     get nodeName() { const t = d.tag(this.__id); return this.nodeType === 1 ? t.toUpperCase() : t; }
@@ -287,7 +325,7 @@ class Node extends EventTarget {
     get lastChild() { return wrap(d.last(this.__id)); }
     get nextSibling() { return wrap(d.next(this.__id)); }
     get previousSibling() { return wrap(d.prev(this.__id)); }
-    get childNodes() { const r = []; for (let c = d.first(this.__id); c; c = d.next(c)) r.push(wrap(c)); return coll(r); }
+    get childNodes() { const id = this.__id; return live(() => { const r = []; for (let c = d.first(id); c; c = d.next(c)) r.push(wrap(c)); return r; }); }
     get ownerDocument() { return this.nodeType === 9 ? null : document; }
     get isConnected() { return d.connected(this.__id); }
     get baseURI() { return d.url(); }
@@ -320,7 +358,7 @@ class Node extends EventTarget {
     replaceChild(n, o) { if (n === o) return o; this.insertBefore(n, o); this.removeChild(o); return o; }
     replaceChildren(...a) { while (this.firstChild) this.removeChild(this.firstChild); this.append(...a); }
     cloneNode(deep) { return wrap(d.clone(this.__id, !!deep)); }
-    contains(n) { for (; n; n = n.parentNode) if (n === this) return true; return false; }
+    contains(n) { if (!n || n.__id === undefined) return false; const me = this.__id; for (let i = n.__id; i; i = d.parent(i)) if (i === me) return true; return false; }
     isSameNode(n) { return this === n; }
     isEqualNode(n) { return !!n && this.nodeType === n.nodeType && (this.nodeType === 1 ? this.outerHTML === n.outerHTML : this.textContent === n.textContent); }
     compareDocumentPosition(o) {
@@ -368,29 +406,45 @@ class Comment extends CharacterData {}
 class CDATASection extends Text {}
 
 // ---- selectors and queries shared by Element, Document and DocumentFragment
+// :scope is the element the query runs on: the engine doesn't know it, so mark that element for the duration of the call
+const scoped = (id, s, f) => {
+    s = String(s);
+    if (!s.includes(':scope')) return f(s);
+    if (d.type(id) !== 1) return f(s.replace(/:scope/g, ':root'));
+    d.setAttr(id, 'data-vq', '1');
+    try { return f(s.replace(/:scope/g, '[data-vq]')); } finally { d.delAttr(id, 'data-vq'); }
+};
 const query = {
-    querySelector(s) { return wrap(d.qsa(this.__id, String(s), true)[0] || 0); },
-    querySelectorAll(s) { return coll(d.qsa(this.__id, String(s), false).map(wrap)); },
-    getElementsByTagName(t) { t = String(t); return t === '*' ? this.querySelectorAll('*') : this.querySelectorAll(t.toLowerCase()); },
+    querySelector(s) { return wrap(scoped(this.__id, s, q => d.qsa(this.__id, q, true))[0] || 0); },
+    querySelectorAll(s) { return coll(scoped(this.__id, s, q => d.qsa(this.__id, q, false)).map(wrap)); },
+    getElementsByTagName(t) { t = String(t); const q = t === '*' ? '*' : t.toLowerCase(); return live(() => this.querySelectorAll(q)); },
     getElementsByTagNameNS(ns, t) { return this.getElementsByTagName(t); },
-    getElementsByClassName(c) { c = String(c).trim(); return c ? this.querySelectorAll(c.split(/\s+/).map(x => '.' + CSS.escape(x)).join('')) : coll([]); },
-    get children() { const r = []; for (let c = d.first(this.__id); c; c = d.next(c)) if (d.type(c) === 1) r.push(wrap(c)); return coll(r); },
+    getElementsByClassName(c) { c = String(c).trim(); const q = c.split(/\s+/).map(x => '.' + CSS.escape(x)).join(''); return c ? live(() => this.querySelectorAll(q)) : coll([]); },
+    get children() { const id = this.__id; return live(() => { const r = []; for (let c = d.first(id); c; c = d.next(c)) if (d.type(c) === 1) r.push(wrap(c)); return r; }); },
     get firstElementChild() { for (let c = d.first(this.__id); c; c = d.next(c)) if (d.type(c) === 1) return wrap(c); return null; },
     get lastElementChild() { for (let c = d.last(this.__id); c; c = d.prev(c)) if (d.type(c) === 1) return wrap(c); return null; },
     get childElementCount() { let n = 0; for (let c = d.first(this.__id); c; c = d.next(c)) if (d.type(c) === 1) n++; return n; },
     getElementById(id) { id = String(id); for (const e of d.qsa(this.__id, '[id]', false)) if (d.getAttr(e, 'id') === id) return wrap(e); return null; },
 };
+// constructed stylesheets: each adopted sheet gets a hidden <style> in the document head / the shadow root that its rules are written to
+function adopt(root, list) {
+    list = [...list || []];
+    const old = root.__ass || [], where = root.head || root;
+    for (const sh of old) if (!list.includes(sh) && sh.__ad && sh.__o) { sh.__o.remove(); sh.__o = null; sh.__ad = false; }
+    for (const sh of list) if (sh && !sh.__o) { const st = document.createElement('style'); st.setAttribute('data-adopted', ''); where.appendChild(st); sh.__o = st; sh.__ad = true; sh.__sync(); }
+    root.__ass = list;
+}
 function mix(dst, src) { Object.defineProperties(dst, Object.getOwnPropertyDescriptors(src)); }
 
 class DocumentFragment extends Node {
-    get adoptedStyleSheets() { return this.__ass || []; } set adoptedStyleSheets(v) { this.__ass = v; }
+    get adoptedStyleSheets() { return this.__ass || (this.__ass = []); } set adoptedStyleSheets(v) { adopt(this, v); }
     get innerHTML() { return d.html(this.__id, false); }
     set innerHTML(v) { d.setHTML(this.__id, v == null ? '' : String(v)); }
 }
 mix(DocumentFragment.prototype, query);
 class ShadowRoot extends DocumentFragment {
     get mode() { return d.smode(this.__id) === 2 ? 'closed' : 'open'; } get host() { return wrap(d.host(this.__id)); } get delegatesFocus() { return false; }
-    get adoptedStyleSheets() { return this.__ass || []; } set adoptedStyleSheets(v) { this.__ass = v; }
+    get adoptedStyleSheets() { return this.__ass || (this.__ass = []); } set adoptedStyleSheets(v) { adopt(this, v); }
     get activeElement() { return null; } getSelection() { return g.getSelection(); }
 }
 
@@ -581,7 +635,7 @@ class Element extends Node {
     get outerText() { return this.innerText; }
     get nextElementSibling() { for (let n = this.nextSibling; n; n = n.nextSibling) if (n.nodeType === 1) return n; return null; }
     get previousElementSibling() { for (let n = this.previousSibling; n; n = n.previousSibling) if (n.nodeType === 1) return n; return null; }
-    matches(s) { return d.matches(this.__id, String(s)); }
+    matches(s) { return scoped(this.__id, s, q => d.matches(this.__id, q)); }
     webkitMatchesSelector(s) { return this.matches(s); }
     closest(s) { for (let e = this; e && e.nodeType === 1; e = e.parentNode) if (e.matches(s)) return e; return null; }
     insertAdjacentHTML(where, html) {
@@ -608,7 +662,10 @@ class Element extends Node {
         return wrap(id);
     }
     get shadowRoot() { const id = d.shadow(this.__id); return id && d.smode(id) === 1 ? wrap(id) : null; }
-    animate() { return { finished: Promise.resolve(), cancel() {}, play() {}, pause() {}, finish() {}, onfinish: null, addEventListener() {} }; }
+    animate(kf, o) {                            // runs for its duration (capped), then applies the end frame when fill holds it
+        const a = new Animation(this, kf, typeof o === 'number' ? { duration: o } : o || {});
+        return a;
+    }
     getAnimations() { return []; }
     // geometry: from the display items laid out for the node (js.c n_rect)
     getBoundingClientRect() { const r = rectOf(this); return new DOMRect(r.x, r.y, r.w, r.h); }
@@ -920,7 +977,7 @@ class Document extends Node {
     get scripts() { return coll(this.querySelectorAll('script')); }
     get embeds() { return coll([]); } get plugins() { return coll([]); }
     get styleSheets() { return coll([...this.querySelectorAll('style, link[rel~=stylesheet]')].map(e => e.sheet || new g.CSSStyleSheet())); }
-    get adoptedStyleSheets() { return this.__ass || []; } set adoptedStyleSheets(v) { this.__ass = v; }
+    get adoptedStyleSheets() { return this.__ass || (this.__ass = []); } set adoptedStyleSheets(v) { adopt(this, v); }
     get fonts() { return { ready: Promise.resolve(), load: () => Promise.resolve([]), check: () => true, add() {}, forEach() {}, addEventListener() {} }; }
     get cookie() { return g.__cookieGet(); }
     set cookie(v) { g.__cookieSet(String(v)); }
@@ -1088,7 +1145,7 @@ raf.n = 0;
 
 V.go = go; V.show = show; V.d = d; V.timer = timer; V.W = W; V.document = document; V.T0 = T0; V.EventTarget = EventTarget; V.ET = EventTarget.prototype;
 V.classes = { Event, UIEvent, MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, FocusEvent, InputEvent, CustomEvent, ErrorEvent, MessageEvent, HashChangeEvent, PopStateEvent, ProgressEvent, PromiseRejectionEvent, StorageEvent,
-    TransitionEvent, AnimationEvent, ClipboardEvent, DragEvent, TouchEvent, EventTarget, Node, CharacterData, Text, Comment, CDATASection, Element, Document, DocumentFragment, ShadowRoot, DocumentType, MutationObserver, DOMTokenList, DOMRect, Attr,
+    TransitionEvent, AnimationEvent, Animation, ClipboardEvent, DragEvent, TouchEvent, EventTarget, Node, CharacterData, Text, Comment, CDATASection, Element, Document, DocumentFragment, ShadowRoot, DocumentType, MutationObserver, DOMTokenList, DOMRect, Attr,
     HTMLAnchorElement, HTMLImageElement, HTMLInputElement, HTMLButtonElement, HTMLFormElement, HTMLSelectElement, HTMLOptionElement, HTMLTextAreaElement, HTMLLabelElement, HTMLScriptElement, HTMLLinkElement,
     HTMLStyleElement, HTMLMetaElement, HTMLBaseElement, HTMLTemplateElement, HTMLCanvasElement, HTMLMediaElement, HTMLVideoElement, HTMLAudioElement, HTMLIFrameElement, HTMLDialogElement, HTMLDetailsElement };
 
@@ -1136,7 +1193,7 @@ function computedStyle(e) {
         if (base.get('height') === 'auto' && r.h) base.set('height', r.h + 'px');
         for (const [k, v] of parseStyle(e.getAttribute('style') || '')) if (!/^(color|background-color|display|width|height)$/.test(k) || !base.has(k)) base.set(k, v.replace(/\s*!important$/, ''));
     }
-    const api = { getPropertyValue: n => base.get(String(n).toLowerCase()) || '', getPropertyPriority: () => '', item: i => [...base.keys()][i] || '', setProperty() {}, removeProperty() { return ''; } };
+    const api = { getPropertyValue: n => { n = String(n); return n.startsWith('--') ? (e && e.nodeType === 1 ? d.cvar(e.__id, n) : '') : base.get(n.toLowerCase()) || ''; }, getPropertyPriority: () => '', item: i => [...base.keys()][i] || '', setProperty() {}, removeProperty() { return ''; } };
     return new Proxy({}, {
         get(t, k) { if (typeof k !== 'string') return undefined; if (k in api) return api[k]; if (k === 'length') return base.size; if (k === 'cssText') return [...base].map(([a, b]) => a + ': ' + b + ';').join(' ');
             if (k === 'cssFloat') return base.get('float'); return base.get(cssName(k)) ?? ''; },

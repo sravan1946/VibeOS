@@ -1061,6 +1061,7 @@ static int fetch_cli(int n, char **urls) {
 static void drop_key(struct ui *ui, int i) { memmove(ui->keys + i, ui->keys + i + 1, (--ui->nkeys - i) * sizeof ui->keys[0]); }
 
 int main(int argc, char **argv) {
+    js_set_layout_hook(js_relayout);
     if (argc > 2 && !strcmp(argv[1], "--fetch")) return fetch_cli(argc - 2, argv + 2);
     uni_init();
     win = gui_window_create("Vibe Browser", 960, 660, 0);
