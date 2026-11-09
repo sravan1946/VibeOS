@@ -1083,6 +1083,48 @@ static int line_of(uint8_t k, int v, int nlines) {             /* 1-based line f
     return v > 0 ? v : nlines + 1 + v;
 }
 
+/* named grid lines: [a b] markers in a grid-template-columns/rows string; returns the 0-based line index of the first line called `name`, or -1 */
+static int scan_lines(const char *s, const char *end, const char *nm, int ln, int *pos) {
+    while (s < end) {
+        while (s < end && *s == ' ') s++;
+        if (s >= end) break;
+        if (*s == '[') {
+            const char *q = s + 1;
+            while (q < end && *q != ']') {
+                while (q < end && *q == ' ') q++;
+                const char *w = q;
+                while (q < end && *q != ' ' && *q != ']') q++;
+                if ((int)(q - w) == ln && !strncmp(w, nm, ln)) return *pos;
+            }
+            s = q < end ? q + 1 : end;
+            continue;
+        }
+        const char *e = s;
+        int d = 0;
+        while (e < end && (*e != ' ' || d)) { if (*e == '(') d++; if (*e == ')') d--; e++; }
+        const char *comma = !strncmp(s, "repeat(", 7) ? memchr(s, ',', e - s) : 0;
+        if (comma) {
+            int cnt = isdigit((unsigned char)s[7]) ? atoi(s + 7) : 1, st = *pos;
+            if (cnt > 40) cnt = 40;
+            for (int i = 0; i < cnt; i++) { int r = scan_lines(comma + 1, e - 1, nm, ln, pos); if (r >= 0) return r; }
+        } else (*pos)++;
+        s = e;
+    }
+    return -1;
+}
+static int named_line(const char *tmpl, const char *base, int edge) {   /* edge 0: start, 1: end; `base` is a custom-ident */
+    if (!tmpl || !base) return -1;
+    char nm[48];
+    int l = strlen(base), pos;
+    if (l > 40) return -1;
+    memcpy(nm, base, l); strcpy(nm + l, edge ? "-end" : "-start");
+    pos = 0;
+    int r = scan_lines(tmpl, tmpl + strlen(tmpl), nm, l + (edge ? 4 : 6), &pos);
+    if (r >= 0) return r;
+    pos = 0;
+    return scan_lines(tmpl, tmpl + strlen(tmpl), base, l, &pos);
+}
+
 struct gitem { struct bx *b; int r, c, rs, cs; };
 
 static void lay_grid(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *ch) {
@@ -1132,12 +1174,23 @@ static void lay_grid(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
         if (x->garea) {
             const char *nm = css_str(x->garea - 1);
             for (int q = 0; q < nar; q++) if (!strcmp(ar[q].name, nm)) { r0 = ar[q].r0; c0 = ar[q].c0; rs = ar[q].r1 - ar[q].r0 + 1; cs = ar[q].c1 - ar[q].c0 + 1; }
+            if (r0 < 0) {                                   /* no such template area: lines called nm-start / nm-end define one */
+                const char *ctm = b->gcols ? css_str(b->gcols - 1) : 0, *rtm = b->grows ? css_str(b->grows - 1) : 0;
+                int a = named_line(ctm, nm, 0), z = named_line(ctm, nm, 1), ra = named_line(rtm, nm, 0), rz = named_line(rtm, nm, 1);
+                if (a >= 0) { c0 = a; if (z > a) cs = z - a; }
+                if (ra >= 0) { r0 = ra; if (rz > ra) rs = rz - ra; }
+            }
         } else {
+            const char *ctm = b->gcols ? css_str(b->gcols - 1) : 0, *rtm = b->grows ? css_str(b->grows - 1) : 0;
             int s = line_of(x->gk[0], x->g[0], nc + 1), e = line_of(x->gk[1], x->g[1], nc + 1);
+            if (x->gk[0] == K_STR) s = named_line(ctm, css_str(x->g[0]), 0) + 1;
+            if (x->gk[1] == K_STR) e = named_line(ctm, css_str(x->g[1]), 1) + 1;
             if (x->gk[1] == K_SPAN) cs = x->g[1]; else if (s && e > s) cs = e - s;
             if (x->gk[0] == K_SPAN) cs = x->g[0];
             if (s > 0) c0 = s - 1;
             s = line_of(x->gk[2], x->g[2], nr_t + 1); e = line_of(x->gk[3], x->g[3], nr_t + 1);
+            if (x->gk[2] == K_STR) s = named_line(rtm, css_str(x->g[2]), 0) + 1;
+            if (x->gk[3] == K_STR) e = named_line(rtm, css_str(x->g[3]), 1) + 1;
             if (x->gk[3] == K_SPAN) rs = x->g[3]; else if (s && e > s) rs = e - s;
             if (x->gk[2] == K_SPAN) rs = x->g[2];
             if (s > 0) r0 = s - 1;

@@ -1315,6 +1315,7 @@ static void decl(char *name, char *val, int imp) {
         if (n < 1) return;
         if (grid_line(pc[0], &k, &v)) put(col ? P_GCS : P_GRS, k, v);
         if (n > 1 && grid_line(pc[1], &k, &v)) put(col ? P_GCE : P_GRE, k, v);
+        else if (pc[0][0] && (isalpha((unsigned char)*pc[0]) || *pc[0] == '_') && strncasecmp(pc[0], "span", 4) && strcasecmp(pc[0], "auto")) put(col ? P_GCE : P_GRE, K_STR, intern(pc[0], strlen(pc[0])));   /* a lone name is both edges */
         else put(col ? P_GCE : P_GRE, K_AUTO, 0);
     }
     else if (!strcmp(name, "grid-template") || !strcmp(name, "grid")) {

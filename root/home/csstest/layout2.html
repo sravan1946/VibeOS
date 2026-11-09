@@ -28,4 +28,6 @@ body { margin: 8px; font-family: sans-serif; font-size: 14px; }
 <!-- flex/grid items that are plain inline elements are blockified (gap applies); a nowrap inline (sup.reference) wraps with the word before it, never under a float -->
 <div class="t" style="display:flex;gap:24px"><a>Docs</a><a>Play</a><span>Blog</span></div>
 <div class="t" style="width:200px"><div style="float:right;width:120px;height:40px;background:#ccc"></div>one two three four five six seven eight hardware,<sup style="white-space:nowrap"><a href="#">[2][3]</a></sup> after</div>
+<!-- grid: named lines ([x-start]/[x-end]) place items via grid-column: x / grid-row: x / grid-area: x -->
+<div class="t" style="display:grid;gap:10px;grid-template-columns:[l] 0px [content-start] repeat(3,minmax(0,1fr)) [content-end] 0px;grid-template-rows:[head-start] auto [head-end body-start] auto [body-end]"><div style="grid-column:content;grid-row:head">wide head</div><div style="grid-area:body">b</div></div>
 </body></html>
