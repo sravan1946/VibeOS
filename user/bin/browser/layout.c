@@ -2303,12 +2303,13 @@ static void paint_box(int bi, int ox, int oy) {
     if (b->opacity == 0 || (b->inner == IN_CTL && b->ref < 0)) return;
     int positioned = b->pos != POS_STATIC, mark = npe;
     struct stick *sg = 0;
-    if (b->pos == POS_STICKY && !in_stk && D->nsk < MAXSTK && b->k[L_TOP] != K_AUTO) {       /* moved at draw time: remember what it emits */
+    int fixd = b->pos == POS_FIXED;                                      /* fixed = sticky with top = where it sits at scroll 0 and no parent limit */
+    if ((fixd || (b->pos == POS_STICKY && b->k[L_TOP] != K_AUTO)) && !in_stk && D->nsk < MAXSTK) {       /* moved at draw time: remember what it emits */
         int ph = b->par >= 0 ? B[b->par].h : VIEWH;
         sg = &D->sk[D->nsk++];
         struct bx *pp = b->par >= 0 ? &B[b->par] : 0;
-        *sg = (struct stick){ .i0 = D->nit, .d0 = D->ndc, .c0 = imax_(D->ncl, 1), .y0 = b->y + oy, .h = b->h, .top = rl(b, L_TOP, ph),
-                              .lim = pp ? pp->y + oy + pp->h - pp->bw[2] - pp->p[2] : 1 << 30 };
+        *sg = (struct stick){ .i0 = D->nit, .d0 = D->ndc, .c0 = imax_(D->ncl, 1), .y0 = b->y + oy, .h = b->h, .top = fixd ? b->y + oy : rl(b, L_TOP, ph),
+                              .lim = pp && !fixd ? pp->y + oy + pp->h - pp->bw[2] - pp->p[2] : 1 << 30 };
         in_stk = 1;
     }
     if (b->pos == POS_REL) { int dx, dy; rel_offset(b, &dx, &dy); ox += dx; oy += dy; }
@@ -2620,7 +2621,7 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     if (tag == T_CENTER) cx2->incenter = 1;
     int disp = cp->v[P_DISPLAY];
     int bold = cp->v[P_BOLD], mono = cp->v[P_FAMILY] == FAM_MONO, size = cp->v[P_FSIZE];
-    ni->font = mono ? (bold ? F_MONOB : F_MONO) : size >= 22 ? F_TITLE : bold ? F_UIB : F_UI;
+    ni->font = mono ? (bold ? F_MONOB : F_MONO) : size >= 22 ? (size <= 23 ? F_TITLE : font_scaled(size)) : bold ? F_UIB : F_UI;
     ni->col = cp->v[P_COLOR];
     ni->align = cp->v[P_ALIGN] == TA_CENTER ? 1 : cp->v[P_ALIGN] == TA_RIGHT ? 2 : 0;
     ni->ws = cp->v[P_WS] == WS_BREAK_SPACES ? 3 : cp->v[P_WS];
