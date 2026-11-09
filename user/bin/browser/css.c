@@ -64,15 +64,16 @@ const char *css_str(int id) { return SP ? SP + id : ""; }
 
 /* ---------- state ---------- */
 struct decl { uint8_t prop, imp, kind; int v, a; };
+_Static_assert(P_N <= 250, "decl.prop is a byte and P_CUSTOM/P_RAWDECL live above the property ids; cascade masks hold 256 bits");
 #define P_CUSTOM 250                                    /* --name: raw value (a = name, v = value) */
 #define P_RAWDECL 251                                   /* longhand/shorthand whose value has var(): a = property name, v = value text */
-struct rule { int sel, d0, nd, order, next; uint32_t kh; uint8_t layer, ua; };
+struct rule { int sel, d0, nd, order, next, scope; uint32_t kh; uint8_t layer, ua, bk; };   /* bk/kh: the bucket (1 id, 2 class, 3 tag, 0 any) and key hash the rule is chained under */
 static struct rule *R; static int nr, rcap;
 static struct decl *D; static int nd, dcap;
 #define HB 4096
 static int hid[HB], hcl[HB], htg[HB], huni;           /* rule index + 1 chains */
 static int vpw = 960, vph = 600;
-static int order_n, cur_layer = 255, cur_ua, any_layers;
+static int order_n, cur_layer = 255, cur_ua, any_layers, cur_scope, cur_nscope;
 static char cur_base[URL_MAX], page_base[URL_MAX];
 static int lay_name[128], nlay;
 static int ua_ready, ua_nr, ua_nd, ua_si, ua_co, ua_se;
@@ -633,7 +634,7 @@ static const struct grp { const char *n; uint8_t p[14]; } GRP[] = {
     { "border-top", { P_BWT, P_BSTT, P_BCT, 255 } }, { "border-right", { P_BWR, P_BSTR, P_BCR, 255 } },
     { "border-bottom", { P_BWB, P_BSTB, P_BCB, 255 } }, { "border-left", { P_BWL, P_BSTL, P_BCL, 255 } },
     { "border-radius", { P_RTL, P_RTR, P_RBR, P_RBL, 255 } },
-    { "background", { P_BG, P_BGIMG, P_BGREP, P_BGPX, P_BGPY, P_BGSW, P_BGSH, 255 } },
+    { "background", { P_BG, P_BGIMG, P_BGREP, P_BGPX, P_BGPY, P_BGSW, P_BGSH, P_BG2IMG, 255 } },
     { "background-position", { P_BGPX, P_BGPY, 255 } }, { "background-size", { P_BGSW, P_BGSH, 255 } },
     { "font", { P_ITALIC, P_FWEIGHT, P_FSIZE, P_LH, P_FAMILY, 255 } }, { "flex", { P_FGROW, P_FSHRINK, P_FBASIS, 255 } },
     { "flex-flow", { P_FLEXDIR, P_FLEXWRAP, 255 } }, { "gap", { P_RGAP, P_CGAP, 255 } }, { "grid-gap", { P_RGAP, P_CGAP, 255 } },
@@ -641,7 +642,7 @@ static const struct grp { const char *n; uint8_t p[14]; } GRP[] = {
     { "place-items", { P_ALIGNI, P_JUSTI, 255 } }, { "place-content", { P_ALIGNC, P_JUSTC, 255 } }, { "place-self", { P_ALIGNS, P_JUSTS, 255 } },
     { "text-decoration", { P_DECO, 255 } }, { "grid-column", { P_GCS, P_GCE, 255 } }, { "grid-row", { P_GRS, P_GRE, 255 } },
     { "grid-area", { P_GAREA, P_GRS, P_GCS, P_GRE, P_GCE, 255 } }, { "outline", { P_OUTW, P_OUTS, P_OUTC, 255 } },
-    { "mask-image", { P_MASKIMG, 255 } }, { "box-shadow", { P_SHX, P_SHY, P_SHB, P_SHS, P_SHC, P_SHI, 255 } }, { "object-position", { P_OBJPX, P_OBJPY, 255 } }, { "transform", { P_TRX, P_TRY, 255 } }, { "border-spacing", { P_SPACING, P_SPACINGY, 255 } },
+    { "mask-image", { P_MASKIMG, 255 } }, { "box-shadow", { P_SHX, P_SHY, P_SHB, P_SHS, P_SHC, P_SHI, 255 } }, { "object-position", { P_OBJPX, P_OBJPY, 255 } }, { "transform", { P_TRX, P_TRY, P_TRSX, P_TRSY, P_TRROT, 255 } }, { "border-spacing", { P_SPACING, P_SPACINGY, 255 } },
     { "grid-template", { P_GROWS, P_GCOLS, P_GAREAS, 255 } }, { "vertical-align", { P_VALIGN, P_VAOFF, 255 } },
 };
 
@@ -747,7 +748,7 @@ static int pos_parse(char **tk, int n, int *kx, int *vx, int *ky, int *vy) {
 }
 
 /* background shorthand, one comma-separated layer */
-static void bg_layer(char *layer, int is_last, int first) {
+static void bg_layer(char *layer, int is_last, int which) {      /* which: 0 = the top image layer, 1 = the second, -1 = colour only */
     char buf[600], *tk[16];
     int n = toks(layer, buf, sizeof buf, tk, 16);
     char *pos[5]; int np = 0, inpos = 1, sz = 0;
@@ -774,13 +775,15 @@ static void bg_layer(char *layer, int is_last, int first) {
     }
     if (rx) rep = rep_val(rx, ry);
     if (is_last) put(P_BG, ck, cv);
-    if (first) {
-        put(P_BGIMG, img, imgv); put(P_BGREP, K_PX, rep);
+    if (which >= 0) {
+        static const uint8_t L0[6] = { P_BGIMG, P_BGREP, P_BGPX, P_BGPY, P_BGSW, P_BGSH }, L1[6] = { P_BG2IMG, P_BG2REP, P_BG2PX, P_BG2PY, P_BG2SW, P_BG2SH };
+        const uint8_t *P = which ? L1 : L0;
+        put(P[0], img, imgv); put(P[1], K_PX, rep);
         int kx = K_PCT, vx = 0, ky = K_PCT, vy = 0;
         if (np) pos_parse(pos, np, &kx, &vx, &ky, &vy);
-        put(P_BGPX, kx, vx); put(P_BGPY, ky, vy);
-        if (rk[0] == K_COVER || rk[0] == K_CONTAIN) { put(P_BGSW, rk[0], 0); put(P_BGSH, rk[0], 0); }
-        else { put(P_BGSW, rk[0], rv[0]); put(P_BGSH, sz == 2 ? rk[1] : K_AUTO, rv[1]); }
+        put(P[2], kx, vx); put(P[3], ky, vy);
+        if (rk[0] == K_COVER || rk[0] == K_CONTAIN) { put(P[4], rk[0], 0); put(P[5], rk[0], 0); }
+        else { put(P[4], rk[0], rv[0]); put(P[5], sz == 2 ? rk[1] : K_AUTO, rv[1]); }
     }
 }
 
@@ -796,13 +799,16 @@ static void background_sh(char *val) {
         else if (*p == ')' && d) d--;
         else if (*p == ',' && !d && nl < 8) { *p = 0; layers[nl++] = p + 1; }
     }
-    /* we draw one image: the first layer that has one; the colour comes from the last layer */
-    char *top = layers[0];
-    for (int i = 0; i < nl; i++) if (strstr(layers[i], "url(") || strstr(layers[i], "gradient(")) { top = layers[i]; break; }
+    /* two image layers are kept (top, then the one under it); the colour comes from the last layer */
+    int img[2] = { -1, -1 }, ni = 0;
+    for (int i = 0; i < nl && ni < 2; i++) if (strstr(layers[i], "url(") || strstr(layers[i], "gradient(")) img[ni++] = i;
     char tmp[700];
-    strlcpy(tmp, top, sizeof tmp);
-    bg_layer(tmp, nl == 1, 1);
-    if (nl > 1) { strlcpy(tmp, layers[nl - 1], sizeof tmp); bg_layer(tmp, 1, 0); }
+    strlcpy(tmp, layers[img[0] >= 0 ? img[0] : 0], sizeof tmp);
+    bg_layer(tmp, 0, 0);
+    if (img[1] >= 0) { strlcpy(tmp, layers[img[1]], sizeof tmp); bg_layer(tmp, 0, 1); }
+    else put(P_BG2IMG, K_NONE, 0);
+    strlcpy(tmp, layers[nl - 1], sizeof tmp);
+    bg_layer(tmp, 1, -1);
 }
 
 static int classify_family(const char *list) {     /* FAM_*, or -1 when no listed family is one we know */
@@ -959,11 +965,16 @@ static void special(const struct pdef *d, char *val) {
         else put(p, K_RAW, intern(val, strlen(val)));
         break;
     case P_BGIMG: {
-        char url[URL_MAX], buf[600], *tk[8];
-        if (!toks(val, buf, sizeof buf, tk, 8)) break;
-        if (!strncasecmp(tk[0], "url(", 4) && url_arg(tk[0], url, sizeof url)) put(p, K_STR, intern(url, strlen(url)));
-        else if (strstr(tk[0], "gradient(")) put(p, K_GRAD, intern(tk[0], strlen(tk[0])));
-        else if (!strcasecmp(tk[0], "none")) put(p, K_NONE, 0);
+        char url[URL_MAX], buf[900], *tk[16];
+        int n = toks(val, buf, sizeof buf, tk, 16), got = 0;
+        if (!n) break;
+        for (int i = 0; i < n && got < 2; i++) {
+            int pr = got ? P_BG2IMG : P_BGIMG;
+            if (!strncasecmp(tk[i], "url(", 4) && url_arg(tk[i], url, sizeof url)) { put(pr, K_STR, intern(url, strlen(url))); got++; }
+            else if (strstr(tk[i], "gradient(")) { put(pr, K_GRAD, intern(tk[i], strlen(tk[i]))); got++; }
+            else if (!strncasecmp(tk[i], "none", 4) && i == 0) { put(pr, K_NONE, 0); got++; }
+        }
+        if (got < 2) put(P_BG2IMG, K_NONE, 0);
         break;
     }
     case P_BGREP: {
@@ -1048,7 +1059,27 @@ static void special(const struct pdef *d, char *val) {
                 if (axis == 0 && c2) { trim(c2); if (lenv(c2, F_PCT | F_NEG, &ak, &av)) { ky = ak; vy = av; } }
             }
         }
-        if (!strcasecmp(val, "none") || found || 1) { put(P_TRX, kx, vx); put(P_TRY, ky, vy); }
+        int sx = 1000, sy = 1000, rot = 0;
+        for (const char *q = val; *q; q++) {                  /* scale()/scaleX/scaleY and rotate(): kept as numbers for LAYOUT to approximate or ignore */
+            if (q > val && (isalnum((unsigned char)q[-1]) || q[-1] == '-')) continue;
+            int sc = !strncasecmp(q, "scale", 5), ro = !strncasecmp(q, "rotate(", 7);
+            if (!sc && !ro) continue;
+            const char *a = q + (ro ? 6 : 5);
+            int axis = 0;
+            if (sc && (*a | 32) == 'x') { axis = 1; a++; } else if (sc && (*a | 32) == 'y') { axis = 2; a++; }
+            if (*a != '(') continue;
+            a++;
+            double x, y;
+            int pc;
+            char u[8];
+            if (!cnum(&a, &x, &pc, u)) continue;
+            if (ro) { double dg; if (angle_deg(x, u, &dg)) rot = rnd(dg * 10); continue; }
+            y = x;
+            while (isspace((unsigned char)*a)) a++;
+            if (*a == ',') { a++; if (!cnum(&a, &y, &pc, u)) y = x; }
+            if (axis == 1) sx = rnd(x * 1000); else if (axis == 2) sy = rnd(x * 1000); else { sx = rnd(x * 1000); sy = rnd(y * 1000); }
+        }
+        put(P_TRX, kx, vx); put(P_TRY, ky, vy); put(P_TRSX, K_PX, sx); put(P_TRSY, K_PX, sy); put(P_TRROT, K_PX, rot);
         break;
     }
     case P_SHX: {                                          /* first shadow layer: [inset] x y [blur [spread]] [colour] */
@@ -1386,8 +1417,8 @@ static int cmp_op(int op, double a, double b) {     /* a OP b; op: '<' 'l' (<=) 
 }
 
 static int mq_numeric(const char *f, double *have) {
-    if (!strcmp(f, "width") || !strcmp(f, "device-width")) *have = vpw;
-    else if (!strcmp(f, "height") || !strcmp(f, "device-height")) *have = vph;
+    if (!strcmp(f, "width") || !strcmp(f, "device-width") || !strcmp(f, "inline-size")) *have = vpw;
+    else if (!strcmp(f, "height") || !strcmp(f, "device-height") || !strcmp(f, "block-size")) *have = vph;
     else if (!strcmp(f, "aspect-ratio") || !strcmp(f, "device-aspect-ratio")) *have = (double)vpw / vph;
     else if (!strcmp(f, "resolution")) *have = 1;
     else if (!strcmp(f, "color")) *have = 8;
@@ -1609,27 +1640,53 @@ static int sup_cond(const char **pp, const char *end) {
 }
 
 /* ---------- rules ---------- */
-static void rebucket(int i) {
-    int kind, *head;
-    uint32_t h;
-    sel_key(&SE[R[i].sel], &kind, &h);
-    head = kind == 1 ? &hid[h & (HB - 1)] : kind == 2 ? &hcl[h & (HB - 1)] : kind == 3 ? &htg[h & (HB - 1)] : &huni;
-    R[i].next = *head; R[i].kh = h;
+static void link_rule(int i, int kind, uint32_t h) {
+    int *head = kind == 1 ? &hid[h & (HB - 1)] : kind == 2 ? &hcl[h & (HB - 1)] : kind == 3 ? &htg[h & (HB - 1)] : &huni;
+    R[i].next = *head; R[i].kh = h; R[i].bk = kind;
     *head = i + 1;
 }
+static void rebucket(int i) { link_rule(i, R[i].bk, R[i].kh); }      /* after a soft reset: same bucket as before */
 
-static void add_rule(const struct sel *s, int d0, int ndl) {
+/* a subject that is just :is(.a, .b, tag...) is indexed under each alternative's key instead of the "any element" list (Tailwind/Codex are full of these) */
+static int alt_keys(const struct sel *s, int *kinds, uint32_t *hs, int max) {
+    const struct comp *c = &CO[s->c0 + s->nc - 1];
+    if (c->ns != 1 || SI[c->s0].t != T_IS || SI[c->s0].b > max) return 0;
+    const struct simple *x = &SI[c->s0];
+    for (int i = 0; i < x->b; i++) {
+        const struct sel *q = &SE[x->a + i];
+        sel_key(q, &kinds[i], &hs[i]);
+        if (!kinds[i] || q->pe || q->kind) return 0;
+    }
+    return x->b;
+}
+
+static int rule_slot(void) {
     if (nr == rcap) {
         int nc = rcap ? rcap * 2 : 512;
         struct rule *p = realloc(R, nc * sizeof *p);
-        if (!p) return;
+        if (!p) return 0;
         R = p; rcap = nc;
     }
+    return 1;
+}
+
+static void add_rule(const struct sel *s, int d0, int ndl) {
+    if (!rule_slot()) return;
     int si = sel_push(s);
     if (si < 0) return;
-    R[nr] = (struct rule){ .sel = si, .d0 = d0, .nd = ndl, .order = order_n++, .layer = (uint8_t)cur_layer, .ua = (uint8_t)cur_ua };
-    rebucket(nr);
-    nr++;
+    R[nr] = (struct rule){ .sel = si, .d0 = d0, .nd = ndl, .order = order_n++, .scope = cur_scope, .layer = (uint8_t)(s->kind ? 0 : cur_layer), .ua = (uint8_t)cur_ua };   /* shadow-tree rules about the host / slotted nodes lose to the outer document */
+    int kind, ak[8];
+    uint32_t h, ah[8];
+    sel_key(&SE[si], &kind, &h);
+    if (SE[si].kind) { kind = 0; h = 0; }                /* :host / ::slotted rules don't match the element their last compound names */
+    int na = kind ? 0 : alt_keys(&SE[si], ak, ah, 8);
+    if (!na) { link_rule(nr++, kind, h); return; }
+    struct rule base = R[nr];
+    for (int j = 0; j < na; j++) {
+        if (j && !rule_slot()) return;
+        R[nr] = base;
+        link_rule(nr++, ak[j], ah[j]);
+    }
 }
 
 static int layer_rank(const char *name, int n) {
@@ -1757,6 +1814,11 @@ static void sheet(const char *s, size_t m, const char *base, int depth) {
             memcpy(pre, s + ps, pl); pre[pl] = 0;
             if (depth < 8) {
                 if (IS("media")) { if (css_media(pre)) sheet(s + bs, bend - bs, base, depth + 1); }
+                else if (IS("container")) {                  /* [name] (condition): the container's size is unknown at style time, so the viewport stands in for it */
+                    const char *q = pre;
+                    while (*q && *q != '(' && strncasecmp(q, "not", 3) && strncasecmp(q, "style(", 6)) { while (*q && !isspace((unsigned char)*q) && *q != '(') q++; while (isspace((unsigned char)*q)) q++; }
+                    if (mq_cond(&q, pre + pl)) sheet(s + bs, bend - bs, base, depth + 1);
+                }
                 else if (IS("supports")) { const char *p = pre; if (sup_cond(&p, pre + pl)) sheet(s + bs, bend - bs, base, depth + 1); }
                 else if (IS("layer")) {
                     int saved = cur_layer;
@@ -1779,6 +1841,7 @@ static void sheet(const char *s, size_t m, const char *base, int depth) {
         while (i < m && (qt || br || s[i] != '{')) {
             if (qt) { if (s[i] == '\\') i++; else if (s[i] == qt) qt = 0; }
             else if (s[i] == '"' || s[i] == '\'') qt = s[i];
+            else if (s[i] == '\\') i++;                      /* an escaped bracket (Tailwind: .w-\[3px\]) isn't one */
             else if (s[i] == '[' || s[i] == '(') br++;
             else if ((s[i] == ']' || s[i] == ')') && br) br--;
             else if (s[i] == ';' && !br) { ps = i + 1; }      /* junk statement before a rule: restart the prelude after it */
@@ -1801,6 +1864,7 @@ static void sheet(const char *s, size_t m, const char *base, int depth) {
             while (b < pe && (q2 || dp || s[b] != ',')) {
                 if (q2) { if (s[b] == '\\') b++; else if (s[b] == q2) q2 = 0; }
                 else if (s[b] == '"' || s[b] == '\'') q2 = s[b];
+                else if (s[b] == '\\') b++;
                 else if (s[b] == '[' || s[b] == '(') dp++;
                 else if ((s[b] == ']' || s[b] == ')') && dp) dp--;
                 b++;
@@ -1813,6 +1877,7 @@ static void sheet(const char *s, size_t m, const char *base, int depth) {
 }
 
 void css_add(const char *src, size_t n) { css_add_from(src, n, 0); }
+void css_add_scoped(const char *src, size_t n, const char *base, int scope) { int sv = cur_scope; cur_scope = scope; css_add_from(src, n, base); cur_scope = sv; }
 
 void css_add_from(const char *src, size_t n, const char *base) {
     char *s = malloc(n + 1);
@@ -1867,7 +1932,7 @@ static const char UA[] =
     "small{font-size:smaller}big{font-size:larger}sub{vertical-align:sub;font-size:smaller}sup{vertical-align:super;font-size:smaller}"
     "mark{background-color:yellow;color:black}"
     "abbr[title],acronym[title]{text-decoration:underline dotted}"
-    "a:link{color:#0000ee;text-decoration:underline;cursor:pointer}"
+    "a:any-link{text-decoration:underline;cursor:pointer}a:link{color:#0000ee}a:visited{color:#551a8b}"
     "center{text-align:center}nobr{white-space:nowrap}"
     "q::before{content:open-quote}q::after{content:close-quote}"
     "table{display:table;border-collapse:separate;border-spacing:2px;box-sizing:border-box;text-indent:0}"
@@ -1911,7 +1976,7 @@ void css_reset(void) {
         CD = ua_cd;
     }
     nlay = 0; any_layers = 0; attrs_used = 0; ncn = 0; ncv = 1;
-        cur_layer = 255; cur_ua = 0;
+        cur_layer = 255; cur_ua = 0; cur_scope = 0;
     cur_base[0] = 0;
 }
 
@@ -2030,7 +2095,7 @@ static const char *ls_attr(int n, const char *name) {
 }
 static int ls_state(int n) { return n <= LN && !strcmp(LS[n - 1].name, "a") ? CS_LINK : 0; }
 static int ls_text(int n) { return 1; }
-static const struct css_dom LDOM = { ls_parent, ls_prev, ls_next, ls_first, ls_tag, ls_attr, ls_state, ls_text };
+static const struct css_dom LDOM = { ls_parent, ls_prev, ls_next, ls_first, ls_tag, ls_attr, ls_state, ls_text, 0, 0, 0 };
 
 /* ---------- cascade ---------- */
 struct hit { uint64_t key; int rule; };
@@ -2042,13 +2107,20 @@ static const uint32_t *self_bloom;
 static int try_chain(int head, uint32_t kh, int node, int pe, const uint32_t *anc, int legacy, int nh) {
     for (int r = head; r && nh < 1024; r = R[r - 1].next) {
         const struct rule *ru = &R[r - 1];
-        if (kh && ru->kh != kh) continue;                 /* bucket collision: a different tag/id/class */
+        if (kh && ru->kh != kh) continue;
+        if (!ru->ua && !SE[ru->sel].kind && ru->scope != cur_nscope) continue;   /* encapsulation: a tree's rules only reach its own elements */                 /* bucket collision: a different tag/id/class */
         if (legacy && ru->ua) continue;
         const struct sel *s = &SE[ru->sel];
         if (s->pe != pe) continue;
         if (anc && !bloom_has(anc, s->mask)) continue;
         if (!bloom_has(self_bloom, s->rmask)) continue;
-        if (!sel_match(s, node)) continue;
+#ifdef CSS_STATS
+        { extern int *rule_cand; rule_cand[r - 1]++; }
+#endif
+        if (!sel_match_a(s, node, ru->scope, anc, anc ? self_bloom : 0)) continue;
+#ifdef CSS_STATS
+        { extern int *rule_cand; rule_cand[r - 1] += 1000000; }
+#endif
         H[nh].key = (uint64_t)ru->layer << 52 | (uint64_t)s->spec << 22 | (uint32_t)(ru->order & 0x3FFFFF);
         H[nh++].rule = r - 1;
     }
@@ -2098,6 +2170,7 @@ static void cascade(int node, int pe, const uint32_t *anc, int legacy, const cha
         p = e;
     }
     self_bloom = sb;
+    cur_nscope = DOM->scope ? DOM->scope(node) : 0;
     nh = try_chain(huni, 0, node, pe, anc, legacy, nh);
     uint32_t th = hash_str(tag);
     nh = try_chain(htg[th & (HB - 1)], th, node, pe, anc, legacy, nh);
@@ -2184,7 +2257,7 @@ void css_initial(struct cprops *o) {
     o->k[P_CONTENT] = K_NONE; o->k[P_GCOLS] = o->k[P_GROWS] = o->k[P_GACOLS] = o->k[P_GAROWS] = o->k[P_GAREAS] = o->k[P_GAREA] = K_NONE;
     o->k[P_GCS] = o->k[P_GCE] = o->k[P_GRS] = o->k[P_GRE] = K_AUTO; o->k[P_ASPECT] = K_AUTO;
     o->k[P_BCT] = o->k[P_BCR] = o->k[P_BCB] = o->k[P_BCL] = K_CUR; o->k[P_OUTC] = K_CUR; o->v[P_OUTW] = 3;
-    o->k[P_SHC] = K_NONE; o->k[P_MASKIMG] = K_NONE; o->k[P_CRESET] = o->k[P_CINC] = K_NONE; o->k[P_OBJPX] = o->k[P_OBJPY] = K_PCT; o->v[P_OBJPX] = o->v[P_OBJPY] = 5000;
+    o->k[P_SHC] = K_NONE; o->k[P_MASKIMG] = K_NONE; o->k[P_BG2IMG] = K_NONE; o->k[P_BG2SW] = o->k[P_BG2SH] = K_AUTO; o->k[P_BG2PX] = o->k[P_BG2PY] = K_PCT; o->v[P_TRSX] = o->v[P_TRSY] = 1000; o->k[P_CRESET] = o->k[P_CINC] = K_NONE; o->k[P_OBJPX] = o->k[P_OBJPY] = K_PCT; o->v[P_OBJPX] = o->v[P_OBJPY] = 5000;
     o->v[P_BWT] = o->v[P_BWR] = o->v[P_BWB] = o->v[P_BWL] = 3;
 }
 
@@ -2375,7 +2448,7 @@ static int content_text(const char *s, int node, char *o, int cap) {
 int css_compute(int node, int pe, const struct cprops *parent, struct cprops *out) {
     if (!ini_ready) { css_initial(&INI); for (int p = 0; p < P_N; p++) INHT[p] = inherited_slow(p); ini_ready = 1; }
     struct cprops sp;
-    uint32_t m[4] = { 0, 0, 0, 0 };
+    uint32_t m[8] = { 0 };            /* one bit per property (P_N <= 256) */
     memset(&sp, 0, sizeof sp);
     static const uint32_t none[BLW];
     const uint32_t *anc = pe ? 0 : parent ? parent->bloom : DOM->parent(node) ? 0 : none;
@@ -2454,7 +2527,7 @@ int css_compute(int node, int pe, const struct cprops *parent, struct cprops *ou
             p = e;
         }
     }
-    if (pe == PE_MARKER) {
+    if (pe >= PE_MARKER) {
         if (out->k[P_CONTENT] == K_RAW) { char t[512]; content_text(STR(out->v[P_CONTENT]), node, t, sizeof t); out->k[P_CONTENT] = K_STR; out->v[P_CONTENT] = intern(t, strlen(t)); }
         return last_nh > 0;
     }
@@ -2558,7 +2631,7 @@ void css_cascade(const struct el *st, int n, const char *style, struct cprops *o
     const struct css_dom *saved = DOM;
     DOM = &LDOM; LS = st; LN = n;
     struct cprops sp;
-    uint32_t m[4] = { 0, 0, 0, 0 };
+    uint32_t m[8] = { 0 };            /* one bit per property (P_N <= 256) */
     int vars;
     memset(&sp, 0, sizeof sp);
     cascade(n, 0, 0, 1, style, 0, &sp, m, &vars);
@@ -2603,6 +2676,7 @@ static int match_list_str(const char *sel, int node) {
         while (b < len && (q || dp || sel[b] != ',')) {
             if (q) { if (sel[b] == '\\') b++; else if (sel[b] == q) q = 0; }
             else if (sel[b] == '"' || sel[b] == '\'') q = sel[b];
+            else if (sel[b] == '\\') b++;
             else if (sel[b] == '(' || sel[b] == '[') dp++;
             else if ((sel[b] == ')' || sel[b] == ']') && dp) dp--;
             b++;
@@ -2630,4 +2704,26 @@ void css_stats(void) {          /* bench aid (tools/csstest/wpbench): rule bucke
     for (int r = huni; r; r = R[r - 1].next) u++;
     for (int i = 0; i < HB; i++) { int c = 0; for (int r = htg[i]; r; r = R[r - 1].next) c++; t += c; if (c > mx) mx = c; }
     fprintf(stderr, "rules %d universal %d tag-bucketed %d (longest chain %d)\n", nr, u, t, mx);
+    if (getenv("UNI")) for (int r = huni, n = 0; r && n < 40; r = R[r - 1].next, n++) {
+        const struct sel *q = &SE[R[r - 1].sel];
+        fprintf(stderr, "  uni: nc=%d kind=%d pe=%d:", q->nc, q->kind, q->pe);
+        for (int c = 0; c < q->nc; c++) { fprintf(stderr, " ["); for (int k = 0; k < CO[q->c0 + c].ns; k++) { const struct simple *x = &SI[CO[q->c0 + c].s0 + k]; fprintf(stderr, "%d:%s ", x->t, x->t <= T_ATTR ? STR(x->a) : ""); } fprintf(stderr, "]%c", CO[q->c0 + c].comb ? CO[q->c0 + c].comb : ' '); }
+        fprintf(stderr, "\n");
+    }
 }
+
+#ifdef CSS_STATS
+int *rule_cand;
+void css_stats_alloc(void) { rule_cand = calloc(nr + 1, sizeof(int)); }
+void css_stats_top(void) {
+    for (int k = 0; k < 12; k++) {
+        int best = -1, bi = 0;
+        for (int i = 0; i < nr; i++) { int c = rule_cand[i] % 1000000, ok = rule_cand[i] / 1000000, fail = c - ok; if (fail > best) { best = fail; bi = i; } }
+        const struct sel *q = &SE[R[bi].sel];
+        fprintf(stderr, "failed %d (matched %d): nc=%d kind=%d pe=%d:", best, rule_cand[bi] / 1000000, q->nc, q->kind, q->pe);
+        for (int c = 0; c < q->nc; c++) { fprintf(stderr, " ["); for (int j = 0; j < CO[q->c0 + c].ns; j++) { const struct simple *x = &SI[CO[q->c0 + c].s0 + j]; fprintf(stderr, "%d:%s ", x->t, x->t <= T_ATTR ? STR(x->a) : ""); } fprintf(stderr, "]%c", CO[q->c0 + c].comb ? CO[q->c0 + c].comb : ' '); }
+        fprintf(stderr, "\n");
+        rule_cand[bi] = 0;
+    }
+}
+#endif

@@ -100,7 +100,9 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
        P_OUTW, P_OUTS, P_OUTC, P_OUTO,                                 /* outline width/style (BS_*)/colour/offset */
        P_SHX, P_SHY, P_SHB, P_SHS, P_SHC, P_SHI,                       /* box-shadow, first layer: offset x/y, blur, spread, colour (K_NONE = no shadow), inset 0/1 */
        P_CRESET, P_CINC,                                               /* counter-reset / counter-increment: K_STR "name N name N" (K_NONE = none); see css_cnt_* */
-       P_OBJPX, P_OBJPY, P_TRX, P_TRY, P_MASKIMG,                      /* object-position (px/%), transform: translate() offset (px/%), mask-image (K_STR url or K_NONE; draw the background colour through it) */
+       P_OBJPX, P_OBJPY, P_TRX, P_TRY, P_MASKIMG,
+       P_BG2IMG, P_BG2REP, P_BG2PX, P_BG2PY, P_BG2SW, P_BG2SH,       /* second background layer (painted UNDER the P_BGIMG one, over the colour): same encoding as P_BGIMG..P_BGSH */
+       P_TRSX, P_TRSY, P_TRROT,                                      /* transform scale (x1000, 1000 = none) and rotate (tenths of a degree); LAYOUT may ignore */
        P_N };
 /* value kinds. K_PX also carries every keyword/enum/colour (value in v). Lengths: K_PX px, K_PCT percent*100, K_CALC compiled
  * calc()/min()/max()/clamp() with a percentage inside (resolve with css_len()). Never read p->v of a length directly: css_len(). */
@@ -121,8 +123,9 @@ enum { FAM_SANS, FAM_SERIF, FAM_MONO };
 enum { LT_DISC, LT_CIRCLE, LT_SQUARE, LT_DECIMAL, LT_ZERO, LT_LALPHA, LT_UALPHA, LT_LROMAN, LT_UROMAN, LT_LGREEK, LT_NONE };
 enum { REP_REPEAT, REP_X, REP_Y, REP_NONE };
 enum { DECO_UNDERLINE = 1, DECO_LINETHROUGH = 2, DECO_OVERLINE = 4 };
-enum { PE_NONE, PE_BEFORE, PE_AFTER, PE_MARKER };   /* PE_MARKER: ::marker style only (returns 1 if a rule matched; content K_NONE = the default marker) */
-enum { CS_HOVER = 1, CS_FOCUS = 2, CS_ACTIVE = 4, CS_CHECKED = 8, CS_DISABLED = 16, CS_LINK = 32, CS_VISITED = 64, CS_FOCUSWITHIN = 128 };
+enum { PE_NONE, PE_BEFORE, PE_AFTER, PE_MARKER, PE_PLACEHOLDER, PE_SELECTION, PE_FIRSTLETTER, PE_FIRSTLINE };   /* PE_MARKER/PLACEHOLDER/SELECTION/FIRSTLETTER/FIRSTLINE: style only (returns 1 if a rule matched; content K_NONE) */
+enum { CS_HOVER = 1, CS_FOCUS = 2, CS_ACTIVE = 4, CS_CHECKED = 8, CS_DISABLED = 16, CS_LINK = 32, CS_VISITED = 64,   /* :link = CS_LINK && !CS_VISITED; :visited = CS_VISITED (set CS_LINK too); :any-link = CS_LINK */
+       CS_FOCUSWITHIN = 128 };
 /* cprops.set (legacy css_cascade only): bit p set = property p declared */
 struct cprops { uint32_t set; int v[P_N]; uint8_t k[P_N]; uint32_t bloom[8]; int vars; };   /* bloom/vars: ancestor filter + custom properties, carried to children */
 struct el { char name[16], id[32], cls[64]; int tag, js; char at[240]; short nkids; uint8_t first; };   /* legacy: one open element, for selector matching; js: DOM node id;
@@ -136,6 +139,10 @@ struct css_dom {
     const char *(*attr)(int n, const char *name); /* value or NULL if absent ("id", "class", "style" too; name is lowercase) */
     int (*state)(int n);                          /* CS_* bits */
     int (*has_text)(int n);                       /* 1 if n has a non-empty text child (for :empty) */
+    /* shadow DOM (all optional, NULL = no shadow trees). A shadow tree's top-level elements have parent() == 0 and prev/next only among themselves. */
+    int (*scope)(int n);                          /* the shadow scope (any non-zero id, e.g. the host node) whose tree contains n; 0 = the document tree */
+    int (*host)(int scope);                       /* the shadow host element of that scope */
+    int (*slotted)(int n);                        /* if n is a light-DOM element assigned to a slot: the scope of that slot's shadow tree, else 0 */
 };
 void css_dom_set(const struct css_dom *d);        /* before css_compute / css_match_node */
 void css_initial(struct cprops *out);             /* the initial values (root's "parent") */
@@ -166,6 +173,7 @@ void css_viewport(int w);                         /* window width for @media and
 void css_viewport_size(int w, int h);             /* ... and height */
 void css_reset(void);
 void css_add(const char *s, size_t n);           /* append a stylesheet (author origin, in document order) */
+void css_add_scoped(const char *s, size_t n, const char *base, int scope);   /* a stylesheet inside a shadow root: applies only to elements with css_dom.scope() == scope, plus :host, :host(), :host-context(), ::slotted() */
 void css_add_from(const char *s, size_t n, const char *base);   /* same; base resolves @import and url() (0 = none) */
 int  css_media(const char *q);                   /* media query list (a media="" attribute): 1 = applies on screen */
 int  css_attrs(void);                            /* legacy: some rule uses an attribute selector: elements need el.at */
@@ -173,6 +181,10 @@ int  css_any(void);
 void css_cascade(const struct el *st, int n, const char *style, struct cprops *out);   /* legacy; st[n-1] is the subject */
 int  css_color(const char *s, color_t *out, int legacy);   /* any CSS colour (alpha in the top byte; transparent = 0); legacy: bare hex too */
 int  css_match(const char *sel, const struct el *st, int n);   /* legacy: selector list vs st[n-1]: 1/0, -1 = nothing parsable */
+
+/* ---- visited.c: :visited. main.c calls visited_add(url) when a page commits; the css_dom state() callback sets CS_LINK|CS_VISITED on <a href> when visited_url(absolute href) ---- */
+int  visited_url(const char *abs_url);
+void visited_add(const char *abs_url);
 
 /* ---- sheet.c: external stylesheets (<link rel=stylesheet>, @import): one fetch each, kept until the next page ---- */
 const char *sheet_get(const char *url, size_t *len);   /* the text once loaded; NULL while loading or failed (queues on first use) */

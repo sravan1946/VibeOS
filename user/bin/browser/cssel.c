@@ -106,6 +106,7 @@ static int parse_list(const char *s, int n, int rel, int *first) {
         while (b < n && (q || d || s[b] != ',')) {
             if (q) { if (s[b] == '\\') b++; else if (s[b] == q) q = 0; }
             else if (s[b] == '"' || s[b] == '\'') q = s[b];
+            else if (s[b] == '\\') b++;
             else if (s[b] == '(' || s[b] == '[') d++;
             else if ((s[b] == ')' || s[b] == ']') && d) d--;
             b++;
@@ -159,7 +160,7 @@ static int parse_nth(const char *s, int n, int *A, int *B) {     /* odd | even |
 static const struct { const char *n; int pc; } PCS[] = {
     { "first-child", PC_FIRSTC }, { "last-child", PC_LASTC }, { "only-child", PC_ONLYC }, { "first-of-type", PC_FIRSTT },
     { "last-of-type", PC_LASTT }, { "only-of-type", PC_ONLYT }, { "empty", PC_EMPTY }, { "root", PC_ROOT }, { "scope", PC_ROOT },
-    { "link", PC_LINK }, { "any-link", PC_LINK }, { "-webkit-any-link", PC_LINK }, { "visited", PC_NEVER }, { "hover", PC_HOVER },
+    { "link", PC_LINK }, { "any-link", PC_ANYLINK }, { "-webkit-any-link", PC_ANYLINK }, { "visited", PC_VISITED }, { "hover", PC_HOVER },
     { "focus", PC_FOCUS }, { "focus-visible", PC_FOCUS }, { "active", PC_ACTIVE }, { "checked", PC_CHECKED }, { "disabled", PC_DISABLED },
     { "enabled", PC_ENABLED }, { "focus-within", PC_FOCUSWITHIN }, { "required", PC_REQUIRED }, { "optional", PC_OPTIONAL },
     { "read-only", PC_READONLY }, { "read-write", PC_READWRITE }, { "target", PC_NEVER }, { "placeholder-shown", PC_NEVER },
@@ -234,11 +235,26 @@ static int parse_compound(const char *s, int n, int *pi, struct simple *t, int *
             char nm[40];
             if (!read_ident(s, n, &j, nm, sizeof nm)) return 0;
             lower(nm);
+            if (dbl && !strcmp(nm, "slotted") && j < n && s[j] == '(') {
+                int bs2, be2, first2 = 0;
+                if (!paren_body(s, n, &j, &bs2, &be2)) return 0;
+                nest++;
+                int cnt = parse_list(s + bs2, be2 - bs2, 0, &first2);
+                nest--;
+                if (!cnt) return 0;
+                x->t = T_SLOTTED; x->a = first2; x->b = cnt;
+                sp->c++; (*nt)++; i = j; any = 1;
+                continue;
+            }
             if (dbl || !strcmp(nm, "before") || !strcmp(nm, "after") || !strcmp(nm, "first-line") || !strcmp(nm, "first-letter")) {
                 if (!strcmp(nm, "before")) *pe = PE_BEFORE;
                 else if (!strcmp(nm, "after")) *pe = PE_AFTER;
                 else if (!strcmp(nm, "marker")) *pe = PE_MARKER;
-                else return 0;                              /* ::marker, ::selection, ::placeholder, ::-webkit-*: not rendered */
+                else if (!strcmp(nm, "placeholder") || !strcmp(nm, "-webkit-input-placeholder") || !strcmp(nm, "-moz-placeholder")) *pe = PE_PLACEHOLDER;
+                else if (!strcmp(nm, "selection") || !strcmp(nm, "-moz-selection")) *pe = PE_SELECTION;
+                else if (!strcmp(nm, "first-letter")) *pe = PE_FIRSTLETTER;
+                else if (!strcmp(nm, "first-line")) *pe = PE_FIRSTLINE;
+                else return 0;                              /* ::-webkit-scrollbar, ::backdrop...: not rendered */
                 sp->c++;
                 i = j; any = 1;
                 continue;
@@ -246,6 +262,14 @@ static int parse_compound(const char *s, int n, int *pi, struct simple *t, int *
             int fn = j < n && s[j] == '(';
             int bs = 0, be = 0;
             if (fn && !paren_body(s, n, &j, &bs, &be)) return 0;
+            if (!strcmp(nm, "host") || (fn && !strcmp(nm, "host-context"))) {
+                int first = 0, cnt = 0, ctx = nm[4] == '-';
+                if (fn) { nest++; cnt = parse_list(s + bs, be - bs, 0, &first); nest--; if (!cnt) return 0; }
+                x->t = ctx ? T_HOSTCTX : T_HOST; x->a = first; x->b = cnt;
+                sp->b++; (*nt)++; i = j; any = 1;
+                if (cnt) { struct spc m = { 0, 0, 0 }; for (int q = 0; q < cnt; q++) spec_max(&m, SE[first + q].spec); sp->a += m.a; sp->b += m.b; sp->c += m.c; }
+                continue;
+            }
             if (fn && (!strcmp(nm, "not") || !strcmp(nm, "is") || !strcmp(nm, "where") || !strcmp(nm, "matches") || !strcmp(nm, "-webkit-any") || !strcmp(nm, "-moz-any") || !strcmp(nm, "has"))) {
                 int has = !strcmp(nm, "has"), first = 0;
                 int cnt = parse_list(s + bs, be - bs, has, &first);
@@ -310,7 +334,8 @@ static int pc_state(int pc) {
     case PC_FOCUSWITHIN: return CS_FOCUS | CS_FOCUSWITHIN;
     case PC_CHECKED: return CS_CHECKED;
     case PC_DISABLED: case PC_ENABLED: return CS_DISABLED;
-    case PC_LINK: return CS_LINK;
+    case PC_LINK: case PC_ANYLINK: return CS_LINK | CS_VISITED;
+    case PC_VISITED: return CS_VISITED;
     }
     return 0;
 }
@@ -318,6 +343,14 @@ static int pc_state(int pc) {
 static void sel_finish(struct sel *o) {      /* bloom masks: what the ancestors (descendant/child chain) and the subject itself must have; plus restyle dependencies */
     memset(o->mask, 0, sizeof o->mask);
     memset(o->rmask, 0, sizeof o->rmask);
+    o->kind = 0;
+    for (int c = 0; c < o->nc; c++) {
+        const struct comp *cp = &CO[o->c0 + c];
+        for (int k = 0; k < cp->ns; k++) {
+            int t = SI[cp->s0 + k].t;
+            if (t == T_SLOTTED) o->kind = 2; else if ((t == T_HOST || t == T_HOSTCTX) && !o->kind) o->kind = 1;
+        }
+    }
     for (int c = 0; c < o->nc; c++) {
         const struct comp *cp = &CO[o->c0 + c];
         int anc = c < o->nc - 1;
@@ -485,7 +518,12 @@ static int match_pc(int pc, const struct simple *x, int n) {
     case PC_ONLYT: return nth_index(n, 2) == 1 && nth_index(n, 3) == 1;
     case PC_EMPTY: return !DOM->first(n) && !DOM->has_text(n);
     case PC_ROOT: return !DOM->parent(n);
-    case PC_LINK: { const char *t = DOM->tag(n); return (DOM->state(n) & CS_LINK) || ((!strcmp(t, "a") || !strcmp(t, "area")) && has_attr(n, "href")); }
+    case PC_LINK: case PC_ANYLINK: {
+        const char *t = DOM->tag(n);
+        int st = DOM->state(n), link = (st & CS_LINK) || ((!strcmp(t, "a") || !strcmp(t, "area")) && has_attr(n, "href"));
+        return link && (pc == PC_ANYLINK || !(st & CS_VISITED));
+    }
+    case PC_VISITED: return (DOM->state(n) & (CS_VISITED | CS_LINK)) == (CS_VISITED | CS_LINK);
     case PC_HOVER: return DOM->state(n) & CS_HOVER;
     case PC_FOCUS: return DOM->state(n) & CS_FOCUS;
     case PC_ACTIVE: return DOM->state(n) & CS_ACTIVE;
@@ -504,9 +542,14 @@ static int match_pc(int pc, const struct simple *x, int n) {
 }
 
 static int match_chain(const struct sel *s, int ci, int n);
+static int msc;                                          /* shadow scope of the rule being matched */
 
+static const uint32_t *sanc, *sself;     /* the subject's ancestor bloom, while its own compound is being matched: lets :is(.dark *) skip a walk up the tree */
 static int match_list(int first, int cnt, int n) {
-    for (int i = 0; i < cnt; i++) if (match_chain(&SE[first + i], SE[first + i].nc - 1, n)) return 1;
+    for (int i = 0; i < cnt; i++) {
+        if (sanc && (!bloom_has(sanc, SE[first + i].mask) || !bloom_has(sself, SE[first + i].rmask))) continue;
+        if (match_chain(&SE[first + i], SE[first + i].nc - 1, n)) return 1;
+    }
     return 0;
 }
 
@@ -544,6 +587,15 @@ static int match_simple(const struct simple *x, int n) {
         int d = idx - B;
         return d % A == 0 && d / A >= 0;
     }
+    case T_HOST:
+        if (!msc || !DOM->host || n != DOM->host(msc)) return 0;
+        return !x->b || match_list(x->a, x->b, n);
+    case T_HOSTCTX: {
+        if (!msc || !DOM->host) return 0;
+        for (int h = DOM->host(msc); h; h = DOM->parent(h)) if (match_list(x->a, x->b, h)) return 1;
+        return 0;
+    }
+    case T_SLOTTED: return msc && DOM->slotted && DOM->slotted(n) == msc && match_list(x->a, x->b, n);
     case T_NOT: return !match_list(x->a, x->b, n);
     case T_IS: return match_list(x->a, x->b, n);
     case T_HAS: for (int q = 0; q < x->b; q++) if (has_fwd(&SE[x->a + q], 0, n)) return 1; return 0;
@@ -556,20 +608,39 @@ static int match_comp(const struct comp *c, int n) {
     return 1;
 }
 
+static int comp_is_host(const struct comp *c) {
+    for (int k = 0; k < c->ns; k++) if (SI[c->s0 + k].t == T_HOST || SI[c->s0 + k].t == T_HOSTCTX) return 1;
+    return 0;
+}
+
+static int match_chain_i(const struct sel *s, int ci, int n);
 static int match_chain(const struct sel *s, int ci, int n) {
+    const uint32_t *save = sanc;
+    if (ci != s->nc - 1) sanc = 0;                       /* only the subject's own compound has the known ancestors */
+    int r = match_chain_i(s, ci, n);
+    sanc = save;
+    return r;
+}
+static int match_chain_i(const struct sel *s, int ci, int n) {
     const struct comp *c = &CO[s->c0 + ci];
     if (!match_comp(c, n)) return 0;
+    sanc = 0;
     if (!ci) return 1;
     int p;
     switch (c->comb) {
-    case '>': p = DOM->parent(n); return p && match_chain(s, ci - 1, p);
+    case '>': p = DOM->parent(n); if (p) return match_chain(s, ci - 1, p); break;
     case '+': p = DOM->prev(n); return p && match_chain(s, ci - 1, p);
     case '~': for (p = DOM->prev(n); p; p = DOM->prev(p)) if (match_chain(s, ci - 1, p)) return 1; return 0;
-    default:  for (p = DOM->parent(n); p; p = DOM->parent(p)) if (match_chain(s, ci - 1, p)) return 1; return 0;
+    default:  for (p = DOM->parent(n); p; p = DOM->parent(p)) if (match_chain(s, ci - 1, p)) return 1; break;
     }
+    /* ran out of ancestors inside a shadow tree: the left end may be :host (the tree's host is its parent in the composed tree) */
+    if (msc && ci == 1 && DOM->host && comp_is_host(&CO[s->c0])) { int h = DOM->host(msc); return h && match_comp(&CO[s->c0], h); }
+    return 0;
 }
 
-int sel_match(const struct sel *s, int node) { return match_chain(s, s->nc - 1, node); }
+int sel_match_a(const struct sel *s, int node, int scope, const uint32_t *anc, const uint32_t *self) { msc = scope; sanc = anc; sself = self; int r = match_chain(s, s->nc - 1, node); msc = 0; sanc = 0; return r; }
+int sel_match(const struct sel *s, int node) { return sel_match_a(s, node, 0, 0, 0); }
+int sel_match_scoped(const struct sel *s, int node, int scope) { return sel_match_a(s, node, scope, 0, 0); }
 
 void sel_key(const struct sel *s, int *kind, uint32_t *h) {
     const struct comp *c = &CO[s->c0 + s->nc - 1];

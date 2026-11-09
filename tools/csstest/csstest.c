@@ -18,7 +18,8 @@ const char *sheet_get(const char *url, size_t *len) {
 
 /* ---- a tiny DOM ---- */
 #define MAXN 60000
-static struct node { const char *tag; char id[32], cls[96], style[160]; char at[4][2][40]; int nat; int par, prev, next, first, last, state, text; } N[MAXN];
+static struct node { const char *tag; char id[32], cls[96], style[160]; char at[4][2][40]; int nat; int par, prev, next, first, last, state, text, scope, slotted; } N[MAXN];
+static int host_of[64];
 static int nn = 1;
 static int d_parent(int n) { return N[n].par; }
 static int d_prev(int n) { return N[n].prev; }
@@ -34,7 +35,10 @@ static const char *d_attr(int n, const char *a) {
 }
 static int d_state(int n) { return N[n].state; }
 static int d_text(int n) { return N[n].text; }
-static const struct css_dom DOMT = { d_parent, d_prev, d_next, d_first, d_tag, d_attr, d_state, d_text };
+static int d_scope(int n) { return N[n].scope; }
+static int d_host(int sc) { return host_of[sc]; }
+static int d_slotted(int n) { return N[n].slotted; }
+static const struct css_dom DOMT = { d_parent, d_prev, d_next, d_first, d_tag, d_attr, d_state, d_text, d_scope, d_host, d_slotted };
 
 /* el(parent, "div", "id", "a b"): returns node; extra attrs through at() */
 static int el(int par, const char *tag, const char *id, const char *cls) {
@@ -348,6 +352,46 @@ static void test_garbage(void) {
     CHECK(1);
 }
 
+static void test_round3(void) {
+    reset_dom();
+    int html = el(0, "html", 0, 0), body = el(html, "body", 0, 0), d = el(body, "div", 0, "m"), inp = el(body, "input", 0, 0), p = el(body, "p", 0, "f");
+    struct cprops c, pe;
+    new_page(".m{background:linear-gradient(red,blue) center/cover no-repeat, url(a.png) 10px 20px repeat-x, #123456;transform:scale(2, 3) rotate(45deg) translate(5px,6px)}"
+             "input::placeholder{color:gray} p::selection{background:yellow} p::first-letter{font-size:2em;float:left}"
+             "@container (min-width: 500px){.f{margin-top:11px}} @container side (max-width: 100px){.f{margin-top:22px}} @container style(--x: 1){.f{margin-top:33px}}");
+    c = compute(d);
+    CHECK(c.k[P_BGIMG] == K_GRAD && c.k[P_BGSW] == K_COVER && c.v[P_BGREP] == REP_NONE && c.k[P_BG2IMG] == K_STR && c.v[P_BG2REP] == REP_X && c.v[P_BG2PX] == 10 && c.v[P_BG2PY] == 20 && c.v[P_BG] == (int)0xFF123456u);
+    CHECK(c.v[P_TRSX] == 2000 && c.v[P_TRSY] == 3000 && c.v[P_TRROT] == 450 && len(&c, P_TRX) == 5 && len(&c, P_TRY) == 6);
+    c = compute(body); CHECK(c.v[P_TRSX] == 1000 && c.k[P_BG2IMG] == K_NONE);
+    c = compute(inp);
+    CHECK(css_compute(inp, PE_PLACEHOLDER, &c, &pe) == 1 && pe.v[P_COLOR] == (int)0xFF808080u);
+    c = compute(p);
+    CHECK(css_compute(p, PE_SELECTION, &c, &pe) == 1 && pe.v[P_BG] == (int)0xFFFFFF00u && css_compute(p, PE_FIRSTLETTER, &c, &pe) == 1 && pe.v[P_FLOAT] == FLT_LEFT && css_compute(p, PE_FIRSTLINE, &c, &pe) == 0);
+    CHECK(len(&c, P_MT) == 11);                                     /* viewport (1000px) stands in for the container: only the first query holds */
+}
+
+static void test_shadow(void) {
+    reset_dom();
+    memset(host_of, 0, sizeof host_of);
+    int html = el(0, "html", 0, 0), body = el(html, "body", 0, 0), outer = el(body, "p", 0, 0), host = el(body, "my-el", 0, "big"), light = el(host, "span", 0, "light");
+    int box = el(0, "div", 0, "box"), sp = el(box, "p", 0, 0), a = el(sp, "a", 0, 0);
+    N[box].scope = N[sp].scope = N[a].scope = 5; host_of[5] = host; N[light].slotted = 5;
+    struct cprops c;
+    new_page("p{color:blue} .light{color:green} my-el{display:block;color:red}");
+    const char *sh = "p{color:orange} :host{display:flex;color:purple;padding:7px} :host(.big){margin:9px} :host(.small){margin:1px} ::slotted(span){margin:3px;color:pink}"
+                     ":host .box p{padding-left:1px} :host > .box{border-left:2px solid red} :host-context(body){margin-top:5px} a:link{color:teal}";
+    css_add_scoped(sh, strlen(sh), "http://x/", 5);
+    c = compute(outer); CHECK(c.v[P_COLOR] == (int)0xFF0000FFu);                       /* document rules still reach the document tree */
+    c = compute(sp); CHECK(c.v[P_COLOR] == (int)0xFFFFA500u && len(&c, P_PL) == 1);       /* shadow rules reach only their own tree */
+    c = compute(box); CHECK(len(&c, P_BWL) == 2);                                      /* :host > .box at the tree's top */
+    c = compute(host); CHECK(c.v[P_DISPLAY] == D_BLOCK && c.v[P_COLOR] == (int)0xFFFF0000u);   /* the outer document beats :host */
+    CHECK(len(&c, P_PT) == 7 && len(&c, P_ML) == 9 && len(&c, P_MT) == 9);                      /* ...but :host fills in what it leaves alone; :host(.big) matches, .small doesn't */
+    c = compute(light); CHECK(len(&c, P_ML) == 3 && c.v[P_COLOR] == (int)0xFF008000u);       /* ::slotted, outer .light wins on colour */
+    N[a].state = CS_LINK; c = compute(a); CHECK(c.v[P_COLOR] == (int)0xFF008080u);
+    N[a].state = CS_LINK | CS_VISITED; c = compute(a); CHECK(c.v[P_COLOR] != (int)0xFF008080u);   /* :link is unvisited links only */
+    CHECK(css_match_node("a:visited", a) == 1 && css_match_node("a:any-link", a) == 1 && css_match_node("a:link", a) == 0);
+}
+
 static void test_restyle(void) {
     reset_dom();
     int html = el(0, "html", 0, 0), body = el(html, "body", 0, 0), ul = el(body, "ul", 0, "menu"), li = el(ul, "li", 0, "item"), a = el(li, "a", 0, 0);
@@ -418,6 +462,8 @@ int main(int argc, char **argv) {
     test_vars_media();
     test_pseudo_ua();
     test_garbage();
+    test_round3();
+    test_shadow();
     test_extras();
     test_restyle();
     bench(argc > 1 ? atoi(argv[1]) : 20000, 3000);
