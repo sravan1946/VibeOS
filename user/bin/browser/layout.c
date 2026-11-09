@@ -1062,13 +1062,18 @@ static int top_comma(const char *p) {                       /* offset of the las
     for (int i = 0; p[i]; i++) { if (p[i] == '(') d++; else if (p[i] == ')') d--; else if (p[i] == ',' && d == 1) r = i; }
     return r;
 }
-static int is_fn_len(const char *p) { return !strncmp(p, "min(", 4) || !strncmp(p, "max(", 4) || !strncmp(p, "clamp(", 6); }
+static int is_fn_len(const char *p) { return !strncmp(p, "calc(", 5) || !strncmp(p, "min(", 4) || !strncmp(p, "max(", 4) || !strncmp(p, "clamp(", 6); }
+/* a calc()/min()/max()/clamp() length in px against cw; plain calc() keeps the local evaluator (its truncation is what the goldens expect),
+ * anything with min/max/clamp inside (var() results nest them) goes to CSS's */
+static int fn_len(const char *p, int cw, int *px) {
+    if (!strncmp(p, "calc(", 5) && !strstr(p, "min(") && !strstr(p, "max(") && !strstr(p, "clamp(")) { const char *q = p + 4; *px = (int)gc_atom(&q, cw); return 1; }
+    return css_calc_px(p, cw, px);
+}
 
 static int track_one(const char *t, int len, struct trk *o, int cw) {
-    char b[320];
+    char b[1024];
     int px;
     o->mn = -1;
-    if (!strncmp(t, "calc(", 5)) { const char *q = t + 4; double v = gc_atom(&q, cw); o->kind = 0; o->v = v < 0 ? 0 : (int)v; return 1; }
     if (len >= (int)sizeof b) len = sizeof b - 1;
     memcpy(b, t, len); b[len] = 0;
     char *p = b;
@@ -1076,10 +1081,10 @@ static int track_one(const char *t, int len, struct trk *o, int cw) {
         const char *a = p + 7;
         while (*a == ' ') a++;
         if (isdigit((unsigned char)*a) && strcspn(a, "%,") == strcspn(a, ",")) o->mn = css_px(a);
-        else if (is_fn_len(a) || !strncmp(a, "calc(", 5)) {          /* minmax(min(..)/calc(..), x): the minimum, evaluated against the container */
+        else if (is_fn_len(a)) {          /* minmax(min(..)/calc(..), x): the minimum, evaluated against the container */
             char *mc = (char *)a; int d = 0;
             while (*mc && (d || *mc != ',')) { if (*mc == '(') d++; else if (*mc == ')') d--; mc++; }
-            if (*mc == ',') { *mc = 0; if (css_calc_px(a, cw, &px)) o->mn = px < 0 ? 0 : px; *mc = ','; }
+            if (*mc == ',') { *mc = 0; if (fn_len(a, cw, &px)) o->mn = px < 0 ? 0 : px; *mc = ','; }
         }
     }
     if (!strncmp(p, "minmax(", 7) || !strncmp(p, "fit-content(", 12)) {
@@ -1089,7 +1094,7 @@ static int track_one(const char *t, int len, struct trk *o, int cw) {
         char *e = p + strlen(p);
         if (e > p && e[-1] == ')') e[-1] = 0;
     }
-    if (is_fn_len(p) && css_calc_px(p, cw, &px)) { o->kind = 0; o->v = px < 0 ? 0 : px; }   /* min()/max()/clamp() track sizes */
+    if (is_fn_len(p) && fn_len(p, cw, &px)) { o->kind = 0; o->v = px < 0 ? 0 : px; }   /* calc()/min()/max()/clamp() track sizes */
     else if (strstr(p, "fr")) { o->kind = 1; o->v = (int)(atof(p) * 100); if (o->v <= 0) o->v = 100; }
     else if (strchr(p, '%')) { o->kind = 3; o->v = (int)atof(p); }
     else if (isdigit((unsigned char)*p) || *p == '.') { o->kind = 0; o->v = css_px(p); }
@@ -1114,7 +1119,7 @@ static int track_min(const char *s, int cw) {   /* minmax()'s minimum: px, %, em
 
 static int parse_tracks_raw(const char *s, struct trk *t, int max, int cw, int gap);
 static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) {   /* whitespace runs (newlines, tabs) -> one space */
-    char buf[600];
+    char buf[4096];                                           /* var() expansion makes long templates */
     if (!s) return 0;
     int k = 0, sp = 0;
     for (; *s && k < (int)sizeof buf - 1; s++) {
@@ -1140,10 +1145,10 @@ static int parse_tracks_raw(const char *s, struct trk *t, int max, int cw, int g
             if (comma && comma < e) {
                 struct trk in[8];
                 int ni = 0, cnt;
-                char sub[160];
+                char sub[1024];
                 int sl = (int)(e - comma - 2);
                 if (sl < 0) sl = 0;
-                if (sl > 159) sl = 159;
+                if (sl > 1023) sl = 1023;
                 memcpy(sub, comma + 1, sl); sub[sl] = 0;
                 ni = parse_tracks(sub, in, 8, cw, gap);
                 if (isdigit((unsigned char)*a)) cnt = atoi(a);
