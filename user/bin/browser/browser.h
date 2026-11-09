@@ -186,6 +186,20 @@ int  css_media(const char *q);                   /* media query list (a media=""
 int  css_attrs(void);                            /* legacy: some rule uses an attribute selector: elements need el.at */
 int  css_any(void);
 void css_cascade(const struct el *st, int n, const char *style, struct cprops *out);   /* legacy; st[n-1] is the subject */
+/* ---- canvas.c: <canvas> 2D pixel buffers and rasteriser behind js.c's cv* natives ---- */
+void cnv_reset(void);
+int  cnv_new(int w, int h);
+int  cnv_resize(int id, int w, int h);
+int  cnv_fill(int id, const double *poly, int np, int evenodd, const double *pn, int npn, double alpha, int op, const uint8_t *mask);
+uint8_t *cnv_clip(int id, const double *poly, int np, int evenodd, const uint8_t *prev, size_t *len);
+void cnv_measure(const char *s, double size, int flags, double *w, double *asc, double *desc);
+int  cnv_text(int id, const char *s, double x, double y, double size, int flags, const double *pn, int npn, double alpha, int op, const uint8_t *mask);
+uint8_t *cnv_get_rgba(int id, int x, int y, int w, int h);
+void cnv_put_rgba(int id, const uint8_t *s, int w, int h, int dx, int dy);
+char *cnv_png_url(int id);
+const uint8_t *cnv_pixels(int id, int *w, int *h);
+int  img_set_rgba(const char *url, const uint8_t *rgba, int w, int h);   /* <canvas> pixels as the image "canvas:<js node id>" */
+int  img_find(const char *url);                  /* index of an already known image, or -1 (never queues anything) */
 int  css_color(const char *s, color_t *out, int legacy);   /* any CSS colour (alpha in the top byte; transparent = 0); legacy: bare hex too */
 int  css_match(const char *sel, const struct el *st, int n);   /* legacy: selector list vs st[n-1]: 1/0, -1 = nothing parsable */
 

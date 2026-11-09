@@ -2872,7 +2872,7 @@ static void build_text(int tn, int pb, const struct inh *in) {
 static const char *cur_base_url;
 static int plain_text;
 
-static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
+static void build_img(int dn, int pb, struct bx *S, const struct inh *ni, int cvn) {   /* cvn: a <canvas> (its js node id, or -1): the picture is the image "canvas:<id>" */
     const char *src = ATTR(dn, "src"), *alt = ATTR(dn, "alt");
     int idx = -1, iw = 0, ih = 0, st = IMG_FAILED;
     char u[URL_MAX], pk[URL_MAX];
@@ -2883,7 +2883,11 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
                 img_pick(0, ATTR(s, "srcset"), ATTR(s, "sizes"), rootw, pk, sizeof pk)) { src = pk; picked = 1; }
     }
     if (!picked && ATTR(dn, "srcset") && img_pick(src, ATTR(dn, "srcset"), ATTR(dn, "sizes"), rootw, pk, sizeof pk)) src = pk;
-    if (src && *src) {
+    if (cvn) {
+        snprintf(u, sizeof u, "canvas:%d", cvn);
+        idx = img_find(u);
+        st = idx >= 0 ? img_info(idx, &iw, &ih) : IMG_FAILED;
+    } else if (src && *src) {
         if (!strncasecmp(src, "data:", 5)) idx = img_ref_ex(src, ATTR(dn, "loading"));
         else { url_resolve(cur_base_url, src, u, sizeof u); idx = img_ref_ex(u, ATTR(dn, "loading")); }
         st = img_info(idx, &iw, &ih);
@@ -2891,7 +2895,8 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
     const char *aw = ATTR(dn, "width"), *ah = ATTR(dn, "height");
     int W = aw && atoi(aw) > 0 && !strchr(aw, '%') ? atoi(aw) : 0, H = ah && atoi(ah) > 0 && !strchr(ah, '%') ? atoi(ah) : 0;
     int cssw = S->k[L_W] != K_AUTO, cssh = S->k[L_H] == K_PX;
-    if (st == IMG_FAILED && !((W || cssw) && (H || cssh))) {      /* broken and unsized: just the alt text, like a text browser */
+    if (cvn) { if (!W) W = 300; if (!H) H = 150; }                                   /* a canvas is 300x150 unless it says otherwise */
+    if (st == IMG_FAILED && !cvn && !((W || cssw) && (H || cssh))) {      /* broken and unsized: just the alt text, like a text browser */
         char buf[200];
         snprintf(buf, sizeof buf, "[image%s%s]", alt && *alt ? ": " : "", alt && *alt ? alt : "");
         struct inh dim = *ni;
@@ -2903,7 +2908,7 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
     if (bi < 0) return;
     B[bi] = *S;
     struct bx *b = &B[bi];
-    b->outer = b->flt || oof(b) || S->outer == OUT_BLOCK ? OUT_BLOCK : OUT_INLINE; b->inner = IN_IMG; b->ref = idx;
+    b->outer = b->flt || oof(b) || S->outer == OUT_BLOCK ? OUT_BLOCK : OUT_INLINE; b->inner = IN_IMG; b->ref = cvn && st != IMG_READY ? -1 : idx;
     b->link = ni->link; b->node = ni->node; b->vis = ni->vis; b->col = ni->col; b->font = ni->font;
     if (st == IMG_READY && iw > 0 && ih > 0) { b->iw = iw; b->ih = ih; }
     else if (W && H) { b->iw = W; b->ih = H; }
@@ -3028,7 +3033,8 @@ static void build_pseudo(int dn, int pb, const struct inh *in, struct bctx *cx, 
 static void build_el(int dn, int pb, const struct inh *in, struct bctx *cx, int isfirst, int pe) {
     int tag = pe ? T_NONE : DN(dn).tag;
     const char *name = hd_str(DN(dn).nm);
-    if (!pe && (tag == T_HEAD || tag == T_SKIP || tag == T_COL || tag == T_OPTION)) return;
+    int is_cv = !pe && tag == T_SKIP && !strcmp(name, "canvas");
+    if (!pe && !is_cv && (tag == T_HEAD || tag == T_SKIP || tag == T_COL || tag == T_OPTION)) return;
     if (!pe && tag == T_DIV && !strcmp(name, "noscript") && is_js) return;
     if (cpd >= 250) return;
     struct cprops *cp = &CPS[cpd];
@@ -3105,7 +3111,8 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
         return;
     }
     if (tag == T_IFRAME) { if (is_js) build_frame(dn, pb, &S, &ni); return; }
-    if (tag == T_IMG) { build_img(dn, pb, &S, &ni); return; }
+    int is_cv = !pe && tag == T_SKIP && !strcmp(hd_str(DN(dn).nm), "canvas");
+    if (tag == T_IMG || is_cv) { build_img(dn, pb, &S, &ni, is_cv ? (ni.node > 0 ? ni.node : -1) : 0); return; }
     if (tag == T_SVG) { build_svg(dn, pb, &S, &ni, cp); return; }
     int iconbtn = 0;                                          /* <button><svg/></button>: lay the children out as an inline-block instead of a text control */
     if (tag == T_BUTTON && has_icon(dn)) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
