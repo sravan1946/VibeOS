@@ -493,6 +493,8 @@ static void svg_ser(struct sbuf *b, int j, int depth) {
     for (int i = 0, n = dom_nattr(j); i < n; i++) {
         const char *an, *av;
         if (!dom_attr_at(j, i, &an, &av)) continue;
+        static const char *const cs[] = { "viewBox", "preserveAspectRatio", "gradientUnits", "gradientTransform", "spreadMethod", "patternUnits", "patternTransform", "clipPathUnits" };
+        for (size_t k = 0; k < sizeof cs / sizeof *cs; k++) if (!strcasecmp(an, cs[k])) { an = cs[k]; break; }   /* the JS tree lowercases attribute names; nanosvg wants SVG's camelCase */
         sb_put(b, " ", 1); sb_put(b, an, strlen(an)); sb_put(b, "=\"", 2); sb_esc(b, av, 1); sb_put(b, "\"", 1);
     }
     sb_put(b, ">", 1);
