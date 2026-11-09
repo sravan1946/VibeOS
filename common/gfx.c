@@ -393,7 +393,7 @@ const struct glyph *font_glyph(const struct font *f, uint32_t cp) {
         if (f->xcp[m] == cp) return &f->xg[m];
         if (f->xcp[m] < cp) lo = m + 1; else hi = m - 1;
     }
-    if (font_fallback && cp >= 0x590) { const struct glyph *g = font_fallback(f, cp); if (g) return g; }
+    if (font_fallback && cp >= 0x80) { const struct glyph *g = font_fallback(f, cp); if (g) return g; }
     if (f->nx && f->xcp[f->nx - 1] == 0xFFFF) return &f->xg[f->nx - 1];   /* the wide faces carry a missing-glyph box */
     return &f->g['?' - 32];
 }

@@ -8,62 +8,16 @@
 #include <stdio.h>
 #include <ctype.h>
 
-/* Only one proportional heading face is baked (Inter 20/26), so page text bigger than that (a 96 px hero) is drawn from enlarged copies of it,
- * built on first use for a few sizes (bilinear-resampled glyph alphas, scaled metrics) and slotted into FT after the five real faces; layout
- * only ever sees a font index, so nothing else knows. A colour (emoji) glyph keeps its native size. */
-#define NBIG 9
-static const uint8_t bigpx[NBIG] = { 24, 28, 32, 40, 48, 64, 80, 96, 128 };
-static struct font bigf[NBIG];
-const struct font *FT[5 + NBIG] = { &font_ui, &font_ui_bold, &font_title, &font_mono, &font_mono_bold };
+/* FT[]: the five baked faces, then the vector faces ttf.c makes on demand (one per face and pixel size) */
+const struct font *FT[5 + NVEC] = { &font_ui, &font_ui_bold, &font_title, &font_mono, &font_mono_bold };
 
-static void big_build(struct font *o, int px) {
-    const struct font *s = &font_title;
-    int ns = 95 + s->nx;
-    struct glyph *gs = malloc(ns * sizeof *gs);
-    long tot = 0;
-    if (!gs) { *o = *s; return; }
-    double k = px / 20.0, gain = k > 2 ? 1 + (k - 2) * .4 : 1;
-    if (gain > 2.5) gain = 2.5;
-    for (int i = 0; i < ns; i++) {
-        const struct glyph *g = i < 95 ? &s->g[i] : &s->xg[i - 95];
-        struct glyph *d = &gs[i];
-        *d = *g;
-        if (g->off >= GLYPH_FB_COLOR) continue;
-        int w = (int)(g->w * k + .999), h = (int)(g->h * k + .999);
-        d->w = w > 255 ? 255 : w; d->h = h > 255 ? 255 : h;
-        d->xoff = (int8_t)(g->xoff * k); d->yoff = (int8_t)(g->yoff * k);
-        d->adv = (uint8_t)(g->adv * k + .5); d->adv64 = (uint16_t)(g->adv64 * k + .5);
-        d->off = tot; tot += d->w * d->h;
-    }
-    uint8_t *al = malloc(tot + 1);
-    if (!al) { free(gs); *o = *s; return; }
-    for (int i = 0; i < ns; i++) {
-        const struct glyph *g = i < 95 ? &s->g[i] : &s->xg[i - 95], *d = &gs[i];
-        if (g->off >= GLYPH_FB_COLOR || !g->w || !g->h) continue;
-        const uint8_t *src = s->alpha + g->off;
-        for (int y = 0; y < d->h; y++) {
-            double fy = (y + .5) * g->h / d->h - .5; int y0 = (int)(fy < 0 ? 0 : fy), y1 = y0 + 1 < g->h ? y0 + 1 : y0; double ty = fy < 0 ? 0 : fy - y0;
-            for (int x = 0; x < d->w; x++) {
-                double fx = (x + .5) * g->w / d->w - .5; int x0 = (int)(fx < 0 ? 0 : fx), x1 = x0 + 1 < g->w ? x0 + 1 : x0; double tx = fx < 0 ? 0 : fx - x0;
-                double a = src[y0 * g->w + x0] * (1 - tx) + src[y0 * g->w + x1] * tx, b = src[y1 * g->w + x0] * (1 - tx) + src[y1 * g->w + x1] * tx;
-                double v = (a * (1 - ty) + b * ty - (gain > 1 ? 100 : 128)) * gain + 128;   /* an enlarged edge is a wide ramp: steepen it so big text stays crisp */
-                al[d->off + y * d->w + x] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v + .5);
-            }
-        }
-    }
-    memcpy(o->g, gs, 95 * sizeof *gs);
-    o->height = (int)(s->height * k + .5); o->ascent = (int)(s->ascent * k + .5);
-    o->alpha = al; o->nx = s->nx; o->xcp = s->xcp; o->xg = s->nx ? memcpy(malloc(s->nx * sizeof *gs), gs + 95, s->nx * sizeof *gs) : 0;
-    free(gs);
-}
-
-/* font index for text of `px` CSS px (>= 22): the nearest enlarged size */
-int font_scaled(int px) {
-    int b = 0;
-    for (int i = 1; i < NBIG; i++) if (abs(px - bigpx[i]) < abs(px - bigpx[b])) b = i;
-    if (!bigf[b].alpha) { big_build(&bigf[b], bigpx[b]); if (!bigf[b].alpha) return F_TITLE; }
-    FT[5 + b] = &bigf[b];
-    return 5 + b;
+/* font index for text of `px` CSS px in family `fam` (lower case, "" = the page default) at weight/italic; the baked face `base` when no vector face fits */
+int font_vec(const char *fam, int mono, int wght, int ital, int px, int base) {
+    int fi = fam && *fam ? ttf_find(fam, wght, ital) : -1, i;
+    if (fi < 0) fi = ttf_find(mono ? "jbmono" : "inter", wght, ital);
+    if (fi < 0 || ttf_font(fi, px, &i) < 0) return base;
+    FT[5 + i] = ttf_font_ptr(i);
+    return 5 + i;
 }
 
 void doc_free(struct doc *d) {

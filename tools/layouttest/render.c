@@ -55,6 +55,7 @@ const char *svg_mem(const char *h, size_t hn, const char *nd, size_t nn) { for (
 char *svg_resolve_use(const char *svg, size_t n, const char *const *docs, const size_t *dl, int nd, size_t *on) { return 0; }
 void browser_status(int bad, const char *fmt, ...) {}
 int main(int argc, char **argv) {
+    ttf_init();
     FILE *f = fopen(argv[1], "rb");
     if (!f) return 1;
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);

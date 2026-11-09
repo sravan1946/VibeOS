@@ -1,31 +1,29 @@
-? o1 i0 p0 f0 [0,0 900x877]  fr0@0,0
-  html o1 i0 p0 f0 [0,21 900x852]  fr0@0,0
-    body o1 i0 p0 f0 [118,21 664x852]  fr0@0,0
-      h1 o1 i0 p0 f0 [130,21 640x53]  fr1@341,21
+? o1 i0 p0 f0 [0,0 900x868]  fr0@0,0
+  html o1 i0 p0 f0 [0,21 900x843]  fr0@0,0
+    body o1 i0 p0 f0 [118,21 664x843]  fr0@0,0
+      h1 o1 i0 p0 f0 [130,21 640x50]  fr1@343,21
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      p#hero o1 i0 p0 f0 [130,98 640x34]  fr1@335,98
+      p#hero o1 i0 p0 f0 [130,95 640x32]  fr1@344,95
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      ul.nav o1 i0 p0 f0 [130,136 640x22]  fr3@130,136
+      ul.nav o1 i0 p0 f0 [130,131 640x22]  fr3@130,131
         li o0 i1 p0 f0 [0,0 0x0]  fr0@0,0
           #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
         li o0 i1 p0 f0 [0,0 0x0]  fr0@0,0
           #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
         li o0 i1 p0 f0 [0,0 0x0]  fr0@0,0
           #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      h2 o1 i0 p0 f0 [130,182 640x34]  fr1@130,182
+      h2 o1 i0 p0 f0 [130,177 640x32]  fr1@130,177
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      div.note o1 i0 p0 f0 [130,236 640x38]  fr1@146,244
+      div.note o1 i0 p0 f0 [130,229 640x38]  fr1@146,237
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      p.warn o1 i0 p0 f0 [130,290 640x33]  fr1@136,296
+      p.warn o1 i0 p0 f0 [130,283 640x33]  fr1@136,289
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      div.box o1 i0 p0 f0 [130,331 640x56]  fr0@0,0
-        p o1 i0 p0 f0 [141,354 618x22]  fr1@141,354
+      div.box o1 i0 p0 f0 [130,324 640x56]  fr0@0,0
+        p o1 i0 p0 f0 [141,347 618x22]  fr1@141,347
           #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      h2 o1 i0 p0 f0 [130,411 640x34]  fr1@130,411
+      h2 o1 i0 p0 f0 [130,404 640x32]  fr1@130,404
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      p o1 i0 p0 f0 [130,465 640x45]  fr13@130,465
-        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+      p o1 i0 p0 f0 [130,456 640x45]  fr13@130,456
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
@@ -37,24 +35,24 @@
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      p.right o1 i0 p0 f0 [130,526 640x22]  fr1@594,526
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      div.narrow o1 i0 p0 f0 [290,558 320x64]  fr2@319,568
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      p.imp o1 i0 p0 f0 [130,638 640x22]  fr1@130,638
+      p.right o1 i0 p0 f0 [130,517 640x22]  fr1@594,517
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      p o1 i0 p0 f0 [130,676 640x27]  fr1@130,676
+      div.narrow o1 i0 p0 f0 [290,549 320x64]  fr2@319,559
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      p o1 i0 p0 f0 [130,719 640x54]  fr0@0,0
-        (anon) o1 i0 p0 f0 [130,719 640x22]  fr1@130,719
+      p.imp o1 i0 p0 f0 [130,629 640x22]  fr1@130,629
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+      p o1 i0 p0 f0 [130,667 640x27]  fr1@130,667
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+      p o1 i0 p0 f0 [130,710 640x54]  fr0@0,0
+        (anon) o1 i0 p0 f0 [130,710 640x22]  fr1@130,710
           #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-        span o1 i0 p0 f0 [130,751 640x22]  fr1@130,751
+        span o1 i0 p0 f0 [130,742 640x22]  fr1@130,742
           #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      p o1 i0 p0 f0 [130,813 640x22]  fr1@130,813
+      p o1 i0 p0 f0 [130,804 640x22]  fr1@130,804
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-      p o1 i0 p0 f0 [130,851 640x22]  fr7@130,851
-        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+      p o1 i0 p0 f0 [130,842 640x22]  fr7@130,842
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
@@ -62,6 +60,8 @@
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
-        span o1 i0 p2 f2 [649,851 95x22]  fr1@649,851
-          #text o0 i9 p0 f0 [649,851 0x0]  fr0@0,0
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+        span o1 i0 p2 f2 [649,842 95x22]  fr1@649,842
+          #text o0 i9 p0 f0 [649,842 0x0]  fr0@0,0
         #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0

@@ -1064,6 +1064,7 @@ int main(int argc, char **argv) {
     js_set_layout_hook(js_relayout);
     if (argc > 2 && !strcmp(argv[1], "--fetch")) return fetch_cli(argc - 2, argv + 2);
     uni_init();
+    ttf_init();
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;
