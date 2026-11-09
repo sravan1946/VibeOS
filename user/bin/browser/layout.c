@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <math.h>
 
 #ifdef LT_DEBUG
 #include <time.h>
@@ -828,7 +829,7 @@ static void place_float(struct bx *c, int cx, int cw, int y, struct bfc *f) {
 }
 
 /* ---------- flexbox ---------- */
-struct fi { struct bx *b; int order, hyp, main, cross, edges, grow, shrink, basis, minc, maxc, ml, mr, mt, mb, line; };
+struct fi { struct bx *b; int seq, order, hyp, main, cross, edges, grow, shrink, basis, minc, maxc, ml, mr, mt, mb, line; };
 
 static int fi_cmp(const void *a, const void *b) {
     const struct fi *x = a, *y = b;
@@ -1056,21 +1057,40 @@ static double gc_sum(const char **p, int cw) {
     }
 }
 
+static int top_comma(const char *p) {                       /* offset of the last comma directly inside the outer brackets, -1 if none */
+    int d = 0, r = -1;
+    for (int i = 0; p[i]; i++) { if (p[i] == '(') d++; else if (p[i] == ')') d--; else if (p[i] == ',' && d == 1) r = i; }
+    return r;
+}
+static int is_fn_len(const char *p) { return !strncmp(p, "min(", 4) || !strncmp(p, "max(", 4) || !strncmp(p, "clamp(", 6); }
+
 static int track_one(const char *t, int len, struct trk *o, int cw) {
-    char b[64];
+    char b[320];
+    int px;
     o->mn = -1;
     if (!strncmp(t, "calc(", 5)) { const char *q = t + 4; double v = gc_atom(&q, cw); o->kind = 0; o->v = v < 0 ? 0 : (int)v; return 1; }
     if (len >= (int)sizeof b) len = sizeof b - 1;
     memcpy(b, t, len); b[len] = 0;
     char *p = b;
-    if (!strncmp(p, "minmax(", 7)) { const char *a = p + 7; while (*a == ' ') a++; if (isdigit((unsigned char)*a) && strcspn(a, "%,") == strcspn(a, ",")) o->mn = css_px(a); }
-    if (!strncmp(p, "minmax(", 7) || !strncmp(p, "fit-content(", 12)) {
-        char *c = strrchr(p, ',');
-        p = c ? c + 1 : strchr(p, '(') + 1;
-        while (*p == ' ') p++;
-        char *e = strchr(p, ')'); if (e) *e = 0;
+    if (!strncmp(p, "minmax(", 7)) {
+        const char *a = p + 7;
+        while (*a == ' ') a++;
+        if (isdigit((unsigned char)*a) && strcspn(a, "%,") == strcspn(a, ",")) o->mn = css_px(a);
+        else if (is_fn_len(a) || !strncmp(a, "calc(", 5)) {          /* minmax(min(..)/calc(..), x): the minimum, evaluated against the container */
+            char *mc = (char *)a; int d = 0;
+            while (*mc && (d || *mc != ',')) { if (*mc == '(') d++; else if (*mc == ')') d--; mc++; }
+            if (*mc == ',') { *mc = 0; if (css_calc_px(a, cw, &px)) o->mn = px < 0 ? 0 : px; *mc = ','; }
+        }
     }
-    if (strstr(p, "fr")) { o->kind = 1; o->v = (int)(atof(p) * 100); if (o->v <= 0) o->v = 100; }
+    if (!strncmp(p, "minmax(", 7) || !strncmp(p, "fit-content(", 12)) {
+        int c = top_comma(p);
+        p = c >= 0 ? p + c + 1 : strchr(p, '(') + 1;
+        while (*p == ' ') p++;
+        char *e = p + strlen(p);
+        if (e > p && e[-1] == ')') e[-1] = 0;
+    }
+    if (is_fn_len(p) && css_calc_px(p, cw, &px)) { o->kind = 0; o->v = px < 0 ? 0 : px; }   /* min()/max()/clamp() track sizes */
+    else if (strstr(p, "fr")) { o->kind = 1; o->v = (int)(atof(p) * 100); if (o->v <= 0) o->v = 100; }
     else if (strchr(p, '%')) { o->kind = 3; o->v = (int)atof(p); }
     else if (isdigit((unsigned char)*p) || *p == '.') { o->kind = 0; o->v = css_px(p); }
     else { o->kind = 2; o->v = 0; }
@@ -1111,7 +1131,7 @@ static int parse_tracks_raw(const char *s, struct trk *t, int max, int cw, int g
     while (s && *s && n < max) {
         while (*s == ' ') s++;
         if (!*s) break;
-        if (*s == '[') { while (*s && *s != ']') s++; if (*s) s++; continue; }
+        if (*s == '[') { while (*s && *s != ']') s++; if (*s) s++; continue; }   /* line names: named_line() reads them from the template text */
         const char *e = s;
         int d = 0;
         while (*e && (*e != ' ' || d)) { if (*e == '(') d++; if (*e == ')') d--; e++; }
@@ -1841,8 +1861,191 @@ static int clip_push(int x, int y, int w, int h) {         /* returns the previo
     return prev;
 }
 
-/* linear-gradient(): stops painted as consecutive two-colour rects (decor.gdir). Only the axis matters: angles and corners snap to
- * vertical or horizontal. ponytail: no radial/conic gradients (nothing is painted), no gradient on a rounded box's corners. */
+/* Gradients. Axis-aligned linear ones without a radius are painted as consecutive two-colour rects (decor.gdir 1/2, cheap); everything else
+ * (angled linear, radial, conic, any with border-radius) is a decor with gdir 3 that grad_render() fills per pixel at draw time.
+ * ponytail: repeating-*-gradient paints as the plain one; stop colour hints and two-position stops are ignored. */
+#define GS_MAX 16
+#define gmin_(a, b) ((a) < (b) ? (a) : (b))
+#define gmax_(a, b) ((a) > (b) ? (a) : (b))
+struct gspec {
+    int kind;                                        /* 0 linear, 1 radial, 2 conic */
+    float ang;                                       /* radians, CSS convention (0 = up, clockwise); conic: start angle */
+    int cdx, cdy;                                    /* linear "to top right" etc: corner direction (the angle then depends on the box) */
+    int circle, size;                                /* radial: circle?; 0 farthest-corner 1 closest-side 2 farthest-side 3 closest-corner 4 explicit */
+    int ex[2], ek[2];                                /* explicit radii */
+    int px[2], pk[2];                                /* centre (K_PX px or K_PCT x100) */
+    int n; color_t c[GS_MAX]; int k[GS_MAX], v[GS_MAX]; float t[GS_MAX];   /* stop kind 0 unset 1 pct 2 px 3 deg (x100) */
+};
+static int gs_len(const char *s, int *kind, int *out) {      /* "12px" "30%" "45deg" "0.5turn" -> kind (1 pct, 2 px, 3 angle), value x100 (px: x1) */
+    char *e; double v = strtod(s, &e);
+    if (e == s) return 0;
+    if (*e == '%') { *kind = 1; *out = (int)(v * 100); }
+    else if (!strncmp(e, "deg", 3)) { *kind = 3; *out = (int)(v * 100); }
+    else if (!strncmp(e, "turn", 4)) { *kind = 3; *out = (int)(v * 36000); }
+    else if (!strncmp(e, "rad", 3)) { *kind = 3; *out = (int)(v * 5729.58); }
+    else { *kind = 2; *out = (int)(!strncmp(e, "em", 2) || !strncmp(e, "rem", 3) ? v * 16 : v); }
+    return 1;
+}
+static int gs_parse(const char *s, struct gspec *g) {
+    const char *p = strstr(s, "-gradient(");
+    if (!p) return 0;
+    memset(g, 0, sizeof *g);
+    if (p - s >= 6 && !strncmp(p - 6, "radial", 6)) g->kind = 1; else if (p - s >= 5 && !strncmp(p - 5, "conic", 5)) g->kind = 2; else g->kind = 0;
+    g->ang = 3.14159265f; g->px[0] = g->px[1] = 5000; g->pk[0] = g->pk[1] = K_PCT;
+    p += 10;
+    int d = 0, first = 1;
+    char a[200];
+    while (*p && g->n < GS_MAX) {
+        const char *e = p;
+        for (; *e && (d || (*e != ',' && *e != ')')); e++) { if (*e == '(') d++; if (*e == ')') d--; }
+        int l = imin_((int)(e - p), 199);
+        memcpy(a, p, l); a[l] = 0;
+        char *q = a;
+        while (*q == ' ') q++;
+        int isdir = 0;
+        if (first) {
+            if (g->kind == 0) isdir = !strncmp(q, "to ", 3) || ((isdigit((unsigned char)*q) || *q == '-' || *q == '.') && (strstr(q, "deg") || strstr(q, "turn") || strstr(q, "rad")));
+            else isdir = strstr(q, "at ") || !strncmp(q, "from", 4) || !strncmp(q, "circle", 6) || !strncmp(q, "ellipse", 7) || !strncmp(q, "closest", 7) || !strncmp(q, "farthest", 8);
+        }
+        if (first && isdir) {
+            char *at = strstr(q, "at ");
+            if (at) { *at = 0; at += 3; }
+            if (g->kind == 0 && !strncmp(q, "to ", 3)) {
+                int up = !!strstr(q, "top"), lf = !!strstr(q, "left"), rt = !!strstr(q, "right"), dn = !!strstr(q, "bottom");
+                g->ang = (up ? (lf ? 315 : rt ? 45 : 0) : dn ? (lf ? 225 : rt ? 135 : 180) : lf ? 270 : 90) * 0.0174532925f;
+                if ((up || dn) && (lf || rt)) { g->cdx = rt ? 1 : -1; g->cdy = dn ? 1 : -1; }
+            } else if (g->kind == 0) {
+                int kk, vv;
+                if (gs_len(q, &kk, &vv)) g->ang = vv * 0.0174532925f / 100;
+            } else if (g->kind == 2) {
+                g->ang = 0;
+                if (!strncmp(q, "from", 4)) { char *t = q + 4; int kk, vv; while (*t == ' ') t++; if (gs_len(t, &kk, &vv) && kk == 3) g->ang = vv * 0.0174532925f / 100; }
+            } else {
+                g->circle = !!strstr(q, "circle");
+                g->size = strstr(q, "closest-side") ? 1 : strstr(q, "farthest-side") ? 2 : strstr(q, "closest-corner") ? 3 : 0;
+                char *t = q; int ni = 0;
+                while (*t && ni < 2) {                             /* explicit radius/radii: leading numbers */
+                    while (*t == ' ') t++;
+                    if (!(isdigit((unsigned char)*t) || *t == '.')) break;
+                    gs_len(t, &g->ek[ni], &g->ex[ni]); ni++; g->size = 4;
+                    while (*t && *t != ' ') t++;
+                }
+                if (ni == 1) { g->ek[1] = g->ek[0]; g->ex[1] = g->ex[0]; }
+                if (g->size == 4) for (int i = 0; i < 2; i++) g->ek[i] = g->ek[i] == 1 ? K_PCT : K_PX;
+            }
+            if (at) {                                              /* centre: 1 or 2 keywords/lengths */
+                char *t = at;
+                int val[2] = { 5000, 5000 }, kd[2] = { K_PCT, K_PCT }, ni = 0, vfirst = 0;
+                while (*t && ni < 2) {
+                    while (*t == ' ') t++;
+                    if (!*t) break;
+                    int v = -1, kk = K_PCT;
+                    if (!strncmp(t, "left", 4)) v = 0; else if (!strncmp(t, "right", 5)) v = 10000; else if (!strncmp(t, "center", 6)) v = 5000;
+                    else if (!strncmp(t, "top", 3)) { v = 0; vfirst = ni == 0; } else if (!strncmp(t, "bottom", 6)) { v = 10000; vfirst = ni == 0; }
+                    else { int k2, v2; if (gs_len(t, &k2, &v2)) { kk = k2 == 1 ? K_PCT : K_PX; v = v2; } }
+                    if (v >= 0) { val[ni] = v; kd[ni] = kk; ni++; }
+                    while (*t && *t != ' ') t++;
+                }
+                if (ni == 1 && vfirst) { val[1] = val[0]; kd[1] = kd[0]; val[0] = 5000; kd[0] = K_PCT; }   /* "at top": the y keyword alone */
+                else if (ni == 2 && vfirst) { int tv = val[0], tk = kd[0]; val[0] = val[1]; kd[0] = kd[1]; val[1] = tv; kd[1] = tk; }   /* "top left" */
+                for (int i = 0; i < 2; i++) { g->px[i] = val[i]; g->pk[i] = kd[i]; }
+            }
+        } else {
+            char *sp = 0;                                          /* a trailing position: the last top-level space */
+            int dd = 0;
+            for (char *t = q; *t; t++) { if (*t == '(') dd++; else if (*t == ')') dd--; else if (*t == ' ' && !dd) sp = t; }
+            int kk = 0, vv = 0;
+            if (sp && (isdigit((unsigned char)sp[1]) || sp[1] == '.' || sp[1] == '-') && gs_len(sp + 1, &kk, &vv)) *sp = 0; else kk = 0;
+            color_t c;
+            if (css_color(q, &c, 0)) { g->c[g->n] = c; g->k[g->n] = kk; g->v[g->n] = vv; g->n++; }
+        }
+        first = 0;
+        p = e;
+        if (*p == ')' && !d) break;
+        if (*p == ',') p++;
+    }
+    return g->n >= 2;
+}
+static int gs_axis(const struct gspec *g) {                  /* plain horizontal/vertical linear: the rect path paints it */
+    if (g->kind || g->cdx) return 0;
+    int a = (int)(g->ang * 57.29578f + 0.5f);
+    return a % 90 == 0;
+}
+static color_t gs_mix(color_t a, color_t b, int t) {
+    if (!(a >> 24)) a = b & 0xFFFFFF; else if (!(b >> 24)) b = a & 0xFFFFFF;
+    uint32_t r = 0;
+    for (int s = 0; s <= 24; s += 8) r |= (uint32_t)((((a >> s) & 255) * (255 - t) + ((b >> s) & 255) * t + 127) / 255) << s;
+    return r;
+}
+/* rows [y0, y1) of the w x h box into out (w ARGB pixels per row); colours are evaluated once per step x step block */
+void grad_render(const char *s, int w, int h, int rad, int y0, int y1, uint32_t *out, int step) {
+    struct gspec g;
+    if (!gs_parse(s, &g) || w <= 0 || h <= 0) return;
+    float cx = g.pk[0] == K_PCT ? w * g.px[0] / 10000.f : g.px[0], cy = g.pk[1] == K_PCT ? h * g.px[1] / 10000.f : g.px[1];
+    float len = 1, dx = 0, dy = 0, rx = 1, ry = 1;
+    if (g.kind == 0) {
+        if (g.cdx) { dx = g.cdx * (float)h; dy = g.cdy * (float)w; float m = sqrtf(dx * dx + dy * dy); dx /= m; dy /= m; }
+        else { dx = sinf(g.ang); dy = -sinf(g.ang + 1.5707963f); }
+        len = fabsf(w * dx) + fabsf(h * dy);
+    } else if (g.kind == 1) {
+        float mnx = gmin_(cx, w - cx), mny = gmin_(cy, h - cy), mxx = gmax_(cx, w - cx), mxy = gmax_(cy, h - cy);
+        if (g.size == 4) {
+            rx = g.ek[0] == K_PCT ? w * g.ex[0] / 10000.f : g.ex[0];
+            ry = g.ek[1] == K_PCT ? h * g.ex[1] / 10000.f : g.ex[1];
+        } else if (g.circle) {
+            rx = g.size == 1 ? gmin_(mnx, mny) : g.size == 2 ? gmax_(mxx, mxy) : g.size == 3 ? sqrtf(mnx * mnx + mny * mny) : sqrtf(mxx * mxx + mxy * mxy);
+            ry = rx;
+        } else {
+            int near = g.size == 1 || g.size == 3;
+            rx = near ? mnx : mxx; ry = near ? mny : mxy;
+            if (g.size == 0 || g.size == 3) { rx *= 1.41421356f; ry *= 1.41421356f; }
+        }
+        if (rx < 0.5f) rx = 0.5f;
+        if (ry < 0.5f) ry = 0.5f;
+        len = rx;
+    }
+    float *t = g.t; int n = g.n;
+    for (int i = 0; i < n; i++) t[i] = g.k[i] == 1 ? g.v[i] / 10000.f : g.k[i] == 2 ? g.v[i] / len : g.k[i] == 3 ? g.v[i] / 36000.f : -1.f;
+    if (t[0] < 0) t[0] = 0;
+    if (t[n - 1] < 0) t[n - 1] = 1;
+    for (int i = 1; i < n; i++) if (t[i] >= 0 && t[i] < t[i - 1]) t[i] = t[i - 1];
+    for (int i = 1; i < n - 1; i++) if (t[i] < 0) {
+        int a = i - 1, z = i + 1;
+        while (t[z] < 0) z++;
+        for (int k = i; k < z; k++) t[k] = t[a] + (t[z] - t[a]) * (k - a) / (z - a);
+    }
+    if (step < 1) step = 1;
+    for (int y = y0; y < y1; y++) {
+        uint32_t *row = out + (size_t)(y - y0) * w;
+        if (step > 1 && y > y0 && (y - y0) % step) { memcpy(row, row - w, (size_t)w * 4); continue; }
+        for (int x = 0; x < w; x++) {
+            if (x % step) { row[x] = row[x - 1]; continue; }
+            float px = x + step * 0.5f, py = y + step * 0.5f, u;
+            if (g.kind == 0) u = ((px - w * 0.5f) * dx + (py - h * 0.5f) * dy) / len + 0.5f;
+            else if (g.kind == 1) { float ax = (px - cx) / rx, ay = (py - cy) / ry; u = sqrtf(ax * ax + ay * ay); }
+            else { u = (atan2f(px - cx, -(py - cy)) - g.ang) / 6.28318531f; u -= floorf(u); }
+            int i = 0;
+            while (i < n - 2 && u >= t[i + 1]) i++;
+            if (u <= t[0]) row[x] = g.c[0];
+            else if (u >= t[n - 1]) row[x] = g.c[n - 1];
+            else { float sp = t[i + 1] - t[i]; row[x] = gs_mix(g.c[i], g.c[i + 1], sp > 1e-6f ? (int)((u - t[i]) / sp * 255 + 0.5f) : 255); }
+        }
+    }
+    int R = rad > w / 2 ? w / 2 : rad;
+    if (R > h / 2) R = h / 2;
+    for (int y = y0; y < y1 && R > 0; y++) {                       /* rounded corners: anti-aliased coverage, only in the corner squares */
+        int ccy = y < R ? R : y >= h - R ? h - R : -1;
+        if (ccy < 0) continue;
+        uint32_t *row = out + (size_t)(y - y0) * w;
+        for (int k = 0; k < 2 * R; k++) {
+            int x = k < R ? k : w - 2 * R + k, ccx = k < R ? R : w - R;
+            float ex = x + 0.5f - ccx, ey = y + 0.5f - ccy, dd = sqrtf(ex * ex + ey * ey) - R + 0.5f;
+            if (dd > 0) row[x] = (row[x] & 0xFFFFFF) | (dd >= 1 ? 0u : (uint32_t)((1 - dd) * (row[x] >> 24))) << 24;
+        }
+    }
+}
+
+/* linear-gradient() axis path: stops painted as consecutive two-colour rects */
 #define GSTOPS 12
 struct gstop { color_t c; int kind, v; };                  /* kind 0 unset, 1 percent (x100), 2 px */
 static int grad_parse(const char *s, int *horiz, int *rev, struct gstop *st) {
@@ -1871,7 +2074,7 @@ static int grad_parse(const char *s, int *horiz, int *rev, struct gstop *st) {
                 else *rev = deg < 45 || deg >= 315;
             }
         } else {
-            char *sp = 0;                                         /* a trailing position: the last top-level space */
+            char *sp = 0;
             int dd = 0;
             for (char *t = q; *t; t++) { if (*t == '(') dd++; else if (*t == ')') dd--; else if (*t == ' ' && !dd) sp = t; }
             st[n].kind = 0; st[n].v = 0;
@@ -1892,9 +2095,18 @@ static int grad_parse(const char *s, int *horiz, int *rev, struct gstop *st) {
 }
 
 static void paint_grad(struct bx *b, int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    struct gspec gs;
+    if (!gs_parse(css_str(b->grd - 1), &gs)) return;
+    if (b->rad > 0 || !gs_axis(&gs)) {                              /* per pixel at draw time; px = the gradient's css_str id */
+        int n0 = D->ndc;
+        emit_decor(x, y, w, h, 0xFF000001, b->rad, 0);
+        if (D->ndc == n0 + 1) { struct decor *r = &D->dc[n0]; r->gdir = 3; r->px = b->grd - 1; }
+        return;
+    }
     struct gstop st[GSTOPS];
     int horiz, rev, n = grad_parse(css_str(b->grd - 1), &horiz, &rev, st);
-    if (n < 2 || w <= 0 || h <= 0) return;
+    if (n < 2) return;
     int len = horiz ? w : h, pos[GSTOPS];
     for (int i = 0; i < n; i++) pos[i] = st[i].kind == 1 ? len * st[i].v / 10000 : st[i].kind == 2 ? st[i].v : -1;
     if (pos[0] < 0) pos[0] = 0;
@@ -2697,7 +2909,7 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
     if (oof(b)) abs_reg(bi);
 }
 
-static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
+static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni, const struct cprops *cp) {
     int c = HD.n[dn].first;
     if (c < 0) return;
     const char *mk = hd_str(HD.n[c].nm);
@@ -2713,8 +2925,31 @@ static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
         size_t rn = 0;
         if ((res = svg_resolve_use(mk, mn, dp, dl, nd, &rn))) { mk = res; mn = rn; }
     }
+    char *styled = 0;
+    if (cp->k[P_FILL] == K_PX || cp->k[P_STROKE] == K_PX || cp->k[P_STROKEW] == K_PX) {   /* CSS fill/stroke on the svg (or inherited): a style attribute at the end of the root tag */
+        const char *gt = memchr(mk, '>', mn);
+        if (gt) {
+            char st[120];
+            int sl = 0;
+            for (int w = 0; w < 3; w++) {
+                int p = w == 0 ? P_FILL : w == 1 ? P_STROKE : P_STROKEW;
+                if (cp->k[p] != K_PX) continue;
+                if (w == 2) sl += snprintf(st + sl, sizeof st - sl, "stroke-width:%d;", cp->v[p]);
+                else if (!(cp->v[p] >> 24)) sl += snprintf(st + sl, sizeof st - sl, "%s:none;", w ? "stroke" : "fill");
+                else sl += snprintf(st + sl, sizeof st - sl, "%s:#%06X;", w ? "stroke" : "fill", (unsigned)cp->v[p] & 0xFFFFFF);
+            }
+            size_t at = gt - mk - (gt > mk && gt[-1] == '/');
+            if ((styled = malloc(mn + sl + 16))) {
+                size_t o = at;
+                memcpy(styled, mk, at);
+                o += snprintf(styled + o, sl + 16, " style=\"%s\"", st);
+                memcpy(styled + o, mk + at, mn - at);
+                mk = styled; mn = mn + (o - at);
+            }
+        }
+    }
     int idx = img_svg_inline(mk, mn, ni->col & 0xFFFFFF), iw = 0, ih = 0;
-    free(res);
+    free(res); free(styled);
     if (idx < 0 || img_info(idx, &iw, &ih) != IMG_READY || iw <= 0 || ih <= 0) return;
     const char *aw = ATTR(dn, "width"), *ah = ATTR(dn, "height");
     int bi = bx_new();
@@ -2845,7 +3080,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
         return;
     }
     if (tag == T_IMG) { build_img(dn, pb, &S, &ni); return; }
-    if (tag == T_SVG) { build_svg(dn, pb, &S, &ni); return; }
+    if (tag == T_SVG) { build_svg(dn, pb, &S, &ni, cp); return; }
     int iconbtn = 0;                                          /* <button><svg/></button>: lay the children out as an inline-block instead of a text control */
     if (tag == T_BUTTON && has_icon(dn)) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
         const char *ty2 = ATTR(dn, "type");

@@ -106,6 +106,7 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
        P_BG2IMG, P_BG2REP, P_BG2PX, P_BG2PY, P_BG2SW, P_BG2SH,       /* second background layer (painted UNDER the P_BGIMG one, over the colour): same encoding as P_BGIMG..P_BGSH */
        P_TRSX, P_TRSY, P_TRROT, P_CLIP,   /* P_CLIP: clip: rect(0 0 0 0) (the sr-only trick) = 1: nothing painted */
                                             /* transform scale (x1000, 1000 = none) and rotate (tenths of a degree); LAYOUT may ignore */
+       P_FILL, P_STROKE, P_STROKEW,       /* svg: colour (alpha 0 = none) / K_AUTO = not set; stroke width px */
        P_N };
 /* value kinds. K_PX also carries every keyword/enum/colour (value in v). Lengths: K_PX px, K_PCT percent*100, K_CALC compiled
  * calc()/min()/max()/clamp() with a percentage inside (resolve with css_len()). Never read p->v of a length directly: css_len(). */
@@ -160,6 +161,8 @@ void css_cnt_leave(int depth);
 int  css_counter_format(int lt, int n, char *out, int cap);    /* n in a list-style-type LT_*: "iv", "c", "07", a bullet...; returns length */
 int  css_len(const struct cprops *p, int prop, int base);      /* a length property in px: px, % of base, calc(); auto/none -> 0 */
 const char *css_custom(const struct cprops *p, const char *name);   /* a custom property's value in a computed style (NULL = unset) */
+void grad_render(const char *s, int w, int h, int rad, int y0, int y1, uint32_t *out, int step);   /* layout.c: gdir 3 decors */
+int  css_calc_px(const char *t, int base, int *out);   /* calc()/min()/max()/clamp() or a plain length in px against a % base; 0 = not one */
 const char *css_str(int id);                      /* text of a K_STR value (grid track lists, content, url of background-image) */
 int  css_match_node(const char *sel, int node);
 /* Restyle scoping (after a change, which part of the tree needs css_compute again; hover must not restyle the page).
