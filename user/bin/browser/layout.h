@@ -20,7 +20,9 @@ int  hd_ent(const char *s, int n, char *o, int *used);  /* s[0] == '&': UTF-8 wr
 
 /* ---- html.c ---- */
 enum { F_UI, F_UIB, F_TITLE, F_MONO, F_MONOB };
-extern const struct font *const FT[];
+extern const struct font *FT[];
+#define NVEC 40
+int font_vec(const char *fam, int mono, int wght, int ital, int px, int base);   /* html.c: FT index of a vector face (ttf.c) at px, else `base` */
 uint32_t hd_pool_add(const char *s, size_t n);
 void hd_plain(const char *src, size_t n);
 int  hd_from_js(struct doc *d, const char *base);   /* the page's tree from js.c's accessors (pages with scripts) */

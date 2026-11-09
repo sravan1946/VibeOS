@@ -294,6 +294,8 @@ int fetch_start_req(struct fetch *f, const char *url, const char *method, const 
     f->head = !strcmp(method, "HEAD");
     if (!strncasecmp(url, "data:", 5)) return data_response(f, url);
     int plain = !strcmp(method, "GET") && !hdrs && !body;       /* the only kind the cache serves */
+    if (!hdrs && !strncasecmp(url, "https://fonts.googleapis.com/", 29))   /* modern UAs get woff2 only; this one gets a TTF per weight (no brotli decoder needed) */
+        hdrs = "User-Agent: Mozilla/4.0 (compatible; VibeBrowser/1.0)\r\n";
     char cond[300];
     if (plain) {
         struct cent *c = cache_find(url);

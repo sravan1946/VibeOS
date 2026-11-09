@@ -8,7 +8,17 @@
 #include <stdio.h>
 #include <ctype.h>
 
-const struct font *const FT[] = { &font_ui, &font_ui_bold, &font_title, &font_mono, &font_mono_bold };
+/* FT[]: the five baked faces, then the vector faces ttf.c makes on demand (one per face and pixel size) */
+const struct font *FT[5 + NVEC] = { &font_ui, &font_ui_bold, &font_title, &font_mono, &font_mono_bold };
+
+/* font index for text of `px` CSS px in family `fam` (lower case, "" = the page default) at weight/italic; the baked face `base` when no vector face fits */
+int font_vec(const char *fam, int mono, int wght, int ital, int px, int base) {
+    int fi = ttf_web(fam, wght, ital), i;                    /* a page's @font-face first, at any size */
+    if (fi < 0 && px >= 22) fi = ttf_find(mono ? "jbmono" : "inter", wght, ital);     /* else the built-in vector faces for big text */
+    if (fi < 0 || ttf_font(fi, px, &i) < 0) return base;
+    FT[5 + i] = ttf_font_ptr(i);
+    return 5 + i;
+}
 
 void doc_free(struct doc *d) {
     for (int i = 0; i < d->nlink; i++) free(d->link[i]);
@@ -189,9 +199,33 @@ static int stick_shift(const struct stick *g, int scroll) {
     return s < mx ? s : mx > 0 ? mx : 0;
 }
 
+/* CSS animations: a group with akf moves by its keyframes' translate() at the time of the draw. Time starts at the first draw. */
+uint32_t uptime_ms(void);                        /* syscall.h (tools/layouttest stubs it) */
+static int g_ax, g_shx[MAXSTK];                  /* x shift of the group being drawn / of every group (animations; sticky ones only move in y) */
+static uint32_t anim_ms(void) { static uint32_t ep; uint32_t n = uptime_ms(); if (!ep) ep = n | 1; return n - ep; }
+static void anim_shift(const struct stick *k, int *dx, int *dy) {
+    long t = (long)anim_ms() - k->adel, it, ph;
+    *dx = *dy = 0;
+    if (t < 0) return;
+    it = t / k->adur;
+    if (k->ait && it >= k->ait) { it = k->ait - 1; ph = 1000; } else ph = t % k->adur * 1000 / k->adur;
+    if (k->adr == 1 || (k->adr == 2 && (it & 1)) || (k->adr == 3 && !(it & 1))) ph = 1000 - ph;
+    int xp, xc, yp, yc;
+    css_kf_eval(k->akf - 1, (int)ph, &xp, &xc, &yp, &yc);
+    *dx = xp + xc * k->bw / 10000; *dy = yp + yc * k->h / 10000;
+}
+/* ms until the next frame an animation needs (-1: nothing is moving) */
+int doc_anim_due(const struct doc *d) {
+    for (int g = 0; g < d->nsk; g++) {
+        const struct stick *k = &d->sk[g];
+        if (k->akf && (!k->ait || (long)anim_ms() - k->adel < (long)k->adur * k->ait)) return 66;
+    }
+    return -1;
+}
+
 /* is item (decor = 0) or decor (decor = 1) index n inside a sticky group that is currently shifted? */
 static int stick_in(const struct doc *d, const int *shs, int n, int decor) {
-    for (int g = 0; g < d->nsk; g++) if (shs[g] && (decor ? n >= d->sk[g].d0 && n < d->sk[g].d1 : n >= d->sk[g].i0 && n < d->sk[g].i1)) return 1;
+    for (int g = 0; g < d->nsk; g++) if ((shs[g] || g_shx[g]) && (decor ? n >= d->sk[g].d0 && n < d->sk[g].d1 : n >= d->sk[g].i0 && n < d->sk[g].i1)) return 1;
     return 0;
 }
 
@@ -200,7 +234,7 @@ static void draw_decor(struct canvas *cc, const struct doc *d, const struct deco
     int y = vy + r->y - scroll + sh;
     if (y >= vy + vh || y + r->h <= vy) return;
     struct canvas c2 = *cc, *c = cc;
-    if (r->clip) { const struct cliprect *k = &d->cl[r->clip]; c2 = *cc; canvas_clip(&c2, vx + k->x, vy + k->y - scroll + (r->clip >= c0 && r->clip < c1 ? sh : 0), k->w, k->h); c = &c2; }
+    if (r->clip) { const struct cliprect *k = &d->cl[r->clip]; c2 = *cc; canvas_clip(&c2, vx + k->x - (r->clip >= c0 && r->clip < c1 ? 0 : g_ax), vy + k->y - scroll + (r->clip >= c0 && r->clip < c1 ? sh : 0), k->w, k->h); c = &c2; }
     if (r->gdir == 3) {                                  /* angled/radial/conic gradient or one with rounded corners: per pixel */
         static uint32_t *gb; static size_t gcap;
         int y0 = y < vy ? vy - y : 0, y1 = y + r->h > vy + vh ? vy + vh - y : r->h, w = r->w;
@@ -231,9 +265,15 @@ static void draw_decor(struct canvas *cc, const struct doc *d, const struct deco
         if (th < 1) th = 1;
         if (tw > 4096 || th > 4096) return;
         long ox = r->kx == K_PCT ? (W - tw) * r->px / 10000 : r->px, oy = r->ky == K_PCT ? (H - th) * r->py / 10000 : r->py;
-        const uint32_t *px = img_pixels(r->img - 1, (int)tw, (int)th, r->msk ? 0 : (r->col >> 24) == 0xFF ? r->col : d->bg);
+        const uint32_t *px = img_pixels(r->img - 1, (int)tw, (int)th, 0);      /* keep the picture's alpha: gfx_blit_alpha blends it over whatever is really behind (a pre-blend with the page colour made a translucent overlay a solid slab) */
         if (!px) return;
         uint32_t *tint = 0;
+        if (r->opq && !r->msk) {                         /* opacity < 1 on the box: fade the picture */
+            tint = malloc((size_t)tw * th * 4);
+            if (!tint) return;
+            for (long k = 0, m = tw * th; k < m; k++) tint[k] = (((px[k] >> 24) * (255 - r->opq) / 255) << 24) | (px[k] & 0xFFFFFF);
+            px = tint;
+        }
         if (r->msk) {                                    /* mask-image: the box colour through the picture's alpha */
             tint = malloc((size_t)tw * th * 4);
             if (!tint) return;
@@ -278,7 +318,7 @@ static void draw_item(struct canvas *cc, const struct doc *d, int i, int vx, int
     int y = vy + it->y - scroll + sh;
     if (y >= vy + vh || y + it->h < vy) return;
     struct canvas c2 = *cc, *cv = cc;
-    if (it->clip) { const struct cliprect *k = &d->cl[it->clip]; canvas_clip(&c2, vx + k->x, vy + k->y - scroll + (it->clip >= c0 && it->clip < c1 ? sh : 0), k->w, k->h); cv = &c2; }
+    if (it->clip) { const struct cliprect *k = &d->cl[it->clip]; canvas_clip(&c2, vx + k->x - (it->clip >= c0 && it->clip < c1 ? 0 : g_ax), vy + k->y - scroll + (it->clip >= c0 && it->clip < c1 ? sh : 0), k->w, k->h); cv = &c2; }
     if (it->flags & FL_IMG) { draw_box(cv, d, it, vx + it->x, y); return; }
     if (it->flags & FL_CTL) {
         const struct ctl *t = &d->ct[it->ref];
@@ -298,6 +338,14 @@ static void draw_item(struct canvas *cc, const struct doc *d, int i, int vx, int
         k += nl - 1;
     }
     color_t col = it->link >= 0 && it->link == hover ? d->hoverc : it->col;
+    if (it->flags & FL_DIFF) {                                               /* mix-blend-mode: difference: |backdrop - colour|, with the backdrop sampled mid-item */
+        int sx = vx + it->x + it->w / 2, sy = y + it->h / 2;
+        if (sx >= cv->cx0 && sx < cv->cx1 && sy >= cv->cy0 && sy < cv->cy1) {
+            color_t bgp = cv->px[sy * cv->stride + sx];
+            int r = abs((int)((bgp >> 16) & 255) - (int)((col >> 16) & 255)), g = abs((int)((bgp >> 8) & 255) - (int)((col >> 8) & 255)), b = abs((int)(bgp & 255) - (int)(col & 255));
+            col = (col & 0xFF000000u) | r << 16 | g << 8 | b;
+        }
+    }
     gfx_text_n(cv, f, vx + it->x, y, txt, it->len, col);
     if (it->flags & FL_UL) gfx_fill(cv, vx + it->x, y + f->ascent + 2, it->w, 1, col);
     if (it->flags & FL_STRIKE) gfx_fill(cv, vx + it->x, y + f->height * 55 / 100, it->w, 1, col);
@@ -309,7 +357,11 @@ void doc_draw(struct ui *ui, const struct doc *d, int vx, int vy, int vw, int vh
     canvas_clip(&cc, vx, vy, vw, vh);
     gfx_fill(&cc, vx, vy, vw, vh, d->bg);
     int nl = mk && mk->find ? strlen(mk->find) : 0, di = 0, start = first_item(d, scroll), shifted = 0, shs[MAXSTK];
-    for (int g = 0; g < d->nsk; g++) { shs[g] = stick_shift(&d->sk[g], scroll); shifted |= shs[g] != 0; }
+    for (int g = 0; g < d->nsk; g++) {
+        g_shx[g] = 0;
+        if (d->sk[g].akf) anim_shift(&d->sk[g], &g_shx[g], &shs[g]); else shs[g] = stick_shift(&d->sk[g], scroll);
+        shifted |= shs[g] != 0 || g_shx[g] != 0;
+    }
     for (; di < d->ndc && d->dc[di].it <= start; di++) if (!shifted || !stick_in(d, shs, di, 1)) draw_decor(&cc, d, &d->dc[di], vx, vy, vh, scroll, 0, 0, 0);   /* backgrounds under the first visible item */
     for (int i = start; i < d->nit; i++) {
         const struct item *it = &d->it[i];
@@ -321,15 +373,19 @@ void doc_draw(struct ui *ui, const struct doc *d, int vx, int vy, int vw, int vh
         draw_item(&cc, d, i, vx, vy, vh, scroll, 0, 0, 0, hover, mk, focus_ord, caret, nl);
     }
     for (; di < d->ndc; di++) if (!shifted || !stick_in(d, shs, di, 1)) draw_decor(&cc, d, &d->dc[di], vx, vy, vh, scroll, 0, 0, 0);
+    for (int i = start; i < d->nit && d->smin[i] < scroll + 3 * vh; i++)                  /* loading=lazy pictures within ~2 screens below start downloading now, as in other browsers */
+        if ((d->it[i].flags & FL_IMG) && d->it[i].y < scroll + 3 * vh) img_near(d->it[i].ref);
     for (int g = 0; g < d->nsk; g++) {                                           /* sticky boxes last: on top, at their stuck position */
         const struct stick *k = &d->sk[g];
-        if (!shs[g]) continue;
+        if (!shs[g] && !g_shx[g]) continue;
+        g_ax = g_shx[g];
         int di2 = k->d0;
         for (int i = k->i0; i < k->i1; i++) {
-            for (; di2 < k->d1 && d->dc[di2].it <= i; di2++) draw_decor(&cc, d, &d->dc[di2], vx, vy, vh, scroll, shs[g], k->c0, k->c1);
-            draw_item(&cc, d, i, vx, vy, vh, scroll, shs[g], k->c0, k->c1, hover, mk, focus_ord, caret, nl);
+            for (; di2 < k->d1 && d->dc[di2].it <= i; di2++) draw_decor(&cc, d, &d->dc[di2], vx + g_ax, vy, vh, scroll, shs[g], k->c0, k->c1);
+            draw_item(&cc, d, i, vx + g_ax, vy, vh, scroll, shs[g], k->c0, k->c1, hover, mk, focus_ord, caret, nl);
         }
-        for (; di2 < k->d1; di2++) draw_decor(&cc, d, &d->dc[di2], vx, vy, vh, scroll, shs[g], k->c0, k->c1);
+        for (; di2 < k->d1; di2++) draw_decor(&cc, d, &d->dc[di2], vx + g_ax, vy, vh, scroll, shs[g], k->c0, k->c1);
+        g_ax = 0;
     }
 }
 

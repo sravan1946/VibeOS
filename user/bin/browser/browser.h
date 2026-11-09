@@ -107,6 +107,9 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
        P_TRSX, P_TRSY, P_TRROT, P_CLIP,   /* P_CLIP: clip: rect(0 0 0 0) (the sr-only trick) = 1: nothing painted */
                                             /* transform scale (x1000, 1000 = none) and rotate (tenths of a degree); LAYOUT may ignore */
        P_FILL, P_STROKE, P_STROKEW,       /* svg: colour (alpha 0 = none) / K_AUTO = not set; stroke width px */
+       P_FFAM,                            /* font-family list as written, lower case (K_STR; K_NONE = unset): web fonts match by name */
+       P_ANAME, P_ADUR, P_AITER, P_ADELAY, P_ADIR, P_ANIMSH,   /* animation-name (K_STR, K_NONE = none) / duration ms / iteration count (0 = infinite) / delay ms / direction 0 normal 1 reverse 2 alternate 3 alt-reverse; P_ANIMSH = the shorthand */
+       P_BLEND,                           /* mix-blend-mode: 1 = difference/exclusion (text drawn inverted over its backdrop), 0 = anything else */
        P_N };
 /* value kinds. K_PX also carries every keyword/enum/colour (value in v). Lengths: K_PX px, K_PCT percent*100, K_CALC compiled
  * calc()/min()/max()/clamp() with a percentage inside (resolve with css_len()). Never read p->v of a length directly: css_len(). */
@@ -163,6 +166,11 @@ int  css_len(const struct cprops *p, int prop, int base);      /* a length prope
 const char *css_custom(const struct cprops *p, const char *name);   /* a custom property's value in a computed style (NULL = unset) */
 void grad_render(const char *s, int w, int h, int rad, int y0, int y1, uint32_t *out, int step);   /* layout.c: gdir 3 decors */
 int  css_calc_px(const char *t, int base, int *out);   /* calc()/min()/max()/clamp() or a plain length in px against a % base; 0 = not one */
+/* @keyframes (css.c): translate offsets only, as px + percent*100 of the box; css_kf_find: index by animation name (-1 none) */
+int css_ff_n(void);                                             /* @font-face rules of the page so far */
+int css_ff_get(int i, const char **fam, int *wght, int *ital, const char **url);   /* family lower case; url absolute, TTF/OTF/WOFF only */
+int css_kf_find(int name);
+void css_kf_eval(int kf, int phase1000, int *xpx, int *xpc, int *ypx, int *ypc);
 const char *css_str(int id);                      /* text of a K_STR value (grid track lists, content, url of background-image) */
 int  css_match_node(const char *sel, int node);
 /* Restyle scoping (after a change, which part of the tree needs css_compute again; hover must not restyle the page).
@@ -195,6 +203,13 @@ void visited_add(const char *abs_url);
 
 /* ---- sheet.c: external stylesheets (<link rel=stylesheet>, @import): one fetch each, kept until the next page ---- */
 const char *sheet_get(const char *url, size_t *len);   /* the text once loaded; NULL while loading or failed (queues on first use) */
+int ttf_web(const char *famlist, int wght, int ital);              /* ttf.c: face of the first listed family with a loaded @font-face (starts the download), -1 none yet */
+int ttf_find(const char *fam, int wght, int ital);              /* ttf.c: face index (-1 none) */
+int ttf_add_face(const char *fam, int wght, int ital, const char *url, const uint8_t *bytes, size_t n);
+int ttf_font(int face, int px, int *idx);
+const struct font *ttf_font_ptr(int i);
+void ttf_init(void);
+void img_near(int i);                             /* img.c: fetch it soon (lazy images a couple of screens below the viewport) */
 void uni_init(void);                             /* uni.c: CJK/Hangul/Hebrew/Thai fallback glyphs (font_fallback) */
 int  sheet_pump(void);                          /* advance downloads; nonzero when a sheet arrived or failed */
 int  sheet_busy(void);
@@ -232,21 +247,23 @@ int  img_type_ok(const char *mime);              /* a <source type=...> the deco
 extern int doc_zoom;                             /* main.c: page zoom in percent (100 = normal); layout scales fonts, lengths and images by it */
 enum { C_TEXT, C_PASS, C_AREA, C_BTN, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT };
 struct ctl { uint8_t kind, sub, chk, fl; int form, ord, item, node; uint32_t name, val, ph; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits; ph: placeholder (txt offset, "" = none); fl: CF_* */
-enum { CF_REQ = 1, CF_EMAIL = 2, CF_AUTO = 4, CF_RO = 8 };   /* required, type=email, autofocus, readonly/disabled */
+enum { CF_REQ = 1, CF_EMAIL = 2, CF_AUTO = 4, CF_RO = 8, CF_FLAT = 16 };   /* required, type=email, autofocus, readonly/disabled; flat: author drew only a bottom rule (underline field), so no native box */
 struct opt { uint32_t lab, val; };
 struct form { uint32_t action; uint8_t post; int node; };
 #define FL_UL 1
 #define FL_STRIKE 2
 #define FL_IMG 4
 #define FL_CTL 8
+#define FL_DIFF 16                       /* text inside a mix-blend-mode:difference box: drawn as |backdrop - colour| */
 struct item { int x, y; short w, h, clip; uint8_t font, flags, fit; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
-struct decor { int x, y, w, h; color_t col, g1; int it; short clip; uint8_t rad, ring, msk, gdir;   /* gdir 1/2: linear gradient col -> g1 down / right across the rect */
+struct decor { int x, y, w, h; color_t col, g1; int it; short clip; uint8_t rad, ring, msk, gdir, opq;   /* gdir 1/2: linear gradient col -> g1 down / right across the rect */
                int img; uint8_t rep, kx, ky, kw, kh; int px, py, sw, sh; };   /* img: background-image (image cache index + 1; col is then unused): repeat, position and size as k (K_PX/K_PCT[x100]/K_AUTO/K_COVER/K_CONTAIN) + value */   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */
 struct cliprect { int x, y, w, h; };
 /* position: sticky box: the items/decors/clips it emitted are moved down at draw time (doc_draw) so it stays `top` px below the viewport top,
  * but never past `lim` (bottom of its parent). y0/h: its border box. */
-struct stick { int i0, i1, d0, d1, c0, c1, y0, h, top, lim; };
-#define MAXSTK 8
+struct stick { int i0, i1, d0, d1, c0, c1, y0, h, top, lim;
+               int akf, adur, adel, ait, adr, bw;   /* akf > 0: a CSS animation (keyframes index + 1, ms, ms, iterations (0 = infinite), direction) moving the box by translate() at draw time; bw: its width (for %) */ };
+#define MAXSTK 12
 struct anchor { char name[40]; int y; };
 struct doc {
     struct item *it; int nit, itcap;
@@ -270,6 +287,7 @@ void doc_layout_js(struct doc *d, int width, const char *base);   /* the same fo
 /* sel: selection (document order, item/char offsets; from < 0 = none), find: highlight needle (or NULL) with the
  * active match at find_it/find_off */
 struct docmark { int from_it, from_ch, to_it, to_ch; const char *find; int find_it, find_off; };
+int doc_anim_due(const struct doc *d);                /* html.c: ms to the next frame a CSS animation needs, -1 when none runs */
 void doc_draw(struct ui *ui, const struct doc *d, int vx, int vy, int vw, int vh, int scroll, int hover,
               const struct docmark *mk, int focus_ord, int caret);
 int  doc_unstick(const struct doc *d, int y, int scroll);   /* a document y under a drawn sticky box -> where that box was laid out */

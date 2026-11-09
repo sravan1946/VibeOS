@@ -51,10 +51,13 @@ int img_ref_ex(const char *u, const char *l) { return 0; }
 int img_info(int i, int *w, int *h) { const char *e = getenv("LT_IMG"); int a, b; if (e && sscanf(e, "%dx%d", &a, &b) == 2) { *w = a; *h = b; return IMG_READY; } return IMG_LOADING; }   /* LT_IMG=WxH: every image is loaded at that natural size */
 const uint32_t *img_pixels(int i, int w, int h, color_t bg) { return 0; }
 int img_translucent(int i) { return 0; }
+void img_near(int i) {}
+uint32_t uptime_ms(void) { return 0; }
 const char *svg_mem(const char *h, size_t hn, const char *nd, size_t nn) { for (; hn >= nn; h++, hn--) if (!memcmp(h, nd, nn)) return h; return 0; }
 char *svg_resolve_use(const char *svg, size_t n, const char *const *docs, const size_t *dl, int nd, size_t *on) { return 0; }
 void browser_status(int bad, const char *fmt, ...) {}
 int main(int argc, char **argv) {
+    ttf_init();
     FILE *f = fopen(argv[1], "rb");
     if (!f) return 1;
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);

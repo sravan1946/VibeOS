@@ -1064,6 +1064,7 @@ int main(int argc, char **argv) {
     js_set_layout_hook(js_relayout);
     if (argc > 2 && !strcmp(argv[1], "--fetch")) return fetch_cli(argc - 2, argv + 2);
     uni_init();
+    ttf_init();
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;
@@ -1082,6 +1083,7 @@ int main(int argc, char **argv) {
         if (jt >= 0 && (timeout < 0 || jt < timeout)) timeout = jt;
         int at = img_anim_due();
         if (at >= 0 && (timeout < 0 || at < timeout)) timeout = at;
+        { int ad = pg.have ? doc_anim_due(&doc) : -1; if (ad >= 0 && (timeout < 0 || ad < timeout)) timeout = ad; }
         if (scroll != target) timeout = 16;
         struct pollfd pf[2] = { { win->fd, POLLIN, 0 }, { fe.fd, POLLIN, 0 } };
         poll(pf, loading ? 2 : 1, timeout);

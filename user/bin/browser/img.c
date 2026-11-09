@@ -37,6 +37,7 @@ struct pimg {
     struct image im;                    /* the pixels (the current frame of an animation); im.w/h can exceed the natural size (SVG) or be smaller (shrunk) */
     int nw, nh;                         /* natural size: what layout uses */
     uint32_t *sc; int scw, sch; color_t scbg;
+    uint8_t near;                       /* within a couple of screens of the viewport: fetch even when loading=lazy */
     uint32_t want;                      /* uptime_ms | 1 when last drawn, 0 = never */
     struct image_anim an; int nf, fr, plays; uint32_t t_next;
     uint8_t hasa;                       /* the scaled copy (sc) has translucent pixels */
@@ -79,6 +80,7 @@ int img_ref(const char *url) {
 
 const char *img_url(int i) { return i >= 0 && i < np ? P[i].url : ""; }
 
+void img_near(int i) { if (i >= 0 && i < np) P[i].near = 1; }
 int img_info(int i, int *w, int *h) {
     if (i < 0 || i >= np) return IMG_FAILED;
     if (P[i].state == IMG_READY || P[i].reload) { *w = P[i].nw; *h = P[i].nh; return IMG_READY; }   /* (a dropped picture still has its size) */
@@ -229,7 +231,7 @@ static int pump_slot(struct slot *s) {
 
 static int eligible(int q) {
     if (P[q].reload) return P[q].want && uptime_ms() - P[q].want < 1000;     /* dropped: only while it is on screen */
-    if (P[q].want || P[q].mode == 2) return 1;
+    if (P[q].want || P[q].mode == 2 || P[q].near) return 1;
     if (P[q].mode == 1) return 0;
     return (q < FIRST || q <= want_hi + LOOKAHEAD) && used_bytes() < BUDGET * 3 / 4;   /* prefetch only while there is room: it would just be dropped again */
 }

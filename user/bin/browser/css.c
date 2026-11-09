@@ -604,6 +604,7 @@ static int len_parse(const char *s, int *k, int *v) {
 }
 
 /* ---------- declarations ---------- */
+static int anim_time(const char *t, int *ms);
 static int last_nh;                                      /* rules that matched the element cascade() just styled */
 static int imp_cur;                                     /* !important of the declaration being parsed */
 
@@ -751,7 +752,7 @@ static const struct pdef PD[] = {
     KW("align-self", P_ALIGNS, ALK "|auto:100"), KW("justify-self", P_JUSTS, ALK "|auto:100"),
     KW("white-space", P_WS, "normal|nowrap|pre|pre-wrap|pre-line|break-spaces"),
     KW("table-layout", P_TBLAY, "auto|fixed"), KW("pointer-events", P_PEV, "auto|none|all:0|visible:0|painted:0|fill:0|stroke:0"),
-    KW("object-fit", P_OBJFIT, "fill|contain|cover|none|scale-down"), KW("font-style", P_ITALIC, "normal|italic|oblique:1"),
+    KW("mix-blend-mode", P_BLEND, "normal|difference|exclusion:1|multiply:0|screen:0|overlay:0|darken:0|lighten:0|color-dodge:0|color-burn:0|hard-light:0|soft-light:0|hue:0|saturation:0|color:0|luminosity:0|plus-lighter:0|plus-darker:0"), KW("object-fit", P_OBJFIT, "fill|contain|cover|none|scale-down"), KW("font-style", P_ITALIC, "normal|italic|oblique:1"),
     KW("border-top-style", P_BSTT, BSL), KW("border-right-style", P_BSTR, BSL), KW("border-bottom-style", P_BSTB, BSL), KW("border-left-style", P_BSTL, BSL),
     KW("border-collapse", P_COLLAPSE, "separate|collapse"), KW("list-style-position", P_LISTP, "outside|inside"),
     KW("text-align", P_ALIGN, "left|center|right|justify|start:0|end:2|-webkit-center:1|-moz-center:1|-webkit-left:0|-webkit-right:2|match-parent:0|justify-all:3"),
@@ -769,7 +770,7 @@ static const struct pdef PD[] = {
     SPEC("grid-template-areas", P_GAREAS), SPEC("grid-column-start", P_GCS), SPEC("grid-column-end", P_GCE), SPEC("grid-row-start", P_GRS),
     SPEC("grid-row-end", P_GRE), SPEC("grid-area", P_GAREA), SPEC("text-decoration-line", P_DECO),
     SPEC("outline-width", P_OUTW), KW("outline-style", P_OUTS, "none|solid|dashed|dotted|double|groove|ridge|inset|outset|hidden:0|auto:1"), COL("outline-color", P_OUTC),
-    LEN("outline-offset", P_OUTO, F_NEG), SPEC("box-shadow", P_SHX), SPEC("counter-reset", P_CRESET), SPEC("counter-increment", P_CINC),
+    LEN("outline-offset", P_OUTO, F_NEG), SPEC("box-shadow", P_SHX), SPEC("animation", P_ANIMSH), SPEC("animation-name", P_ANAME), SPEC("animation-duration", P_ADUR), SPEC("animation-iteration-count", P_AITER), SPEC("animation-delay", P_ADELAY), KW("animation-direction", P_ADIR, "normal|reverse|alternate|alternate-reverse"), SPEC("counter-reset", P_CRESET), SPEC("counter-increment", P_CINC),
     SPEC("object-position", P_OBJPX), SPEC("transform", P_TRX), SPEC("mask-image", P_MASKIMG),
 };
 
@@ -1108,7 +1109,16 @@ static void special(const struct pdef *d, char *val) {
         if (!strcmp(d->n, "overflow-wrap")) { int a = kwi("normal|break-word|anywhere:1", val); if (a >= 0) put(p, K_PX, a); }
         else { int a = kwi("normal|break-all|keep-all|break-word", val); if (a >= 0) put(p, K_PX, a == 0 ? 0 : a == 1 ? 2 : a == 2 ? 3 : 1); }
         break;
-    case P_FAMILY: { int f = classify_family(val); if (f >= 0) put(p, K_PX, f); break; }
+    case P_FAMILY: {
+        int f = classify_family(val);
+        if (f >= 0) put(p, K_PX, f);
+        char lc[200];
+        size_t i = 0;
+        for (; val[i] && i < sizeof lc - 1; i++) lc[i] = tolower((unsigned char)val[i]);
+        lc[i] = 0;
+        put(P_FFAM, K_STR, intern(lc, i));
+        break;
+    }
     case P_CONTENT:
         if (!strcasecmp(val, "none") || !strcasecmp(val, "normal")) put(p, K_NONE, 0);
         else put(p, K_RAW, intern(val, strlen(val)));
@@ -1176,6 +1186,26 @@ static void special(const struct pdef *d, char *val) {
         break;
     }
     case P_OUTW: if (bw_value(val, &k, &v)) put(p, k, v); break;
+    case P_ANIMSH: {                                       /* animation: <time> [<time>] <ident> infinite|<n> normal|reverse|alternate.. (timing functions/fill modes are ignored) */
+        char buf[300], *tk[12];
+        int n = toks(val, buf, sizeof buf, tk, 12), name = -1, dur = 0, delay = 0, it = 1, dir = 0, nt = 0;
+        for (int i = 0; i < n; i++) {
+            int ms;
+            if (anim_time(tk[i], &ms)) { if (!nt++) dur = ms; else delay = ms; }
+            else if (!strcasecmp(tk[i], "infinite")) it = 0;
+            else if (isdigit((unsigned char)tk[i][0])) it = atoi(tk[i]);
+            else if (kwi("normal|reverse|alternate|alternate-reverse", tk[i]) >= 0) dir = kwi("normal|reverse|alternate|alternate-reverse", tk[i]);
+            else if (!strcasecmp(tk[i], "none")) name = -2;
+            else if (kwi("linear|ease|ease-in|ease-out|ease-in-out|forwards|backwards|both|running|paused|step-start|step-end", tk[i]) >= 0 || strchr(tk[i], '(')) continue;
+            else name = intern(tk[i], strlen(tk[i]));
+        }
+        if (name >= 0) put(P_ANAME, K_STR, name); else put(P_ANAME, K_NONE, 0);
+        put(P_ADUR, K_PX, dur); put(P_AITER, K_PX, it); put(P_ADELAY, K_PX, delay); put(P_ADIR, K_PX, dir);
+        break;
+    }
+    case P_ANAME: if (!strcasecmp(val, "none")) put(p, K_NONE, 0); else put(p, K_STR, intern(val, strcspn(val, ", "))); break;
+    case P_ADUR: case P_ADELAY: { int ms; if (anim_time(val, &ms)) put(p, K_PX, ms); break; }
+    case P_AITER: put(p, K_PX, !strcasecmp(val, "infinite") ? 0 : atoi(val)); break;
     case P_CRESET: case P_CINC: if (!strcasecmp(val, "none")) put(p, K_NONE, 0); else put(p, K_STR, intern(val, strlen(val))); break;
     case P_OBJPX: {
         char buf[200], *tk[6];
@@ -1320,6 +1350,145 @@ static void place_sh(char *val, int pa, int pj) {
 }
 
 /* one declaration: name lowercase (custom properties keep case), val trimmed and mutable */
+static int anim_time(const char *t, int *ms) {            /* "30s" / "250ms" / ".01ms" */
+    char *e;
+    double x = strtod(t, &e);
+    if (e == t) return 0;
+    if (!strcasecmp(e, "s")) { *ms = rnd(x * 1000); return 1; }
+    if (!strcasecmp(e, "ms")) { *ms = rnd(x); return 1; }
+    return 0;
+}
+
+/* ---------- @font-face: family / weight / style / the first src ttf, otf or woff url (woff2 is skipped: sites that offer it also get TTF from Google
+ * Fonts for our old-browser User-Agent, see fetch.c). unicode-range is ignored. The fonts themselves are fetched and parsed by ttf.c. ---------- */
+static const char *ci_find(const char *h, const char *n) { size_t l = strlen(n); for (; *h; h++) if (!strncasecmp(h, n, l)) return h; return 0; }
+struct ffe { short wght; uint8_t ital; int fam, url; };
+static struct ffe FFT[48];
+static int nff;
+int css_ff_n(void) { return nff; }
+int css_ff_get(int i, const char **fam, int *wght, int *ital, const char **url) {
+    if (i < 0 || i >= nff) return 0;
+    *fam = STR(FFT[i].fam); *wght = FFT[i].wght; *ital = FFT[i].ital; *url = STR(FFT[i].url);
+    return 1;
+}
+static int ff_fmt_ok(const char *fmt, const char *url) {
+    if (fmt[0]) return !strcasecmp(fmt, "truetype") || !strcasecmp(fmt, "opentype") || !strcasecmp(fmt, "woff") || !strcasecmp(fmt, "ttf") || !strcasecmp(fmt, "otf");
+    size_t n = strcspn(url, "?#");
+    return (n > 4 && (!strncasecmp(url + n - 4, ".ttf", 4) || !strncasecmp(url + n - 4, ".otf", 4))) || (n > 5 && !strncasecmp(url + n - 5, ".woff", 5));
+}
+static void fontface(const char *body, size_t n) {
+    char *b = malloc(n + 1);
+    if (!b) return;
+    memcpy(b, body, n); b[n] = 0;
+    char fam[64] = "", url[URL_MAX] = "";
+    int wght = 400, ital = 0;
+    for (char *p = b; *p; ) {
+        char *e = p;
+        int d = 0;
+        char q = 0;
+        for (; *e && (q || d || *e != ';'); e++) {
+            if (q) { if (*e == '\\' && e[1]) e++; else if (*e == q) q = 0; }
+            else if (*e == '"' || *e == '\'') q = *e;
+            else if (*e == '(') d++;
+            else if (*e == ')' && d) d--;
+        }
+        int last = !*e;
+        *e = 0;
+        char *c = strchr(p, ':');
+        if (c) {
+            *c = 0;
+            char *nm = p, *v = c + 1;
+            trim(nm); trim(v);
+            for (char *t = nm; *t; t++) *t = tolower((unsigned char)*t);
+            if (!strcmp(nm, "font-family")) {
+                size_t k = 0;
+                for (const char *t = v; *t && k < sizeof fam - 1; t++) if (*t != '"' && *t != '\'') fam[k++] = tolower((unsigned char)*t);
+                fam[k] = 0;
+                trim(fam);
+            } else if (!strcmp(nm, "font-weight")) wght = !strncasecmp(v, "bold", 4) ? 700 : isdigit((unsigned char)*v) ? atoi(v) : 400;
+            else if (!strcmp(nm, "font-style")) ital = !strncasecmp(v, "italic", 6) || !strncasecmp(v, "oblique", 7);
+            else if (!strcmp(nm, "src") && !url[0]) {
+                for (const char *t = v; (t = ci_find(t, "url(")); ) {
+                    char u[URL_MAX], fmt[24] = "";
+                    if (!url_arg(t, u, sizeof u)) { t += 4; continue; }
+                    const char *close = strchr(t, ')'), *nx = ci_find(t + 4, "url("), *f = close ? ci_find(close, "format(") : 0;
+                    if (f && (!nx || f < nx)) {
+                        f += 7;
+                        while (*f == ' ' || *f == '"' || *f == '\'') f++;
+                        size_t k = strcspn(f, "\"') ");
+                        if (k < sizeof fmt) { memcpy(fmt, f, k); fmt[k] = 0; }
+                    }
+                    if (ff_fmt_ok(fmt, u)) { strlcpy(url, u, sizeof url); break; }
+                    t = close ? close : t + 4;
+                }
+            }
+        }
+        if (last) break;
+        p = e + 1;
+    }
+    free(b);
+    if (!fam[0] || !url[0] || nff >= 48) return;
+    for (int i = 0; i < nff; i++) if (!strcmp(STR(FFT[i].fam), fam) && FFT[i].wght == wght && FFT[i].ital == ital) return;     /* first wins (the subsets of one weight) */
+    FFT[nff++] = (struct ffe){ (short)wght, (uint8_t)ital, intern(fam, strlen(fam)), intern(url, strlen(url)) };
+}
+
+/* ---------- @keyframes: only the translate() part of transform is kept (the box moves at draw time, see doc_draw) ---------- */
+struct kfr { int pct, xpx, xpc, ypx, ypc; };
+static struct kf { int name, n; struct kfr f[8]; } KFT[24];
+static int nkf;
+int css_kf_find(int name) { for (int i = 0; i < nkf; i++) if (KFT[i].name == name) return i; return -1; }
+void css_kf_eval(int ki, int ph, int *xpx, int *xpc, int *ypx, int *ypc) {
+    const struct kf *k = &KFT[ki];
+    struct kfr a = { 0, 0, 0, 0, 0 }, b = { 1000, 0, 0, 0, 0 };
+    int haveb = 0;
+    for (int i = 0; i < k->n; i++) {
+        if (k->f[i].pct <= ph) a = k->f[i];
+        else if (!haveb) { b = k->f[i]; haveb = 1; }
+    }
+    if (!haveb) b = a;
+    int span = b.pct - a.pct, t = span > 0 ? (ph - a.pct) * 1000 / span : 0;
+    if (t < 0) t = 0;
+    *xpx = a.xpx + (b.xpx - a.xpx) * t / 1000; *xpc = a.xpc + (b.xpc - a.xpc) * t / 1000;
+    *ypx = a.ypx + (b.ypx - a.ypx) * t / 1000; *ypc = a.ypc + (b.ypc - a.ypc) * t / 1000;
+}
+static const char *skip_block(const char *s, const char *e);
+static void parse_decls(const char *s, size_t n);
+static void keyframes(const char *name, const char *body, size_t n) {
+    if (nkf >= 24) return;
+    char nm[64];
+    strlcpy(nm, name, sizeof nm);
+    trim(nm);
+    struct kf *k = &KFT[nkf];
+    k->name = intern(nm, strlen(nm)); k->n = 0;
+    size_t i = 0;
+    while (i < n && k->n < 8) {
+        while (i < n && (isspace((unsigned char)body[i]) || body[i] == ',')) i++;
+        size_t ps = i;
+        while (i < n && body[i] != '{') i++;
+        if (i >= n) break;
+        char sel[40];
+        size_t sl = i - ps < sizeof sel - 1 ? i - ps : sizeof sel - 1;
+        memcpy(sel, body + ps, sl); sel[sl] = 0;
+        trim(sel);
+        const char *be = skip_block(body + i, body + n);
+        size_t bs = i + 1, bend = (size_t)(be - body - 1) > bs ? (size_t)(be - body - 1) : bs;
+        i = be - body;
+        int nd0 = nd;
+        parse_decls(body + bs, bend - bs);
+        struct kfr f = { !strcasecmp(sel, "from") ? 0 : !strcasecmp(sel, "to") ? 1000 : rnd(atof(sel) * 10), 0, 0, 0, 0 };
+        for (int d = nd0; d < nd; d++) {
+            const struct decl *e = &D[d];
+            if (e->prop == P_TRX) { if (e->kind == K_PX) f.xpx = e->v; else if (e->kind == K_PCT) f.xpc = e->v; }
+            else if (e->prop == P_TRY) { if (e->kind == K_PX) f.ypx = e->v; else if (e->kind == K_PCT) f.ypc = e->v; }
+        }
+        nd = nd0;
+        int at = k->n;
+        while (at > 0 && k->f[at - 1].pct > f.pct) { k->f[at] = k->f[at - 1]; at--; }
+        k->f[at] = f; k->n++;
+    }
+    nkf++;
+}
+
 static void decl(char *name, char *val, int imp) {
     imp_cur = imp;
     if (name[0] == '-' && name[1] == '-') {                            /* custom property: raw text, var() resolved per element */
@@ -1977,6 +2146,8 @@ static void sheet(const char *s, size_t m, const char *base, int depth) {
                     while (*q && *q != '(' && strncasecmp(q, "not", 3) && strncasecmp(q, "style(", 6)) { while (*q && !isspace((unsigned char)*q) && *q != '(') q++; while (isspace((unsigned char)*q)) q++; }
                     if (mq_cond(&q, pre + pl)) sheet(s + bs, bend - bs, base, depth + 1);
                 }
+                else if (IS("font-face")) fontface(s + bs, bend - bs);
+                else if (IS("keyframes") || IS("-webkit-keyframes")) keyframes(pre, s + bs, bend - bs);
                 else if (IS("supports")) { const char *p = pre; if (sup_cond(&p, pre + pl)) sheet(s + bs, bend - bs, base, depth + 1); }
                 else if (IS("layer")) {
                     int saved = cur_layer;
@@ -2116,6 +2287,8 @@ static void ua_init(void) {
 }
 
 void css_reset(void) {
+    nff = 0;
+    nkf = 0;                                              /* keyframes are per page (their names are interned strings) */
     if (!ua_ready || sp_n > (6 << 20)) {                  /* first time, or the string pool got big: start over (invalidates every computed style) */
         nr = nd = 0;
         sel_trunc(0, 0, 0);
@@ -2398,7 +2571,7 @@ static struct cprops INI; static int ini_ready;
 static uint8_t INHT[P_N];
 static int inherited_slow(int p) {
     switch (p) {
-    case P_COLOR: case P_FSIZE: case P_FWEIGHT: case P_FAMILY: case P_ITALIC: case P_BOLD: case P_MONO: case P_LH: case P_LS: case P_WSP: case P_TIND:
+    case P_COLOR: case P_FSIZE: case P_FWEIGHT: case P_FAMILY: case P_FFAM: case P_ITALIC: case P_BOLD: case P_MONO: case P_LH: case P_LS: case P_WSP: case P_TIND:
     case P_ALIGN: case P_TT: case P_WS: case P_WBRK: case P_LISTT: case P_LISTP: case P_LIST: case P_VISIB: case P_CURSOR: case P_DIR:
     case P_COLLAPSE: case P_SPACING: case P_SPACINGY: case P_PEV: case P_FILL: case P_STROKE: case P_STROKEW:
         return 1;
@@ -2421,7 +2594,7 @@ void css_initial(struct cprops *o) {
     o->k[P_GCS] = o->k[P_GCE] = o->k[P_GRS] = o->k[P_GRE] = K_AUTO; o->k[P_ASPECT] = K_AUTO;
     o->k[P_BCT] = o->k[P_BCR] = o->k[P_BCB] = o->k[P_BCL] = K_CUR; o->k[P_OUTC] = K_CUR; o->v[P_OUTW] = 3;
     o->k[P_FILL] = o->k[P_STROKE] = o->k[P_STROKEW] = K_AUTO;
-    o->k[P_SHC] = K_NONE; o->k[P_MASKIMG] = K_NONE; o->k[P_BG2IMG] = K_NONE; o->k[P_BG2SW] = o->k[P_BG2SH] = K_AUTO; o->k[P_BG2PX] = o->k[P_BG2PY] = K_PCT; o->v[P_TRSX] = o->v[P_TRSY] = 1000; o->k[P_CRESET] = o->k[P_CINC] = K_NONE; o->k[P_OBJPX] = o->k[P_OBJPY] = K_PCT; o->v[P_OBJPX] = o->v[P_OBJPY] = 5000;
+    o->k[P_SHC] = K_NONE; o->k[P_MASKIMG] = K_NONE; o->k[P_BG2IMG] = K_NONE; o->k[P_BG2SW] = o->k[P_BG2SH] = K_AUTO; o->k[P_BG2PX] = o->k[P_BG2PY] = K_PCT; o->v[P_TRSX] = o->v[P_TRSY] = 1000; o->k[P_CRESET] = o->k[P_CINC] = K_NONE; o->k[P_ANAME] = K_NONE; o->k[P_FFAM] = K_NONE; o->v[P_AITER] = 1; o->k[P_OBJPX] = o->k[P_OBJPY] = K_PCT; o->v[P_OBJPX] = o->v[P_OBJPY] = 5000;
     o->v[P_BWT] = o->v[P_BWR] = o->v[P_BWB] = o->v[P_BWL] = 3;
 }
 

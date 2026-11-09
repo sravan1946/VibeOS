@@ -259,6 +259,7 @@ UEXTRA_qjs := $(QJS_OBJ) build/user/obj/qjs/repl.o
 UEXTRA_browser := $(QJS_CORE)
 build/user/obj/bin/browser/%.o: UCFLAGS += -I$(QJS_DIR)
 build/user/obj/bin/browser/svg.o: UCFLAGS += -Ithird_party/nanosvg -w     # nanosvg is third-party: its warnings are not ours
+build/user/obj/bin/browser/ttf.o: UCFLAGS += -Ithird_party/stb_truetype -w   # stb_truetype (public domain), no libc beyond malloc/math
 
 $(foreach p,$(UBIN_MULTI),$(eval $(call UMULTI,$(p))))
 
