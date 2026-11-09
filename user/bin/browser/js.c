@@ -1114,7 +1114,7 @@ NATIVE(n_cv_measure) {           /* text, size, flags -> [width, ascent, descent
     JS_SetPropertyUint32(c, r, 0, JS_NewFloat64(c, w)); JS_SetPropertyUint32(c, r, 1, JS_NewFloat64(c, a)); JS_SetPropertyUint32(c, r, 2, JS_NewFloat64(c, d));
     return r;
 }
-static void cnv_free_cb(JSRuntime *rt, void *opaque, void *ptr) { free(ptr); }
+static void cnv_free_cb(JSRuntime *jrt, void *opaque, void *ptr) { free(ptr); }
 NATIVE(n_cv_clip) {              /* id, polys, evenodd, prev|undefined -> mask ArrayBuffer */
     int np;
     const double *poly = abd(c, argv[1], &np);
