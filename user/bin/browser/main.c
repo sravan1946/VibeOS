@@ -388,7 +388,7 @@ static void load_file(const char *url) {
     else if (ext_is(path, ".txt.md.c.h.css.js.json.conf.log.sh.py.xml.csv.ini")) html = 0;
     else { const char *s = buf; while (isspace((unsigned char)*s)) s++; html = *s == '<'; }
     commit(url, buf, got, html);
-    say(false, "%s - %lu bytes%s", path, (unsigned long)got, st.st_size > MAX_PAGE ? " (truncated at 2 MiB)" : "");
+    say(false, "%s - %lu bytes%s", path, (unsigned long)got, st.st_size > MAX_PAGE ? " (truncated at 8 MiB)" : "");
 }
 
 /* ---------- http ---------- */
@@ -466,7 +466,7 @@ static void finish_fetch(void) {
         return;
     }
     commit(pend_url, rs.body, n, html);
-    say(rs.status >= 400, "%d %s - %lu bytes%s", rs.status, rs.text, (unsigned long)n, rs.truncated ? " (truncated at 2 MiB)" : "");
+    say(rs.status >= 400, "%d %s - %lu bytes%s", rs.status, rs.text, (unsigned long)n, rs.truncated ? " (truncated at 8 MiB)" : "");
 }
 
 static void service_fetch(void) {

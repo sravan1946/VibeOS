@@ -458,6 +458,16 @@ class WebSocket extends D.EventTarget {
 }
 for (const [k, v] of [['CONNECTING', 0], ['OPEN', 1], ['CLOSING', 2], ['CLOSED', 3]]) WebSocket[k] = WebSocket.prototype[k] = v;
 class EventSource extends D.EventTarget { constructor(u) { super(); this.url = String(u); this.readyState = 2; setTimeout(() => this.dispatchEvent(new D.Event('error')), 10); } close() {} }
+// indexedDB: present so feature tests pass, but every open() fails asynchronously (like a private window), which pages handle
+class IDBRequest extends D.EventTarget { constructor() { super(); this.result = undefined; this.error = null; this.readyState = 'pending'; this.onsuccess = this.onerror = this.onupgradeneeded = this.onblocked = null; } }
+class IDBFactory {
+    open() { const r = new IDBRequest(); setTimeout(() => { r.readyState = 'done'; r.error = new DOMException('The user denied permission to access the database.', 'UnknownError'); const e = new D.Event('error', { cancelable: true }); r.dispatchEvent(e); if (r.onerror) r.onerror(e); }, 0); return r; }
+    deleteDatabase() { const r = this.open(); return r; }
+    databases() { return Promise.resolve([]); }
+    cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+}
+class IDBKeyRange { static only(v) { return Object.assign(new IDBKeyRange(), { lower: v, upper: v }); } static lowerBound(l, o) { return Object.assign(new IDBKeyRange(), { lower: l, lowerOpen: !!o }); } static upperBound(u, o) { return Object.assign(new IDBKeyRange(), { upper: u, upperOpen: !!o }); } static bound(l, u, lo, uo) { return Object.assign(new IDBKeyRange(), { lower: l, upper: u, lowerOpen: !!lo, upperOpen: !!uo }); } }
+def(g, { indexedDB: new IDBFactory(), IDBFactory, IDBRequest, IDBKeyRange, IDBOpenDBRequest: IDBRequest });
 class BroadcastChannel extends D.EventTarget { constructor(n) { super(); this.name = n; } postMessage() {} close() {} }
 class MessageChannel { constructor() { const mk = () => Object.assign(new D.EventTarget(), { start() {}, close() {} }); const a = mk(), b = mk(); a.postMessage = m => setTimeout(() => b.dispatchEvent(new D.MessageEvent('message', { data: m })), 0); b.postMessage = m => setTimeout(() => a.dispatchEvent(new D.MessageEvent('message', { data: m })), 0); this.port1 = a; this.port2 = b; } }
 def(g, { WebSocket, EventSource, BroadcastChannel, MessageChannel });

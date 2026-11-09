@@ -358,6 +358,9 @@ const t0 = performance.now();
     { const sc = document.createElement('script'); sc.innerHTML = 'var jsq = 1<2 && 3>1;'; document.head.appendChild(sc); check('script innerHTML is raw text', [sc.textContent, window.jsq], ['var jsq = 1<2 && 3>1;', true]); }
     { const st = document.createElement('style'); document.head.appendChild(st); const sh = st.sheet; sh.insertRule('#summary { letter-spacing: 0px }', 0); sh.insertRule('.zz { color: red }', 1);
       check('CSSOM insertRule', [st.sheet === sh, sh.cssRules.length, sh.cssRules[1].selectorText, st.textContent.includes('.zz')], [true, 2, '.zz', true]); sh.deleteRule(0); check('CSSOM deleteRule', [sh.cssRules.length, st.textContent.includes('letter-spacing')], [1, false]); }
+    { const el = document.createElement('div'); check('"prop" in style', ['display' in el.style, 'borderTopWidth' in el.style, 'nope' in el.style, 'webkitFoo' in el.style], [true, true, false, false]); }
+    check('indexedDB open fails async', await new Promise(r => { const q = indexedDB.open('x'); q.onerror = () => r(q.error.name); q.onsuccess = () => r('ok'); }), 'UnknownError');
+    check('SVG className.baseVal', document.createElementNS('http://www.w3.org/2000/svg', 'svg').className instanceof SVGAnimatedString, true);
     const s = document.getElementById('summary');
     s.textContent = fail ? `${pass} passed, ${fail} FAILED` : `all ${pass} tests passed`;
     s.className = fail ? 'fail' : 'pass';

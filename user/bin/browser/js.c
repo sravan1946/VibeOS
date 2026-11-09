@@ -1443,7 +1443,7 @@ int js_page(const char *src, size_t n, const char *url) {
     if (!uses_js(src, n)) return 0;
     rt = JS_NewRuntime();
     if (!rt) return 0;
-    JS_SetMemoryLimit(rt, 64u << 20);
+    JS_SetMemoryLimit(rt, 128u << 20);
     JS_SetMaxStackSize(rt, 1u << 20);
     JS_SetInterruptHandler(rt, on_interrupt, 0);
     JS_SetModuleLoaderFunc(rt, mod_norm, mod_load, 0);
@@ -1493,9 +1493,6 @@ static char *sync_get(const char *url, size_t *len) {
     strlcpy(cur, url, sizeof cur);
     for (int hop = 0; hop < 6; hop++) {
         if (!url_is_web(cur)) {
-            struct jf f;
-            memset(&f, 0, sizeof f);
-            strlcpy(f.url, cur, sizeof f.url);
             char path[PATH_MAX];
             url_file_path(cur, path, sizeof path);
             int fd = open(path, O_RDONLY);

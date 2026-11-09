@@ -12,7 +12,7 @@
 #define font_mono bfont_mono
 #define font_mono_bold bfont_mono_bold
 
-#define MAX_PAGE (2u << 20)      /* body bytes kept per page */
+#define MAX_PAGE (8u << 20)      /* body bytes kept per page */
 #define URL_MAX  1024
 /* what we call ourselves everywhere (HTTP User-Agent; JS navigator.userAgent should say the same): Firefox-shaped so sites
  * serve the normal page, VibeBrowser at the end so we're still identifiable */
