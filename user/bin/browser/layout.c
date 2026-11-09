@@ -2429,7 +2429,7 @@ static int build_ctl(int dn, int tag, struct bx *b, const struct bctx *cx, const
         else if (!strcmp(k, "reset")) { c.kind = C_BTN; c.sub = 2; }
         else if (!strcmp(k, "button")) c.kind = C_BTN;
         else c.kind = C_TEXT;
-        if (c.kind == C_BTN) strlcpy(lab, val[0] ? val : c.sub == 1 ? "Submit" : c.sub == 2 ? "Reset" : "Button", sizeof lab);
+        if (c.kind == C_BTN) strlcpy(lab, val[0] || (ATTR(dn, "value") && strcmp(k, "image")) ? val : c.sub == 1 ? "Submit" : c.sub == 2 ? "Reset" : "Button", sizeof lab);
     } else if (tag == T_BUTTON) {
         c.kind = C_BTN;
         c.sub = ty && !strcasecmp(ty, "reset") ? 2 : ty && !strcasecmp(ty, "button") ? 0 : 1;
