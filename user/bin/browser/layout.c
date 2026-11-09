@@ -1787,7 +1787,14 @@ static void paint_bg(struct bx *b, int ox, int oy) {
         color_t c = (b->shc & 0xFFFFFF) | (a > 255 ? 255u : a) << 24;
         for (int i = n - 1; i >= 0; i--) {
             int g = b->sh[3] + (n > 1 ? bl * i / (n - 1) : 0) - (n > 1 ? bl / 4 : 0);
-            emit_decor(x + b->sh[0] - g, y + b->sh[1] - g, w + 2 * g, h + 2 * g, c, b->rad + g, 0);
+            int sx = x + b->sh[0] - g, sy = y + b->sh[1] - g, sw = w + 2 * g, sh = h + 2 * g;
+            if ((b->bg >> 24) == 0xFF) { emit_decor(sx, sy, sw, sh, c, b->rad + g, 0); continue; }
+            /* a transparent box shows what's behind it: the shadow only exists outside the border box (4 strips around it) */
+            int top = imin_(imax_(y - sy, 0), sh), bot = imin_(imax_(sy + sh - (y + h), 0), sh), mid = sh - top - bot;
+            int l = imin_(imax_(x - sx, 0), sw), r = imin_(imax_(sx + sw - (x + w), 0), sw);
+            emit_decor(sx, sy, sw, top, c, 0, 0);
+            emit_decor(sx, sy + sh - bot, sw, bot, c, 0, 0);
+            if (mid > 0) { emit_decor(sx, sy + top, l, mid, c, 0, 0); emit_decor(sx + sw - r, sy + top, r, mid, c, 0, 0); }
         }
     }
     if (b->bg) emit_decor(x, y, w, h, b->bg, b->rad, 0);
