@@ -239,6 +239,7 @@ class Headers {
     keys() { return [...this.__m.keys()].sort()[Symbol.iterator](); } values() { return [...this.__m].sort().map(p => p[1])[Symbol.iterator](); }
     entries() { return [...this.__m].sort((a, b) => a[0] < b[0] ? -1 : 1)[Symbol.iterator](); } [Symbol.iterator]() { return this.entries(); }
 }
+const bodyRaw = b => b instanceof ArrayBuffer ? b.slice(0) : ArrayBuffer.isView(b) ? b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) : b instanceof Blob && b.__bin ? b.__bin.slice().buffer : null;   // binary bodies go over the wire as bytes
 function bodyText(b) {
     if (b === undefined || b === null) return null;
     if (typeof b === 'string') return b;
@@ -248,7 +249,7 @@ function bodyText(b) {
     return String(b);
 }
 class Body {
-    __init(b, ct) { Object.defineProperty(this, '__b', { value: bodyText(b), writable: true }); this.bodyUsed = false; if (ct && !this.headers.has('content-type')) this.headers.set('content-type', ct); }
+    __init(b, ct) { Object.defineProperty(this, '__b', { value: bodyText(b), writable: true }); Object.defineProperty(this, '__r', { value: bodyRaw(b), writable: true }); this.bodyUsed = false; if (ct && !this.headers.has('content-type')) this.headers.set('content-type', ct); }
     __take() { if (this.bodyUsed) return Promise.reject(new TypeError('body stream already read')); this.bodyUsed = true; return Promise.resolve(this.__b === null ? '' : this.__b); }
     text() { return this.__take(); }
     json() { return this.__take().then(JSON.parse); }
@@ -306,7 +307,7 @@ function fetch(input, init) {
         const hs = new Headers(req.headers);
         if (req.__b !== null && !hs.has('content-type')) hs.set('content-type', 'text/plain;charset=UTF-8');
         if (!hs.has('accept')) hs.set('accept', '*/*');
-        raw(req.url.replace(/#.*$/, ''), req.__b === null && m !== 'POST' ? null : (req.__b || ''), (status, text, ct, body, err, url, hd) => {
+        raw(req.url.replace(/#.*$/, ''), req.__b === null && m !== 'POST' ? null : (req.__r || req.__b || ''), (status, text, ct, body, err, url, hd) => {
             if (done) return;
             done = true;
             if (err !== null) return rej(new TypeError('Failed to fetch (' + err + ': ' + req.url + ')'));
@@ -415,7 +416,7 @@ class XMLHttpRequest extends XMLHttpRequestEventTarget {
         }
         const hs = new Headers(); for (const k of Object.keys(this.__h)) hs.set(k, this.__h[k]);
         if (text !== null && !hs.has('content-type')) hs.set('content-type', body instanceof FormData || body instanceof URLSearchParams ? 'application/x-www-form-urlencoded;charset=UTF-8' : 'text/plain;charset=UTF-8');
-        raw(u.replace(/#.*$/, ''), text === null && m !== 'POST' ? null : text || '', (...a) => this.__finish(...a), m, hdrStr(hs));
+        raw(u.replace(/#.*$/, ''), text === null && m !== 'POST' ? null : bodyRaw(body) || text || '', (...a) => this.__finish(...a), m, hdrStr(hs));
         if (this.timeout) setTimeout(() => { if (this.readyState < 4 && !this.__abort) { this.__abort = true; this.readyState = 4; this.__ev('readystatechange'); this.__ev('timeout'); this.__ev('loadend'); } }, this.timeout);
         this.__ev('loadstart');
     }
