@@ -516,6 +516,8 @@ function matchMedia(q) {
 }
 def(g, { IntersectionObserver, ResizeObserver, PerformanceObserver, matchMedia });
 def(g, { MutationObserver: D.MutationObserver });
+// <link rel=stylesheet onload="this.media='all'"> (the print-swap trick for async CSS): the sheet "loads" once the document is parsed
+document.addEventListener('DOMContentLoaded', () => { for (const l of document.querySelectorAll('link[rel~=stylesheet]')) setTimeout(() => l.dispatchEvent(new D.Event('load')), 0); });
 
 // ---------- performance, crypto, navigator, screen ----------
 const marks = [];

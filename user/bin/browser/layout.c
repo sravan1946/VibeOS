@@ -2640,7 +2640,7 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     int disp = cp->v[P_DISPLAY];
     int bold = cp->v[P_BOLD], mono = cp->v[P_FAMILY] == FAM_MONO, size = cp->v[P_FSIZE];
     int base = mono ? (bold ? F_MONOB : F_MONO) : size >= 22 ? F_TITLE : bold ? F_UIB : F_UI;
-    ni->font = size >= 22 ? font_vec("", mono, cp->v[P_FWEIGHT], cp->v[P_ITALIC], size, base) : base;       /* vector outlines from 22 px up; the baked faces below */
+    ni->font = size >= 22 || css_ff_n() ? font_vec(cp->k[P_FFAM] == K_STR ? css_str(cp->v[P_FFAM]) : "", mono, cp->v[P_FWEIGHT], cp->v[P_ITALIC], size, base) : base;       /* vector outlines: web fonts at any size, the built-in ones from 22 px up; the baked faces otherwise */
     ni->col = cp->v[P_COLOR];
     ni->align = cp->v[P_ALIGN] == TA_CENTER ? 1 : cp->v[P_ALIGN] == TA_RIGHT ? 2 : 0;
     ni->ws = cp->v[P_WS] == WS_BREAK_SPACES ? 3 : cp->v[P_WS];

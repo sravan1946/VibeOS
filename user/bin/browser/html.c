@@ -13,8 +13,8 @@ const struct font *FT[5 + NVEC] = { &font_ui, &font_ui_bold, &font_title, &font_
 
 /* font index for text of `px` CSS px in family `fam` (lower case, "" = the page default) at weight/italic; the baked face `base` when no vector face fits */
 int font_vec(const char *fam, int mono, int wght, int ital, int px, int base) {
-    int fi = fam && *fam ? ttf_find(fam, wght, ital) : -1, i;
-    if (fi < 0) fi = ttf_find(mono ? "jbmono" : "inter", wght, ital);
+    int fi = ttf_web(fam, wght, ital), i;                    /* a page's @font-face first, at any size */
+    if (fi < 0 && px >= 22) fi = ttf_find(mono ? "jbmono" : "inter", wght, ital);     /* else the built-in vector faces for big text */
     if (fi < 0 || ttf_font(fi, px, &i) < 0) return base;
     FT[5 + i] = ttf_font_ptr(i);
     return 5 + i;

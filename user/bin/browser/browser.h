@@ -107,6 +107,7 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
        P_TRSX, P_TRSY, P_TRROT, P_CLIP,   /* P_CLIP: clip: rect(0 0 0 0) (the sr-only trick) = 1: nothing painted */
                                             /* transform scale (x1000, 1000 = none) and rotate (tenths of a degree); LAYOUT may ignore */
        P_FILL, P_STROKE, P_STROKEW,       /* svg: colour (alpha 0 = none) / K_AUTO = not set; stroke width px */
+       P_FFAM,                            /* font-family list as written, lower case (K_STR; K_NONE = unset): web fonts match by name */
        P_ANAME, P_ADUR, P_AITER, P_ADELAY, P_ADIR, P_ANIMSH,   /* animation-name (K_STR, K_NONE = none) / duration ms / iteration count (0 = infinite) / delay ms / direction 0 normal 1 reverse 2 alternate 3 alt-reverse; P_ANIMSH = the shorthand */
        P_BLEND,                           /* mix-blend-mode: 1 = difference/exclusion (text drawn inverted over its backdrop), 0 = anything else */
        P_N };
@@ -166,6 +167,8 @@ const char *css_custom(const struct cprops *p, const char *name);   /* a custom 
 void grad_render(const char *s, int w, int h, int rad, int y0, int y1, uint32_t *out, int step);   /* layout.c: gdir 3 decors */
 int  css_calc_px(const char *t, int base, int *out);   /* calc()/min()/max()/clamp() or a plain length in px against a % base; 0 = not one */
 /* @keyframes (css.c): translate offsets only, as px + percent*100 of the box; css_kf_find: index by animation name (-1 none) */
+int css_ff_n(void);                                             /* @font-face rules of the page so far */
+int css_ff_get(int i, const char **fam, int *wght, int *ital, const char **url);   /* family lower case; url absolute, TTF/OTF/WOFF only */
 int css_kf_find(int name);
 void css_kf_eval(int kf, int phase1000, int *xpx, int *xpc, int *ypx, int *ypc);
 const char *css_str(int id);                      /* text of a K_STR value (grid track lists, content, url of background-image) */
@@ -200,8 +203,9 @@ void visited_add(const char *abs_url);
 
 /* ---- sheet.c: external stylesheets (<link rel=stylesheet>, @import): one fetch each, kept until the next page ---- */
 const char *sheet_get(const char *url, size_t *len);   /* the text once loaded; NULL while loading or failed (queues on first use) */
+int ttf_web(const char *famlist, int wght, int ital);              /* ttf.c: face of the first listed family with a loaded @font-face (starts the download), -1 none yet */
 int ttf_find(const char *fam, int wght, int ital);              /* ttf.c: face index (-1 none) */
-int ttf_add_face(const char *fam, int wght, int ital, uint8_t *data);
+int ttf_add_face(const char *fam, int wght, int ital, const char *url, const uint8_t *bytes, size_t n);
 int ttf_font(int face, int px, int *idx);
 const struct font *ttf_font_ptr(int i);
 void ttf_init(void);
