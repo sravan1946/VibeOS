@@ -386,7 +386,7 @@ static void pair(char *q, int cap, int *n, const char *name, const char *val) {
 }
 
 int form_submit(const struct doc *d, int form, int btn, const char *base, char *url, int ucap, char *body, int bcap) {
-    char q[2048];
+    static char q[16384];                                 /* (a reCAPTCHA token alone is 2.2 KB, the continue= URL another 4) */
     int n = 0, first_submit = -1;
     q[0] = 0;
     for (int i = 0; i < d->nct; i++) if (d->ct[i].form == form && d->ct[i].kind == C_BTN && d->ct[i].sub == 1) { first_submit = i; break; }

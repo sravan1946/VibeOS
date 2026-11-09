@@ -1037,16 +1037,25 @@ NATIVE(n_fetch) {
     url_resolve(base_of(J), u, abs, sizeof abs);
     url_strip_frag(abs);
     JS_FreeCString(c, u);
-    /* the request travels as one blob "METHOD\0headers\0body" (NULL = a plain GET) */
-    const char *body = JS_IsNull(argv[1]) || JS_IsUndefined(argv[1]) ? 0 : JS_ToCString(c, argv[1]);
+    /* the request travels as one blob "METHOD\0headers\0" + u32 body length + body bytes (NULL = a plain GET); the body is a string (UTF-8) or an ArrayBuffer (binary: protobuf and friends) */
+    size_t abn = 0;
+    uint8_t *abp = JS_IsObject(argv[1]) ? JS_GetArrayBuffer(c, &abn, argv[1]) : 0;
+    if (!abp) JS_FreeValue(c, JS_GetException(c));
+    const char *body = abp || JS_IsNull(argv[1]) || JS_IsUndefined(argv[1]) ? 0 : JS_ToCString(c, argv[1]);
     const char *meth = argc > 2 && !JS_IsUndefined(argv[2]) ? JS_ToCString(c, argv[2]) : 0;
     const char *hd = argc > 3 && !JS_IsUndefined(argv[3]) ? JS_ToCString(c, argv[3]) : 0;
     char *blob = 0;
     if (body || hd || (meth && strcmp(meth, "GET"))) {
         const char *m = meth ? meth : "POST";
-        size_t lm = strlen(m), lh = hd ? strlen(hd) : 0, lb = body ? strlen(body) : 0;
-        blob = malloc(lm + lh + lb + 3);
-        if (blob) { memcpy(blob, m, lm + 1); memcpy(blob + lm + 1, hd ? hd : "", lh + 1); memcpy(blob + lm + lh + 2, body ? body : "", lb + 1); }
+        size_t lm = strlen(m), lh = hd ? strlen(hd) : 0, lb = abp ? abn : body ? strlen(body) : 0;
+        uint32_t lb32 = (uint32_t)lb;
+        blob = malloc(lm + lh + lb + 8);
+        if (blob) {
+            memcpy(blob, m, lm + 1); memcpy(blob + lm + 1, hd ? hd : "", lh + 1);
+            memcpy(blob + lm + lh + 2, &lb32, 4);
+            memcpy(blob + lm + lh + 6, abp ? (const char *)abp : body ? body : "", lb);
+            blob[lm + lh + 6 + lb] = 0;
+        }
     }
     int id = fetch_queue(abs, 0, blob, blob ? 1 : 0);
     free(blob);
@@ -1628,9 +1637,11 @@ static int slot_start(struct jf *f, int id, const char *url, int script, char *p
 }
 
 static void start_req(struct jf *f) {                  /* (re)start the network request; a failure is retried by pump_fetches for a while */
-    const char *post = f->post, *meth = post, *hdrs = post ? post + strlen(post) + 1 : 0, *body = hdrs ? hdrs + strlen(hdrs) + 1 : 0, *url = f->url;
+    const char *post = f->post, *meth = post, *hdrs = post ? post + strlen(post) + 1 : 0, *body = hdrs ? hdrs + strlen(hdrs) + 1 + 4 : 0, *url = f->url;
+    uint32_t blen = 0;
+    if (hdrs) memcpy(&blen, body - 4, 4);
     int started = post ? fetch_start_req(&f->f, url, strcmp(meth, "GET") ? meth : 0, *hdrs ? hdrs : 0,
-                                         strcmp(meth, "GET") && strcmp(meth, "HEAD") ? body : 0, strlen(body))
+                                         strcmp(meth, "GET") && strcmp(meth, "HEAD") ? body : 0, blen)
                        : fetch_start(&f->f, url, 0);
     f->fail = started < 0 ? "the network helper didn't start" : 0;
 }
@@ -1639,9 +1650,11 @@ static int fetch_queue(const char *url, int script, const char *blob, int has_bl
     int id = next_fid++;
     char *pd = 0;
     if (has_blob) {
-        size_t l1 = strlen(blob) + 1, l2 = strlen(blob + l1) + 1, l3 = strlen(blob + l1 + l2) + 1;
-        pd = malloc(l1 + l2 + l3);
-        if (pd) memcpy(pd, blob, l1 + l2 + l3);
+        size_t l1 = strlen(blob) + 1, l2 = strlen(blob + l1) + 1;
+        uint32_t lb;
+        memcpy(&lb, blob + l1 + l2, 4);
+        pd = malloc(l1 + l2 + 5 + lb);
+        if (pd) memcpy(pd, blob, l1 + l2 + 5 + lb);
     }
     for (int i = 0; i < MAXF; i++) if (!F[i].used) { slot_start(&F[i], id, url, script, pd); return id; }
     if (nfq == 64) { free(pd); return -1; }

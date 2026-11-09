@@ -705,6 +705,15 @@ static int url_arg(const char *t, char *out, int cap) {     /* url(x), url("x"):
     return 1;
 }
 
+static int url_intern(const char *t) {                       /* url(x) token -> pool offset of the absolute URL, 0 = not a url */
+    char url[URL_MAX];
+    const char *a = t + 4;
+    while (isspace((unsigned char)*a)) a++;
+    if (*a == '"' || *a == '\'') a++;
+    if (*a == 1) return atoi(a + 1);                          /* a parked data: URI */
+    return url_arg(t, url, sizeof url) ? intern(url, strlen(url)) : 0;
+}
+
 static int parse_color_val(const char *v, int *k, int *val) {
     color_t c;
     if (!strcasecmp(v, "currentcolor")) { *k = K_CUR; *val = 0; return 1; }
@@ -903,12 +912,11 @@ static void bg_layer(char *layer, int is_last, int which) {      /* which: 0 = t
     char *pos[5]; int np = 0, inpos = 1, sz = 0;
     int ck = K_PX, cv = 0, img = K_NONE, imgv = 0, rep = REP_REPEAT, rk[2] = { K_AUTO, K_AUTO }, rv[2] = { 0, 0 };
     char *rx = 0, *ry = 0;
-    char url[URL_MAX];
     for (int i = 0; i < n; i++) {
         char *t = tk[i];
         int k, v;
         if (!strcmp(t, "/")) { inpos = 0; continue; }
-        if (!strncasecmp(t, "url(", 4)) { if (url_arg(t, url, sizeof url)) { img = K_STR; imgv = intern(url, strlen(url)); } }
+        if (!strncasecmp(t, "url(", 4)) { int uo = url_intern(t); if (uo) { img = K_STR; imgv = uo; } }
         else if (strstr(t, "gradient(")) { img = K_GRAD; imgv = intern(t, strlen(t)); }
         else if (!strcasecmp(t, "none")) img = K_NONE;
         else if (is_rep(t)) { if (!rx) rx = t; else ry = t; }
@@ -1124,12 +1132,13 @@ static void special(const struct pdef *d, char *val) {
         else put(p, K_RAW, intern(val, strlen(val)));
         break;
     case P_BGIMG: {
-        char url[URL_MAX], buf[900], *tk[16];
+        char buf[900], *tk[16];
         int n = toks(val, buf, sizeof buf, tk, 16), got = 0;
         if (!n) break;
         for (int i = 0; i < n && got < 2; i++) {
             int pr = got ? P_BG2IMG : P_BGIMG;
-            if (!strncasecmp(tk[i], "url(", 4) && url_arg(tk[i], url, sizeof url)) { put(pr, K_STR, intern(url, strlen(url))); got++; }
+            int uo = !strncasecmp(tk[i], "url(", 4) ? url_intern(tk[i]) : 0;
+            if (uo) { put(pr, K_STR, uo); got++; }
             else if (strstr(tk[i], "gradient(")) { put(pr, K_GRAD, intern(tk[i], strlen(tk[i]))); got++; }
             else if (!strncasecmp(tk[i], "none", 4) && i == 0) { put(pr, K_NONE, 0); got++; }
         }
@@ -1283,10 +1292,11 @@ static void special(const struct pdef *d, char *val) {
         break;
     }
     case P_MASKIMG: {
-        char url[URL_MAX], buf[600], *tk[12];
+        char buf[600], *tk[12];
         int n = toks(val, buf, sizeof buf, tk, 12);
         for (int i = 0; i < n; i++) {                      /* also the `mask` shorthand: the first image token */
-            if (!strncasecmp(tk[i], "url(", 4) && url_arg(tk[i], url, sizeof url)) { put(p, K_STR, intern(url, strlen(url))); return; }
+            int uo = !strncasecmp(tk[i], "url(", 4) ? url_intern(tk[i]) : 0;
+            if (uo) { put(p, K_STR, uo); return; }
             if (strstr(tk[i], "gradient(")) { put(p, K_GRAD, intern(tk[i], strlen(tk[i]))); return; }
         }
         put(p, K_NONE, 0);
@@ -1489,8 +1499,29 @@ static void keyframes(const char *name, const char *body, size_t n) {
     nkf++;
 }
 
+/* url(data:...) bodies can be tens of KB (reCAPTCHA's check mark is 31 KB): the tokenisers below work in small buffers, so a long one is
+ * interned right here and the value keeps "\x01<pool offset>" in its place (url_intern turns that back into the string). Not for custom properties. */
+static void park_data_urls(char *val) {
+    for (char *p = val; *p; p++) {
+        if (strncasecmp(p, "url(", 4)) continue;
+        char *a = p + 4, q = 0;
+        while (isspace((unsigned char)*a)) a++;
+        if (*a == '"' || *a == '\'') q = *a++;
+        if (strncasecmp(a, "data:", 5)) continue;
+        char *e = a;
+        while (*e && (q ? *e != q : *e != ')')) e++;
+        if (e - a < 300) continue;
+        int off = intern(a, (int)(e - a));
+        char mk[16];
+        int ml = snprintf(mk, sizeof mk, "\x01%d", off);
+        memmove(a + ml, e, strlen(e) + 1);
+        memcpy(a, mk, ml);
+    }
+}
+static int url_intern(const char *t);
 static void decl(char *name, char *val, int imp) {
     imp_cur = imp;
+    if (!(name[0] == '-' && name[1] == '-') && strlen(val) > 300) park_data_urls(val);
     if (name[0] == '-' && name[1] == '-') {                            /* custom property: raw text, var() resolved per element */
         put(P_CUSTOM, K_RAW, intern(val, strlen(val)));
         D[nd - 1].a = intern(name, strlen(name));
