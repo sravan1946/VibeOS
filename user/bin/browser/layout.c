@@ -56,6 +56,7 @@ struct bx {
     int ref, iw, ih, bel, cs, rs, mark;   /* img cache index / control index; intrinsic size; baseline below the box; colspan, rowspan; list marker (0 bullet, n number, -1 none) */
     uint8_t halign, valn, lt;
     int txp, typ;
+    int anm, adur, adel, ait, adr;   /* CSS animation: keyframes index + 1, duration/delay ms, iterations (0 = infinite), direction */
     int aspect, txv, tyv, sh[4], outw, outo; color_t shc, outc, markc; uint8_t tt;   /* box-shadow x/y/blur/spread, outline */         /* aspect-ratio (w/h x1000), transform: translate() */         /* table cell: horizontal / vertical alignment */
     int grd;                       /* background-image: linear-gradient(...): css_str index + 1 */
     int bgi; uint8_t msk, brep, bkx, bky, bkw, bkh, objfit; int bpx, bpy, bsw, bsh;   /* background-image (img index + 1) and its repeat/position/size; object-fit for images */
@@ -2315,6 +2316,11 @@ static void paint_box(int bi, int ox, int oy) {
     if (b->opacity == 0 || (b->inner == IN_CTL && b->ref < 0)) return;
     int positioned = b->pos != POS_STATIC, mark = npe;
     struct stick *sg = 0;
+    if (b->anm && !in_stk && D->nsk < MAXSTK && !sg) {                   /* a CSS animation: what the box emits is shifted at draw time, like a sticky one */
+        sg = &D->sk[D->nsk++];
+        *sg = (struct stick){ .i0 = D->nit, .d0 = D->ndc, .c0 = imax_(D->ncl, 1), .y0 = b->y + oy, .h = b->h, .lim = 1 << 30, .akf = b->anm, .adur = b->adur, .adel = b->adel, .ait = b->ait, .adr = b->adr, .bw = b->w };
+        in_stk = 1;
+    }
     int fixd = b->pos == POS_FIXED;                                      /* fixed = sticky with top = where it sits at scroll 0 and no parent limit */
     if ((fixd || (b->pos == POS_STICKY && b->k[L_TOP] != K_AUTO)) && !in_stk && D->nsk < MAXSTK) {       /* moved at draw time: remember what it emits */
         int ph = b->par >= 0 ? B[b->par].h : VIEWH;
@@ -2664,6 +2670,7 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     if (cp->v[P_OUTS] != BS_NONE && cp->v[P_OUTW] > 0) { S->outw = cp->v[P_OUTW]; S->outc = cp->v[P_OUTC]; S->outo = css_len(cp, P_OUTO, 0); }
     ni->tt = cp->v[P_TT];
     S->aspect = cp->k[P_ASPECT] == K_PX ? cp->v[P_ASPECT] : 0;
+    if (cp->k[P_ANAME] == K_STR && cp->v[P_ADUR] > 0) { int kf = css_kf_find(cp->v[P_ANAME]); if (kf >= 0) { S->anm = kf + 1; S->adur = cp->v[P_ADUR]; S->adel = cp->v[P_ADELAY]; S->ait = cp->v[P_AITER]; S->adr = cp->v[P_ADIR]; } }
     S->txv = css_len(cp, P_TRX, 0); S->tyv = css_len(cp, P_TRY, 0);                 /* px part, and the % of the box (translate(calc(-100% - 10px)) works) */
     S->txp = css_len(cp, P_TRX, 100) - S->txv; S->typ = css_len(cp, P_TRY, 100) - S->tyv;
     S->bgi = 0; S->grd = cp->k[P_BGIMG] == K_GRAD ? cp->v[P_BGIMG] + 1 : 0;

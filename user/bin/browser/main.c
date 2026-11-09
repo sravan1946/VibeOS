@@ -1083,6 +1083,7 @@ int main(int argc, char **argv) {
         if (jt >= 0 && (timeout < 0 || jt < timeout)) timeout = jt;
         int at = img_anim_due();
         if (at >= 0 && (timeout < 0 || at < timeout)) timeout = at;
+        { int ad = pg.have ? doc_anim_due(&doc) : -1; if (ad >= 0 && (timeout < 0 || ad < timeout)) timeout = ad; }
         if (scroll != target) timeout = 16;
         struct pollfd pf[2] = { { win->fd, POLLIN, 0 }, { fe.fd, POLLIN, 0 } };
         poll(pf, loading ? 2 : 1, timeout);
