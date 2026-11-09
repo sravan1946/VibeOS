@@ -10,6 +10,8 @@ body { margin: 8px; font-family: sans-serif; font-size: 14px; }
 .fx { display: flex; border: 1px solid #a9a9a9; align-items: stretch; }
 .fx input[type=search] { border: 0; padding-left: 24px; width: 100%; flex: 1; }
 .fx input[type=submit] { height: 100%; border: 0; }
+.nav { position: sticky; top: 0; padding: 10px 0; color: #fff; }
+.nav::after { position: absolute; inset: 0; z-index: -1; display: block; content: ""; background-image: linear-gradient(rgb(112,44,249), rgba(112,44,249,.8)); }
 </style></head><body>
 <div class="t"><form class="srch"><input type="text"><input type="submit" value=""></form></div>
 <!-- flex form: controls are flex items (blockified, flex:1 beats width:100%) -->
@@ -17,4 +19,6 @@ body { margin: 8px; font-family: sans-serif; font-size: 14px; }
 <input type="search"><input type="submit" value="Go"></form></div>
 <!-- grid: minmax(15rem,1fr) keeps its minimum, minmax(0,48rem) is capped by the room left -->
 <div class="t" style="display:grid;grid-template-columns:minmax(15rem,1fr) 2rem minmax(0,48rem) minmax(0,1fr)"><div style="background:#fcc">side</div><div></div><div style="background:#cfc">content</div><div></div></div>
+<!-- position: sticky is a containing block (its ::after fills it) and a gradient background is painted -->
+<div class="t" style="height:90px"><header class="nav">navbar</header><p>below the sticky header</p></div>
 </body></html>

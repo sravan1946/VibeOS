@@ -56,6 +56,7 @@ struct bx {
     uint8_t halign, valn, lt;
     int txp, typ;
     int aspect, txv, tyv, sh[4], outw, outo; color_t shc, outc, markc; uint8_t tt;   /* box-shadow x/y/blur/spread, outline */         /* aspect-ratio (w/h x1000), transform: translate() */         /* table cell: horizontal / vertical alignment */
+    int grd;                       /* background-image: linear-gradient(...): css_str index + 1 */
     int bgi; uint8_t brep, bkx, bky, bkw, bkh, objfit; int bpx, bpy, bsw, bsh;   /* background-image (img index + 1) and its repeat/position/size; object-fit for images */
     int x, y, w, h, base;         /* border box, document coordinates; base: baseline offset from the top (-1 = bottom edge) */
     int m[4], p[4];               /* used margins and paddings (t r b l) */
@@ -1696,6 +1697,87 @@ static int clip_push(int x, int y, int w, int h) {         /* returns the previo
     return prev;
 }
 
+/* linear-gradient(): stops painted as consecutive two-colour rects (decor.gdir). Only the axis matters: angles and corners snap to
+ * vertical or horizontal. ponytail: no radial/conic gradients (nothing is painted), no gradient on a rounded box's corners. */
+#define GSTOPS 12
+struct gstop { color_t c; int kind, v; };                  /* kind 0 unset, 1 percent (x100), 2 px */
+static int grad_parse(const char *s, int *horiz, int *rev, struct gstop *st) {
+    const char *p = strstr(s, "linear-gradient(");
+    if (!p) return 0;
+    p += 16;
+    *horiz = 0; *rev = 0;
+    int n = 0, d = 0, first = 1;
+    char a[160];
+    while (*p && n < GSTOPS) {
+        const char *e = p;
+        for (; *e && (d || (*e != ',' && *e != ')')); e++) { if (*e == '(') d++; if (*e == ')') d--; }
+        int l = imin_((int)(e - p), 159);
+        memcpy(a, p, l); a[l] = 0;
+        char *q = a;
+        while (*q == ' ') q++;
+        int isdir = !strncmp(q, "to ", 3) || (first && (isdigit((unsigned char)*q) || *q == '-' || *q == '.') && strstr(q, "deg"));
+        if (first && isdir) {
+            if (!strncmp(q, "to ", 3)) {
+                int up = !!strstr(q, "top"), lf = !!strstr(q, "left"), rt = !!strstr(q, "right"), dn = !!strstr(q, "bottom");
+                if ((lf || rt) && !up && !dn) { *horiz = 1; *rev = lf; } else *rev = up && !dn;
+            } else {
+                int deg = ((int)atof(q) % 360 + 360) % 360;
+                if (deg >= 45 && deg < 135) *horiz = 1;
+                else if (deg >= 225 && deg < 315) { *horiz = 1; *rev = 1; }
+                else *rev = deg < 45 || deg >= 315;
+            }
+        } else {
+            char *sp = 0;                                         /* a trailing position: the last top-level space */
+            int dd = 0;
+            for (char *t = q; *t; t++) { if (*t == '(') dd++; else if (*t == ')') dd--; else if (*t == ' ' && !dd) sp = t; }
+            st[n].kind = 0; st[n].v = 0;
+            if (sp && (isdigit((unsigned char)sp[1]) || sp[1] == '.' || sp[1] == '-')) {
+                st[n].kind = strchr(sp, '%') ? 1 : 2;
+                st[n].v = (int)(atof(sp + 1) * (st[n].kind == 1 ? 100 : 1));
+                *sp = 0;
+            }
+            color_t c;
+            if (css_color(q, &c, 0)) st[n++].c = c;
+        }
+        first = 0;
+        p = e;
+        if (*p == ')' && !d) break;
+        if (*p == ',') p++;
+    }
+    return n >= 2 ? n : 0;
+}
+
+static void paint_grad(struct bx *b, int x, int y, int w, int h) {
+    struct gstop st[GSTOPS];
+    int horiz, rev, n = grad_parse(css_str(b->grd - 1), &horiz, &rev, st);
+    if (n < 2 || w <= 0 || h <= 0) return;
+    int len = horiz ? w : h, pos[GSTOPS];
+    for (int i = 0; i < n; i++) pos[i] = st[i].kind == 1 ? len * st[i].v / 10000 : st[i].kind == 2 ? st[i].v : -1;
+    if (pos[0] < 0) pos[0] = 0;
+    if (pos[n - 1] < 0) pos[n - 1] = len;
+    for (int i = 1; i < n; i++) if (pos[i] >= 0 && pos[i] < pos[i - 1]) pos[i] = pos[i - 1];
+    for (int i = 1; i < n - 1; i++) if (pos[i] < 0) {              /* unset stops spread evenly between their neighbours */
+        int a = i - 1, z = i + 1;
+        while (pos[z] < 0) z++;
+        for (int k = i; k < z; k++) pos[k] = pos[a] + (pos[z] - pos[a]) * (k - a) / (z - a);
+    }
+    if (rev) {                                                      /* "to top"/"to left": run the stops backwards */
+        for (int i = 0; i < n / 2; i++) { struct gstop t = st[i]; st[i] = st[n - 1 - i]; st[n - 1 - i] = t; }
+        for (int i = 0; i < n / 2; i++) { int t = pos[i]; pos[i] = len - pos[n - 1 - i]; pos[n - 1 - i] = len - t; }
+        if (n & 1) pos[n / 2] = len - pos[n / 2];
+    }
+    if (pos[0] > 0) { if (horiz) emit_decor(x, y, pos[0], h, st[0].c, 0, 0); else emit_decor(x, y, w, pos[0], st[0].c, 0, 0); }
+    for (int i = 0; i + 1 < n; i++) {
+        int a = imin_(pos[i], len), z = imin_(pos[i + 1], len);
+        if (z <= a) continue;
+        int n0 = D->ndc;
+        color_t c0 = st[i].c ? st[i].c : 1;                          /* emit_decor drops colour 0 */
+        if (horiz) emit_decor(x + a, y, z - a, h, c0, 0, 0); else emit_decor(x, y + a, w, z - a, c0, 0, 0);
+        if (D->ndc == n0 + 1) { struct decor *r = &D->dc[n0]; r->g1 = st[i + 1].c ? st[i + 1].c : 1; r->gdir = horiz ? 2 : 1; }
+    }
+    if (pos[n - 1] < len) { if (horiz) emit_decor(x + pos[n - 1], y, len - pos[n - 1], h, st[n - 1].c, 0, 0); else emit_decor(x, y + pos[n - 1], w, len - pos[n - 1], st[n - 1].c, 0, 0); }
+}
+
 static void paint_bg(struct bx *b, int ox, int oy) {
     int x = b->x + ox, y = b->y + oy, w = b->w, h = b->h;
     if (b->shc && w > 0 && h > 0) {                       /* box-shadow: a few growing translucent rounded rects stand in for the blur */
@@ -1718,6 +1800,7 @@ static void paint_bg(struct bx *b, int ox, int oy) {
             r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh;
         }
     }
+    if (b->grd && w > 0 && h > 0) paint_grad(b, x + b->bw[3], y + b->bw[0], w - b->bw[1] - b->bw[3], h - b->bw[0] - b->bw[2]);
     if (b->outw && b->outc >> 24) emit_decor(x - b->outo - b->outw, y - b->outo - b->outw, w + 2 * (b->outo + b->outw), h + 2 * (b->outo + b->outw), b->outc, b->rad, b->outw);
     int bt = b->bw[0], br = b->bw[1], bb = b->bw[2], bl = b->bw[3];
     if (!(bt | br | bb | bl)) return;
@@ -1846,10 +1929,20 @@ static void paint_kids(int bi, int ox, int oy, int pass) {
     }
 }
 
+static int in_stk;
 static void paint_box(int bi, int ox, int oy) {
     struct bx *b = &B[bi];
     if (b->opacity == 0 || (b->inner == IN_CTL && b->ref < 0)) return;
-    int positioned = b->pos != POS_STATIC && b->pos != POS_STICKY, mark = npe;
+    int positioned = b->pos != POS_STATIC, mark = npe;
+    struct stick *sg = 0;
+    if (b->pos == POS_STICKY && !in_stk && D->nsk < MAXSTK && b->k[L_TOP] != K_AUTO) {       /* moved at draw time: remember what it emits */
+        int ph = b->par >= 0 ? B[b->par].h : VIEWH;
+        sg = &D->sk[D->nsk++];
+        struct bx *pp = b->par >= 0 ? &B[b->par] : 0;
+        *sg = (struct stick){ .i0 = D->nit, .d0 = D->ndc, .c0 = imax_(D->ncl, 1), .y0 = b->y + oy, .h = b->h, .top = rl(b, L_TOP, ph),
+                              .lim = pp ? pp->y + oy + pp->h - pp->bw[2] - pp->p[2] : 1 << 30 };
+        in_stk = 1;
+    }
     if (b->pos == POS_REL) { int dx, dy; rel_offset(b, &dx, &dy); ox += dx; oy += dy; }
     if (b->txv || b->tyv || b->txp || b->typ) { ox += b->txv + b->w * b->txp / 100; oy += b->tyv + b->h * b->typ / 100; }
     if (b->aname) anchor_add(b->aname, b->y + oy);
@@ -1881,6 +1974,7 @@ static void paint_box(int bi, int ox, int oy) {
         npe = mark;
     }
     cur_clip = prev;
+    if (sg) { sg->i1 = D->nit; sg->d1 = D->ndc; sg->c1 = imax_(D->ncl, 1); in_stk = 0; }
 }
 
 /* ---------- build: HD + CSS -> boxes ---------- */
@@ -2190,7 +2284,7 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     S->aspect = cp->k[P_ASPECT] == K_PX ? cp->v[P_ASPECT] : 0;
     S->txv = css_len(cp, P_TRX, 0); S->tyv = css_len(cp, P_TRY, 0);                 /* px part, and the % of the box (translate(calc(-100% - 10px)) works) */
     S->txp = css_len(cp, P_TRX, 100) - S->txv; S->typ = css_len(cp, P_TRY, 100) - S->tyv;
-    S->bgi = 0;
+    S->bgi = 0; S->grd = cp->k[P_BGIMG] == K_GRAD ? cp->v[P_BGIMG] + 1 : 0;
     if (cp->k[P_BGIMG] == K_STR) {                       /* url(...) is absolute already (css.c); a gradient or none paints nothing */
         int ix = img_ref_ex(css_str(cp->v[P_BGIMG]), "lazy");
         S->bgi = ix >= 0 ? ix + 1 : 0;
@@ -2712,7 +2806,7 @@ static void layout_do(struct doc *d, const char *src, size_t n, int mode, int wi
     double t_phase = now_ms();
 #endif
     free_boxes();
-    nabs = npe = nord = nel = cur_clip = 0;
+    nabs = npe = nord = nel = cur_clip = in_stk = 0;
     bg_from_html = is_js = 0;
     root_box = -1;
     plain_text = mode == 0;

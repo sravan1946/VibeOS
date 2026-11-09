@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
     uint32_t *px = calloc((size_t)w * h, 4);
     struct canvas c; canvas_init(&c, px, w, h, w);
     struct ui ui; memset(&ui, 0, sizeof ui); ui.c = &c;
-    doc_draw(&ui, &d, 0, 0, w, h, 0, -1, 0, -1, 0);
+    doc_draw(&ui, &d, 0, 0, w, h, getenv("LT_SCROLL") ? atoi(getenv("LT_SCROLL")) : 0, -1, 0, -1, 0);
     FILE *o = fopen(argv[3], "wb");
     fprintf(o, "P6\n%d %d\n255\n", w, h);
     for (int i = 0; i < w * h; i++) { fputc(px[i] >> 16, o); fputc(px[i] >> 8, o); fputc(px[i], o); }

@@ -176,11 +176,31 @@ static void draw_box(struct canvas *cc, const struct doc *d, const struct item *
     }
 }
 
-static void draw_decor(struct canvas *cc, const struct doc *d, const struct decor *r, int vx, int vy, int vh, int scroll) {
-    int y = vy + r->y - scroll;
+static color_t mix_a(color_t a, color_t b, int t) {   /* a -> b, t 0..255, alpha included (a transparent end takes the other's colour) */
+    if (!(a >> 24)) a = b & 0xFFFFFF; else if (!(b >> 24)) b = a & 0xFFFFFF;
+    uint32_t r = 0;
+    for (int s = 0; s <= 24; s += 8) r |= (uint32_t)((((a >> s) & 255) * (255 - t) + ((b >> s) & 255) * t + 127) / 255) << s;
+    return r;
+}
+
+static int stick_shift(const struct stick *g, int scroll) {
+    int s = scroll + g->top - g->y0, mx = g->lim - (g->y0 + g->h);
+    if (s <= 0) return 0;
+    return s < mx ? s : mx > 0 ? mx : 0;
+}
+
+/* is item (decor = 0) or decor (decor = 1) index n inside a sticky group that is currently shifted? */
+static int stick_in(const struct doc *d, const int *shs, int n, int decor) {
+    for (int g = 0; g < d->nsk; g++) if (shs[g] && (decor ? n >= d->sk[g].d0 && n < d->sk[g].d1 : n >= d->sk[g].i0 && n < d->sk[g].i1)) return 1;
+    return 0;
+}
+
+/* sh: the sticky shift of the group the thing belongs to (clip rects created inside the group move with it: [c0, c1)) */
+static void draw_decor(struct canvas *cc, const struct doc *d, const struct decor *r, int vx, int vy, int vh, int scroll, int sh, int c0, int c1) {
+    int y = vy + r->y - scroll + sh;
     if (y >= vy + vh || y + r->h <= vy) return;
     struct canvas c2 = *cc, *c = cc;
-    if (r->clip) { const struct cliprect *k = &d->cl[r->clip]; c2 = *cc; canvas_clip(&c2, vx + k->x, vy + k->y - scroll, k->w, k->h); c = &c2; }
+    if (r->clip) { const struct cliprect *k = &d->cl[r->clip]; c2 = *cc; canvas_clip(&c2, vx + k->x, vy + k->y - scroll + (r->clip >= c0 && r->clip < c1 ? sh : 0), k->w, k->h); c = &c2; }
     if (r->img) {                                        /* background-image: sized, positioned, tiled, clipped to the box */
         int iw, ih;
         struct canvas c3 = *c;
@@ -216,9 +236,53 @@ static void draw_decor(struct canvas *cc, const struct doc *d, const struct deco
         }
         return;
     }
+    if (r->gdir) {                                       /* linear gradient: one fill per row (or column) */
+        int vert = r->gdir == 1, len = vert ? r->h : r->w, a0 = 0, a1 = len;
+        if (vert) { if (y < vy) a0 = vy - y; if (y + r->h > vy + vh) a1 = vy + vh - y; }
+        for (int i = a0; i < a1;) {
+            int j = i + 1;
+            color_t cc2 = mix_a(r->col, r->g1, (2 * i + 1) * 255 / (2 * len));
+            while (j < a1 && mix_a(r->col, r->g1, (2 * j + 1) * 255 / (2 * len)) == cc2) j++;
+            if (vert) gfx_fill(c, vx + r->x, y + i, r->w, j - i, cc2); else gfx_fill(c, vx + r->x + i, y, j - i, r->h, cc2);
+            i = j;
+        }
+        return;
+    }
     if (r->ring) gfx_rrect_ring(c, vx + r->x, y, r->w, r->h, RADII(r->rad, r->rad, r->rad, r->rad), r->ring, r->col);
     else if (r->rad) gfx_round_fill(c, vx + r->x, y, r->w, r->h, r->rad, r->col);
     else gfx_fill(c, vx + r->x, y, r->w, r->h, r->col);
+}
+
+/* one text/image/control item; sh/c0/c1 as in draw_decor */
+static void draw_item(struct canvas *cc, const struct doc *d, int i, int vx, int vy, int vh, int scroll, int sh, int c0, int c1,
+                      int hover, const struct docmark *mk, int focus_ord, int caret, int nl) {
+    const struct item *it = &d->it[i];
+    int y = vy + it->y - scroll + sh;
+    if (y >= vy + vh || y + it->h < vy) return;
+    struct canvas c2 = *cc, *cv = cc;
+    if (it->clip) { const struct cliprect *k = &d->cl[it->clip]; canvas_clip(&c2, vx + k->x, vy + k->y - scroll + (it->clip >= c0 && it->clip < c1 ? sh : 0), k->w, k->h); cv = &c2; }
+    if (it->flags & FL_IMG) { draw_box(cv, d, it, vx + it->x, y); return; }
+    if (it->flags & FL_CTL) {
+        const struct ctl *t = &d->ct[it->ref];
+        ctl_draw(cv, d, t, vx + it->x, y, it->w, it->h, t->ord == focus_ord, caret);
+        return;
+    }
+    const struct font *f = FT[it->font];
+    const char *txt = d->txt + it->off;
+    if (mk && mk->from_it >= 0 && i >= mk->from_it && i <= mk->to_it) {      /* selection */
+        int s = i == mk->from_it ? mk->from_ch : 0, e = i == mk->to_it ? mk->to_ch : it->len;
+        if (e > s) { int x0 = run_x(d, it, s), x1 = run_x(d, it, e); gfx_fill(cv, vx + it->x + x0, y, x1 - x0 + (e == it->len ? 3 : 0), it->h, RGBA(0x4C, 0x8D, 0xFF, 120)); }
+    }
+    for (int k = 0; nl && k + nl <= it->len; k++) {                          /* find matches */
+        if (!ci_at(txt, it->len, k, mk->find, nl)) continue;
+        int x0 = run_x(d, it, k), x1 = run_x(d, it, k + nl), act = i == mk->find_it && k == mk->find_off;
+        gfx_fill(cv, vx + it->x + x0, y, x1 - x0, it->h, act ? RGBA(0xFF, 0x96, 0x1E, 200) : RGBA(0xFF, 0xE0, 0x3C, 150));
+        k += nl - 1;
+    }
+    color_t col = it->link >= 0 && it->link == hover ? d->hoverc : it->col;
+    gfx_text_n(cv, f, vx + it->x, y, txt, it->len, col);
+    if (it->flags & FL_UL) gfx_fill(cv, vx + it->x, y + f->ascent + 2, it->w, 1, col);
+    if (it->flags & FL_STRIKE) gfx_fill(cv, vx + it->x, y + f->height * 55 / 100, it->w, 1, col);
 }
 
 void doc_draw(struct ui *ui, const struct doc *d, int vx, int vy, int vw, int vh, int scroll, int hover,
@@ -226,40 +290,37 @@ void doc_draw(struct ui *ui, const struct doc *d, int vx, int vy, int vw, int vh
     struct canvas cc = *ui->c;
     canvas_clip(&cc, vx, vy, vw, vh);
     gfx_fill(&cc, vx, vy, vw, vh, d->bg);
-    int nl = mk && mk->find ? strlen(mk->find) : 0, di = 0, start = first_item(d, scroll);
-    for (; di < d->ndc && d->dc[di].it <= start; di++) draw_decor(&cc, d, &d->dc[di], vx, vy, vh, scroll);   /* backgrounds under the first visible item */
+    int nl = mk && mk->find ? strlen(mk->find) : 0, di = 0, start = first_item(d, scroll), shifted = 0, shs[MAXSTK];
+    for (int g = 0; g < d->nsk; g++) { shs[g] = stick_shift(&d->sk[g], scroll); shifted |= shs[g] != 0; }
+    for (; di < d->ndc && d->dc[di].it <= start; di++) if (!shifted || !stick_in(d, shs, di, 1)) draw_decor(&cc, d, &d->dc[di], vx, vy, vh, scroll, 0, 0, 0);   /* backgrounds under the first visible item */
     for (int i = start; i < d->nit; i++) {
         const struct item *it = &d->it[i];
         int y = vy + it->y - scroll;
         if (vy + d->smin[i] - scroll >= vy + vh) break;
         if (y >= vy + vh || y + it->h < vy) continue;
-        for (; di < d->ndc && d->dc[di].it <= i; di++) draw_decor(&cc, d, &d->dc[di], vx, vy, vh, scroll);
-        struct canvas c2 = cc, *cv = &cc;
-        if (it->clip) { const struct cliprect *k = &d->cl[it->clip]; canvas_clip(&c2, vx + k->x, vy + k->y - scroll, k->w, k->h); cv = &c2; }
-        if (it->flags & FL_IMG) { draw_box(cv, d, it, vx + it->x, y); continue; }
-        if (it->flags & FL_CTL) {
-            const struct ctl *t = &d->ct[it->ref];
-            ctl_draw(cv, d, t, vx + it->x, y, it->w, it->h, t->ord == focus_ord, caret);
-            continue;
-        }
-        const struct font *f = FT[it->font];
-        const char *txt = d->txt + it->off;
-        if (mk && mk->from_it >= 0 && i >= mk->from_it && i <= mk->to_it) {      /* selection */
-            int s = i == mk->from_it ? mk->from_ch : 0, e = i == mk->to_it ? mk->to_ch : it->len;
-            if (e > s) { int x0 = run_x(d, it, s), x1 = run_x(d, it, e); gfx_fill(cv, vx + it->x + x0, y, x1 - x0 + (e == it->len ? 3 : 0), it->h, RGBA(0x4C, 0x8D, 0xFF, 120)); }
-        }
-        for (int k = 0; nl && k + nl <= it->len; k++) {                          /* find matches */
-            if (!ci_at(txt, it->len, k, mk->find, nl)) continue;
-            int x0 = run_x(d, it, k), x1 = run_x(d, it, k + nl), act = i == mk->find_it && k == mk->find_off;
-            gfx_fill(cv, vx + it->x + x0, y, x1 - x0, it->h, act ? RGBA(0xFF, 0x96, 0x1E, 200) : RGBA(0xFF, 0xE0, 0x3C, 150));
-            k += nl - 1;
-        }
-        color_t col = it->link >= 0 && it->link == hover ? d->hoverc : it->col;
-        gfx_text_n(cv, f, vx + it->x, y, txt, it->len, col);
-        if (it->flags & FL_UL) gfx_fill(cv, vx + it->x, y + f->ascent + 2, it->w, 1, col);
-        if (it->flags & FL_STRIKE) gfx_fill(cv, vx + it->x, y + f->height * 55 / 100, it->w, 1, col);
+        for (; di < d->ndc && d->dc[di].it <= i; di++) if (!shifted || !stick_in(d, shs, di, 1)) draw_decor(&cc, d, &d->dc[di], vx, vy, vh, scroll, 0, 0, 0);
+        if (shifted && stick_in(d, shs, i, 0)) continue;                         /* drawn below, moved */
+        draw_item(&cc, d, i, vx, vy, vh, scroll, 0, 0, 0, hover, mk, focus_ord, caret, nl);
     }
-    for (; di < d->ndc; di++) draw_decor(&cc, d, &d->dc[di], vx, vy, vh, scroll);
+    for (; di < d->ndc; di++) if (!shifted || !stick_in(d, shs, di, 1)) draw_decor(&cc, d, &d->dc[di], vx, vy, vh, scroll, 0, 0, 0);
+    for (int g = 0; g < d->nsk; g++) {                                           /* sticky boxes last: on top, at their stuck position */
+        const struct stick *k = &d->sk[g];
+        if (!shs[g]) continue;
+        int di2 = k->d0;
+        for (int i = k->i0; i < k->i1; i++) {
+            for (; di2 < k->d1 && d->dc[di2].it <= i; di2++) draw_decor(&cc, d, &d->dc[di2], vx, vy, vh, scroll, shs[g], k->c0, k->c1);
+            draw_item(&cc, d, i, vx, vy, vh, scroll, shs[g], k->c0, k->c1, hover, mk, focus_ord, caret, nl);
+        }
+        for (; di2 < k->d1; di2++) draw_decor(&cc, d, &d->dc[di2], vx, vy, vh, scroll, shs[g], k->c0, k->c1);
+    }
+}
+
+int doc_unstick(const struct doc *d, int y, int scroll) {
+    for (int g = 0; g < d->nsk; g++) {
+        int s = stick_shift(&d->sk[g], scroll);
+        if (s && y >= d->sk[g].y0 + s && y < d->sk[g].y0 + s + d->sk[g].h) return y - s;
+    }
+    return y;
 }
 
 int doc_hit(const struct doc *d, int x, int y) {

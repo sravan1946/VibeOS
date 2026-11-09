@@ -1202,17 +1202,17 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (in_view && sel_ci < 0) hover = doc_hit(&doc, zd(ui.mx), zd(ui.my - CT) + scroll);
+        if (in_view && sel_ci < 0) hover = doc_hit(&doc, zd(ui.mx), doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll));
         if (js_active()) {                                   /* mouseover/out on node changes, mousemove, mouseup */
             static int pnode, pmx = -1, pmy = -1, pbtn;
-            int dx = zd(ui.mx), dy = zd(ui.my - CT) + scroll, nn = in_view && sel_ci < 0 ? doc_node_at(&doc, dx, dy) : 0;
+            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), nn = in_view && sel_ci < 0 ? doc_node_at(&doc, dx, dy) : 0;
             if (nn != pnode) { if (pnode) js_event(pnode, "mouseout", 0, dx, dy); if (nn) js_event(nn, "mouseover", 0, dx, dy); pnode = nn; }
             if (in_view && (ui.mx != pmx || ui.my != pmy)) { pmx = ui.mx; pmy = ui.my; js_event(nn, "mousemove", 0, dx, dy); }
             if (pbtn && !(ui.buttons & 1)) js_event(nn, "mouseup", 0, dx, dy);
             pbtn = ui.buttons & 1;
         }
         if (ui.pressed && !consumed && in_view) {
-            int dx = zd(ui.mx), dy = zd(ui.my - CT) + scroll, ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
+            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
             fo = -1;
             mk.from_it = mk.to_it = -1;
             js_event(node, "mousedown", 0, dx, dy);
