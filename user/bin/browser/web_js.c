@@ -450,6 +450,7 @@ def(g, { Storage: function Storage() {} });
 Object.defineProperties(g, { localStorage: { get() { return ls; }, configurable: true }, sessionStorage: { get() { return ss; }, configurable: true } });
 
 // ---------- cookies: the shared jar (cookie.c), as document.cookie sees it ----------
+g.__blobText = u => { const b = blobs.get(u); return b ? String(b.__s) : undefined; };
 def(g, { __cookieGet: () => d.cookieGet(), __cookieSet: s => d.cookieSet(s) });
 
 // ---------- observers, media ----------

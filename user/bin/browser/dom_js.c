@@ -278,6 +278,34 @@ function connectedCallbacks(n, name) {
     rec(n);
 }
 
+class Animation extends EventTarget {
+    constructor(el, kf, o) {
+        super();
+        this.effect = { target: el, getTiming: () => o, getComputedTiming: () => o }; this.id = o.id || ''; this.playState = 'running'; this.pending = false;
+        this.onfinish = null; this.oncancel = null; this.currentTime = 0; this.playbackRate = 1; this.timeline = null;
+        this.__el = el; this.__kf = kf; this.__fill = o.fill === 'forwards' || o.fill === 'both';
+        this.finished = new Promise((res, rej) => { this.__res = res; this.__rej = rej; }); this.finished.catch(() => {}); this.ready = Promise.resolve(this);
+        const dur = Math.min(Math.max(+o.duration || 0, 0), 600) * Math.max(+o.iterations || 1, 1) + Math.max(+o.delay || 0, 0);
+        this.__t = timer(() => this.finish(), isFinite(dur) ? dur : 600, [], false);
+    }
+    __last() {
+        const k = this.__kf, r = {};
+        if (Array.isArray(k)) { for (const f of k) if (f) Object.assign(r, f); }
+        else if (k) for (const p in k) { const v = k[p]; r[p] = Array.isArray(v) ? v[v.length - 1] : v; }
+        return r;
+    }
+    finish() {
+        if (this.playState === 'finished' || this.playState === 'idle') return;
+        this.playState = 'finished'; clear(this.__t);
+        if (this.__fill) { const f = this.__last(), st = this.__el.style; for (const p in f) if (p !== 'offset' && p !== 'easing' && p !== 'composite') try { st[p === 'cssFloat' ? 'float' : p] = f[p]; } catch (e) {} }
+        this.__res(this);
+        const ev = new Event('finish'); ev.currentTime = this.currentTime; ev.timelineTime = null;
+        if (typeof this.onfinish === 'function') try { this.onfinish(ev); } catch (e) { report(e); }
+        this.dispatchEvent(ev);
+    }
+    cancel() { if (this.playState === 'idle') return; this.playState = 'idle'; clear(this.__t); const ev = new Event('cancel'); if (typeof this.oncancel === 'function') try { this.oncancel(ev); } catch (e) { report(e); } this.dispatchEvent(ev); }
+    play() {} pause() {} reverse() {} updatePlaybackRate() {} persist() {} commitStyles() {}
+}
 class Node extends EventTarget {
     get nodeType() { return d.type(this.__id); }
     get nodeName() { const t = d.tag(this.__id); return this.nodeType === 1 ? t.toUpperCase() : t; }
@@ -608,7 +636,10 @@ class Element extends Node {
         return wrap(id);
     }
     get shadowRoot() { const id = d.shadow(this.__id); return id && d.smode(id) === 1 ? wrap(id) : null; }
-    animate() { return { finished: Promise.resolve(), cancel() {}, play() {}, pause() {}, finish() {}, onfinish: null, addEventListener() {} }; }
+    animate(kf, o) {                            // runs for its duration (capped), then applies the end frame when fill holds it
+        const a = new Animation(this, kf, typeof o === 'number' ? { duration: o } : o || {});
+        return a;
+    }
     getAnimations() { return []; }
     // geometry: from the display items laid out for the node (js.c n_rect)
     getBoundingClientRect() { const r = rectOf(this); return new DOMRect(r.x, r.y, r.w, r.h); }
@@ -1088,7 +1119,7 @@ raf.n = 0;
 
 V.go = go; V.show = show; V.d = d; V.timer = timer; V.W = W; V.document = document; V.T0 = T0; V.EventTarget = EventTarget; V.ET = EventTarget.prototype;
 V.classes = { Event, UIEvent, MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, FocusEvent, InputEvent, CustomEvent, ErrorEvent, MessageEvent, HashChangeEvent, PopStateEvent, ProgressEvent, PromiseRejectionEvent, StorageEvent,
-    TransitionEvent, AnimationEvent, ClipboardEvent, DragEvent, TouchEvent, EventTarget, Node, CharacterData, Text, Comment, CDATASection, Element, Document, DocumentFragment, ShadowRoot, DocumentType, MutationObserver, DOMTokenList, DOMRect, Attr,
+    TransitionEvent, AnimationEvent, Animation, ClipboardEvent, DragEvent, TouchEvent, EventTarget, Node, CharacterData, Text, Comment, CDATASection, Element, Document, DocumentFragment, ShadowRoot, DocumentType, MutationObserver, DOMTokenList, DOMRect, Attr,
     HTMLAnchorElement, HTMLImageElement, HTMLInputElement, HTMLButtonElement, HTMLFormElement, HTMLSelectElement, HTMLOptionElement, HTMLTextAreaElement, HTMLLabelElement, HTMLScriptElement, HTMLLinkElement,
     HTMLStyleElement, HTMLMetaElement, HTMLBaseElement, HTMLTemplateElement, HTMLCanvasElement, HTMLMediaElement, HTMLVideoElement, HTMLAudioElement, HTMLIFrameElement, HTMLDialogElement, HTMLDetailsElement };
 

@@ -13,6 +13,7 @@
 #include <quickjs.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <string.h>
 #include <stdarg.h>
 #include <ctype.h>
@@ -44,7 +45,7 @@ static int nn, ncap;
 
 static JSRuntime *rt;
 static JSContext *ctx;
-static JSValue fn_dispatch, fn_fire, fn_fetch;
+static JSValue fn_dispatch, fn_fire, fn_fetch, fn_blob;
 static struct doc *live;
 static int active, dirty, dead, killed, loaded, focus_req, pumps;
 static uint32_t deadline;
@@ -70,7 +71,7 @@ static struct { int id, every; uint32_t due; } T[MAXT];
 static int nt, next_tid = 1;
 
 /* fetch() and <script src>: helper processes like page loads (fetch.c); file: URLs are read on the next pump */
-static struct jf { int id, used, hops, script; struct fetch f; char *url; int file; const char *fail; char *post; } F[MAXF];
+static struct jf { int id, used, hops, script; unsigned long t0; struct fetch f; char *url; int file; const char *fail; char *post; } F[MAXF];
 static struct { int id; char *url; int script; char *post; } FQ[64];   /* waiting for a slot */
 static int nfq, next_fid = 1;
 
@@ -862,6 +863,7 @@ NATIVE(n_url) { return str(page_url); }
 NATIVE(n_resolve) {
     char out[URL_MAX];
     CSTR(u, 0);
+    if (!strncasecmp(u, "data:", 5)) { JSValue r = str(u); JS_FreeCString(c, u); return r; }   /* absolute and possibly longer than URL_MAX */
     const char *bs = argc > 1 && !JS_IsUndefined(argv[1]) ? JS_ToCString(c, argv[1]) : 0;
     url_resolve(bs ? bs : page_url, u, out, sizeof out);
     JS_FreeCString(c, bs);
@@ -1166,8 +1168,40 @@ static const JSCFunctionListEntry NATIVES[] = {
 };
 
 /* ---------- running JS ---------- */
+/* The JS heap is counted here (QuickJS's default allocator does the same) so that on_interrupt can stop a page's scripts
+   shortly BEFORE the hard limit: running into the limit throws a null "out of memory" at arbitrary places and corrupts
+   whatever was half done (a ~130 MB Verge page crashed the browser that way). */
+#define HEAP_MAX  (128u << 20)
+#define HEAP_SOFT (116u << 20)
+static size_t heap_bytes;
+static int mem_kill;
+static void *jm_malloc(JSMallocState *s, size_t n) {
+    if (heap_bytes + n > HEAP_MAX) return 0;
+    void *p = malloc(n);
+    if (p) { size_t u = malloc_usable_size(p); heap_bytes += u; s->malloc_size += u; s->malloc_count++; }
+    return p;
+}
+static void jm_free(JSMallocState *s, void *p) {
+    if (!p) return;
+    size_t u = malloc_usable_size(p);
+    heap_bytes -= u; s->malloc_size -= u; s->malloc_count--;
+    free(p);
+}
+static void *jm_realloc(JSMallocState *s, void *p, size_t n) {
+    if (!p) return n ? jm_malloc(s, n) : 0;
+    if (!n) { jm_free(s, p); return 0; }
+    size_t o = malloc_usable_size(p);
+    if (heap_bytes - o + n > HEAP_MAX) return 0;
+    void *q = realloc(p, n);
+    if (q) { size_t u = malloc_usable_size(q); heap_bytes += u - o; s->malloc_size += u - o; }
+    return q;
+}
+static size_t jm_usable(const void *p) { return p ? malloc_usable_size((void *)p) : 0; }
+static const JSMallocFunctions JM = { jm_malloc, jm_free, jm_realloc, jm_usable };
+
 static int on_interrupt(JSRuntime *r, void *op) {
     if (killed || uptime_ms() > deadline) { killed = 1; return 1; }
+    if (heap_bytes > HEAP_SOFT) { killed = 1; mem_kill = 1; return 1; }
     return 0;
 }
 
@@ -1176,6 +1210,7 @@ static void enter(void) { if (depth++ == 0) { deadline = uptime_ms() + RUN_MS; i
 
 static void report(JSContext *c) {
     JSValue e = JS_GetException(c);
+    if (killed && mem_kill) { jlog(2, "this page's scripts used too much memory and are now off"); dead = 1; nt = 0; JS_FreeValue(c, e); return; }
     if (killed) {
         if (++strikes >= 3) { jlog(2, "scripts on this page ran too long three times and are now off"); dead = 1; nt = 0; }
         else jlog(2, "a script ran for more than %d s and was stopped", RUN_MS / 1000);
@@ -1333,18 +1368,23 @@ static void deliver(int id, int script, int status, const char *text, const char
     call(fn_fetch, 8, argv);
 }
 
+static void start_req(struct jf *f);
 static int slot_start(struct jf *f, int id, const char *url, int script, char *post) {   /* takes post */
     free(f->url); memset(f, 0, sizeof *f);
     f->id = id; f->script = script; f->post = post;
     f->url = strdup(url);
     if (!url_is_web(url)) { f->used = 1; f->file = 1; return 0; }       /* read on the next pump */
-    f->used = 1;
-    const char *meth = post, *hdrs = post ? post + strlen(post) + 1 : 0, *body = hdrs ? hdrs + strlen(hdrs) + 1 : 0;
+    f->used = 1; f->t0 = uptime_ms();
+    start_req(f);
+    return 0;
+}
+
+static void start_req(struct jf *f) {                  /* (re)start the network request; a failure is retried by pump_fetches for a while */
+    const char *post = f->post, *meth = post, *hdrs = post ? post + strlen(post) + 1 : 0, *body = hdrs ? hdrs + strlen(hdrs) + 1 : 0, *url = f->url;
     int started = post ? fetch_start_req(&f->f, url, strcmp(meth, "GET") ? meth : 0, *hdrs ? hdrs : 0,
                                          strcmp(meth, "GET") && strcmp(meth, "HEAD") ? body : 0, strlen(body))
                        : fetch_start(&f->f, url, 0);
-    if (started < 0) f->fail = "the network helper didn't start";
-    return 0;
+    f->fail = started < 0 ? "the network helper didn't start" : 0;
 }
 
 static int fetch_queue(const char *url, int script, const char *blob, int has_blob) {
@@ -1362,6 +1402,15 @@ static int fetch_queue(const char *url, int script, const char *blob, int has_bl
 }
 
 static void read_file(struct jf *f) {
+    if (!strncasecmp(f->url, "blob:", 5)) {            /* a script from URL.createObjectURL(new Blob([...])) */
+        JSValue a = str(f->url), r = ctx && !dead ? JS_Call(ctx, fn_blob, JS_UNDEFINED, 1, &a) : JS_EXCEPTION;
+        JS_FreeValue(ctx, a);
+        f->used = 0;
+        if (JS_IsString(r)) { size_t n; const char *t = JS_ToCStringLen(ctx, &n, r); deliver(f->id, f->script, 200, "OK", "", t, n, 0, f->url, ""); JS_FreeCString(ctx, t); }
+        else deliver(f->id, f->script, 0, "", "", 0, 0, "blob not found", f->url, "");
+        JS_FreeValue(ctx, r);
+        return;
+    }
     char path[PATH_MAX];
     url_file_path(f->url, path, sizeof path);
     int fd = open(path, O_RDONLY);
@@ -1384,6 +1433,7 @@ static void pump_fetches(void) {
     for (int i = 0; i < MAXF && active; i++) {
         struct jf *f = &F[i];
         if (!f->used) continue;
+        if (f->fail && uptime_ms() - f->t0 < 8000) { start_req(f); continue; }   /* helpers are busy: try again next frame */
         if (f->fail) { f->used = 0; deliver(f->id, f->script, 0, "", "", 0, 0, f->fail, f->url, ""); continue; }
         if (f->file) { read_file(f); continue; }
         int r = fetch_pump(&f->f);
@@ -1443,9 +1493,9 @@ static JSValue global_fn(const char *name) {
 int js_page(const char *src, size_t n, const char *url) {
     js_reset();
     if (!uses_js(src, n)) return 0;
-    rt = JS_NewRuntime();
+    heap_bytes = 0; mem_kill = 0;
+    rt = JS_NewRuntime2(&JM, 0);
     if (!rt) return 0;
-    JS_SetMemoryLimit(rt, 128u << 20);
     JS_SetMaxStackSize(rt, 1u << 20);
     JS_SetInterruptHandler(rt, on_interrupt, 0);
     JS_SetModuleLoaderFunc(rt, mod_norm, mod_load, 0);
@@ -1475,7 +1525,7 @@ int js_page(const char *src, size_t n, const char *url) {
         JS_FreeValue(ctx, r);
     }
     depth = 0;
-    fn_dispatch = global_fn("__dispatch"); fn_fire = global_fn("__fire"); fn_fetch = global_fn("__fetchDone");
+    fn_dispatch = global_fn("__dispatch"); fn_fire = global_fn("__fire"); fn_fetch = global_fn("__fetchDone"); fn_blob = global_fn("__blobText");
     return 1;
 }
 
@@ -1590,12 +1640,12 @@ static void add_script(int id, int where) {                /* where: 0 parser, 1
         free(mb.p);
         return;
     }
+    if (attr(id, "nomodule")) return;                      /* legacy-browser fallback bundles: we support modules */
     if (ty && *ty && !module && !ci_has(ty, "javascript") && !ci_has(ty, "ecmascript")) return;
     struct buf b = { 0 };
     if (!(src && *src)) { text_of(&b, id); if (!b.n) { free(b.p); return; } free(b.p); }
     struct scr e = { id, 0, src && *src ? 1 : 2, module, 0, where == 0 ? nscr : 0, 0, 0 };
-    if (src && *src && !strncasecmp(src, "data:", 5)) { size_t sl = strlen(src); char *u = malloc(sl + 1); if (u) { url_resolve(page_url, src, u, sl + 1); e.url = u; } }   /* data: URLs can exceed URL_MAX */
-    else if (src && *src) { char u[URL_MAX]; url_resolve(page_url, src, u, sizeof u); e.url = strdup(u); }
+    if (src && *src) { size_t sl = strlen(src) + strlen(page_url) + 1; char *u = malloc(sl); if (u) { url_resolve(page_url, src, u, sl); e.url = u; } }   /* data: and long URLs can exceed URL_MAX */
     if (where == 2 || (e.url && attr(id, "async"))) e.mode = 2;
     else if (module || (e.url && attr(id, "defer"))) e.mode = 1;
     struct scr *slot;
@@ -1715,11 +1765,11 @@ void js_reset(void) {
     nfq = 0;
     if (ctx) {
         JS_FreeValue(ctx, imap); imap = JS_UNDEFINED;
-        JS_FreeValue(ctx, fn_dispatch); JS_FreeValue(ctx, fn_fire); JS_FreeValue(ctx, fn_fetch);
+        JS_FreeValue(ctx, fn_dispatch); JS_FreeValue(ctx, fn_fire); JS_FreeValue(ctx, fn_fetch); JS_FreeValue(ctx, fn_blob);
         JS_FreeContext(ctx);
         JS_FreeRuntime(rt);
     }
-    fn_dispatch = fn_fire = fn_fetch = JS_UNDEFINED;
+    fn_dispatch = fn_fire = fn_fetch = fn_blob = JS_UNDEFINED;
     ctx = 0; rt = 0;
     for (int i = 0; i < nn; i++) {
         struct node *x = &N[i];
