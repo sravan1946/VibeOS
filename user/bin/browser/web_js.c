@@ -458,6 +458,20 @@ class WebSocket extends D.EventTarget {
 }
 for (const [k, v] of [['CONNECTING', 0], ['OPEN', 1], ['CLOSING', 2], ['CLOSED', 3]]) WebSocket[k] = WebSocket.prototype[k] = v;
 class EventSource extends D.EventTarget { constructor(u) { super(); this.url = String(u); this.readyState = 2; setTimeout(() => this.dispatchEvent(new D.Event('error')), 10); } close() {} }
+// WebAssembly: a stub (no engine here): feature tests and promise-based loaders see an honest failure instead of a ReferenceError
+{
+    class CompileError extends Error { constructor(m) { super(m); this.name = 'CompileError'; } }
+    class LinkError extends Error { constructor(m) { super(m); this.name = 'LinkError'; } }
+    class RuntimeError extends Error { constructor(m) { super(m); this.name = 'RuntimeError'; } }
+    const no = () => { throw new CompileError('WebAssembly is not supported'); };
+    const fail = () => Promise.reject(new CompileError('WebAssembly is not supported'));
+    class Module { constructor() { no(); } static exports() { return []; } static imports() { return []; } static customSections() { return []; } }
+    class Instance { constructor() { no(); } }
+    class Memory { constructor() { no(); } }
+    class Table { constructor() { no(); } }
+    class Global { constructor() { no(); } }
+    def(g, { WebAssembly: { Module, Instance, Memory, Table, Global, CompileError, LinkError, RuntimeError, validate: () => false, compile: fail, instantiate: fail, compileStreaming: fail, instantiateStreaming: fail } });
+}
 // indexedDB: present so feature tests pass, but every open() fails asynchronously (like a private window), which pages handle
 class IDBRequest extends D.EventTarget { constructor() { super(); this.result = undefined; this.error = null; this.readyState = 'pending'; this.onsuccess = this.onerror = this.onupgradeneeded = this.onblocked = null; } }
 class IDBFactory {
