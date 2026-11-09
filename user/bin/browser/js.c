@@ -1035,8 +1035,25 @@ void js_set_rect(int node, int x, int y, int w, int h) {
     }
     RC[node][0] = x; RC[node][1] = y; RC[node][2] = w; RC[node][3] = h; rc_set = 1;
 }
+/* Reading a size or position after a DOM change must see the change (offsetHeight, getBoundingClientRect, scrollHeight...): main.c registers its
+ * relayout and we run it on demand. Adaptive so a loop that alternates writes and reads can't spend more than ~1/3 of the time in layout. */
+static void (*layout_hook)(void);
+static int in_layout;
+static uint32_t lay_end, lay_ms;
+void js_set_layout_hook(void (*f)(void)) { layout_hook = f; }
+static void force_layout(void) {
+    if (!dirty || !layout_hook || in_layout || !live) return;
+    uint32_t t0 = uptime_ms();
+    if (lay_end && t0 - lay_end < lay_ms * 2) return;
+    in_layout = 1;
+    layout_hook();
+    in_layout = 0;
+    dirty = 0;
+    lay_end = uptime_ms(); lay_ms = lay_end - t0;
+}
 NATIVE(n_rect) {
     int id = ARGID(0), x0 = 1 << 30, y0 = 1 << 30, x1 = -1, y1 = -1;
+    force_layout();
     JSValue a = JS_NewArray(c);
     if (id && id < nrc && RC[id][2] >= 0) {
         for (int i = 0; i < 4; i++) JS_SetPropertyUint32(c, a, i, JS_NewInt32(c, RC[id][i]));

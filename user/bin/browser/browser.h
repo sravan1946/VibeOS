@@ -300,6 +300,7 @@ int  form_submit(const struct doc *d, int form, int btn, const char *base, char 
 int  js_page(const char *src, size_t n, const char *url);   /* new page: 1 = it has scripts (the DOM takes over) */
 char *js_html(size_t *n);                         /* the tree as HTML for doc_layout (malloc'd) */
 void js_attach(struct doc *d);                    /* the doc laid out from the last js_html() */
+void js_set_layout_hook(void (*f)(void));         /* main.c's relayout: js.c calls it when a script reads a size/position after a DOM change */
 void js_sync(void);                               /* copy form state into the tree before a relayout */
 int  js_pump(void);                               /* run scripts, timers, fetches: 1 = the tree changed (relayout) */
 int  js_timeout(void);                            /* ms until the next timer, -1 = none */
