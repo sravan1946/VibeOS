@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><title>Child frame</title>
+<style>body{font:14px sans-serif;margin:8px;background:#eef6ff}h1{font-size:18px;margin:0 0 6px}button{padding:6px 12px}</style></head>
+<body>
+<h1 id="title">Child</h1>
+<p>same-origin frame, clicks: <b id="n">0</b></p>
+<button id="btn">Click me in the frame</button>
+<input id="txt" placeholder="type here" size="14">
+<script>
+var clicks = 0;
+document.getElementById('btn').addEventListener('click', function () {
+  clicks++;
+  document.getElementById('n').textContent = clicks;
+  parent.postMessage({ type: 'clicked', n: clicks }, '*');
+});
+window.addEventListener('message', function (e) {
+  console.log('child got ' + e.data + ' from ' + e.origin);
+  if (e.data === 'ping') e.source.postMessage('pong:' + e.origin, '*');
+});
+document.cookie = 'framecookie=child1; path=/';
+</script>
+</body></html>

@@ -1,0 +1,8 @@
+<!doctype html>
+<html><head><title>Child two</title></head>
+<body style="font:14px sans-serif;background:#fff4e6;margin:8px"><h1 id="title">Second child</h1>
+<p id="info"></p>
+<script>
+var n = 0, w = window; while (w.parent !== w) { w = w.parent; n++; }
+document.getElementById('info').textContent = 'depth: ' + n + ', top is parent: ' + (top === parent);
+</script></body></html>

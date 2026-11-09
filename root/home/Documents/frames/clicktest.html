@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><title>Frame click test</title>
+<style>body{font:14px sans-serif;margin:10px}iframe{border:1px solid #888}</style></head>
+<body>
+<h3>Click the button inside the frame, then type in its field</h3>
+<iframe id="f" src="child.html" width="320" height="170"></iframe>
+<p>messages from the frame: <b id="m">none</b></p>
+<script>
+window.addEventListener('message', function (e) {
+  if (e.data && e.data.type === 'clicked') {
+    document.getElementById('m').textContent = 'clicked ' + e.data.n + ' times, value="' + document.getElementById('f').contentDocument.getElementById('txt').value + '"';
+    console.log('clicktest: ' + document.getElementById('m').textContent);
+  }
+});
+</script>
+</body></html>
