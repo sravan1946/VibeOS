@@ -165,9 +165,9 @@ class Blob {
         Object.defineProperty(this, '__s', { value: s, writable: true });
         this.type = o && o.type ? String(o.type).toLowerCase() : '';
     }
-    get size() { return new TextEncoder().encode(this.__s).length; }
+    get size() { return this.__bin ? this.__bin.length : new TextEncoder().encode(this.__s).length; }
     text() { return Promise.resolve(this.__s); }
-    arrayBuffer() { return Promise.resolve(new TextEncoder().encode(this.__s).buffer); }
+    arrayBuffer() { return Promise.resolve(this.__bin ? this.__bin.slice().buffer : new TextEncoder().encode(this.__s).buffer); }
     slice(a, b, t) { const e = new Blob([], { type: t }); e.__s = this.__s.slice(a, b); return e; }
     stream() { return new g.ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(this.__s)); c.close(); } }); }
 }
@@ -709,7 +709,7 @@ class CSSStyleSheet {
     addRule(s, r, i) { this.insertRule(s + '{' + r + '}', i === undefined ? this.cssRules.length : i); return -1; } removeRule(i) { this.deleteRule(i); }
     replace(t) { this.replaceSync(t); return Promise.resolve(this); } replaceSync(t) { this.__r = splitRules(t).map(x => mkRule(x, this)); this.__sync(); }
 }
-// geometry: DOMPoint, DOMMatrix (4x4, column-major like the spec), Path2D (records nothing; the canvas is a stub)
+// geometry: DOMPoint, DOMMatrix (4x4, column-major like the spec)
 class DOMPoint { constructor(x = 0, y = 0, z = 0, w = 1) { this.x = +x; this.y = +y; this.z = +z; this.w = +w; } static fromPoint(p) { return new DOMPoint(p.x, p.y, p.z, p.w); } toJSON() { return { x: this.x, y: this.y, z: this.z, w: this.w }; } matrixTransform(m) { return m.transformPoint(this); } }
 const MK = ['m11', 'm12', 'm13', 'm14', 'm21', 'm22', 'm23', 'm24', 'm31', 'm32', 'm33', 'm34', 'm41', 'm42', 'm43', 'm44'];
 class DOMMatrix {
@@ -740,8 +740,7 @@ class DOMMatrix {
 }
 MK.forEach((k, i) => Object.defineProperty(DOMMatrix.prototype, k, { get() { return this.__m[i]; }, set(v) { this.__m[i] = +v; }, configurable: true }));
 ['a', 'b', 'c', 'd', 'e', 'f'].forEach((k, i) => { const j = [0, 1, 4, 5, 12, 13][i]; Object.defineProperty(DOMMatrix.prototype, k, { get() { return this.__m[j]; }, set(v) { this.__m[j] = +v; }, configurable: true }); });
-class Path2D { constructor() {} addPath() {} closePath() {} moveTo() {} lineTo() {} bezierCurveTo() {} quadraticCurveTo() {} arc() {} arcTo() {} ellipse() {} rect() {} roundRect() {} }
-def(g, { DOMPoint, DOMPointReadOnly: DOMPoint, DOMMatrix, DOMMatrixReadOnly: DOMMatrix, WebKitCSSMatrix: DOMMatrix, Path2D });
+def(g, { DOMPoint, DOMPointReadOnly: DOMPoint, DOMMatrix, DOMMatrixReadOnly: DOMMatrix, WebKitCSSMatrix: DOMMatrix });
 def(g, { CSS, CSSStyleSheet, CSSRule: function CSSRule() {}, StyleSheet: CSSStyleSheet });
 
 // ---------- Range, Selection, TreeWalker ----------

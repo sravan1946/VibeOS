@@ -990,6 +990,75 @@ NATIVE(n_rand) {                                           /* crypto.getRandomVa
     free(b);
     return r;
 }
+/* ---- <canvas> 2D (canvas.c): geometry arrives as ArrayBuffers of doubles from the prelude's CanvasRenderingContext2D ---- */
+static const double *abd(JSContext *c, JSValueConst v, int *n) { size_t sz = 0; uint8_t *p = JS_GetArrayBuffer(c, &sz, v); if (!p) { JS_FreeValue(c, JS_GetException(c)); *n = 0; return 0; } *n = (int)(sz / 8); return (const double *)p; }
+static const uint8_t *abb(JSContext *c, JSValueConst v, size_t need) { size_t sz = 0; uint8_t *p = JS_GetArrayBuffer(c, &sz, v); if (!p) JS_FreeValue(c, JS_GetException(c)); return p && sz >= need ? p : 0; }
+static int ai(JSContext *c, JSValueConst v) { int32_t i = 0; JS_ToInt32(c, &i, v); return i; }
+static double af(JSContext *c, JSValueConst v) { double d = 0; JS_ToFloat64(c, &d, v); return d; }
+#define OPTAB(v) (JS_IsUndefined(v) || JS_IsNull(v) ? 0 : abb(c, v, 1))
+NATIVE(n_cv_new) { return JS_NewInt32(c, cnv_new(ai(c, argv[0]), ai(c, argv[1]))); }
+NATIVE(n_cv_size) { return JS_NewInt32(c, cnv_resize(ai(c, argv[0]), ai(c, argv[1]), ai(c, argv[2]))); }
+NATIVE(n_cv_fill) {              /* id, polys, evenodd, paint, alpha, op, mask|undefined */
+    int np, nq;
+    const double *poly = abd(c, argv[1], &np), *pn = abd(c, argv[3], &nq);
+    if (poly && pn) cnv_fill(ai(c, argv[0]), poly, np, ai(c, argv[2]), pn, nq, af(c, argv[4]), ai(c, argv[5]), OPTAB(argv[6]));
+    return JS_UNDEFINED;
+}
+NATIVE(n_cv_text) {              /* id, text, x, baseline y, size, flags, paint, alpha, op, mask|undefined */
+    int nq;
+    const double *pn = abd(c, argv[6], &nq);
+    CSTR(s, 1);
+    if (pn) cnv_text(ai(c, argv[0]), s, af(c, argv[2]), af(c, argv[3]), af(c, argv[4]), ai(c, argv[5]), pn, nq, af(c, argv[7]), ai(c, argv[8]), OPTAB(argv[9]));
+    JS_FreeCString(c, s);
+    return JS_UNDEFINED;
+}
+NATIVE(n_cv_measure) {           /* text, size, flags -> [width, ascent, descent] */
+    CSTR(s, 0);
+    double w, a, d;
+    cnv_measure(s, af(c, argv[1]), ai(c, argv[2]), &w, &a, &d);
+    JS_FreeCString(c, s);
+    JSValue r = JS_NewArray(c);
+    JS_SetPropertyUint32(c, r, 0, JS_NewFloat64(c, w)); JS_SetPropertyUint32(c, r, 1, JS_NewFloat64(c, a)); JS_SetPropertyUint32(c, r, 2, JS_NewFloat64(c, d));
+    return r;
+}
+static void cnv_free_cb(JSRuntime *rt, void *opaque, void *ptr) { free(ptr); }
+NATIVE(n_cv_clip) {              /* id, polys, evenodd, prev|undefined -> mask ArrayBuffer */
+    int np;
+    const double *poly = abd(c, argv[1], &np);
+    if (!poly) return JS_UNDEFINED;
+    size_t len = 0;
+    uint8_t *m = cnv_clip(ai(c, argv[0]), poly, np, ai(c, argv[2]), OPTAB(argv[3]), &len);
+    return m ? JS_NewArrayBuffer(c, m, len, cnv_free_cb, 0, 0) : JS_UNDEFINED;
+}
+NATIVE(n_cv_get) {               /* id, x, y, w, h -> RGBA ArrayBuffer */
+    int w = ai(c, argv[3]), h = ai(c, argv[4]);
+    uint8_t *p = cnv_get_rgba(ai(c, argv[0]), ai(c, argv[1]), ai(c, argv[2]), w, h);
+    return p ? JS_NewArrayBuffer(c, p, (size_t)w * h * 4, cnv_free_cb, 0, 0) : JS_UNDEFINED;
+}
+NATIVE(n_cv_put) {               /* id, rgba, w, h, dx, dy */
+    int w = ai(c, argv[2]), h = ai(c, argv[3]);
+    const uint8_t *s = w > 0 && h > 0 ? abb(c, argv[1], (size_t)w * h * 4) : 0;
+    if (s) cnv_put_rgba(ai(c, argv[0]), s, w, h, ai(c, argv[4]), ai(c, argv[5]));
+    return JS_UNDEFINED;
+}
+NATIVE(n_cv_show) {              /* js node id of a <canvas>, canvas slot: hand the pixels to the image cache and relayout */
+    int id = ARGID(0), w = 0, h = 0;
+    const uint8_t *px = id ? cnv_pixels(ai(c, argv[1]), &w, &h) : 0;
+    if (px) {
+        char key[24];
+        snprintf(key, sizeof key, "canvas:%d", id);
+        if (img_set_rgba(key, px, w, h) >= 0) touch(id);
+    }
+    return JS_UNDEFINED;
+}
+NATIVE(n_cv_png) { return take(cnv_png_url(ai(c, argv[0]))); }
+NATIVE(n_color) {                /* CSS colour -> 0xAARRGGBB as an unsigned number, or -1 */
+    CSTR(s, 0);
+    color_t col = 0;
+    int ok = css_color(s, &col, 0);
+    JS_FreeCString(c, s);
+    return ok ? JS_NewUint32(c, col) : JS_NewInt32(c, -1);
+}
 NATIVE(n_ua) { return str(BROWSER_UA); }
 NATIVE(n_cookie_get) { char b[4096]; cookie_get(page_url, b, sizeof b); return str(b); }
 NATIVE(n_cookie_set) { CSTR(v, 0); cookie_set(page_url, v); JS_FreeCString(c, v); return JS_UNDEFINED; }
@@ -1207,7 +1276,7 @@ static const JSCFunctionListEntry NATIVES[] = {
     JS_CFUNC_DEF("createComment", 1, n_create_comment), JS_CFUNC_DEF("docwrite", 1, n_docwrite), JS_CFUNC_DEF("curScript", 0, n_cur_script),
     JS_CFUNC_DEF("ready", 0, n_ready), JS_CFUNC_DEF("setUrl", 2, n_set_url), JS_CFUNC_DEF("scrollTo", 2, n_scroll_to),
     JS_CFUNC_DEF("view", 0, n_view), JS_CFUNC_DEF("rect", 1, n_rect), JS_CFUNC_DEF("media", 1, n_media),
-    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("gen", 0, n_gen), JS_CFUNC_DEF("cvar", 2, n_cvar), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("rand", 1, n_rand), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
+    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("gen", 0, n_gen), JS_CFUNC_DEF("cvar", 2, n_cvar), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("rand", 1, n_rand), JS_CFUNC_DEF("cvNew", 2, n_cv_new), JS_CFUNC_DEF("cvSize", 3, n_cv_size), JS_CFUNC_DEF("cvFill", 7, n_cv_fill), JS_CFUNC_DEF("cvText", 10, n_cv_text), JS_CFUNC_DEF("cvMeasure", 3, n_cv_measure), JS_CFUNC_DEF("cvClip", 4, n_cv_clip), JS_CFUNC_DEF("cvGet", 5, n_cv_get), JS_CFUNC_DEF("cvPut", 6, n_cv_put), JS_CFUNC_DEF("cvPNG", 1, n_cv_png), JS_CFUNC_DEF("cvShow", 2, n_cv_show), JS_CFUNC_DEF("color", 1, n_color), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
 };
 
 /* ---------- running JS ---------- */
@@ -1813,6 +1882,7 @@ int js_timeout(void) {
 }
 
 void js_reset(void) {
+    cnv_reset();
     for (int i = 0; i < MAXF; i++) if (F[i].used) { if (!F[i].file) fetch_cancel(&F[i].f); F[i].used = 0; free(F[i].post); F[i].post = 0; }
     for (int i = 0; i < nfq; i++) { free(FQ[i].post); free(FQ[i].url); }
     nfq = 0;

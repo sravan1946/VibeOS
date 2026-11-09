@@ -46,6 +46,7 @@ const char *dom_attr(int n, const char *a) { return 0; }
 int sheet_pump(void) { return 0; }
 int sheet_busy(void) { return 0; }
 void sheet_reset(void) {}
+int img_find(const char *u) { return -1; }
 int img_ref(const char *u) { return 0; }
 int img_ref_ex(const char *u, const char *l) { return 0; }
 int img_info(int i, int *w, int *h) { const char *e = getenv("LT_IMG"); int a, b; if (e && sscanf(e, "%dx%d", &a, &b) == 2) { *w = a; *h = b; return IMG_READY; } return IMG_LOADING; }   /* LT_IMG=WxH: every image is loaded at that natural size */
