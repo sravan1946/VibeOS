@@ -470,9 +470,10 @@ int img_pick(const char *src, const char *srcset, const char *sizes, int vw, cha
     return 0;
 }
 
-/* a <source type=""> we can decode (no type = yes). WebP and AVIF are not supported, so a <picture> falls through to its <img>. */
+/* a <source type=""> we can decode (no type = yes). AVIF is not supported, so a <picture> falls through to a WebP/JPEG/PNG source or its <img>. */
 int img_type_ok(const char *type) {
     if (!type || !*type) return 1;
     return !strncasecmp(type, "image/png", 9) || !strncasecmp(type, "image/jpeg", 10) || !strncasecmp(type, "image/jpg", 9) ||
-           !strncasecmp(type, "image/gif", 9) || !strncasecmp(type, "image/svg", 9) || !strncasecmp(type, "image/bmp", 9);
+           !strncasecmp(type, "image/gif", 9) || !strncasecmp(type, "image/svg", 9) || !strncasecmp(type, "image/bmp", 9) ||
+           !strncasecmp(type, "image/webp", 10);
 }

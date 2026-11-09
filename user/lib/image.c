@@ -402,6 +402,7 @@ int image_decode(const uint8_t *d, size_t n, struct image *im) {
     if (n >= 2 && d[0] == 'B' && d[1] == 'M') return bmp_decode(d, n, im);
     if (n >= 2 && d[0] == 'P') return ppm_decode(d, n, im);
     if (n >= 3 && d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF) return jpeg_decode(d, n, im);
+    if (n >= 12 && !memcmp(d, "RIFF", 4) && !memcmp(d + 8, "WEBP", 4)) return webp_decode(d, n, im);
     if (n >= 6 && !memcmp(d, "GIF8", 4)) {
         struct image_anim a;
         if (gif_decode(d, n, 1, &a) < 0) return -1;
@@ -477,7 +478,7 @@ int image_is_ext(const char *name) {
     const char *e = strrchr(name, '.');
     if (!e) return 0;
     return !strcasecmp(e, ".png") || !strcasecmp(e, ".bmp") || !strcasecmp(e, ".ppm") || !strcasecmp(e, ".pgm") ||
-           !strcasecmp(e, ".jpg") || !strcasecmp(e, ".jpeg") || !strcasecmp(e, ".gif");
+           !strcasecmp(e, ".jpg") || !strcasecmp(e, ".jpeg") || !strcasecmp(e, ".gif") || !strcasecmp(e, ".webp");
 }
 
 /* ================= PNG encode: filter 0, LZ77 (one hash slot) + fixed Huffman ================= */

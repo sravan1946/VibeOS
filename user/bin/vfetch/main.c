@@ -49,8 +49,8 @@ static int has_hdr(const char *hs, const char *name) {
     return 0;
 }
 
-/* Accept for what the URL looks like it is: stylesheets and images (only the formats we decode: no webp/avif, so the server picks
- * png/jpeg) and scripts get what a browser asks for them; everything else is a page */
+/* Accept for what the URL looks like it is: stylesheets and images (webp only when the URL says .webp: a negotiating server would send
+ * animated ones as webp, which we show as one frame, so it gets png/jpeg/gif) and scripts get what a browser asks for them; everything else is a page */
 static const char *accept_for(const char *path) {
     int pl = strcspn(path, "?#");
     const char *dot = 0;
@@ -58,6 +58,7 @@ static const char *accept_for(const char *path) {
     int el = dot ? (int)(path + pl - dot) : 0;
     #define EXT(s) (el == (int)sizeof(s) - 1 && !strncasecmp(dot, s, el))
     if (EXT("css") || strstr(path, "only=styles")) return "text/css,*/*;q=0.1";
+    if (EXT("webp")) return "image/webp,image/png,image/jpeg,image/gif,image/bmp,image/svg+xml,image/*;q=0.8,*/*;q=0.5";
     if (EXT("png") || EXT("jpg") || EXT("jpeg") || EXT("gif") || EXT("bmp") || EXT("svg") || EXT("ico"))
         return "image/png,image/jpeg,image/gif,image/bmp,image/svg+xml,image/*;q=0.8,*/*;q=0.5";
     if (EXT("js") || EXT("mjs") || strstr(path, "only=scripts")) return "*/*";
