@@ -2515,6 +2515,11 @@ int css_compute(int node, int pe, const struct cprops *parent, struct cprops *ou
                             d == D_INLINE_FLEX ? D_FLEX : d == D_INLINE_GRID ? D_GRID : d == D_INLINE_TABLE ? D_TABLE : d;
         if (out->v[P_DISPLAY] == D_TABLE_COL) out->v[P_DISPLAY] = D_BLOCK;
     }
+    int pd = parent ? parent->v[P_DISPLAY] : 0;           /* children of a flex/grid container are blockified (an <a> in a nav is a flex item, not inline text) */
+    if (pd == D_FLEX || pd == D_INLINE_FLEX || pd == D_GRID || pd == D_INLINE_GRID) {
+        int e = out->v[P_DISPLAY];
+        out->v[P_DISPLAY] = e == D_INLINE || e == D_INLINE_BLOCK ? D_BLOCK : e == D_INLINE_FLEX ? D_FLEX : e == D_INLINE_GRID ? D_GRID : e == D_INLINE_TABLE ? D_TABLE : e;
+    }
     out->v[P_BOLD] = out->v[P_FWEIGHT] >= 600; out->k[P_BOLD] = K_PX;
     out->v[P_MONO] = out->v[P_FAMILY] == FAM_MONO; out->k[P_MONO] = K_PX;
     out->v[P_LIST] = out->v[P_LISTT] == LT_NONE; out->k[P_LIST] = K_PX;

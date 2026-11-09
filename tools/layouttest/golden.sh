@@ -9,7 +9,7 @@ gcc -m32 -O1 -w -I$root/user/lib -I$root/common -I$b -DLT_DEBUG \
   $here/render.c $b/layout.c $b/dom.c $b/html.c $b/css.c $b/cssel.c $b/entities.c $b/url.c $b/form.c \
   $root/common/gfx.c $root/common/fonts.c $root/common/theme.c $root/common/fontsw.c -lm -o $out/render
 fail=0; n=0
-for spec in Documents/test.html:900 Documents/css.html:900 csstest/tables.html:900 csstest/layout.html:700 csstest/layout.html:420 csstest/layout2.html:600 Documents/svgicons.html:700; do
+for spec in Documents/test.html:900 Documents/css.html:900 csstest/tables.html:900 csstest/layout.html:700 csstest/layout.html:420 csstest/layout2.html:600 Documents/svgicons.html:700 csstest/flexitems.html:400 csstest/gradients.html:700; do
     f=${spec%%:*}; w=${spec##*:}; name=$(echo "$f" | tr '/' '_')_$w
     LT_DUMP=1 $out/render $root/root/home/$f $w $out/x.ppm 50 2>$out/dump.txt >/dev/null
     grep -v '^layout ' $out/dump.txt > $out/cur.txt
