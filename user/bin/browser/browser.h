@@ -189,7 +189,8 @@ void visited_add(const char *abs_url);
 
 /* ---- sheet.c: external stylesheets (<link rel=stylesheet>, @import): one fetch each, kept until the next page ---- */
 const char *sheet_get(const char *url, size_t *len);   /* the text once loaded; NULL while loading or failed (queues on first use) */
-int  sheet_pump(void);                           /* advance downloads; nonzero when a sheet arrived or failed */
+void uni_init(void);                             /* uni.c: CJK/Hangul/Hebrew/Thai fallback glyphs (font_fallback) */
+int  sheet_pump(void);                          /* advance downloads; nonzero when a sheet arrived or failed */
 int  sheet_busy(void);
 void sheet_reset(void);                          /* new page */
 void *sheet_save(void);                          /* same trio as img_save, for a background tab */

@@ -364,6 +364,10 @@ void gfx_blit_scaled(struct canvas *c, int x, int y, int dw, int dh, const uint3
     }
 }
 
+const struct glyph *(*font_fallback)(const struct font *f, uint32_t cp);
+uint8_t gfx_fb_alpha[GFX_FB_MAX];
+#define GALPHA(f, g) ((g)->off == GLYPH_FB ? gfx_fb_alpha : (f)->alpha + (g)->off)
+
 const struct glyph *font_glyph(const struct font *f, uint32_t cp) {
     if (cp >= 32 && cp < 127) return &f->g[cp - 32];
     int lo = 0, hi = f->nx - 1;                               /* extras are sorted */
@@ -372,6 +376,7 @@ const struct glyph *font_glyph(const struct font *f, uint32_t cp) {
         if (f->xcp[m] == cp) return &f->xg[m];
         if (f->xcp[m] < cp) lo = m + 1; else hi = m - 1;
     }
+    if (font_fallback && cp >= 0x590) { const struct glyph *g = font_fallback(f, cp); if (g) return g; }
     if (f->nx && f->xcp[f->nx - 1] == 0xFFFF) return &f->xg[f->nx - 1];   /* the wide faces carry a missing-glyph box */
     return &f->g['?' - 32];
 }
@@ -392,7 +397,7 @@ int utf8_decode(const char *s, int n, uint32_t *cp) {
 
 int gfx_char(struct canvas *c, const struct font *f, int x, int y, uint32_t cp, color_t col) {
     const struct glyph *g = font_glyph(f, cp);
-    gfx_mask(c, x + g->xoff, y + g->yoff, f->alpha + g->off, g->w, g->h, g->w, col);
+    gfx_mask(c, x + g->xoff, y + g->yoff, GALPHA(f, g), g->w, g->h, g->w, col);
     return g->adv;
 }
 
@@ -407,7 +412,7 @@ int gfx_text_n(struct canvas *c, const struct font *f, int x, int y, const char 
         if ((uint8_t)s[i] < 0x80) cp = (uint8_t)s[i++]; else i += utf8_decode(s + i, n - i, &cp);
         const struct glyph *g = font_glyph(f, cp);
         int gx = (pen + 32) >> 6;
-        gfx_mask(c, gx + g->xoff, y + g->yoff, f->alpha + g->off, g->w, g->h, g->w, col);
+        gfx_mask(c, gx + g->xoff, y + g->yoff, GALPHA(f, g), g->w, g->h, g->w, col);
         pen += fr ? g->adv64 : g->adv << 6;
     }
     return ((pen + 32) >> 6) - x;

@@ -1059,6 +1059,7 @@ static void drop_key(struct ui *ui, int i) { memmove(ui->keys + i, ui->keys + i 
 
 int main(int argc, char **argv) {
     if (argc > 2 && !strcmp(argv[1], "--fetch")) return fetch_cli(argc - 2, argv + 2);
+    uni_init();
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;
