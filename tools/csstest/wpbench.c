@@ -106,6 +106,9 @@ int main(int argc, char **argv) {
     for (int i = 2; i < argc; i++) { size_t m; char *c = slurp(argv[i], &m); css_add_from(c, m, "https://en.wikipedia.org/"); free(c); }
     double parse_ms = (clock() - t0) * 1000.0 / CLOCKS_PER_SEC;
     (void)rules0;
+#ifdef CSS_STATS
+    { extern void css_stats_alloc(void); css_stats_alloc(); }
+#endif
     int reps = getenv("REPS") ? atoi(getenv("REPS")) : 20;
     double best = 1e9;
     for (int r = 0; r < reps; r++) {
@@ -117,6 +120,25 @@ int main(int argc, char **argv) {
     int hid = 0;
     for (int i = 1; i < nn; i++) hid += cs[i].v[P_DISPLAY] == D_NONE;
     printf("wpbench: %d elements (%d display:none), sheets parsed in %.1f ms; css_compute %.1f ms = %.2f us/element\n", nn - 1, hid, parse_ms, best, best * 1000 / (nn - 1));
+    if (getenv("QUERY")) {                       /* QUERY='header.navbar' : computed key properties of the first matches */
+        int shown = 0;
+        for (int i = 1; i < nn && shown < (getenv("MAXN") ? atoi(getenv("MAXN")) : 3); i++) {
+            if (css_match_node(getenv("QUERY"), i) != 1) continue;
+            const struct cprops *c = &cs[i];
+            printf("#%d <%s class=\"%s\"> display=%d position=%d bg=%08x color=%08x w=%d/%d h=%d/%d vis=%d op=%d float=%d ov=%d/%d z=%d(%d) fs=%d mt=%d pt=%d\n", i, N[i].tag, N[i].cls ? N[i].cls : "", c->v[P_DISPLAY], c->v[P_POSITION],
+                   (unsigned)c->v[P_BG], (unsigned)c->v[P_COLOR], c->v[P_WIDTH], c->k[P_WIDTH], c->v[P_HEIGHT], c->k[P_HEIGHT], c->v[P_VISIB], c->v[P_OPACITY], c->v[P_FLOAT],
+                   c->v[P_OVX], c->v[P_OVY], c->v[P_ZINDEX], c->k[P_ZINDEX], c->v[P_FSIZE], css_len(c, P_MT, 1000), css_len(c, P_PT, 1000));
+            for (int pe = PE_BEFORE; pe <= PE_AFTER; pe++) {
+                struct cprops q;
+                if (css_compute(i, pe, c, &q)) printf("   ::%s display=%d position=%d content=\"%s\" bgimg=%d(%s) inset=%d,%d,%d,%d z=%d w=%d/%d h=%d/%d\n", pe == PE_BEFORE ? "before" : "after", q.v[P_DISPLAY], q.v[P_POSITION],
+                       css_str(q.v[P_CONTENT]), q.k[P_BGIMG], q.k[P_BGIMG] == K_STR || q.k[P_BGIMG] == K_GRAD ? css_str(q.v[P_BGIMG]) : "", css_len(&q, P_TOP, 100), css_len(&q, P_RIGHT, 100), css_len(&q, P_BOTTOM, 100), css_len(&q, P_LEFT, 100), q.v[P_ZINDEX], q.v[P_WIDTH], q.k[P_WIDTH], q.v[P_HEIGHT], q.k[P_HEIGHT]);
+            }
+            shown++;
+        }
+    }
+#ifdef CSS_STATS
+    { extern void css_stats_top(void); css_stats_top(); }
+#endif
     { extern void css_stats(void); css_stats(); }
     return 0;
 }

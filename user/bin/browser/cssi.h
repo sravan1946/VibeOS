@@ -27,6 +27,7 @@ void sel_mark(int *a, int *b, int *c);
 void sel_trunc(int a, int b, int c);
 int  sel_match(const struct sel *s, int node);
 int  sel_match_scoped(const struct sel *s, int node, int scope);
+int  sel_match_a(const struct sel *s, int node, int scope, const uint32_t *anc, const uint32_t *self);   /* anc/self: blooms of the node's ancestors / of itself (or NULL, NULL) */
 
 void sel_key(const struct sel *s, int *kind, uint32_t *h);   /* bucket: kind 1 id, 2 class, 3 tag, 0 any */
 void bloom_add(uint32_t *b, uint32_t h);

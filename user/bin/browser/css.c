@@ -67,7 +67,7 @@ struct decl { uint8_t prop, imp, kind; int v, a; };
 _Static_assert(P_N <= 250, "decl.prop is a byte and P_CUSTOM/P_RAWDECL live above the property ids; cascade masks hold 256 bits");
 #define P_CUSTOM 250                                    /* --name: raw value (a = name, v = value) */
 #define P_RAWDECL 251                                   /* longhand/shorthand whose value has var(): a = property name, v = value text */
-struct rule { int sel, d0, nd, order, next, scope; uint32_t kh; uint8_t layer, ua; };
+struct rule { int sel, d0, nd, order, next, scope; uint32_t kh; uint8_t layer, ua, bk; };   /* bk/kh: the bucket (1 id, 2 class, 3 tag, 0 any) and key hash the rule is chained under */
 static struct rule *R; static int nr, rcap;
 static struct decl *D; static int nd, dcap;
 #define HB 4096
@@ -1640,28 +1640,53 @@ static int sup_cond(const char **pp, const char *end) {
 }
 
 /* ---------- rules ---------- */
-static void rebucket(int i) {
-    int kind, *head;
-    uint32_t h;
-    sel_key(&SE[R[i].sel], &kind, &h);
-    if (SE[R[i].sel].kind) { kind = 0; h = 0; }          /* :host / ::slotted rules don't match the element their last compound names */
-    head = kind == 1 ? &hid[h & (HB - 1)] : kind == 2 ? &hcl[h & (HB - 1)] : kind == 3 ? &htg[h & (HB - 1)] : &huni;
-    R[i].next = *head; R[i].kh = h;
+static void link_rule(int i, int kind, uint32_t h) {
+    int *head = kind == 1 ? &hid[h & (HB - 1)] : kind == 2 ? &hcl[h & (HB - 1)] : kind == 3 ? &htg[h & (HB - 1)] : &huni;
+    R[i].next = *head; R[i].kh = h; R[i].bk = kind;
     *head = i + 1;
 }
+static void rebucket(int i) { link_rule(i, R[i].bk, R[i].kh); }      /* after a soft reset: same bucket as before */
 
-static void add_rule(const struct sel *s, int d0, int ndl) {
+/* a subject that is just :is(.a, .b, tag...) is indexed under each alternative's key instead of the "any element" list (Tailwind/Codex are full of these) */
+static int alt_keys(const struct sel *s, int *kinds, uint32_t *hs, int max) {
+    const struct comp *c = &CO[s->c0 + s->nc - 1];
+    if (c->ns != 1 || SI[c->s0].t != T_IS || SI[c->s0].b > max) return 0;
+    const struct simple *x = &SI[c->s0];
+    for (int i = 0; i < x->b; i++) {
+        const struct sel *q = &SE[x->a + i];
+        sel_key(q, &kinds[i], &hs[i]);
+        if (!kinds[i] || q->pe || q->kind) return 0;
+    }
+    return x->b;
+}
+
+static int rule_slot(void) {
     if (nr == rcap) {
         int nc = rcap ? rcap * 2 : 512;
         struct rule *p = realloc(R, nc * sizeof *p);
-        if (!p) return;
+        if (!p) return 0;
         R = p; rcap = nc;
     }
+    return 1;
+}
+
+static void add_rule(const struct sel *s, int d0, int ndl) {
+    if (!rule_slot()) return;
     int si = sel_push(s);
     if (si < 0) return;
     R[nr] = (struct rule){ .sel = si, .d0 = d0, .nd = ndl, .order = order_n++, .scope = cur_scope, .layer = (uint8_t)(s->kind ? 0 : cur_layer), .ua = (uint8_t)cur_ua };   /* shadow-tree rules about the host / slotted nodes lose to the outer document */
-    rebucket(nr);
-    nr++;
+    int kind, ak[8];
+    uint32_t h, ah[8];
+    sel_key(&SE[si], &kind, &h);
+    if (SE[si].kind) { kind = 0; h = 0; }                /* :host / ::slotted rules don't match the element their last compound names */
+    int na = kind ? 0 : alt_keys(&SE[si], ak, ah, 8);
+    if (!na) { link_rule(nr++, kind, h); return; }
+    struct rule base = R[nr];
+    for (int j = 0; j < na; j++) {
+        if (j && !rule_slot()) return;
+        R[nr] = base;
+        link_rule(nr++, ak[j], ah[j]);
+    }
 }
 
 static int layer_rank(const char *name, int n) {
@@ -1816,6 +1841,7 @@ static void sheet(const char *s, size_t m, const char *base, int depth) {
         while (i < m && (qt || br || s[i] != '{')) {
             if (qt) { if (s[i] == '\\') i++; else if (s[i] == qt) qt = 0; }
             else if (s[i] == '"' || s[i] == '\'') qt = s[i];
+            else if (s[i] == '\\') i++;                      /* an escaped bracket (Tailwind: .w-\[3px\]) isn't one */
             else if (s[i] == '[' || s[i] == '(') br++;
             else if ((s[i] == ']' || s[i] == ')') && br) br--;
             else if (s[i] == ';' && !br) { ps = i + 1; }      /* junk statement before a rule: restart the prelude after it */
@@ -1838,6 +1864,7 @@ static void sheet(const char *s, size_t m, const char *base, int depth) {
             while (b < pe && (q2 || dp || s[b] != ',')) {
                 if (q2) { if (s[b] == '\\') b++; else if (s[b] == q2) q2 = 0; }
                 else if (s[b] == '"' || s[b] == '\'') q2 = s[b];
+                else if (s[b] == '\\') b++;
                 else if (s[b] == '[' || s[b] == '(') dp++;
                 else if ((s[b] == ']' || s[b] == ')') && dp) dp--;
                 b++;
@@ -2087,7 +2114,13 @@ static int try_chain(int head, uint32_t kh, int node, int pe, const uint32_t *an
         if (s->pe != pe) continue;
         if (anc && !bloom_has(anc, s->mask)) continue;
         if (!bloom_has(self_bloom, s->rmask)) continue;
-        if (!(ru->scope ? sel_match_scoped(s, node, ru->scope) : sel_match(s, node))) continue;
+#ifdef CSS_STATS
+        { extern int *rule_cand; rule_cand[r - 1]++; }
+#endif
+        if (!sel_match_a(s, node, ru->scope, anc, anc ? self_bloom : 0)) continue;
+#ifdef CSS_STATS
+        { extern int *rule_cand; rule_cand[r - 1] += 1000000; }
+#endif
         H[nh].key = (uint64_t)ru->layer << 52 | (uint64_t)s->spec << 22 | (uint32_t)(ru->order & 0x3FFFFF);
         H[nh++].rule = r - 1;
     }
@@ -2643,6 +2676,7 @@ static int match_list_str(const char *sel, int node) {
         while (b < len && (q || dp || sel[b] != ',')) {
             if (q) { if (sel[b] == '\\') b++; else if (sel[b] == q) q = 0; }
             else if (sel[b] == '"' || sel[b] == '\'') q = sel[b];
+            else if (sel[b] == '\\') b++;
             else if (sel[b] == '(' || sel[b] == '[') dp++;
             else if ((sel[b] == ')' || sel[b] == ']') && dp) dp--;
             b++;
@@ -2670,4 +2704,26 @@ void css_stats(void) {          /* bench aid (tools/csstest/wpbench): rule bucke
     for (int r = huni; r; r = R[r - 1].next) u++;
     for (int i = 0; i < HB; i++) { int c = 0; for (int r = htg[i]; r; r = R[r - 1].next) c++; t += c; if (c > mx) mx = c; }
     fprintf(stderr, "rules %d universal %d tag-bucketed %d (longest chain %d)\n", nr, u, t, mx);
+    if (getenv("UNI")) for (int r = huni, n = 0; r && n < 40; r = R[r - 1].next, n++) {
+        const struct sel *q = &SE[R[r - 1].sel];
+        fprintf(stderr, "  uni: nc=%d kind=%d pe=%d:", q->nc, q->kind, q->pe);
+        for (int c = 0; c < q->nc; c++) { fprintf(stderr, " ["); for (int k = 0; k < CO[q->c0 + c].ns; k++) { const struct simple *x = &SI[CO[q->c0 + c].s0 + k]; fprintf(stderr, "%d:%s ", x->t, x->t <= T_ATTR ? STR(x->a) : ""); } fprintf(stderr, "]%c", CO[q->c0 + c].comb ? CO[q->c0 + c].comb : ' '); }
+        fprintf(stderr, "\n");
+    }
 }
+
+#ifdef CSS_STATS
+int *rule_cand;
+void css_stats_alloc(void) { rule_cand = calloc(nr + 1, sizeof(int)); }
+void css_stats_top(void) {
+    for (int k = 0; k < 12; k++) {
+        int best = -1, bi = 0;
+        for (int i = 0; i < nr; i++) { int c = rule_cand[i] % 1000000, ok = rule_cand[i] / 1000000, fail = c - ok; if (fail > best) { best = fail; bi = i; } }
+        const struct sel *q = &SE[R[bi].sel];
+        fprintf(stderr, "failed %d (matched %d): nc=%d kind=%d pe=%d:", best, rule_cand[bi] / 1000000, q->nc, q->kind, q->pe);
+        for (int c = 0; c < q->nc; c++) { fprintf(stderr, " ["); for (int j = 0; j < CO[q->c0 + c].ns; j++) { const struct simple *x = &SI[CO[q->c0 + c].s0 + j]; fprintf(stderr, "%d:%s ", x->t, x->t <= T_ATTR ? STR(x->a) : ""); } fprintf(stderr, "]%c", CO[q->c0 + c].comb ? CO[q->c0 + c].comb : ' '); }
+        fprintf(stderr, "\n");
+        rule_cand[bi] = 0;
+    }
+}
+#endif

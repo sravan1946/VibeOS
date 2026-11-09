@@ -106,6 +106,7 @@ static int parse_list(const char *s, int n, int rel, int *first) {
         while (b < n && (q || d || s[b] != ',')) {
             if (q) { if (s[b] == '\\') b++; else if (s[b] == q) q = 0; }
             else if (s[b] == '"' || s[b] == '\'') q = s[b];
+            else if (s[b] == '\\') b++;
             else if (s[b] == '(' || s[b] == '[') d++;
             else if ((s[b] == ')' || s[b] == ']') && d) d--;
             b++;
@@ -543,8 +544,12 @@ static int match_pc(int pc, const struct simple *x, int n) {
 static int match_chain(const struct sel *s, int ci, int n);
 static int msc;                                          /* shadow scope of the rule being matched */
 
+static const uint32_t *sanc, *sself;     /* the subject's ancestor bloom, while its own compound is being matched: lets :is(.dark *) skip a walk up the tree */
 static int match_list(int first, int cnt, int n) {
-    for (int i = 0; i < cnt; i++) if (match_chain(&SE[first + i], SE[first + i].nc - 1, n)) return 1;
+    for (int i = 0; i < cnt; i++) {
+        if (sanc && (!bloom_has(sanc, SE[first + i].mask) || !bloom_has(sself, SE[first + i].rmask))) continue;
+        if (match_chain(&SE[first + i], SE[first + i].nc - 1, n)) return 1;
+    }
     return 0;
 }
 
@@ -608,9 +613,18 @@ static int comp_is_host(const struct comp *c) {
     return 0;
 }
 
+static int match_chain_i(const struct sel *s, int ci, int n);
 static int match_chain(const struct sel *s, int ci, int n) {
+    const uint32_t *save = sanc;
+    if (ci != s->nc - 1) sanc = 0;                       /* only the subject's own compound has the known ancestors */
+    int r = match_chain_i(s, ci, n);
+    sanc = save;
+    return r;
+}
+static int match_chain_i(const struct sel *s, int ci, int n) {
     const struct comp *c = &CO[s->c0 + ci];
     if (!match_comp(c, n)) return 0;
+    sanc = 0;
     if (!ci) return 1;
     int p;
     switch (c->comb) {
@@ -624,8 +638,9 @@ static int match_chain(const struct sel *s, int ci, int n) {
     return 0;
 }
 
-int sel_match(const struct sel *s, int node) { msc = 0; return match_chain(s, s->nc - 1, node); }
-int sel_match_scoped(const struct sel *s, int node, int scope) { msc = scope; int r = match_chain(s, s->nc - 1, node); msc = 0; return r; }
+int sel_match_a(const struct sel *s, int node, int scope, const uint32_t *anc, const uint32_t *self) { msc = scope; sanc = anc; sself = self; int r = match_chain(s, s->nc - 1, node); msc = 0; sanc = 0; return r; }
+int sel_match(const struct sel *s, int node) { return sel_match_a(s, node, 0, 0, 0); }
+int sel_match_scoped(const struct sel *s, int node, int scope) { return sel_match_a(s, node, scope, 0, 0); }
 
 void sel_key(const struct sel *s, int *kind, uint32_t *h) {
     const struct comp *c = &CO[s->c0 + s->nc - 1];
