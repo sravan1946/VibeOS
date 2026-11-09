@@ -1170,6 +1170,7 @@ static void lay_grid(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
     int cwid[GMAXC], fixed = 0, frsum = 0, gaps = b->gapc * (nc - 1);
     for (int i = 0; i < nc; i++) {
         cwid[i] = 0;
+        if (ct[i].kind == 3 && ct[i].mn >= 0) { ct[i].kind = 0; ct[i].v = pctof(ct[i].v, cw); }   /* minmax(0, 25%): a range, grows to 25% only if there's room */
         if (ct[i].kind == 0) cwid[i] = ct[i].v;
         else if (ct[i].kind == 3) cwid[i] = pctof(ct[i].v, cw);
         else if (ct[i].kind == 2) {
@@ -2258,7 +2259,7 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     ni->ws = cp->v[P_WS] == WS_BREAK_SPACES ? 3 : cp->v[P_WS];
     ni->flags = in->flags | ((cp->v[P_DECO] & DECO_UNDERLINE) ? FL_UL : 0) | ((cp->v[P_DECO] & DECO_LINETHROUGH) ? FL_STRIKE : 0);
     ni->nul = 1;
-    ni->vis = cp->v[P_VISIB] != 0;
+    ni->vis = cp->v[P_VISIB] != 0 || cp->v[P_CLIP];
     ni->nomark = cp->v[P_LISTT] == LT_NONE;
     int va = cp->v[P_VALIGN];
     ni->valign = va == VA_SUPER ? VA_SUPER : va == VA_SUB ? VA_SUB : in->valign;

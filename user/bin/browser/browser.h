@@ -102,7 +102,8 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
        P_CRESET, P_CINC,                                               /* counter-reset / counter-increment: K_STR "name N name N" (K_NONE = none); see css_cnt_* */
        P_OBJPX, P_OBJPY, P_TRX, P_TRY, P_MASKIMG,
        P_BG2IMG, P_BG2REP, P_BG2PX, P_BG2PY, P_BG2SW, P_BG2SH,       /* second background layer (painted UNDER the P_BGIMG one, over the colour): same encoding as P_BGIMG..P_BGSH */
-       P_TRSX, P_TRSY, P_TRROT,                                      /* transform scale (x1000, 1000 = none) and rotate (tenths of a degree); LAYOUT may ignore */
+       P_TRSX, P_TRSY, P_TRROT, P_CLIP,   /* P_CLIP: clip: rect(0 0 0 0) (the sr-only trick) = 1: nothing painted */
+                                            /* transform scale (x1000, 1000 = none) and rotate (tenths of a degree); LAYOUT may ignore */
        P_N };
 /* value kinds. K_PX also carries every keyword/enum/colour (value in v). Lengths: K_PX px, K_PCT percent*100, K_CALC compiled
  * calc()/min()/max()/clamp() with a percentage inside (resolve with css_len()). Never read p->v of a length directly: css_len(). */
