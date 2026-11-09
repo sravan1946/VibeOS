@@ -686,7 +686,9 @@ class HTMLElement extends Element {
     }
 }
 class HTMLUnknownElement extends HTMLElement {}
-class SVGElement extends Element { get ownerSVGElement() { return null; } get viewportElement() { return null; } get className() { return { baseVal: this.getAttribute('class') || '', animVal: this.getAttribute('class') || '' }; } }
+class SVGElement extends Element { get ownerSVGElement() { return null; } get viewportElement() { return null; } get className() { const e = this; return new SVGAnimatedString(() => e.getAttribute('class') || '', v => e.setAttribute('class', v)); } }
+class SVGAnimatedString { constructor(g, s) { this.__g = g; this.__s = s; } get baseVal() { return this.__g(); } set baseVal(v) { this.__s(String(v)); } get animVal() { return this.__g(); } }
+g.SVGAnimatedString = SVGAnimatedString;
 reflect(Element, { accessKey: 'accesskey', ariaLabel: 'aria-label', role: 'role' });
 reflect(HTMLElement, { accessKey: 'accesskey', translate: 'translate', draggable: 'draggable', inputMode: 'inputmode', enterKeyHint: 'enterkeyhint', nonce: 'nonce' });
 V.nameOf = ctor => { for (const [n, c] of CE) if (c === ctor) return n; throw new TypeError('Illegal constructor'); };
@@ -731,7 +733,7 @@ const HTMLDialogElement = defcls('HTMLDialogElement', HTMLElement, ['dialog']);
 const HTMLDetailsElement = defcls('HTMLDetailsElement', HTMLElement, ['details']);
 for (const t of ['svg', 'path', 'g', 'circle', 'rect', 'line', 'polyline', 'polygon', 'ellipse', 'text', 'tspan', 'use', 'defs', 'symbol', 'clippath', 'lineargradient', 'radialgradient', 'stop', 'mask', 'image', 'foreignobject'])
     TAGS[t] = SVGElement;
-g.SVGSVGElement = SVGElement;
+g.SVGSVGElement = SVGElement; g.SVGGraphicsElement = SVGElement; g.SVGGeometryElement = SVGElement; g.SVGPathElement = SVGElement; g.SVGUseElement = SVGElement; g.SVGAElement = SVGElement; g.SVGTextContentElement = SVGElement;
 
 reflect(HTMLAnchorElement, { target: 'target', rel: 'rel', download: 'download', hreflang: 'hreflang', type: 'type', referrerPolicy: 'referrerpolicy', ping: 'ping' }, 0, 0, { href: 'href' });
 for (const [p, f] of [['protocol', 'protocol'], ['host', 'host'], ['hostname', 'hostname'], ['port', 'port'], ['pathname', 'pathname'], ['search', 'search'], ['hash', 'hash'], ['origin', 'origin'], ['username', 'username'], ['password', 'password']])
