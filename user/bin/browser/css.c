@@ -821,7 +821,8 @@ static int classify_family(const char *list) {     /* FAM_*, or -1 when no liste
             char *s = b;
             while (isspace((unsigned char)*s) || *s == '"' || *s == '\'') s++;
             int c = -1;
-            if (strstr(s, "mono") || strstr(s, "courier") || strstr(s, "consolas") || strstr(s, "menlo") || strstr(s, "monaco") || strstr(s, "lucida console") ||
+            if (strstr(s, "material icons") || strstr(s, "material symbols") || strstr(s, "fontawesome") || strstr(s, "font awesome") || strstr(s, "glyphicons") || strstr(s, "icomoon") || strstr(s, "bootstrap-icons") || strstr(s, "ionicons") || strstr(s, "octicons")) c = FAM_ICON;
+            else if (strstr(s, "mono") || strstr(s, "courier") || strstr(s, "consolas") || strstr(s, "menlo") || strstr(s, "monaco") || strstr(s, "lucida console") ||
                 strstr(s, "fira code") || strstr(s, "source code") || strstr(s, "cascadia") || strstr(s, "jetbrains") || strstr(s, "inconsolata") || strstr(s, "terminal")) c = FAM_MONO;
             else if (strstr(s, "sans") || !strncmp(s, "arial", 5) || strstr(s, "helvetica") || strstr(s, "verdana") || strstr(s, "tahoma") || strstr(s, "segoe") ||
                      strstr(s, "system-ui") || strstr(s, "-apple-system") || strstr(s, "blinkmacsystemfont") || strstr(s, "roboto") || !strncmp(s, "inter", 5) ||

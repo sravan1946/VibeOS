@@ -1990,7 +1990,7 @@ static void paint_box(int bi, int ox, int oy) {
 static color_t col_em, col_dim;
 static int nord, curform_;
 
-struct inh { uint8_t tt, font, flags, nul, ws, align, nomark, vis, valign; color_t col; int link, lh, node; };
+struct inh { uint8_t tt, font, flags, nul, ws, align, nomark, vis, valign, icon; color_t col; int link, lh, node; };
 struct bctx { int incenter, cb, curform, tpad, tborder, tcollapse, nested, js; int *cnt; uint8_t tva; };
 static struct el E[128];
 static int nel;
@@ -2267,6 +2267,7 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     ni->flags = in->flags | ((cp->v[P_DECO] & DECO_UNDERLINE) ? FL_UL : 0) | ((cp->v[P_DECO] & DECO_LINETHROUGH) ? FL_STRIKE : 0);
     ni->nul = 1;
     ni->vis = cp->v[P_VISIB] != 0 || cp->v[P_CLIP];
+    ni->icon = cp->v[P_FAMILY] == FAM_ICON;
     ni->nomark = cp->v[P_LISTT] == LT_NONE;
     int va = cp->v[P_VALIGN];
     ni->valign = va == VA_SUPER ? VA_SUPER : va == VA_SUB ? VA_SUB : in->valign;
@@ -2487,6 +2488,7 @@ static void build_children(int dn, int pb, const struct inh *in, struct bctx *cx
 static int root_box = -1, is_js;
 
 static int mk_text(int pb, uint32_t off, int n, const struct inh *in) {
+    if (in->icon) return -1;                                    /* icon-font text (Material ligature names, private-use glyphs): nothing to show */
     int t = bx_new();
     if (t < 0) return -1;
     struct bx *x = &B[t];
