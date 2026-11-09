@@ -529,7 +529,9 @@ char *js_html(size_t *n) {
 }
 
 static int clone(int id, int deep) {
-    int c = new_node(N[id].type, N[id].tag);
+    char tag[sizeof N[0].tag];                             /* new_node may realloc N: don't pass a pointer into it */
+    strlcpy(tag, N[id].tag, sizeof tag);
+    int c = new_node(N[id].type, N[id].type == 1 ? tag : 0);
     if (!c) return 0;
     struct node *x = &N[id];
     if (x->text) N[c].text = sdup(x->text);
