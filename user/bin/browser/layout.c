@@ -257,6 +257,7 @@ static void inl_walk(struct iw *w, int p) {
 
 /* ---------- intrinsic widths ---------- */
 static void intr(struct bx *b, int *mn, int *mx);
+static void grid_intr(struct bx *b, int *mn, int *mx);
 static void tab_intr(struct bx *b, int *mn, int *mx);
 
 static void outer_intr(struct bx *c, int *mn, int *mx) {     /* margin box of a child: min/max-content */
@@ -310,6 +311,7 @@ static void intr(struct bx *b, int *mn, int *mx) {
     switch (b->inner) {
     case IN_IMG: case IN_CTL: a = z = b->iw; break;
     case IN_TABLE: tab_intr(b, &a, &z); break;
+    case IN_GRID: grid_intr(b, &a, &z); break;
     case IN_FLEX: {
         int row = !(b->fdir & 2), n = 0;
         for (int c = b->first; c >= 0; c = B[c].next) {
@@ -1076,6 +1078,26 @@ static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) 
         s = e;
     }
     return n;
+}
+
+/* shrink-to-fit width of a grid: items fall into the explicit columns in order; px tracks keep their size, the others take their widest item (ponytail: ignores spans and explicit placement) */
+static void grid_intr(struct bx *b, int *mn, int *mx) {
+    struct trk ct[GMAXC];
+    int nc = parse_tracks(b->gcols ? css_str(b->gcols - 1) : 0, ct, GMAXC, 0, b->gapc), i = 0, a = 0, z = 0;
+    int cmn[GMAXC] = { 0 }, cmx[GMAXC] = { 0 };
+    if (nc < 1) nc = 1;
+    for (int c = b->first; c >= 0; c = B[c].next) {
+        if (oof(&B[c])) continue;
+        int x, y, q = i++ % nc;
+        outer_intr(&B[c], &x, &y);
+        if (x > cmn[q]) cmn[q] = x;
+        if (y > cmx[q]) cmx[q] = y;
+    }
+    for (int q = 0; q < nc && q < GMAXC; q++) {
+        if (b->gcols && q < nc && ct[q].kind == 0) { a += ct[q].v; z += ct[q].v; } else { a += cmn[q]; z += cmx[q]; }
+    }
+    a += b->gapc * (nc - 1); z += b->gapc * (nc - 1);
+    *mn = a; *mx = z;
 }
 
 static int line_of(uint8_t k, int v, int nlines) {             /* 1-based line from a K_PX line number (negative counts from the end); 0 = auto */

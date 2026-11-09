@@ -30,4 +30,6 @@ body { margin: 8px; font-family: sans-serif; font-size: 14px; }
 <div class="t" style="width:200px"><div style="float:right;width:120px;height:40px;background:#ccc"></div>one two three four five six seven eight hardware,<sup style="white-space:nowrap"><a href="#">[2][3]</a></sup> after</div>
 <!-- grid: named lines ([x-start]/[x-end]) place items via grid-column: x / grid-row: x / grid-area: x -->
 <div class="t" style="display:grid;gap:10px;grid-template-columns:[l] 0px [content-start] repeat(3,minmax(0,1fr)) [content-end] 0px;grid-template-rows:[head-start] auto [head-end body-start] auto [body-end]"><div style="grid-column:content;grid-row:head">wide head</div><div style="grid-area:body">b</div></div>
+<!-- a floated / shrink-to-fit grid is as wide as its columns together (icon + LIVE label), not its widest item -->
+<div class="t"><div style="float:left;display:grid;grid-template-columns:auto auto;gap:3px"><i style="width:20px;height:20px;display:block"></i><span>LIVE</span></div><b>headline text</b></div>
 </body></html>
