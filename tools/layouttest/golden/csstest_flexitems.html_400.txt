@@ -1,4 +1,4 @@
-? o1 i0 p0 f0 [0,0 400x110]  fr0@0,0
+? o1 i0 p0 f0 [0,0 400x328]  fr0@0,0
   div.flex o1 i2 p0 f0 [0,0 400x22]  fr0@0,0
     a o1 i0 p0 f0 [0,0 34x22]  fr1@0,0
       #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
@@ -28,3 +28,14 @@
     #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
     #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
     #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+  (anon) o1 i0 p0 f0 [0,110 400x88]  fr4@0,110
+    #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+  ul o1 i0 p0 f0 [0,214 400x22]  fr0@0,0
+    li o1 i0 p0 f0 [40,214 360x22]  fr1@40,214
+      #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+  ul o1 i0 p0 f0 [0,252 400x22]  fr0@0,0
+    li o1 i0 p0 f0 [40,252 360x22]  fr1@40,252
+      #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+  ul o1 i0 p0 f0 [0,290 400x22]  fr0@0,0
+    li o1 i0 p0 f0 [40,290 360x22]  fr1@40,290
+      #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0

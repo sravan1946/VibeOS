@@ -376,9 +376,9 @@ int hd_parse(const char *src, size_t n, const char *base, struct doc *d) {
         }
         tb[tl] = 0;
         i = j < n ? j + 1 : n;
-        char name[16];
+        char name[64];                                        /* custom elements have long names (devsite-language-selector) */
         int nl = 0;
-        while (nl < 15 && tb[nl] && !isspace((unsigned char)tb[nl]) && tb[nl] != '/') { name[nl] = tolower((unsigned char)tb[nl]); nl++; }
+        while (nl < 63 && tb[nl] && !isspace((unsigned char)tb[nl]) && tb[nl] != '/') { name[nl] = tolower((unsigned char)tb[nl]); nl++; }
         name[nl] = 0;
         if (closing) {
             if (!strcmp(name, "br")) strcpy(name, "br"), closing = 0;
