@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <design.h>
 
 /* form.c: swap its field-state table with a frame's */
 void fs_swap(struct fstate **pf, int *pn);
@@ -49,6 +50,8 @@ void frame_relayout(struct frame *f) {
     js_use(was);
 }
 
+static void sel_draw(struct canvas *c, struct frame *f, int ox, int oy);
+static void submit_in(struct frame *f, int form, int btn);
 void frames_dirty(void) { for (int i = 0, n = js_nframes(); i < n; i++) js_frame_nth(i)->redo = 1; }
 
 void frame_paint(struct canvas *c, const struct doc *d, const struct item *it, int x, int y) {
@@ -61,6 +64,7 @@ void frame_paint(struct canvas *c, const struct doc *d, const struct item *it, i
     if (!f->ready) { gfx_fill(c, x, y, w, h, RGB(0xFF, 0xFF, 0xFF)); return; }
     int own = enter(f);
     doc_draw_c(c, &f->doc, x, y, w, h, f->sy, f->hover, 0, f->focus ? f->fo : -1, f->caret);
+    if (f->selp) sel_draw(c, f, x, y);
     leave(f, own);
     int ph = f->doc.height - 24;
     if (ph > h) {                                         /* a slim scroll thumb */
@@ -83,7 +87,9 @@ void frames_pump(void) {
         const char *n = js_nav();
         nav[0] = 0;
         if (n) strlcpy(nav, n, sizeof nav);
-        js_scroll_req(); js_anchor_req(); js_url_change(); js_submit_req();
+        js_scroll_req(); js_anchor_req(); js_url_change();
+        int sf = js_submit_req();                           /* form.submit() in the frame */
+        for (int i = 0; sf && i < f->doc.nfm; i++) if (f->doc.fm[i].node == sf) { submit_in(f, i, -1); break; }
         int fr = js_focus_req();
         if (fr) for (int i = 0; i < f->doc.nct; i++) if (f->doc.ct[i].node == fr) { f->fo = f->doc.ct[i].ord; f->caret = f->doc.ct[i].kind == C_TEXT ? 0 : 0; }
         char *al = js_alert();
@@ -92,6 +98,36 @@ void frames_pump(void) {
         if (d) f->redo = 1;
         if (nav[0] && !js_frame_is_worker(f)) js_frame_navigate(f, nav);
         if (f->redo && f->w > 0 && f->ready) frame_relayout(f);
+    }
+}
+
+/* ---------- an open <select>: its list over the frame ---------- */
+#define SELRH 20
+static int sel_geom(struct frame *f, int *px, int *py, int *pw, int *rows) {      /* frame viewport coordinates; 0 = no list */
+    if (!f->selp || f->selp - 1 >= f->doc.nct) return 0;
+    const struct ctl *c = &f->doc.ct[f->selp - 1];
+    if (c->item < 0) return 0;
+    const struct item *it = &f->doc.it[c->item];
+    *rows = c->no < 8 ? c->no : 8;
+    *px = it->x; *pw = it->w < 100 ? 100 : it->w;
+    *py = it->y - f->sy + it->h;
+    if (*py + *rows * SELRH > f->h) *py = it->y - f->sy - *rows * SELRH;
+    return *rows > 0;
+}
+static void sel_draw(struct canvas *c, struct frame *f, int ox, int oy) {
+    int px, py, pw, rows;
+    if (!sel_geom(f, &px, &py, &pw, &rows)) return;
+    const struct ctl *t = &f->doc.ct[f->selp - 1];
+    struct fstate *fs = fs_get(&f->doc, f->selp - 1);
+    struct canvas cc = *c;
+    canvas_clip(&cc, ox, oy, f->w, f->h);
+    gfx_fill(&cc, ox + px, oy + py, pw, rows * SELRH, RGB(0xFF, 0xFF, 0xFF));
+    gfx_rect(&cc, ox + px, oy + py, pw, rows * SELRH, RGB(0x76, 0x76, 0x76));
+    for (int r = 0; r < rows; r++) {
+        int oi = f->sel_sc + r;
+        if (oi >= t->no) break;
+        if (oi == fs->sel) gfx_fill(&cc, ox + px + 1, oy + py + r * SELRH, pw - 2, SELRH, RGB(0xC8, 0xDC, 0xFF));
+        gfx_text(&cc, T_BODY, ox + px + 6, oy + py + r * SELRH + (SELRH - T_BODY->height) / 2, f->doc.txt + f->doc.op[t->o0 + oi].lab, RGB(0x1A, 0x1A, 0x22));
     }
 }
 
@@ -104,10 +140,12 @@ static int ctl_by_ord(struct frame *f, int ord) { for (int i = 0; i < f->doc.nct
 static void submit_in(struct frame *f, int form, int btn) {
     char url[URL_MAX], body[2048];
     if (form < 0 || js_event(f->doc.fm[form].node, "submit", 0, 0, 0)) return;
-    form_submit(&f->doc, form, btn, js_frame_url(f), url, sizeof url, body, sizeof body);
-    char u[URL_MAX];
+    int post = form_submit(&f->doc, form, btn, js_frame_url(f), url, sizeof url, body, sizeof body);
+    char u[URL_MAX], tg[64];
     strlcpy(u, url, sizeof u);
-    js_frame_navigate(f, u);
+    const char *t = js_form_target(f->doc.fm[form].node);
+    strlcpy(tg, t ? t : "", sizeof tg);
+    if (!js_goto_target(f, tg, u, post ? body : 0)) js_frame_navigate_post(f, u, post ? body : 0);
 }
 
 static void blur_in(struct frame *f) {                      /* focus leaves the frame's field */
@@ -140,6 +178,17 @@ static void point(struct frame *f, int dx, int dy, int ev) {
     } else if (ev == 2) js_event(node, "mouseup", 0, x, y);
     else {
         kfocus = f; f->focus = 1;
+        if (f->selp) {                                       /* a click while a list is open: pick a row, or just close it */
+            int sx, sy, sw, rows;
+            if (sel_geom(f, &sx, &sy, &sw, &rows) && lx >= sx && lx < sx + sw && ly >= sy && ly < sy + rows * SELRH) {
+                int oi = f->sel_sc + (ly - sy) / SELRH, sci = f->selp - 1;
+                fs_get(&f->doc, sci)->sel = oi;
+                js_event(f->doc.ct[sci].node, "input", 0, 0, 0); js_event(f->doc.ct[sci].node, "change", 0, 0, 0);
+            }
+            f->selp = 0;
+            leave(f, own);
+            return;
+        }
         blur_in(f);
         js_event(node, "mousedown", 0, x, y);
         if (ci >= 0) {
@@ -149,6 +198,8 @@ static void point(struct frame *f, int dx, int dy, int ev) {
                 f->fo = c->ord; f->caret = ctl_caret_at(&f->doc, ci, x - it->x, y - it->y); fs_get(&f->doc, ci)->anc1 = f->caret + 1;
                 js_event(node, "click", 0, x, y);
                 js_event(node, "focus", 0, 0, 0); js_event(node, "focusin", 0, 0, 0);
+            } else if (c->kind == C_SELECT) {
+                if (!js_event(node, "click", 0, x, y)) { f->selp = ci + 1; f->sel_sc = fs_get(&f->doc, ci)->sel - 3 < 0 ? 0 : fs_get(&f->doc, ci)->sel - 3; }
             } else if (c->kind == C_BTN) {
                 if (!js_event(node, "click", 0, x, y)) { if (c->sub == 1) submit_in(f, c->form, ci); else if (c->sub == 2) form_reset(&f->doc, c->form); }
             } else if (c->kind == C_CHECK || c->kind == C_RADIO) {
@@ -160,10 +211,12 @@ static void point(struct frame *f, int dx, int dy, int ev) {
             }
         } else if (hv >= 0) {
             if (!js_event(node, "click", 0, x, y)) {
-                char u[URL_MAX];
+                char u[URL_MAX], tg[64];
                 url_resolve(js_frame_url(f), f->doc.link[hv], u, sizeof u);
+                const char *t = js_link_target(node);
+                strlcpy(tg, t ? t : "", sizeof tg);
                 leave(f, own);
-                js_frame_navigate(f, u);
+                if (!js_goto_target(f, tg, u, 0)) js_frame_navigate(f, u);
                 return;
             }
         } else js_event(node, "click", 0, x, y);
@@ -238,6 +291,17 @@ void frame_key(const struct gui_event *k) {
     int own = enter(f);
     int ci = f->fo >= 0 ? ctl_by_ord(f, f->fo) : -1, node = ci >= 0 ? f->doc.ct[ci].node : 0;
     int shift = k->mods & MOD_SHIFT;
+    if (f->selp) {                                           /* keys for the open list */
+        int sci = f->selp - 1;
+        struct fstate *fs = fs_get(&f->doc, sci);
+        if (k->key == KEY_DOWN && fs->sel < f->doc.ct[sci].no - 1) fs->sel++;
+        else if (k->key == KEY_UP && fs->sel > 0) fs->sel--;
+        else if (k->key == KEY_ENTER || k->key == ' ') { js_event(f->doc.ct[sci].node, "input", 0, 0, 0); js_event(f->doc.ct[sci].node, "change", 0, 0, 0); f->selp = 0; }
+        else if (k->key == KEY_ESC) f->selp = 0;
+        if (f->selp) { if (fs->sel < f->sel_sc) f->sel_sc = fs->sel; if (fs->sel >= f->sel_sc + 8) f->sel_sc = fs->sel - 7; }
+        leave(f, own);
+        return;
+    }
     if (js_event(node, "keydown", k, 0, 0)) { leave(f, own); return; }
     if (ci >= 0) {
         struct fstate *fs = fs_get(&f->doc, ci);

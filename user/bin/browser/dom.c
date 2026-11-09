@@ -591,6 +591,7 @@ static void js_copy(int j, int par, struct doc *d, int depth) {
 
 int hd_from_js(struct doc *d, const char *base) {
     hd_free();
+    js_css_owner();
     cur_base = base; cur_doc = d;
     node_new(-1, 9, 0, pool_add("#root", 5), 0);
     HD.js = 1;

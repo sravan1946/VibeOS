@@ -11,7 +11,7 @@ var clicks = 0;
 document.getElementById('btn').addEventListener('click', function () {
   clicks++;
   document.getElementById('n').textContent = clicks;
-  parent.postMessage({ type: 'clicked', n: clicks }, '*');
+  parent.postMessage({ type: 'clicked', n: clicks, value: document.getElementById('txt').value }, '*');
 });
 window.addEventListener('message', function (e) {
   console.log('child got ' + e.data + ' from ' + e.origin);

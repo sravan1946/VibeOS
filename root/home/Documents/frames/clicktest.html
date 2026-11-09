@@ -8,7 +8,7 @@
 <script>
 window.addEventListener('message', function (e) {
   if (e.data && e.data.type === 'clicked') {
-    document.getElementById('m').textContent = 'clicked ' + e.data.n + ' times, value="' + document.getElementById('f').contentDocument.getElementById('txt').value + '"';
+    document.getElementById('m').textContent = 'clicked ' + e.data.n + ' times, value="' + e.data.value + '"';
     console.log('clicktest: ' + document.getElementById('m').textContent);
   }
 });

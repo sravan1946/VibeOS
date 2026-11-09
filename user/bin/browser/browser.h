@@ -335,6 +335,8 @@ void js_reset(void);                              /* leave the page */
 /* dispatch `type` (bubbling) at node (0 = window); k: key event or NULL. Returns 1 if a handler called preventDefault */
 int  js_event(int node, const char *type, const struct gui_event *k, int x, int y);
 int  js_active(void);
+int  js_fid(void);                                /* the context (0 = page, else a frame) the current layout belongs to: canvas image keys */
+void js_css_owner(void);                          /* dom.c hd_from_js: the CSS rules now belong to the current context */
 int  js_hit(int x, int y, int hint);              /* the element a click at document point x,y landed on (empty boxes included); hint = the display item's node */
 const char *js_nav(void);                         /* location set by a script: navigate there (consumes it), or NULL */
 int  js_focus_req(void);                          /* element.focus() target (consumes it), or 0 */
@@ -373,6 +375,7 @@ struct frame {
     int lw, lh, redo, ready;           /* size laid out for; needs a layout; has been laid out */
     int fo, caret, cb;                /* focused control (ordinal), caret, control `change` base */
     int hover, pnode, pmx, pmy, pbtn, focus;          /* pointer state; focus: the frame holds keyboard focus */
+    int selp, sel_sc;                 /* an open <select> list: control index + 1 (0 = none), first row shown */
     int bx, by, in;                   /* its box in the parent's document (set when drawn); fs table is swapped in */
     void *st;                         /* js.c's state */
 };
@@ -384,6 +387,11 @@ struct frame *js_frame_nth(int i);
 struct frame *js_frame_find(const struct doc *pdoc, int node);   /* the frame of the <iframe> `node` in the document pdoc, or NULL */
 const char *js_frame_url(struct frame *f);
 void js_frame_navigate(struct frame *f, const char *url);
+void js_frame_navigate_post(struct frame *f, const char *url, const char *post);   /* post = form body (a POST) or NULL */
+int  js_goto_target(struct frame *from, const char *target, const char *url, const char *post);   /* link/form target=: 1 = handled, 0 = navigate the caller's own document */
+const char *js_open_url(void);                    /* a target=_blank (or unknown name) wants a new tab: its URL (consumed), or NULL */
+const char *js_link_target(int node);             /* current context: target of the link holding node (or <base target>) */
+const char *js_form_target(int node);
 int  js_frame_is_worker(struct frame *f);          /* a Web Worker's context (no document) */
 int  js_frame_sandbox(struct frame *f);           /* SB_* flags of its sandbox attribute (0 = none) */
 void frame_relayout(struct frame *f);             /* iframe.c: lay the frame's document out (js.c calls it when a script reads a size) */

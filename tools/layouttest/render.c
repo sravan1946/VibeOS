@@ -31,6 +31,8 @@ int img_svg_inline(const char *s, size_t n, long c) { return -1; }
 const char *img_url(int i) { return ""; }
 int doc_zoom = 100;
 int js_active(void) { return 0; }
+int js_fid(void) { return 0; }
+void js_css_owner(void) {}
 void frame_paint(struct canvas *c, const struct doc *d, const struct item *it, int x, int y) {}
 void js_set_rect(int n, int x, int y, int w, int h) {}
 int dom_first(int n) { return 0; }
