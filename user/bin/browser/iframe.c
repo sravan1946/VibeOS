@@ -138,7 +138,7 @@ static struct frame *hovered;                               /* the frame the poi
 static int ctl_by_ord(struct frame *f, int ord) { for (int i = 0; i < f->doc.nct; i++) if (f->doc.ct[i].ord == ord) return i; return -1; }
 
 static void submit_in(struct frame *f, int form, int btn) {
-    char url[URL_MAX], body[2048];
+    char url[URL_MAX], body[16384];
     if (form < 0 || js_event(f->doc.fm[form].node, "submit", 0, 0, 0)) return;
     int post = form_submit(&f->doc, form, btn, js_frame_url(f), url, sizeof url, body, sizeof body);
     char u[URL_MAX], tg[64];

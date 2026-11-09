@@ -14,7 +14,7 @@
 #include <sys/stat.h>
 
 #define MAXCK 300
-struct ck { char dom[80], path[128], name[64], val[1024]; char host, secure, httponly; long exp; };
+struct ck { char dom[80], path[128], name[64], val[2048]; char host, secure, httponly; long exp; };
 
 static void jar_path(char *o, int cap, const char *suffix) {
     const char *h = getenv("HOME");
@@ -62,7 +62,7 @@ static void jar_save(const struct ck *j, int n) {
     for (char *s = d + 1; (s = strchr(s, '/')); *s++ = '/') { *s = 0; mkdir(d, 0755); *s = '/'; }   /* mkdir -p of the parents */
     int fd = open(t, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (fd < 0) return;
-    char line[1400];
+    char line[2600];
     for (int i = 0; i < n; i++) {
         int l = snprintf(line, sizeof line, "%s\t%s%s%s\t%s\t%ld\t%s\t%s\n", j[i].dom, j[i].host ? "h" : "", j[i].secure ? "s" : "", j[i].httponly ? "o" : "",
                          j[i].path, j[i].exp, j[i].name, j[i].val);

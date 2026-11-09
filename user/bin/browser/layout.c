@@ -647,7 +647,7 @@ static void repl_size(struct bx *b, int cw, int *W, int *H) {
     if (b->k[L_MAXH] == K_PX && h > b->v[L_MAXH]) { w = h ? (int)((long long)w * b->v[L_MAXH] / h) : w; h = b->v[L_MAXH]; }
     if (b->k[L_MINW] != K_AUTO && w < rl(b, L_MINW, cw)) { int m = rl(b, L_MINW, cw); h = w ? (int)((long long)h * m / w) : h; w = m; }
     if (b->k[L_MINH] == K_PX && h < b->v[L_MINH]) h = b->v[L_MINH];
-    if (cw > 8 && w > cw) { if (b->inner == IN_IMG) h = (int)((long long)h * cw / w); w = cw; }
+    if (cw > 8 && w > cw && b->k[L_W] == K_AUTO) { if (b->inner == IN_IMG) h = (int)((long long)h * cw / w); w = cw; }   /* a natural size wider than its box shrinks to fit; an explicit width (reCAPTCHA tile sheets: width:300% in a clipped box) is honoured */
     *W = w < 1 ? 1 : w > 8192 ? 8192 : w;
     *H = h < 1 ? 1 : h > 8192 ? 8192 : h;
 }
@@ -2865,6 +2865,25 @@ static int build_ctl(int dn, int tag, struct bx *b, const struct bctx *cx, const
     return c.kind == C_HIDDEN ? -1 : ci;
 }
 
+/* a control under display:none is still part of its form (reCAPTCHA's hidden g-recaptcha-response textarea, filled by script, rides the POST):
+ * register the text-like ones as value-only controls with no box */
+static void hidden_ctls(int dn, const struct bctx *cx, const struct inh *in) {
+    if (DN(dn).type != 1) return;
+    int tag = DN(dn).tag;
+    if (tag == T_INPUT || tag == T_TEXTAREA) {
+        struct bx tmp;
+        struct inh hn = *in;
+        memset(&tmp, 0, sizeof tmp);
+        hn.node = HD.n[dn].js ? HD.n[dn].js : in->node;
+        int ci = build_ctl(dn, tag, &tmp, cx, &hn);
+        int k = D->nct - 1;
+        if (ci >= 0 && (D->ct[ci].kind == C_TEXT || D->ct[ci].kind == C_PASS || D->ct[ci].kind == C_AREA)) D->ct[ci].kind = C_HIDDEN;
+        else if (ci >= 0) D->nct = k;                       /* a button, checkbox, ...: not worth a hidden entry */
+        return;
+    }
+    for (int c = DN(dn).first; c >= 0; c = DN(c).next) hidden_ctls(c, cx, in);
+}
+
 /* ---------- build ---------- */
 static void build_children(int dn, int pb, const struct inh *in, struct bctx *cx);
 static int root_box = -1, is_js;
@@ -3085,7 +3104,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
 #endif
     if (!pe && HD.n[dn].js) ni.node = HD.n[dn].js;
     else if (!pe && (v = ATTR(dn, "data-vjs"))) ni.node = atoi(v);
-    if (disp == D_NONE) return;
+    if (disp == D_NONE) { if (cx->curform >= 0 && !pe) hidden_ctls(dn, cx, &ni); return; }
     if (tag == T_HTML || tag == T_BODY) {
         root_colors(&S, tag, dn, &ni);
         S.bg = 0;
@@ -3133,7 +3152,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
     if (tag == T_IMG || is_cv) { build_img(dn, pb, &S, &ni, is_cv ? (ni.node > 0 ? ni.node : -1) : 0); return; }
     if (tag == T_SVG) { build_svg(dn, pb, &S, &ni, cp); return; }
     int iconbtn = 0;                                          /* <button><svg/></button>: lay the children out as an inline-block instead of a text control */
-    if (tag == T_BUTTON && (has_icon(dn) || S.inner == IN_FLEX || S.inner == IN_GRID || has_elem(dn))) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
+    if (tag == T_BUTTON && (has_icon(dn) || S.inner == IN_FLEX || S.inner == IN_GRID || has_elem(dn) || S.bg || S.bgi || S.bw[0] | S.bw[1] | S.bw[2] | S.bw[3])) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
         const char *ty2 = ATTR(dn, "type");
         iconbtn = S.bg || S.bw[0] | S.bw[1] | S.bw[2] | S.bw[3] || !(ty2 && !strcasecmp(ty2, "submit"));
         if (iconbtn && S.inner == IN_INLINE) S.inner = IN_FLOW;

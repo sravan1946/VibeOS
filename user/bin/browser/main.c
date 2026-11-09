@@ -64,7 +64,7 @@ static bool loading;
 static int pend_push, pend_restore = -1, hops, layout_w;
 static int scroll, target;
 static uint32_t load_t0;
-static char post_body[2048];                 /* body for the next http fetch (form POST), consumed by start_fetch */
+static char post_body[16384];                 /* body for the next http fetch (form POST), consumed by start_fetch */
 static bool has_post, was_post;               /* was_post: the fetch in flight is a POST (a 307/308 redirect repeats it) */
 /* page interaction state */
 static int fo = -1, caret;                   /* focused control (ordinal) and caret byte offset */
