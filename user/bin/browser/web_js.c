@@ -454,13 +454,52 @@ g.__blobText = u => { const b = blobs.get(u); return b ? String(b.__s) : undefin
 def(g, { __cookieGet: () => d.cookieGet(), __cookieSet: s => d.cookieSet(s) });
 
 // ---------- observers, media ----------
+// IntersectionObserver against the real geometry: an entry on observe() and whenever a target crosses the viewport (or the root's box) or one of
+// the thresholds. Re-checked on scroll/resize and every 250 ms while anything is observed (layout changes have no event).
+const IOS = new Set();
+let ioTimer = 0;
+function ioCheckAll() { for (const io of [...IOS]) io.__check(); if (!IOS.size && ioTimer) { clearInterval(ioTimer); ioTimer = 0; } }
 class IntersectionObserver {
-    constructor(cb, o) { this.__cb = cb; this.root = o && o.root || null; this.rootMargin = o && o.rootMargin || '0px'; this.thresholds = [0]; this.__els = new Set(); }
-    observe(e) {
-        if (this.__els.has(e)) return; this.__els.add(e);
-        setTimeout(() => { if (!this.__els.has(e)) return; const r = e.getBoundingClientRect(); try { this.__cb([{ target: e, isIntersecting: true, intersectionRatio: 1, boundingClientRect: r, intersectionRect: r, rootBounds: null, time: performance.now() }], this); } catch (x) { report(x); } }, 0);
+    constructor(cb, o = {}) {
+        if (typeof cb !== 'function') throw new TypeError("Failed to construct 'IntersectionObserver': The callback provided as parameter 1 is not a function.");
+        this.__cb = cb; this.root = o.root || null; this.rootMargin = o.rootMargin || '0px';
+        const t = o.threshold === undefined ? [0] : [].concat(o.threshold); this.thresholds = t.map(Number).sort((a, b) => a - b);
+        const m = String(this.rootMargin).trim().split(/\s+/).map(x => x.endsWith('%') ? [parseFloat(x), 1] : [parseFloat(x) || 0, 0]);
+        this.__m = [m[0] || [0, 0], m[1] || m[0] || [0, 0], m[2] || m[0] || [0, 0], m[3] || m[1] || m[0] || [0, 0]];
+        this.__t = new Map(); this.__q = [];
     }
-    unobserve(e) { this.__els.delete(e); } disconnect() { this.__els.clear(); } takeRecords() { return []; }
+    __bounds() {
+        const r = this.root && this.root.getBoundingClientRect ? this.root.getBoundingClientRect() : new D.DOMRect(0, 0, innerWidth, innerHeight), m = this.__m;
+        const e = (v, base) => v[1] ? base * v[0] / 100 : v[0];
+        const l = r.left - e(m[3], r.width), t = r.top - e(m[0], r.height);
+        return new D.DOMRect(l, t, r.right + e(m[1], r.width) - l, r.bottom + e(m[2], r.height) - t);
+    }
+    __check() {
+        if (!this.__t.size) return;
+        const rb = this.__bounds(), out = [];
+        for (const [e, prev] of this.__t) {
+            const r = e.getBoundingClientRect(), connected = e.isConnected;
+            const x0 = Math.max(r.left, rb.left), y0 = Math.max(r.top, rb.top), x1 = Math.min(r.right, rb.right), y1 = Math.min(r.bottom, rb.bottom);
+            const w = x1 - x0, h = y1 - y0, area = r.width * r.height;
+            const inter = connected && (w > 0 && h > 0 || (w >= 0 && h >= 0 && (r.width > 0 || r.height > 0) && area === 0));
+            const ratio = !inter ? 0 : area > 0 ? Math.min(1, (w * h) / area) : 1;
+            let idx = 0; if (inter) for (const th of this.thresholds) if (ratio >= th) idx++;
+            if (prev.idx === idx && prev.ii === inter) continue;
+            prev.idx = idx; prev.ii = inter;
+            const ir = inter ? new D.DOMRect(x0, y0, Math.max(0, w), Math.max(0, h)) : new D.DOMRect(0, 0, 0, 0);
+            out.push({ target: e, isIntersecting: inter, intersectionRatio: ratio, boundingClientRect: r, intersectionRect: ir, rootBounds: this.root ? null : rb, time: performance.now() });
+        }
+        if (out.length) try { this.__cb(out, this); } catch (x) { report(x); }
+    }
+    observe(e) {
+        if (this.__t.has(e)) return;
+        this.__t.set(e, { idx: -1, ii: null }); IOS.add(this);
+        if (!ioTimer) { ioTimer = setInterval(ioCheckAll, 250); g.addEventListener('scroll', ioCheckAll, { passive: true }); g.addEventListener('resize', ioCheckAll); }
+        setTimeout(() => this.__check(), 0);
+    }
+    unobserve(e) { this.__t.delete(e); if (!this.__t.size) IOS.delete(this); }
+    disconnect() { this.__t.clear(); IOS.delete(this); }
+    takeRecords() { return []; }
 }
 class ResizeObserver {
     constructor(cb) { this.__cb = cb; this.__els = new Set(); }

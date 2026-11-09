@@ -377,6 +377,9 @@ const t0 = performance.now();
       check('CSSOM rule.style', [r.style.getPropertyValue('--x'), r.style.backgroundColor, r.cssText.includes('background-color: red')], ['5', 'red', true]); st.remove(); }
     { const sc = document.createElement('script'); sc.src = URL.createObjectURL(new Blob(['window.js3blob = 41 + 1;'], { type: 'text/javascript' })); document.head.appendChild(sc); await new Promise(r => setTimeout(r, 300)); check('blob: script', window.js3blob, 42); }
     { const e = document.createElement('div'); e.style.cssText = 'width:123px;height:45px'; document.body.appendChild(e); check('geometry right after a DOM change', [e.offsetWidth, e.offsetHeight, Math.round(e.getBoundingClientRect().height)], [123, 45, 45]); e.remove(); }
+    { const far = document.createElement('div'); far.style.cssText = 'position:absolute;top:30000px;height:20px;width:20px'; const near = document.createElement('div'); near.style.cssText = 'height:10px;width:10px'; document.body.prepend(near); document.body.append(far);
+      const got = []; const io = new IntersectionObserver(es => es.forEach(e => got.push((e.target === far ? 'far' : 'near') + ':' + e.isIntersecting))); io.observe(far); io.observe(near);
+      await new Promise(r => setTimeout(r, 400)); const s0 = got.join(); scrollTo(0, 29900); await new Promise(r => setTimeout(r, 700)); scrollTo(0, 0); check('IntersectionObserver reports real visibility', [s0, got.includes('far:true')], ['far:false,near:true', true]); io.disconnect(); far.remove(); near.remove(); }
     const s = document.getElementById('summary');
     s.textContent = fail ? `${pass} passed, ${fail} FAILED` : `all ${pass} tests passed`;
     s.className = fail ? 'fail' : 'pass';
