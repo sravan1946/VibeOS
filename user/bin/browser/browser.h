@@ -13,7 +13,7 @@
 #define font_mono_bold bfont_mono_bold
 
 #define MAX_PAGE (8u << 20)      /* body bytes kept per page */
-#define URL_MAX  1024
+#define URL_MAX  4096
 /* what we call ourselves everywhere (HTTP User-Agent; JS navigator.userAgent should say the same): Firefox-shaped so sites
  * serve the normal page, VibeBrowser at the end so we're still identifiable */
 #define BROWSER_UA "Mozilla/5.0 (X11; Linux i686; rv:128.0) Gecko/20100101 Firefox/128.0 VibeBrowser/1.0"
@@ -194,6 +194,20 @@ int  css_media(const char *q);                   /* media query list (a media=""
 int  css_attrs(void);                            /* legacy: some rule uses an attribute selector: elements need el.at */
 int  css_any(void);
 void css_cascade(const struct el *st, int n, const char *style, struct cprops *out);   /* legacy; st[n-1] is the subject */
+/* ---- canvas.c: <canvas> 2D pixel buffers and rasteriser behind js.c's cv* natives ---- */
+void cnv_reset(void);
+int  cnv_new(int w, int h);
+int  cnv_resize(int id, int w, int h);
+int  cnv_fill(int id, const double *poly, int np, int evenodd, const double *pn, int npn, double alpha, int op, const uint8_t *mask);
+uint8_t *cnv_clip(int id, const double *poly, int np, int evenodd, const uint8_t *prev, size_t *len);
+void cnv_measure(const char *s, double size, int flags, double *w, double *asc, double *desc);
+int  cnv_text(int id, const char *s, double x, double y, double size, int flags, const double *pn, int npn, double alpha, int op, const uint8_t *mask);
+uint8_t *cnv_get_rgba(int id, int x, int y, int w, int h);
+void cnv_put_rgba(int id, const uint8_t *s, int w, int h, int dx, int dy);
+char *cnv_png_url(int id);
+const uint8_t *cnv_pixels(int id, int *w, int *h);
+int  img_set_rgba(const char *url, const uint8_t *rgba, int w, int h);   /* <canvas> pixels as the image "canvas:<js node id>" */
+int  img_find(const char *url);                  /* index of an already known image, or -1 (never queues anything) */
 int  css_color(const char *s, color_t *out, int legacy);   /* any CSS colour (alpha in the top byte; transparent = 0); legacy: bare hex too */
 int  css_match(const char *sel, const struct el *st, int n);   /* legacy: selector list vs st[n-1]: 1/0, -1 = nothing parsable */
 
@@ -254,6 +268,7 @@ struct form { uint32_t action; uint8_t post; int node; };
 #define FL_STRIKE 2
 #define FL_IMG 4
 #define FL_CTL 8
+#define FL_FRM 32   /* an <iframe>: item.node is the element; frame_paint draws it */
 #define FL_DIFF 16                       /* text inside a mix-blend-mode:difference box: drawn as |backdrop - colour| */
 struct item { int x, y; short w, h, clip; uint8_t font, flags, fit; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
 struct decor { int x, y, w, h; color_t col, g1; int it; short clip; uint8_t rad, ring, msk, gdir, opq;   /* gdir 1/2: linear gradient col -> g1 down / right across the rect */
@@ -290,6 +305,8 @@ struct docmark { int from_it, from_ch, to_it, to_ch; const char *find; int find_
 int doc_anim_due(const struct doc *d);                /* html.c: ms to the next frame a CSS animation needs, -1 when none runs */
 void doc_draw(struct ui *ui, const struct doc *d, int vx, int vy, int vw, int vh, int scroll, int hover,
               const struct docmark *mk, int focus_ord, int caret);
+void doc_draw_c(struct canvas *c, const struct doc *d, int vx, int vy, int vw, int vh, int scroll, int hover,
+                const struct docmark *mk, int focus_ord, int caret);   /* the same onto a canvas (an iframe's document) */
 int  doc_unstick(const struct doc *d, int y, int scroll);   /* a document y under a drawn sticky box -> where that box was laid out */
 int  doc_hit(const struct doc *d, int x, int y);          /* link index at document coords, or -1 */
 int  doc_pos_at(const struct doc *d, int x, int y, int *item, int *ch);   /* text run + byte offset nearest the point (for selecting) */
@@ -310,6 +327,7 @@ void fs_reset(void);
 void *fs_save(void);                                     /* same trio as img_save: field values of a background tab */
 void fs_restore(void *h);
 void fs_drop(void *h);
+void fs_swap(struct fstate **pf, int *pn);               /* exchange the table with another (an iframe's fields) */
 void ctl_draw(struct canvas *c, const struct doc *d, const struct ctl *t, int x, int y, int w, int h, int focused, int caret);
 int  ctl_key(const struct doc *d, int ci, const struct gui_event *k, int *caret);   /* 1 = Enter pressed */
 int  ctl_caret_at(const struct doc *d, int ci, int rx, int ry);
@@ -333,6 +351,9 @@ void js_reset(void);                              /* leave the page */
 /* dispatch `type` (bubbling) at node (0 = window); k: key event or NULL. Returns 1 if a handler called preventDefault */
 int  js_event(int node, const char *type, const struct gui_event *k, int x, int y);
 int  js_active(void);
+int  js_fid(void);                                /* the context (0 = page, else a frame) the current layout belongs to: canvas image keys */
+void js_css_owner(void);                          /* dom.c hd_from_js: the CSS rules now belong to the current context */
+int  js_hit(int x, int y, int hint);              /* the element a click at document point x,y landed on (empty boxes included); hint = the display item's node */
 const char *js_nav(void);                         /* location set by a script: navigate there (consumes it), or NULL */
 int  js_focus_req(void);                          /* element.focus() target (consumes it), or 0 */
 char *js_alert(void);                             /* pending alert() text (malloc'd, consumed), or NULL */
@@ -357,3 +378,48 @@ int  js_submit_req(void);                         /* form.submit() was called: t
 extern const char js_prelude[];
 extern const char js_prelude2[];                  /* web_js.c: URL, fetch, XHR, storage, observers, Intl ... (runs after js_prelude) */                   /* dom_js.c: the DOM classes over the natives */
 void browser_status(int bad, const char *fmt, ...);   /* main.c: the status bar */
+/* ---- frames: <iframe>. js.c owns the browsing contexts (each a JSContext + node tree in the shared runtime), iframe.c draws them, routes
+ * input to them and lays them out. A frame's document is a struct doc like the page's; it is laid out at the size of its <iframe> box
+ * and never makes the parent lay out again. ---- */
+struct frame {
+    struct doc doc;
+    struct fstate *fs; int nfs;       /* its form fields (form.c's table is swapped for it while it is in use) */
+    struct frame *par;                /* the frame it is in; NULL = the top page */
+    int node;                         /* its <iframe> element in the parent's tree */
+    int w, h;                         /* viewport = content box of the <iframe> (document pixels of the parent) */
+    int sy, ty;                       /* scroll position and where it is easing to */
+    int lw, lh, redo, ready;           /* size laid out for; needs a layout; has been laid out */
+    int fo, caret, cb;                /* focused control (ordinal), caret, control `change` base */
+    int hover, pnode, pmx, pmy, pbtn, focus;          /* pointer state; focus: the frame holds keyboard focus */
+    int selp, sel_sc;                 /* an open <select> list: control index + 1 (0 = none), first row shown */
+    int bx, by, in;                   /* its box in the parent's document (set when drawn); fs table is swapped in */
+    void *st;                         /* js.c's state */
+};
+extern const char js_prelude_fr[];                /* iframe.c: window.parent/top/frames/postMessage over the natives (runs between js_prelude and js_prelude2) */
+void js_use(struct frame *f);                     /* the js_* / dom_* calls that follow work on this frame (NULL = the top page) */
+struct frame *js_cur(void);
+int  js_nframes(void);
+struct frame *js_frame_nth(int i);
+struct frame *js_frame_find(const struct doc *pdoc, int node);   /* the frame of the <iframe> `node` in the document pdoc, or NULL */
+const char *js_frame_url(struct frame *f);
+void js_frame_navigate(struct frame *f, const char *url);
+void js_frame_navigate_post(struct frame *f, const char *url, const char *post);   /* post = form body (a POST) or NULL */
+int  js_goto_target(struct frame *from, const char *target, const char *url, const char *post);   /* link/form target=: 1 = handled, 0 = navigate the caller's own document */
+const char *js_open_url(void);                    /* a target=_blank (or unknown name) wants a new tab: its URL (consumed), or NULL */
+const char *js_link_target(int node);             /* current context: target of the link holding node (or <base target>) */
+const char *js_form_target(int node);
+int  js_frame_is_worker(struct frame *f);          /* a Web Worker's context (no document) */
+int  js_frame_sandbox(struct frame *f);           /* SB_* flags of its sandbox attribute (0 = none) */
+void frame_relayout(struct frame *f);             /* iframe.c: lay the frame's document out (js.c calls it when a script reads a size) */
+void frame_paint(struct canvas *c, const struct doc *d, const struct item *it, int x, int y);   /* iframe.c: draw the frame of the FL_FRM item at x,y (screen; c already clipped) */
+void frame_gone(struct frame *f);                 /* js.c: this frame is being freed */
+void frames_pump(void);                           /* iframe.c: run every frame's scripts, timers and fetches */
+/* input (iframe.c). node = what doc_node_at found at the point (dx, dy), document coordinates of d. ev: 0 move, 1 press, 2 release. 1 = a frame took it */
+int  frame_pointer(const struct doc *d, int node, int dx, int dy, int ev);
+void frame_leave(void);                           /* the pointer is not over a frame any more */
+int  frame_wheel(const struct doc *d, int node, int dx, int dy, int delta);   /* 1 = the frame scrolled (else the page should) */
+struct frame *frame_focused(void);                /* the frame holding the keyboard, or NULL */
+void frame_unfocus(void);
+void frame_key(const struct gui_event *k);
+void frames_dirty(void);                          /* images/stylesheets arrived: every frame lays out again */
+

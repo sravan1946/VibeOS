@@ -28,7 +28,7 @@ static const struct { const char *n; int t; } TAGS[] = {
     { "a", T_A }, { "font", T_FONT }, { "br", T_BR }, { "hr", T_HR }, { "img", T_IMG },
     { "table", T_TABLE }, { "tr", T_TR }, { "td", T_TD }, { "th", T_TH }, { "caption", T_CAP },
     { "thead", T_TGROUP }, { "tbody", T_TGROUP }, { "tfoot", T_TGROUP }, { "col", T_COL }, { "colgroup", T_COL },
-    { "iframe", T_SKIP }, { "object", T_SKIP }, { "canvas", T_SKIP }, { "video", T_SKIP }, { "audio", T_SKIP }, { "map", T_SKIP },
+    { "iframe", T_IFRAME }, { "object", T_SKIP }, { "canvas", T_SKIP }, { "video", T_SKIP }, { "audio", T_SKIP }, { "map", T_SKIP },
     { "meta", T_SKIP }, { "link", T_SKIP }, { "base", T_SKIP }, { "param", T_SKIP }, { "source", T_SKIP }, { "track", T_SKIP },
     { "datalist", T_SKIP }, { "embed", T_SKIP }, { "area", T_SKIP }, { "wbr", T_SKIP },
 };
@@ -591,6 +591,7 @@ static void js_copy(int j, int par, struct doc *d, int depth) {
 
 int hd_from_js(struct doc *d, const char *base) {
     hd_free();
+    js_css_owner();
     cur_base = base; cur_doc = d;
     node_new(-1, 9, 0, pool_add("#root", 5), 0);
     HD.js = 1;

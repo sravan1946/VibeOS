@@ -31,6 +31,9 @@ int img_svg_inline(const char *s, size_t n, long c) { return -1; }
 const char *img_url(int i) { return ""; }
 int doc_zoom = 100;
 int js_active(void) { return 0; }
+int js_fid(void) { return 0; }
+void js_css_owner(void) {}
+void frame_paint(struct canvas *c, const struct doc *d, const struct item *it, int x, int y) {}
 void js_set_rect(int n, int x, int y, int w, int h) {}
 int dom_first(int n) { return 0; }
 int dom_next(int n) { return 0; }
@@ -46,6 +49,7 @@ const char *dom_attr(int n, const char *a) { return 0; }
 int sheet_pump(void) { return 0; }
 int sheet_busy(void) { return 0; }
 void sheet_reset(void) {}
+int img_find(const char *u) { return -1; }
 int img_ref(const char *u) { return 0; }
 int img_ref_ex(const char *u, const char *l) { return 0; }
 int img_info(int i, int *w, int *h) { const char *e = getenv("LT_IMG"); int a, b; if (e && sscanf(e, "%dx%d", &a, &b) == 2) { *w = a; *h = b; return IMG_READY; } return IMG_LOADING; }   /* LT_IMG=WxH: every image is loaded at that natural size */

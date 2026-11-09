@@ -1,0 +1,144 @@
+<!doctype html>
+<html><head><title>Frames test</title>
+<style>body{font:14px sans-serif;margin:10px}iframe{vertical-align:top;margin:0 6px 6px 0}#log{white-space:pre;font:12px monospace}#t{color:rgb(0,0,255)}</style></head>
+<body>
+<h2>iframe tests <span id="t">(blue = page style)</span></h2>
+<div id="frames"></div>
+<canvas id="cv" width="40" height="20"></canvas>
+<div id="log"></div>
+<script>
+/* Same-origin frames are srcdoc / about:blank ones: every local file is an origin of its own, so child2.html is cross-origin here.
+   With the page served by tools/frametest/server.py (http://10.0.2.2:8099/framestest.html) the header tests run as well. */
+var HTTP = location.protocol === 'http:', pass = 0, fail = 0, lines = [];
+function ok(c, name) { if (c) pass++; else { fail++; console.log('framestest FAIL: ' + name); } lines.push((c ? 'ok   ' : 'FAIL ') + name); }
+function show() { document.getElementById('log').textContent = lines.join('\n'); }
+function esc(s) { return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
+function wait(cond, ms) { return new Promise(function (res) { var t0 = Date.now(); (function p() { if (cond() || Date.now() - t0 > (ms || 15000)) res(); else setTimeout(p, 50); })(); }); }
+function thrown(fn) { try { fn(); } catch (e) { return e; } return null; }
+var loads = {}, msgs = [], frames = {};
+function mk(id, attrs, w, h) {
+  var f = document.createElement('iframe');
+  f.id = id; f.width = w || 200; f.height = h || 80;
+  for (var k in attrs) f.setAttribute(k, attrs[k]);
+  f.addEventListener('load', function () { loads[id] = (loads[id] || 0) + 1; });
+  document.getElementById('frames').appendChild(f);
+  frames[id] = f;
+  return f;
+}
+window.addEventListener('message', function (e) { msgs.push(e); });
+var CHILD = '<title>Child frame</title><body style="font:14px sans-serif;background:#eef6ff;margin:8px"><h1 id="title" style="font-size:18px">Child</h1><p>clicks: <b id="n">0</b></p><button id="btn">Click me</button>' +
+  '<script>var clicks = 0; document.getElementById("btn").addEventListener("click", function () { clicks++; document.getElementById("n").textContent = clicks; parent.postMessage({ type: "clicked", n: clicks }, "*"); });' +
+  'window.addEventListener("message", function (e) { if (e.data === "chan") e.ports[0].postMessage("via-port:" + e.ports.length + ":" + typeof MessagePort); if (e.data === "ping") e.source.postMessage("pong:" + e.origin, "*"); });<\/script></body>';
+var INNER = '<p id=info></p><script>var n = 0, w = window; while (w.parent !== w) { w = w.parent; n++; } document.getElementById("info").textContent = "depth: " + n + ", top is parent: " + (top === parent);<\/script>';
+var MIDDLE = '<h1 id=title style="font-size:16px">Middle frame</h1><iframe id=inner width=260 height=50 srcdoc="' + esc(INNER) + '"></iframe>';
+var f1 = mk('f1', { srcdoc: CHILD }, 300, 120);
+var f2 = mk('f2', { srcdoc: "<body style='font:14px sans-serif;background:#fffbe0'><p id=x>srcdoc frame</p><script>parent.postMessage('hello from srcdoc', '*')<\/script>" });
+var f3 = mk('f3', { srcdoc: MIDDLE }, 320, 120);
+var f4 = mk('f4', { src: "data:text/html,<body style='font:14px sans-serif;background:%23fde'>cross-origin<script>var r1='?';try{parent.frames.f1;r1='leak'}catch(e){r1=e.name}parent.postMessage({a:[1,2,3],s:'x',u:new Uint8Array([7,8,9]),b:new Uint8Array([4,5]).buffer,named:r1},'*')<\/script>" });
+var f5 = mk('f5', { sandbox: '', src: 'child2.html' }, 200, 50);
+var f6 = mk('f6', { src: 'child2.html' }, 200, 50);
+var f7 = mk('f7', { srcdoc: '<style>p{color:rgb(255,0,0)}</style><p id=p>frame style</p>' }, 200, 40);
+var f8 = mk('f8', { name: 'tgt8', srcdoc: '<p>target frame</p>' }, 300, 40);
+var f10 = mk('f10', { srcdoc: '<body style=margin:0><canvas id=c width=40 height=20></canvas><script>var g = document.getElementById("c").getContext("2d"); g.fillStyle = "blue"; g.fillRect(0, 0, 40, 20);<\/script>' }, 60, 30);
+var cx = document.getElementById('cv').getContext('2d'); cx.fillStyle = 'red'; cx.fillRect(0, 0, 40, 20);
+var names = ['ok', 'deny', 'same', 'fa-self', 'fa-none', 'fa-other', 'fa-host'], f9;
+if (HTTP) {
+  names.forEach(function (n) { mk('x-' + n, { src: '/' + n + '.html' }, 120, 30); });
+  f9 = mk('f9', { srcdoc: '<form id=fm method=post action="' + location.origin + '/echo" target="tgt8"><input name=a value=1><input name=b value="x y"></form>' +
+    '<form id=fs method=post action="' + location.origin + '/echo"><input name=c value=3></form>' }, 200, 30);
+}
+(async function () {
+  await wait(function () { return loads.f1 && loads.f2 && loads.f3 && loads.f4 && loads.f5 && loads.f6 && loads.f7 && loads.f8 && loads.f10; });
+  ok(loads.f1 === 1 && loads.f2 === 1 && loads.f3 === 1 && loads.f4 === 1, 'load events fired once per frame');
+  var d1 = f1.contentDocument;
+  ok(d1 && d1.getElementById('title').textContent === 'Child', 'same-origin contentDocument reads the frame DOM');
+  ok(f1.contentWindow.parent === window && f1.contentWindow.top === window, 'frame parent/top are the page window');
+  ok(f1.contentWindow.frameElement === f1, 'frameElement is the iframe element');
+  ok(f1.contentWindow !== window && f1.contentWindow.clicks === 0, 'frames have their own globals');
+  ok(typeof window.clicks === 'undefined', 'frame globals do not leak into the page');
+  ok(d1.title === 'Child frame', 'document.title of the frame');
+  ok(f2.contentDocument.getElementById('x').textContent === 'srcdoc frame', 'srcdoc frame content');
+  await wait(function () { return msgs.length >= 2; });
+  var eo = HTTP ? location.origin : 'null';
+  var m2 = msgs.filter(function (e) { return e.data === 'hello from srcdoc'; })[0];
+  ok(m2 && m2.source === f2.contentWindow, 'postMessage from srcdoc: data and event.source');
+  ok(m2 && m2.origin === eo, 'srcdoc inherits the page origin: ' + (m2 && m2.origin));
+  f1.contentWindow.postMessage('ping', '*');
+  await wait(function () { return msgs.some(function (e) { return typeof e.data === 'string' && e.data.indexOf('pong:') === 0; }); });
+  var pong = msgs.filter(function (e) { return typeof e.data === 'string' && e.data.indexOf('pong:') === 0; })[0];
+  ok(pong && pong.source === f1.contentWindow && pong.data === 'pong:' + eo, 'postMessage both ways, child sees event.origin ' + (pong && pong.data));
+  var ch = new MessageChannel(), portGot = null;
+  ch.port1.onmessage = function (e) { portGot = e.data; };
+  f1.contentWindow.postMessage('chan', '*', [ch.port2]);
+  await wait(function () { return portGot !== null; });
+  ok(portGot === 'via-port:1:function', 'MessageChannel port transferred into a frame and answered: ' + portGot);
+  var wgot = null;
+  var w = new Worker(URL.createObjectURL(new Blob(['onmessage = function (e) { postMessage({ echo: e.data, win: typeof window, self: typeof self }); };'])));
+  w.onmessage = function (e) { wgot = e.data; };
+  w.postMessage({ n: [1, 2, 3] });
+  await wait(function () { return wgot !== null; });
+  ok(wgot && wgot.echo.n.join() === '1,2,3' && wgot.win === 'undefined' && wgot.self === 'object', 'Worker from a blob: round trip, no window in the worker');
+  w.terminate();
+  await wait(function () { return f3.contentWindow.frames[0] && f3.contentWindow.frames[0].document && f3.contentWindow.frames[0].document.getElementById('info') && f3.contentWindow.frames[0].document.getElementById('info').textContent; });
+  ok(f3.contentWindow.length === 1 && f3.contentWindow.frames[0] === f3.contentDocument.getElementById('inner').contentWindow, 'nested frame: window.length and frames[0]');
+  ok(f3.contentWindow.frames[0].document.getElementById('info').textContent === 'depth: 2, top is parent: false', 'nested child: depth 2, top !== parent: ' + f3.contentWindow.frames[0].document.getElementById('info').textContent);
+  ok(window.frames[0] === f1.contentWindow && window.tgt8 === f8.contentWindow, 'window.frames[i] and window[name] on the page');
+  var e4 = thrown(function () { return f4.contentWindow.document; });
+  ok(e4 && e4.name === 'SecurityError', 'cross-origin contentWindow.document throws SecurityError: ' + (e4 && e4.name));
+  ok(f4.contentDocument === null, 'cross-origin contentDocument is null');
+  ok(thrown(function () { return f4.contentWindow.location.href; }) !== null, 'cross-origin location.href read throws');
+  ok(thrown(function () { f4.contentWindow.postMessage('to data frame', '*'); }) === null, 'cross-origin postMessage works');
+  ok(f4.contentWindow.closed === false && f4.contentWindow.parent === window && f4.contentWindow.top === window, 'cross-origin closed/parent/top readable');
+  var m4 = msgs.filter(function (e) { return e.data && e.data.a; })[0];
+  ok(m4 && m4.data.a.join() === '1,2,3' && m4.data.s === 'x' && m4.origin === 'null', 'structured clone from a cross-origin frame (json) origin=' + (m4 && m4.origin));
+  ok(m4 && m4.data.u instanceof Uint8Array && m4.data.u.join() === '7,8,9' && m4.data.b instanceof ArrayBuffer && new Uint8Array(m4.data.b).join() === '4,5', 'typed arrays and ArrayBuffer survive postMessage');
+  ok(m4 && m4.source === f4.contentWindow, 'source of a cross-origin message is its contentWindow proxy');
+  ok(m4 && m4.data.named === 'SecurityError', 'parent.frames[name] from a cross-origin frame gets the proxy (SecurityError): ' + (m4 && m4.data.named));
+  ok(f5.contentDocument === null || f5.contentDocument.getElementById('info').textContent === '', 'sandboxed frame: no scripts, opaque origin');
+  ok(typeof document.domain === 'string', 'document.domain readable');
+  /* every local file is its own origin */
+  if (!HTTP) {
+    var e6 = thrown(function () { return f6.contentWindow.document; });
+    ok(f6.contentDocument === null && e6 && e6.name === 'SecurityError', 'file frame: another local file is cross-origin (SecurityError)');
+    ok(thrown(function () { f6.contentWindow.postMessage('hi', '*'); }) === null, 'file frame: postMessage still works');
+    f1.removeAttribute('srcdoc'); f1.src = 'child2.html';
+    await wait(function () { return loads.f1 === 2; });
+    ok(loads.f1 === 2 && f1.contentDocument === null, 'changing iframe.src navigates the frame (to another origin: no DOM access)');
+  } else {
+    f1.removeAttribute('srcdoc'); f1.src = '/ok.html';
+    await wait(function () { return loads.f1 === 2; });
+    ok(loads.f1 === 2 && f1.contentDocument.body.textContent.indexOf('framed page ok') >= 0, 'changing iframe.src navigates the frame (same-origin http)');
+  }
+  /* per-frame style and viewport */
+  var fw = f7.contentWindow, pe = f7.contentDocument.getElementById('p');
+  ok(fw.getComputedStyle(pe).color === 'rgb(255, 0, 0)', 'getComputedStyle in a frame uses the frame\'s own CSS: ' + fw.getComputedStyle(pe).color);
+  ok(getComputedStyle(document.getElementById('t')).color === 'rgb(0, 0, 255)', 'the page\'s computed style is still the page\'s after the frame asked');
+  ok(fw.matchMedia('(max-width: 250px)').matches === true && matchMedia('(max-width: 250px)').matches === false, 'matchMedia in a frame uses the frame viewport (200px) not the page\'s');
+  ok(fw.document.querySelectorAll('p').length === 1 && f7.contentDocument.querySelector('style') !== null, 'selectors in a frame match its own tree');
+  var nf = document.createElement('iframe'); nf.width = 120; nf.height = 40; document.body.appendChild(nf);
+  var nd = nf.contentWindow.document; nd.open(); nd.write('<p id=w>written</p>'); nd.close();
+  ok(nf.contentDocument.getElementById('w') && nf.contentDocument.getElementById('w').textContent === 'written', 'new iframe: contentWindow.document.write');
+  nf.remove();
+  ok(nf.contentWindow === null, 'removed iframe has no contentWindow');
+  if (HTTP) {
+    await wait(function () { return names.every(function (n) { return loads['x-' + n]; }); });
+    await new Promise(function (r) { setTimeout(r, 1500); });
+    var got = msgs.map(function (e) { return e.data; }).filter(function (d) { return typeof d === 'string' && d.indexOf('ok:') === 0; });
+    function has(n) { return got.indexOf('ok:' + n) >= 0; }
+    ok(has('ok') && has('same') && has('fa-self') && has('fa-host'), 'frames the page allows load: ok, SAMEORIGIN from the same origin, frame-ancestors \'self\' and the host');
+    ok(!has('deny') && !has('fa-none') && !has('fa-other'), 'X-Frame-Options: DENY and CSP frame-ancestors \'none\' / another host are refused');
+    ok(loads['x-deny'] === 1 && frames['x-deny'].contentDocument === null, 'a refused frame shows its own (opaque) message page');
+    f9.contentDocument.getElementById('fm').submit();
+    await wait(function () { return loads.f8 === 2; });
+    var t8 = f8.contentDocument && f8.contentDocument.body.textContent;
+    ok(t8 && t8.indexOf('POST /echo') >= 0 && t8.indexOf('ct=application/x-www-form-urlencoded') >= 0 && t8.indexOf('body=a=1&b=x+y') >= 0, 'form POST from a frame keeps method and body, target=name loads the named frame: ' + t8);
+    f9.contentDocument.getElementById('fs').submit();
+    await wait(function () { return loads.f9 === 2; });
+    var t9 = f9.contentDocument && f9.contentDocument.body.textContent;
+    ok(t9 && t9.indexOf('POST /echo') >= 0 && t9.indexOf('body=c=3') >= 0, 'form POST without target navigates the frame itself: ' + t9);
+  }
+  show();
+  console.log('framestest: ' + pass + ' passed, ' + fail + ' failed' + (HTTP ? ' (http)' : ' (file)'));
+})();
+</script>
+</body></html>

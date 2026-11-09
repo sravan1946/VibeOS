@@ -12,6 +12,9 @@
 static struct fstate *F;
 static int nf;
 
+/* an iframe keeps its own fields: its table is swapped in while it is in use (iframe.c) */
+void fs_swap(struct fstate **pf, int *pn) { struct fstate *t = F; int n = nf; F = *pf; nf = *pn; *pf = t; *pn = n; }
+
 void fs_reset(void) {
     for (int i = 0; i < nf; i++) free(F[i].val);
     free(F);

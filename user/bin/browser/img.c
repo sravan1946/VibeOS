@@ -143,6 +143,21 @@ int img_add_data(const char *url, const uint8_t *d, size_t n) {
     return i;
 }
 
+/* <canvas>: the picture under key url ("canvas:<js node id>") becomes these RGBA pixels (a copy). -1 on failure. */
+int img_set_rgba(const char *url, const uint8_t *rgba, int w, int h) {
+    int i = img_ref(url);
+    if (i < 0 || w < 1 || h < 1) return -1;
+    uint32_t *px = malloc((size_t)w * h * 4);
+    if (!px) return -1;
+    for (long k = 0, n = (long)w * h; k < n; k++) px[k] = (uint32_t)rgba[4 * k + 3] << 24 | rgba[4 * k] << 16 | rgba[4 * k + 1] << 8 | rgba[4 * k + 2];
+    struct pimg *p = &P[i];
+    free(p->im.px); free(p->sc);
+    p->sc = 0; p->im = (struct image){ w, h, px }; p->nw = w; p->nh = h; p->state = IMG_READY; p->reload = 0;
+    ub = -1;
+    return i;
+}
+int img_find(const char *url) { for (int i = 0; i < np; i++) if (!strcmp(P[i].url, url)) return i; return -1; }
+
 /* an inline <svg> element's markup (n bytes) as an image; color: what currentColor means (0xRRGGBB, -1 = black). Same markup, same index. */
 int img_svg_inline(const char *svg, size_t n, long color) {
     uint32_t h = 2166136261u ^ (uint32_t)color;
@@ -179,7 +194,7 @@ static void trim(void) {
             struct pimg *p = &P[i];
             long b = img_bytes(p);
             tot += b;
-            if (!b || p->nf > 1 || (p->want && now - p->want < 2000)) continue;
+            if (!b || p->nf > 1 || !strncmp(p->url, "canvas:", 7) || (p->want && now - p->want < 2000)) continue;
             if (!v || (int32_t)(p->want - v->want) < 0) v = p;
         }
         if (tot <= BUDGET || !v) return;

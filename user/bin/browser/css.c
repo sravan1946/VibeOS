@@ -2274,7 +2274,7 @@ static const char UA[] =
     "fieldset{margin:0 2px;padding:.35em .75em .625em;border:2px groove gray}legend{padding:0 2px}"
     "summary{cursor:pointer}details:not([open])>:not(summary){display:none}"
     "dialog:not([open]){display:none}audio:not([controls]){display:none}"
-    "img,video,canvas,svg,object,embed,iframe{display:inline}";
+    "img,video,canvas,svg,object,embed,iframe{display:inline}iframe{border:2px inset #767676}";
 
 static void ua_init(void) {
     cur_ua = 1; cur_layer = 0;

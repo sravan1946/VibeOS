@@ -45,7 +45,7 @@ static int first_item(const struct doc *d, int ytop) {
 }
 
 /* ---------- text helpers: item/char positions, find, copy ---------- */
-static int is_text(const struct item *it) { return !(it->flags & (FL_IMG | FL_CTL)) && it->len; }
+static int is_text(const struct item *it) { return !(it->flags & (FL_IMG | FL_CTL | FL_FRM)) && it->len; }
 
 /* x offset of byte `ch` inside a text run */
 static int run_x(const struct doc *d, const struct item *it, int ch) { return gfx_text_width_n(FT[it->font], d->txt + it->off, ch); }
@@ -319,6 +319,7 @@ static void draw_item(struct canvas *cc, const struct doc *d, int i, int vx, int
     if (y >= vy + vh || y + it->h < vy) return;
     struct canvas c2 = *cc, *cv = cc;
     if (it->clip) { const struct cliprect *k = &d->cl[it->clip]; canvas_clip(&c2, vx + k->x - (it->clip >= c0 && it->clip < c1 ? 0 : g_ax), vy + k->y - scroll + (it->clip >= c0 && it->clip < c1 ? sh : 0), k->w, k->h); cv = &c2; }
+    if (it->flags & FL_FRM) { frame_paint(cv, d, it, vx + it->x, y); return; }
     if (it->flags & FL_IMG) { draw_box(cv, d, it, vx + it->x, y); return; }
     if (it->flags & FL_CTL) {
         const struct ctl *t = &d->ct[it->ref];
@@ -353,7 +354,11 @@ static void draw_item(struct canvas *cc, const struct doc *d, int i, int vx, int
 
 void doc_draw(struct ui *ui, const struct doc *d, int vx, int vy, int vw, int vh, int scroll, int hover,
               const struct docmark *mk, int focus_ord, int caret) {
-    struct canvas cc = *ui->c;
+    doc_draw_c(ui->c, d, vx, vy, vw, vh, scroll, hover, mk, focus_ord, caret);
+}
+void doc_draw_c(struct canvas *c, const struct doc *d, int vx, int vy, int vw, int vh, int scroll, int hover,
+                const struct docmark *mk, int focus_ord, int caret) {
+    struct canvas cc = *c;
     canvas_clip(&cc, vx, vy, vw, vh);
     gfx_fill(&cc, vx, vy, vw, vh, d->bg);
     int nl = mk && mk->find ? strlen(mk->find) : 0, di = 0, start = first_item(d, scroll), shifted = 0, shs[MAXSTK];

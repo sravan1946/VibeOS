@@ -28,6 +28,9 @@
 #define MAXF 6
 #define MAXSCR 512
 #define MAXDYN 64
+#define MAXDIRTY 1024
+#define MAXIFR 32
+#define MAXFR 32
 #define NLOG 64
 
 struct node {
@@ -40,26 +43,114 @@ struct node {
     int parent, first, last, next, prev;
     int shadow, host; uint8_t smode;   /* element: its shadow root (a type-11 node); shadow root: its host, mode 1 open / 2 closed */
 };
-static struct node *N;
-static int nn, ncap;
-
-static JSRuntime *rt;
-static JSContext *ctx;
-static JSValue fn_dispatch, fn_fire, fn_fetch, fn_blob;
-static struct doc *live;
-static int active, dirty, dead, killed, loaded, focus_req, pumps;
-static uint32_t deadline;
-static char page_url[URL_MAX], nav[URL_MAX];
-static char *alert_text;
-
 /* scripts: S = parser order (sync and defer/module entries, document.write'd ones spliced in after the running one),
  * D = async and dynamically inserted ones, which run whenever their download lands. mode 0 sync, 1 defer, 2 async;
  * state 0 idle, 1 downloading, 2 ready, 3 failed, 4 done */
 struct scr { int node, mode, state, module, fid, rel; char *body, *url; };   /* rel: an async parser script waits until the parser (cur_scr) has got this far */
-static struct scr S[MAXSCR], D[MAXDYN];
-static int nscr, cur_scr, cur_def, cur_script, rstate, idle, strikes, url_changed, scroll_req_y = -1, vscroll, vw = 900, vh = 580;
-static char anchor_req[128];
-static int submit_req;
+struct tmr { int id, every; uint32_t due; };
+/* fetch() and <script src>: helper processes like page loads (fetch.c); file: URLs are read on the next pump */
+struct jf { int id, used, hops, script; unsigned long t0; struct fetch f; char *url; int file; const char *fail; char *post; };   /* script: 0 fetch(), 1 <script src>, 2 an <iframe> document */
+struct fq { int id; char *url; int script; char *post; };   /* waiting for a slot */
+struct rej { JSValue p, reason; };
+
+/* Everything one browsing context (the page, or an <iframe> in it) owns. They share the JSRuntime (rt) and each has its own
+ * JSContext, node tree, scripts, timers and fetches. J is the one being worked on: the natives pick it from their JSContext, the
+ * entry points that main.c calls work on the top page unless iframe.c selected a frame (js_use). The old file-scope names are macros
+ * onto J, so the code below reads as it did when there was a single page. */
+struct jsst {
+    struct node *s_N; int s_nn, s_ncap;
+    JSContext *s_ctx;
+    JSValue s_fn_dispatch, s_fn_fire, s_fn_fetch, s_fn_blob, fn_wrap, fn_msg, s_imap;   /* <script type=importmap> "imports" (the first one; scopes are ignored) */
+    struct doc *s_live;
+    int s_active, s_dirty, s_dead, s_loaded, s_focus_req, s_pumps;
+    char s_page_url[URL_MAX], s_nav[URL_MAX];
+    char *s_alert_text;
+    struct scr s_S[MAXSCR], s_D[MAXDYN];
+    int s_nscr, s_cur_scr, s_cur_def, s_cur_script, s_rstate, s_idle, s_strikes, s_url_changed, s_scroll_req_y, s_vscroll, s_vw, s_vh;
+    char s_anchor_req[128];
+    int s_submit_req;
+    struct tmr s_T[MAXT];
+    int s_nt, s_next_tid;
+    struct jf s_F[MAXF];
+    struct fq s_FQ[64];
+    int s_nfq, s_next_fid;
+    unsigned s_tgen;                                         /* bumped by every tree/attribute change: live NodeLists/HTMLCollections re-query when it moved */
+    int s_DI[MAXDIRTY], s_ndi, s_di_over;
+    uint32_t s_gen;
+    int (*s_RC)[4], s_nrc, s_rc_set;                             /* RC[node] = {x, y, w, h}; w < 0 = unset */
+    struct rej s_RJ[16]; int s_nrj;
+    /* browsing context */
+    struct frame *fr;                                      /* NULL: the top page */
+    int fid;                                               /* 0 = top, else 1 + index in FS */
+    char origin[160];                                      /* scheme://host[:port], "null" for an opaque one */
+    int ifr[MAXIFR], nifr;                                 /* <iframe> element ids created in this tree */
+    int sandbox;                                           /* the iframe's sandbox flags (SB_*) */
+    int owner_load;                                        /* the owner element has had its load event */
+    char *lkey;                                            /* what the iframe was last pointed at: "S"+src, "D"+srcdoc, "" = nothing */
+    int lfid;                                              /* fetch id (in the parent) of the document being loaded into it, 0 = none */
+    int scan;                                              /* the iframe elements need another look */
+    int wready;                                            /* a worker whose script has run (messages wait for it) */
+    JSValue fn_xwin, fn_ser, fn_nf;
+};
+static JSRuntime *rt;
+static struct jsst top_st, *J = &top_st;
+#define N (J->s_N)
+#define nn (J->s_nn)
+#define ncap (J->s_ncap)
+#define ctx (J->s_ctx)
+#define fn_dispatch (J->s_fn_dispatch)
+#define fn_fire (J->s_fn_fire)
+#define fn_fetch (J->s_fn_fetch)
+#define fn_blob (J->s_fn_blob)
+#define imap (J->s_imap)
+#define live (J->s_live)
+#define active (J->s_active)
+#define dirty (J->s_dirty)
+#define dead (J->s_dead)
+#define loaded (J->s_loaded)
+#define focus_req (J->s_focus_req)
+#define pumps (J->s_pumps)
+#define page_url (J->s_page_url)
+#define nav (J->s_nav)
+#define alert_text (J->s_alert_text)
+#define S (J->s_S)
+#define D (J->s_D)
+#define nscr (J->s_nscr)
+#define cur_scr (J->s_cur_scr)
+#define cur_def (J->s_cur_def)
+#define cur_script (J->s_cur_script)
+#define rstate (J->s_rstate)
+#define idle (J->s_idle)
+#define strikes (J->s_strikes)
+#define url_changed (J->s_url_changed)
+#define scroll_req_y (J->s_scroll_req_y)
+#define vscroll (J->s_vscroll)
+#define vw (J->s_vw)
+#define vh (J->s_vh)
+#define anchor_req (J->s_anchor_req)
+#define submit_req (J->s_submit_req)
+#define T (J->s_T)
+#define nt (J->s_nt)
+#define next_tid (J->s_next_tid)
+#define F (J->s_F)
+#define FQ (J->s_FQ)
+#define nfq (J->s_nfq)
+#define next_fid (J->s_next_fid)
+#define tgen (J->s_tgen)
+#define DI (J->s_DI)
+#define ndi (J->s_ndi)
+#define di_over (J->s_di_over)
+#define gen (J->s_gen)
+#define RC (J->s_RC)
+#define nrc (J->s_nrc)
+#define rc_set (J->s_rc_set)
+#define RJ (J->s_RJ)
+#define nrj (J->s_nrj)
+static int killed;
+static struct jsst *par_of(struct jsst *s);
+/* the URL relative references resolve against: a frame's own address, except about:blank / about:srcdoc, whose base is the parent's */
+static const char *base_of(struct jsst *s) { return s->fr && !strncmp(s->s_page_url, "about:", 6) ? base_of(par_of(s)) : s->s_page_url; }
+static uint32_t deadline;
 static char *blob_get(const char *url, size_t *len);
 static char *sync_get(const char *url, size_t *len);
 static void add_script(int id, int where);
@@ -67,14 +158,19 @@ static void scan_scripts(int id, int where);
 static void exec_entry(struct scr *e);
 static char *mod_norm(JSContext *c, const char *base, const char *name, void *op);
 static JSModuleDef *mod_load(JSContext *c, const char *name, void *op);
-
-static struct { int id, every; uint32_t due; } T[MAXT];
-static int nt, next_tid = 1;
-
-/* fetch() and <script src>: helper processes like page loads (fetch.c); file: URLs are read on the next pump */
-static struct jf { int id, used, hops, script; unsigned long t0; struct fetch f; char *url; int file; const char *fail; char *post; } F[MAXF];
-static struct { int id; char *url; int script; char *post; } FQ[64];   /* waiting for a slot */
-static int nfq, next_fid = 1;
+static int fetch_queue(const char *url, int script, const char *blob, int has_blob);
+static void frame_loaded(int id, int status, const char *ctype, const char *body, size_t blen, int bad, const char *url, const char *hdrs);
+static void worker_loaded(int id, int status, const char *body, size_t blen, int bad, const char *url);
+static void frames_scan(void);
+static void msgs_deliver(void);
+static void owner_event(const char *type);
+static void reg_frame_natives(JSContext *c, JSValue d);
+static void st_free(void);
+static void frame_free(struct frame *f);
+static void origin_of(const char *url, const char *inherit, char *out, int cap);
+static int nmq, npt;
+static struct jsst *FS[MAXFR];
+static int page_boot(const char *src, size_t n, const char *url, int scripts);
 
 static struct { char t[200]; int kind; } LOG[NLOG];
 static int nlog;
@@ -114,6 +210,7 @@ static int new_node(int type, const char *tag) {
     if (tag) {
         strlcpy(N[nn].tag, tag, sizeof N[0].tag);
         for (char *p = N[nn].tag; *p; p++) *p = tolower((unsigned char)*p);
+        if (!strcmp(N[nn].tag, "iframe") && J->nifr < MAXIFR) { J->ifr[J->nifr++] = nn; J->scan = 1; }
     }
     return nn++;
 }
@@ -124,7 +221,6 @@ static int new_text(const char *s, int n) {
     return id;
 }
 
-static unsigned tgen;                                    /* bumped by every tree/attribute change: live NodeLists/HTMLCollections re-query when it moved */
 static void unlink_node(int c) {
     struct node *x = &N[c];
     if (!x->parent) return;
@@ -217,12 +313,9 @@ static int cchildren(int p, int *buf, int max) {
     return n;
 }
 /* every change to the connected tree is recorded (the node and its parent) for an incremental layout: dom_dirty() */
-#define MAXDIRTY 1024
-static int DI[MAXDIRTY], ndi, di_over;
-static uint32_t gen;
 static void touch(int id) {
     if (!connected(id)) return;
-    dirty = 1; gen++;
+    dirty = 1; gen++; J->scan = J->nifr > 0;
     for (int k = 0, a = id; k < 2 && a; k++, a = up(a)) {
         int seen = 0;
         for (int i = ndi > 8 ? ndi - 8 : 0; i < ndi; i++) if (DI[i] == a) seen = 1;      /* cheap dedupe of repeats */
@@ -233,7 +326,7 @@ static void touch(int id) {
 
 static int in_list(const char *t, const char *const *l) { for (; *l; l++) if (!strcmp(t, *l)) return 1; return 0; }
 static const char *const VOIDS[] = { "br", "hr", "img", "input", "meta", "link", "area", "base", "col", "param", "source", "track", "wbr", "embed", 0 };
-static const char *const RAWS[] = { "script", "style", "textarea", "title", "xmp", "noscript", 0 };   /* content up to </name> is text */
+static const char *const RAWS[] = { "script", "style", "textarea", "title", "xmp", "noscript", "iframe", 0 };   /* content up to </name> is text */
 static const char *const HEADS[] = { "title", "style", "meta", "link", "script", "base", "noscript", 0 };
 static const char *const PCLOSE[] = { "address", "article", "aside", "blockquote", "center", "details", "div", "dl", "fieldset",
     "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "main", "menu", "nav", "ol",
@@ -269,8 +362,8 @@ static void add_text(int parent, const char *s, int n, int decode) {
     if (pp->last && N[pp->last].type == 3) {                /* merge with the previous text node */
         struct node *t = &N[pp->last];
         size_t a = strlen(t->text), l = strlen(b);
-        char *nt = realloc(t->text, a + l + 1);
-        if (nt) { memcpy(nt + a, b, l + 1); t->text = nt; }
+        char *ntx = realloc(t->text, a + l + 1);
+        if (ntx) { memcpy(ntx + a, b, l + 1); t->text = ntx; }
     } else {
         int id = new_text(b, strlen(b));
         if (id) insert_before(parent, id, 0);
@@ -669,7 +762,10 @@ void js_attach(struct doc *d) { live = d; }
 static int nid(JSValueConst v) { int32_t id = 0; JS_ToInt32(ctx, &id, v); return id > 0 && id < nn ? id : 0; }
 static JSValue str(const char *s) { return JS_NewString(ctx, s ? s : ""); }
 static JSValue take(char *s) { JSValue v = str(s); free(s); return v; }
-#define NATIVE(name) static JSValue name(JSContext *c, JSValueConst this_val, int argc, JSValueConst *argv)
+/* a native works on the context it was called from (J), and hands J back as it found it: a script in one frame can call into another's */
+#define NATIVE(name) static JSValue name##_(JSContext *, JSValueConst, int, JSValueConst *); \
+    static JSValue name(JSContext *c, JSValueConst t_, int a_, JSValueConst *v_) { struct jsst *sv = J; J = JS_GetContextOpaque(c); JSValue r = name##_(c, t_, a_, v_); J = sv; return r; } \
+    static JSValue name##_(JSContext *c, JSValueConst this_val, int argc, JSValueConst *argv)
 #define CSTR(var, i) const char *var = JS_ToCString(c, argv[i]); if (!var) return JS_EXCEPTION
 
 NATIVE(n_type) { int id = ARGID(0); return JS_NewInt32(c, id ? N[id].type : 0); }
@@ -795,10 +891,30 @@ NATIVE(n_remove) {
     return JS_UNDEFINED;
 }
 NATIVE(n_clone) { int id = ARGID(0); int r = id ? clone(id, JS_ToBool(c, argv[1])) : 0; return JS_NewInt32(c, r); }
+/* The CSS engine holds one document's rules (the last one laid out). A script in a frame that asks for a computed style or runs a selector
+ * gets its own: the rules are rebuilt from J's tree (hd_from_js feeds the <style>/<link> elements) when another document owned them. */
+struct doc;
+int hd_from_js(struct doc *d, const char *base);       /* dom.c */
+void hd_free(void);
+static struct jsst *css_owner;
+void js_css_owner(void) { css_owner = J; }
+static void css_claim(void) {
+    css_dom_set(&CDOM);                                    /* layout installs its own tree between our calls */
+    if (css_owner == J || !active) return;
+    struct doc tmp;
+    memset(&tmp, 0, sizeof tmp);
+    css_reset();
+    css_viewport_size(vw, vh);
+    css_base(base_of(J));
+    hd_from_js(&tmp, base_of(J));                            /* (sets css_owner) */
+    hd_free();
+    css_dom_set(&CDOM);
+    css_owner = J;
+}
 NATIVE(n_qsa) {
     int root = ARGID(0), first = JS_ToBool(c, argv[2]);
     CSTR(sel, 1);
-    css_dom_set(&CDOM);                                    /* layout installs its own tree between our calls */
+    css_claim();
     if (css_match_node(sel, 2) < 0) { JSValue e = JS_ThrowSyntaxError(c, "'%s' is not a valid selector", sel); JS_FreeCString(c, sel); return e; }
     JSValue a = JS_NewArray(c);
     uint32_t cnt = 0;
@@ -809,7 +925,7 @@ NATIVE(n_qsa) {
 NATIVE(n_matches) {
     int id = ARGID(0);
     CSTR(sel, 1);
-    css_dom_set(&CDOM);
+    css_claim();
     int r = id && N[id].type == 1 ? css_match_node(sel, id) : 0;
     JS_FreeCString(c, sel);
     return r < 0 ? JS_ThrowSyntaxError(c, "unsupported selector") : JS_NewBool(c, r);
@@ -869,14 +985,14 @@ NATIVE(n_resolve) {
     CSTR(u, 0);
     if (!strncasecmp(u, "data:", 5)) { JSValue r = str(u); JS_FreeCString(c, u); return r; }   /* absolute and possibly longer than URL_MAX */
     const char *bs = argc > 1 && !JS_IsUndefined(argv[1]) ? JS_ToCString(c, argv[1]) : 0;
-    url_resolve(bs ? bs : page_url, u, out, sizeof out);
+    url_resolve(bs ? bs : base_of(J), u, out, sizeof out);
     JS_FreeCString(c, bs);
     JS_FreeCString(c, u);
     return str(out);
 }
 NATIVE(n_navigate) {
     CSTR(u, 0);
-    url_resolve(page_url, u, nav, sizeof nav);
+    url_resolve(base_of(J), u, nav, sizeof nav);
     JS_FreeCString(c, u);
     return JS_UNDEFINED;
 }
@@ -918,7 +1034,7 @@ static int fetch_queue(const char *url, int script, const char *blob, int has_bl
 NATIVE(n_fetch) {
     CSTR(u, 0);
     char abs[URL_MAX];
-    url_resolve(page_url, u, abs, sizeof abs);
+    url_resolve(base_of(J), u, abs, sizeof abs);
     url_strip_frag(abs);
     JS_FreeCString(c, u);
     /* the request travels as one blob "METHOD\0headers\0body" (NULL = a plain GET) */
@@ -970,7 +1086,7 @@ NATIVE(n_submit) { submit_req = ARGID(0); return JS_UNDEFINED; }
 NATIVE(n_sync_get) {
     CSTR(u, 0);
     char abs[URL_MAX];
-    url_resolve(page_url, u, abs, sizeof abs);
+    url_resolve(base_of(J), u, abs, sizeof abs);
     url_strip_frag(abs);
     JS_FreeCString(c, u);
     size_t l = 0;
@@ -979,6 +1095,85 @@ NATIVE(n_sync_get) {
     JSValue v = JS_NewStringLen(c, b, l);
     free(b);
     return v;
+}
+NATIVE(n_rand) {                                           /* crypto.getRandomValues: n bytes of /dev/urandom as an ArrayBuffer */
+    int32_t n = 0; JS_ToInt32(c, &n, argv[0]);
+    if (n < 0 || n > 65536) n = 0;
+    uint8_t *b = malloc(n + 1); int fd = open("/dev/urandom", O_RDONLY), got = 0;
+    if (fd >= 0) { while (got < n) { int r = read(fd, b + got, n - got); if (r <= 0) break; got += r; } close(fd); }
+    for (; got < n; got++) b[got] = (uint8_t)rand();
+    JSValue r = JS_NewArrayBufferCopy(c, b, n);
+    free(b);
+    return r;
+}
+/* ---- <canvas> 2D (canvas.c): geometry arrives as ArrayBuffers of doubles from the prelude's CanvasRenderingContext2D ---- */
+static const double *abd(JSContext *c, JSValueConst v, int *n) { size_t sz = 0; uint8_t *p = JS_GetArrayBuffer(c, &sz, v); if (!p) { JS_FreeValue(c, JS_GetException(c)); *n = 0; return 0; } *n = (int)(sz / 8); return (const double *)p; }
+static const uint8_t *abb(JSContext *c, JSValueConst v, size_t need) { size_t sz = 0; uint8_t *p = JS_GetArrayBuffer(c, &sz, v); if (!p) JS_FreeValue(c, JS_GetException(c)); return p && sz >= need ? p : 0; }
+static int ai(JSContext *c, JSValueConst v) { int32_t i = 0; JS_ToInt32(c, &i, v); return i; }
+static double af(JSContext *c, JSValueConst v) { double d = 0; JS_ToFloat64(c, &d, v); return d; }
+#define OPTAB(v) (JS_IsUndefined(v) || JS_IsNull(v) ? 0 : abb(c, v, 1))
+NATIVE(n_cv_new) { return JS_NewInt32(c, cnv_new(ai(c, argv[0]), ai(c, argv[1]))); }
+NATIVE(n_cv_size) { return JS_NewInt32(c, cnv_resize(ai(c, argv[0]), ai(c, argv[1]), ai(c, argv[2]))); }
+NATIVE(n_cv_fill) {              /* id, polys, evenodd, paint, alpha, op, mask|undefined */
+    int np, nq;
+    const double *poly = abd(c, argv[1], &np), *pn = abd(c, argv[3], &nq);
+    if (poly && pn) cnv_fill(ai(c, argv[0]), poly, np, ai(c, argv[2]), pn, nq, af(c, argv[4]), ai(c, argv[5]), OPTAB(argv[6]));
+    return JS_UNDEFINED;
+}
+NATIVE(n_cv_text) {              /* id, text, x, baseline y, size, flags, paint, alpha, op, mask|undefined */
+    int nq;
+    const double *pn = abd(c, argv[6], &nq);
+    CSTR(s, 1);
+    if (pn) cnv_text(ai(c, argv[0]), s, af(c, argv[2]), af(c, argv[3]), af(c, argv[4]), ai(c, argv[5]), pn, nq, af(c, argv[7]), ai(c, argv[8]), OPTAB(argv[9]));
+    JS_FreeCString(c, s);
+    return JS_UNDEFINED;
+}
+NATIVE(n_cv_measure) {           /* text, size, flags -> [width, ascent, descent] */
+    CSTR(s, 0);
+    double w, a, d;
+    cnv_measure(s, af(c, argv[1]), ai(c, argv[2]), &w, &a, &d);
+    JS_FreeCString(c, s);
+    JSValue r = JS_NewArray(c);
+    JS_SetPropertyUint32(c, r, 0, JS_NewFloat64(c, w)); JS_SetPropertyUint32(c, r, 1, JS_NewFloat64(c, a)); JS_SetPropertyUint32(c, r, 2, JS_NewFloat64(c, d));
+    return r;
+}
+static void cnv_free_cb(JSRuntime *jrt, void *opaque, void *ptr) { free(ptr); }
+NATIVE(n_cv_clip) {              /* id, polys, evenodd, prev|undefined -> mask ArrayBuffer */
+    int np;
+    const double *poly = abd(c, argv[1], &np);
+    if (!poly) return JS_UNDEFINED;
+    size_t len = 0;
+    uint8_t *m = cnv_clip(ai(c, argv[0]), poly, np, ai(c, argv[2]), OPTAB(argv[3]), &len);
+    return m ? JS_NewArrayBuffer(c, m, len, cnv_free_cb, 0, 0) : JS_UNDEFINED;
+}
+NATIVE(n_cv_get) {               /* id, x, y, w, h -> RGBA ArrayBuffer */
+    int w = ai(c, argv[3]), h = ai(c, argv[4]);
+    uint8_t *p = cnv_get_rgba(ai(c, argv[0]), ai(c, argv[1]), ai(c, argv[2]), w, h);
+    return p ? JS_NewArrayBuffer(c, p, (size_t)w * h * 4, cnv_free_cb, 0, 0) : JS_UNDEFINED;
+}
+NATIVE(n_cv_put) {               /* id, rgba, w, h, dx, dy */
+    int w = ai(c, argv[2]), h = ai(c, argv[3]);
+    const uint8_t *s = w > 0 && h > 0 ? abb(c, argv[1], (size_t)w * h * 4) : 0;
+    if (s) cnv_put_rgba(ai(c, argv[0]), s, w, h, ai(c, argv[4]), ai(c, argv[5]));
+    return JS_UNDEFINED;
+}
+NATIVE(n_cv_show) {              /* js node id of a <canvas>, canvas slot: hand the pixels to the image cache and relayout */
+    int id = ARGID(0), w = 0, h = 0;
+    const uint8_t *px = id ? cnv_pixels(ai(c, argv[1]), &w, &h) : 0;
+    if (px) {
+        char key[24];
+        snprintf(key, sizeof key, "canvas:%d.%d", J->fid, id);
+        if (img_set_rgba(key, px, w, h) >= 0) touch(id);
+    }
+    return JS_UNDEFINED;
+}
+NATIVE(n_cv_png) { return take(cnv_png_url(ai(c, argv[0]))); }
+NATIVE(n_color) {                /* CSS colour -> 0xAARRGGBB as an unsigned number, or -1 */
+    CSTR(s, 0);
+    color_t col = 0;
+    int ok = css_color(s, &col, 0);
+    JS_FreeCString(c, s);
+    return ok ? JS_NewUint32(c, col) : JS_NewInt32(c, -1);
 }
 NATIVE(n_ua) { return str(BROWSER_UA); }
 NATIVE(n_cookie_get) { char b[4096]; cookie_get(page_url, b, sizeof b); return str(b); }
@@ -1011,7 +1206,7 @@ NATIVE(n_ready) { return JS_NewInt32(c, rstate); }
 NATIVE(n_set_url) {                                        /* pushState / replaceState / #hash: the page URL changes, no load */
     CSTR(u, 0);
     char out[URL_MAX];
-    url_resolve(page_url, u, out, sizeof out);
+    url_resolve(base_of(J), u, out, sizeof out);
     JS_FreeCString(c, u);
     strlcpy(page_url, out, sizeof page_url);
     url_changed = 1;
@@ -1023,7 +1218,6 @@ NATIVE(n_scroll_to) { double y = 0; JS_ToFloat64(c, &y, argv[1]); scroll_req_y =
 NATIVE(n_view) { JSValue a = JS_NewArray(c); JS_SetPropertyUint32(c, a, 0, JS_NewInt32(c, vscroll)); JS_SetPropertyUint32(c, a, 1, JS_NewInt32(c, vw)); JS_SetPropertyUint32(c, a, 2, JS_NewInt32(c, vh)); return a; }
 /* layout publishes border boxes here after each layout (js_set_rect); until it does (or for a node it skipped) a node's
  * box is the union of the display items inside it: text extents, and an empty element has none */
-static int (*RC)[4], nrc, rc_set;                   /* RC[node] = {x, y, w, h}; w < 0 = unset */
 void js_set_rect(int node, int x, int y, int w, int h) {
     if (node <= 0 || node >= nn) return;
     if (node >= nrc) {
@@ -1042,11 +1236,11 @@ static int in_layout;
 static uint32_t lay_end, lay_ms;
 void js_set_layout_hook(void (*f)(void)) { layout_hook = f; }
 static void force_layout(void) {
-    if (!dirty || !layout_hook || in_layout || !live) return;
+    if (!dirty || (!layout_hook && !J->fr) || in_layout || !live) return;
     uint32_t t0 = uptime_ms();
     if (lay_end && t0 - lay_end < lay_ms * 2) return;
     in_layout = 1;
-    layout_hook();
+    if (J->fr) frame_relayout(J->fr); else layout_hook();
     in_layout = 0;
     dirty = 0;
     lay_end = uptime_ms(); lay_ms = lay_end - t0;
@@ -1076,7 +1270,24 @@ NATIVE(n_rect) {
     for (int i = 0; i < 4; i++) JS_SetPropertyUint32(c, a, i, JS_NewInt32(c, v[i]));
     return a;
 }
-NATIVE(n_media) { CSTR(q, 0); css_viewport(vw); int r = css_media(q); JS_FreeCString(c, q); return JS_NewBool(c, r); }
+/* what a click at document point (x, y) landed on: the display items only know text, images and controls, so an empty styled div (a
+ * checkbox drawn with borders and a background) is found from the border boxes layout published. The deepest box under the point wins;
+ * the item's own node (hint) stands when nothing inside it is under the point. */
+int js_fid(void) { return J->fid; }                         /* which context (0 = the page) the layout in progress belongs to */
+int js_hit(int x, int y, int hint) {
+    if (!rc_set) return hint;
+    int best = hint, bd = -1;
+    for (int a = hint; a > 0 && a < nn; a = N[a].parent) bd++;
+    bd++;
+    for (int i = 1; i < nn && i < nrc; i++) {
+        if (N[i].type != 1 || RC[i][2] <= 0 || RC[i][3] <= 0 || x < RC[i][0] || y < RC[i][1] || x >= RC[i][0] + RC[i][2] || y >= RC[i][1] + RC[i][3]) continue;
+        int d = 0, inside = !hint;
+        for (int a = i; a; a = N[a].parent) { d++; if (a == hint) inside = 1; }
+        if (inside && d > bd) { best = i; bd = d; }
+    }
+    return best;
+}
+NATIVE(n_media) { CSTR(q, 0); css_claim(); css_viewport(vw); int r = css_media(q); JS_FreeCString(c, q); return JS_NewBool(c, r); }
 /* computed style of an element, as an object of CSS strings (css_compute down the ancestor chain: UA sheet, author sheets, style="") */
 static void put_len(JSContext *c, JSValue o, const char *name, const struct cprops *p, int prop) {
     char b[24];
@@ -1094,8 +1305,8 @@ static void put_col(JSContext *c, JSValue o, const char *name, uint32_t col) {
 static const struct cprops *computed_of(int id) {          /* the cascade down the ancestor chain; the result is a static */
     int chain[128], n = 0;
     for (int a = id; a && n < 128; a = cd_parent(a)) chain[n++] = a;
-    css_dom_set(&CDOM);
-    css_base(page_url);
+    css_claim();
+    css_base(base_of(J));
     static struct cprops cp[2];
     int cur = 0;
     for (int i = n - 1; i >= 0; i--) { css_compute(chain[i], PE_NONE, i == n - 1 ? 0 : &cp[cur ^ 1], &cp[cur]); if (i) cur ^= 1; }
@@ -1197,7 +1408,7 @@ static const JSCFunctionListEntry NATIVES[] = {
     JS_CFUNC_DEF("createComment", 1, n_create_comment), JS_CFUNC_DEF("docwrite", 1, n_docwrite), JS_CFUNC_DEF("curScript", 0, n_cur_script),
     JS_CFUNC_DEF("ready", 0, n_ready), JS_CFUNC_DEF("setUrl", 2, n_set_url), JS_CFUNC_DEF("scrollTo", 2, n_scroll_to),
     JS_CFUNC_DEF("view", 0, n_view), JS_CFUNC_DEF("rect", 1, n_rect), JS_CFUNC_DEF("media", 1, n_media),
-    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("gen", 0, n_gen), JS_CFUNC_DEF("cvar", 2, n_cvar), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
+    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("gen", 0, n_gen), JS_CFUNC_DEF("cvar", 2, n_cvar), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("rand", 1, n_rand), JS_CFUNC_DEF("cvNew", 2, n_cv_new), JS_CFUNC_DEF("cvSize", 3, n_cv_size), JS_CFUNC_DEF("cvFill", 7, n_cv_fill), JS_CFUNC_DEF("cvText", 10, n_cv_text), JS_CFUNC_DEF("cvMeasure", 3, n_cv_measure), JS_CFUNC_DEF("cvClip", 4, n_cv_clip), JS_CFUNC_DEF("cvGet", 5, n_cv_get), JS_CFUNC_DEF("cvPut", 6, n_cv_put), JS_CFUNC_DEF("cvPNG", 1, n_cv_png), JS_CFUNC_DEF("cvShow", 2, n_cv_show), JS_CFUNC_DEF("color", 1, n_color), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
 };
 
 /* ---------- running JS ---------- */
@@ -1283,22 +1494,24 @@ static void leave(JSValue r) {
     depth = 0;
     for (int k = 0; !dead && k < 100000; k++) {          /* promise jobs, same budget */
         int ret = JS_ExecutePendingJob(rt, &c);
-        if (ret <= 0) { if (ret < 0) report(c); if (ret == 0) break; }
+        if (ret <= 0) { if (ret < 0) { struct jsst *sv = J; J = JS_GetContextOpaque(c); report(c); J = sv; } if (ret == 0) break; }
     }
     flush_rejections();
 }
 
 /* a rejection nobody handled by the end of the microtask checkpoint (a handler attached right after is fine, as in browsers) */
-static struct { JSValue p, reason; } RJ[16];
-static int nrj;
 static void on_reject(JSContext *c, JSValueConst p, JSValueConst reason, JS_BOOL handled, void *op) {
     if (killed) return;
+    struct jsst *sv = J;
+    J = JS_GetContextOpaque(c);
     if (handled) {
         for (int i = 0; i < nrj; i++)
             if (JS_VALUE_GET_PTR(RJ[i].p) == JS_VALUE_GET_PTR(p)) { JS_FreeValue(c, RJ[i].p); JS_FreeValue(c, RJ[i].reason); RJ[i] = RJ[--nrj]; break; }
+        J = sv;
         return;
     }
     if (nrj < 16) { RJ[nrj].p = JS_DupValue(c, p); RJ[nrj].reason = JS_DupValue(c, reason); nrj++; }
+    J = sv;
 }
 static void flush_rejections(void) {
     while (nrj) {
@@ -1387,6 +1600,8 @@ static struct scr *scr_by_fid(int id) {
     return 0;
 }
 static void deliver(int id, int script, int status, const char *text, const char *ctype, const char *body, size_t blen, const char *err, const char *url, const char *hdrs) {
+    if (script == 3) { worker_loaded(id, status, body, blen, err != 0, url); return; }
+    if (script == 2) { frame_loaded(id, status, ctype, body, blen, err != 0, url, hdrs); return; }
     if (script) {
         struct scr *e = scr_by_fid(id);
         if (!e || e->state != 1) return;
@@ -1492,16 +1707,23 @@ static void pump_fetches(void) {
         if (!F[i].used) { slot_start(&F[i], FQ[0].id, FQ[0].url, FQ[0].script, FQ[0].post); free(FQ[0].url); memmove(FQ, FQ + 1, --nfq * sizeof *FQ); }
 }
 
-int js_busy(void) {
+static int st_busy(void) {
     if (!active) return 0;
     for (int i = 0; i < MAXF; i++) if (F[i].used) return 1;
     return nfq > 0;
+}
+int js_busy(void) {
+    struct jsst *sv = J;
+    int r = 0;
+    for (int i = -1; i < MAXFR && !r; i++) { J = i < 0 ? &top_st : FS[i]; if (J) r = st_busy(); }
+    J = sv;
+    return r;
 }
 
 /* ---------- page lifecycle ---------- */
 static int uses_js(const char *s, size_t n) {
     for (size_t i = 0; i + 8 < n; i++) {
-        if (s[i] == '<' && !strncasecmp(s + i + 1, "script", 6)) return 1;
+        if (s[i] == '<' && (!strncasecmp(s + i + 1, "script", 6) || !strncasecmp(s + i + 1, "iframe", 6))) return 1;
         if (isspace((unsigned char)s[i]) && (s[i + 1] | 32) == 'o' && (s[i + 2] | 32) == 'n' && isalpha((unsigned char)s[i + 3])) {
             size_t j = i + 3;
             while (j < n && isalpha((unsigned char)s[j])) j++;
@@ -1523,18 +1745,25 @@ static JSValue global_fn(const char *name) {
     return f;
 }
 
-int js_page(const char *src, size_t n, const char *url) {
-    js_reset();
-    if (!uses_js(src, n)) return 0;
-    heap_bytes = 0; mem_kill = 0;
-    rt = JS_NewRuntime2(&JM, 0);
-    if (!rt) return 0;
-    JS_SetMaxStackSize(rt, 1u << 20);
-    JS_SetInterruptHandler(rt, on_interrupt, 0);
-    JS_SetModuleLoaderFunc(rt, mod_norm, mod_load, 0);
-    JS_SetHostPromiseRejectionTracker(rt, on_reject, 0);
+static void st_defaults(void) {
+    fn_dispatch = fn_fire = fn_fetch = fn_blob = J->fn_wrap = J->fn_msg = J->fn_xwin = J->fn_ser = J->fn_nf = imap = JS_UNDEFINED;
+    scroll_req_y = -1; vw = 900; vh = 580; next_tid = 1; next_fid = 1;
+}
+
+/* J's context: the runtime (made by the first page), a JSContext, the tree parsed from src, the preludes. scripts 0 = sandboxed: none run */
+static int page_boot(const char *src, size_t n, const char *url, int scripts) {
+    if (!rt) {
+        heap_bytes = 0; mem_kill = 0;
+        rt = JS_NewRuntime2(&JM, 0);
+        if (!rt) return 0;
+        JS_SetMaxStackSize(rt, 1u << 20);
+        JS_SetInterruptHandler(rt, on_interrupt, 0);
+        JS_SetModuleLoaderFunc(rt, mod_norm, mod_load, 0);
+        JS_SetHostPromiseRejectionTracker(rt, on_reject, 0);
+    }
     ctx = JS_NewContext(rt);
-    if (!ctx) { JS_FreeRuntime(rt); rt = 0; return 0; }
+    if (!ctx) return 0;
+    JS_SetContextOpaque(ctx, J);
     strlcpy(page_url, url, sizeof page_url);
     css_dom_set(&CDOM);
     new_node(0, 0);                                        /* id 0 = null */
@@ -1544,21 +1773,30 @@ int js_page(const char *src, size_t n, const char *url) {
     parse_html(1, src, n, 0);
     JSValue g = JS_GetGlobalObject(ctx), d = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, d, NATIVES, sizeof NATIVES / sizeof *NATIVES);
+    reg_frame_natives(ctx, d);
     JS_SetPropertyStr(ctx, g, "__d", d);
     JS_FreeValue(ctx, g);
     active = 1;
-    scan_scripts(1, 0);
+    if (scripts) scan_scripts(1, 0);
     enter();
-    JSValue r = JS_Eval(ctx, js_prelude, strlen(js_prelude), "<dom>", JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(r)) { report(ctx); dead = 1; }
-    JS_FreeValue(ctx, r);
-    if (!dead) {
-        r = JS_Eval(ctx, js_prelude2, strlen(js_prelude2), "<web>", JS_EVAL_TYPE_GLOBAL);
+    static const char *const PRE[3] = { js_prelude, js_prelude_fr, js_prelude2 };
+    static const char *const PN[3] = { "<dom>", "<frames>", "<web>" };
+    for (int i = 0; i < 3 && !dead; i++) {
+        JSValue r = JS_Eval(ctx, PRE[i], strlen(PRE[i]), PN[i], JS_EVAL_TYPE_GLOBAL);
         if (JS_IsException(r)) { report(ctx); dead = 1; }
         JS_FreeValue(ctx, r);
     }
     depth = 0;
     fn_dispatch = global_fn("__dispatch"); fn_fire = global_fn("__fire"); fn_fetch = global_fn("__fetchDone"); fn_blob = global_fn("__blobText");
+    if (!scripts) dead = 1;
+    return 1;
+}
+
+int js_page(const char *src, size_t n, const char *url) {
+    js_reset();
+    if (!uses_js(src, n)) return 0;
+    if (!page_boot(src, n, url, 1)) { js_reset(); return 0; }
+    origin_of(url, 0, top_st.origin, sizeof top_st.origin);
     return 1;
 }
 
@@ -1619,7 +1857,6 @@ static char *sync_get(const char *url, size_t *len) {
     return 0;
 }
 
-static JSValue imap = JS_UNDEFINED;                        /* <script type=importmap> "imports" (the first one; scopes are ignored) */
 static char *mod_norm(JSContext *c, const char *base, const char *name, void *op) {
     char out[URL_MAX];
     if (!JS_IsUndefined(imap)) {
@@ -1688,7 +1925,7 @@ static void add_script(int id, int where) {                /* where: 0 parser, 1
     struct buf b = { 0 };
     if (!(src && *src)) { text_of(&b, id); if (!b.n) { free(b.p); return; } free(b.p); }
     struct scr e = { id, 0, src && *src ? 1 : 2, module, 0, where == 0 ? nscr : 0, 0, 0 };
-    if (src && *src) { size_t sl = strlen(src) + strlen(page_url) + 1; char *u = malloc(sl); if (u) { url_resolve(page_url, src, u, sl); e.url = u; } }   /* data: and long URLs can exceed URL_MAX */
+    if (src && *src) { size_t sl = strlen(src) + strlen(page_url) + 1; char *u = malloc(sl); if (u) { url_resolve(base_of(J), src, u, sl); e.url = u; } }   /* data: and long URLs can exceed URL_MAX */
     if (where == 2 || (e.url && attr(id, "async"))) e.mode = 2;
     else if (module || (e.url && attr(id, "defer"))) e.mode = 1;
     struct scr *slot;
@@ -1771,8 +2008,10 @@ static void run_scripts(void) {
     idle = 1;
 }
 
-int js_pump(void) {
+static int pump_one(void) {                               /* J's page */
     if (!active) return 0;
+    if (J->nifr) frames_scan();
+    msgs_deliver();
     pump_fetches();
     if (++pumps > 1) run_scripts();                       /* the page gets painted once before its scripts run */
     uint32_t now = uptime_ms();
@@ -1788,12 +2027,14 @@ int js_pump(void) {
         JSValue argv[2] = { JS_NewInt32(ctx, due[k]), JS_NewBool(ctx, rep) };
         call(fn_fire, 2, argv);
     }
+    if (J->fr && J->fr->node && !J->owner_load && (rstate >= 2 || dead)) owner_event("load");
     int d = dirty;
     dirty = 0;
     return d;
 }
+int js_pump(void) { return pump_one(); }
 
-int js_timeout(void) {
+static int st_timeout(void) {
     if (active && !dead && !idle) return 0;                 /* scripts still to run */
     if (!active || dead || !nt) return -1;
     uint32_t now = uptime_ms();
@@ -1801,19 +2042,32 @@ int js_timeout(void) {
     for (int i = 0; i < nt; i++) { int32_t d = (int32_t)(T[i].due - now); if (d < best) best = d < 0 ? 0 : d; }
     return best;
 }
+int js_timeout(void) {                                      /* the soonest of the page's and its frames' */
+    struct jsst *sv = J;
+    int best = -1;
+    for (int i = -1; i < MAXFR; i++) {
+        J = i < 0 ? &top_st : FS[i];
+        if (!J) continue;
+        int t = st_timeout();
+        if (t >= 0 && (best < 0 || t < best)) best = t;
+        if (J->nifr && J->scan) best = 0;
+    }
+    J = sv;
+    return best;
+}
 
-void js_reset(void) {
+static void st_free(void) {                                 /* J: everything it owns (not the runtime, not the struct itself) */
     for (int i = 0; i < MAXF; i++) if (F[i].used) { if (!F[i].file) fetch_cancel(&F[i].f); F[i].used = 0; free(F[i].post); F[i].post = 0; }
+    for (int i = 0; i < MAXF; i++) { free(F[i].url); F[i].url = 0; }
     for (int i = 0; i < nfq; i++) { free(FQ[i].post); free(FQ[i].url); }
     nfq = 0;
     if (ctx) {
-        JS_FreeValue(ctx, imap); imap = JS_UNDEFINED;
+        JS_FreeValue(ctx, imap);
         JS_FreeValue(ctx, fn_dispatch); JS_FreeValue(ctx, fn_fire); JS_FreeValue(ctx, fn_fetch); JS_FreeValue(ctx, fn_blob);
+        JS_FreeValue(ctx, J->fn_wrap); JS_FreeValue(ctx, J->fn_msg); JS_FreeValue(ctx, J->fn_xwin); JS_FreeValue(ctx, J->fn_ser); JS_FreeValue(ctx, J->fn_nf);
+        for (int i = 0; i < nrj; i++) { JS_FreeValue(ctx, RJ[i].p); JS_FreeValue(ctx, RJ[i].reason); }
         JS_FreeContext(ctx);
-        JS_FreeRuntime(rt);
     }
-    fn_dispatch = fn_fire = fn_fetch = fn_blob = JS_UNDEFINED;
-    ctx = 0; rt = 0;
     for (int i = 0; i < nn; i++) {
         struct node *x = &N[i];
         free(x->text); free(x->val);
@@ -1821,18 +2075,26 @@ void js_reset(void) {
         free(x->an); free(x->av);
     }
     free(N);
-    N = 0; nn = ncap = 0;
-    free(RC); RC = 0; nrc = rc_set = 0;
+    free(RC);
     for (int i = 0; i < nscr; i++) { free(S[i].body); free(S[i].url); }
     for (int i = 0; i < MAXDYN; i++) { free(D[i].body); free(D[i].url); }
-    memset(S, 0, sizeof S); memset(D, 0, sizeof D);
-    cur_def = cur_script = rstate = idle = strikes = url_changed = depth = 0; scroll_req_y = -1; anchor_req[0] = 0;
     free(alert_text);
-    alert_text = 0;
-    nscr = cur_scr = nt = 0; ndi = di_over = 0; gen = 0;
-    active = dirty = dead = killed = loaded = focus_req = pumps = 0;
-    nav[0] = 0;
-    live = 0;
+    struct frame *fr = J->fr; int fid = J->fid, sb = J->sandbox, v_w = vw, v_h = vh, v_s = vscroll;
+    char *lk = J->lkey; int lf = J->lfid;
+    memset(J, 0, sizeof *J);
+    J->fr = fr; J->fid = fid; J->sandbox = sb; J->lkey = lk; J->lfid = lf; vw = v_w; vh = v_h; vscroll = v_s;
+    st_defaults();
+}
+
+void js_reset(void) {
+    cnv_reset();
+    npt = 1;
+    for (int i = 0; i < MAXFR; i++) if (FS[i]) { J = FS[i]; frame_free(FS[i]->fr); }
+    J = &top_st;
+    st_free();
+    if (rt) { JS_FreeRuntime(rt); rt = 0; }
+    killed = 0;
+    nmq = 0;
 }
 
 int js_active(void) { return active; }
@@ -1909,3 +2171,539 @@ const char *dom_ctl_value(int n) {                       /* current value of an 
 }
 int dom_ctl_checked(int n) { return n > 0 && n < nn && (N[n].has_chk ? N[n].chk : attr(n, "checked") != 0); }
 int dom_ctl_sel(int n) { return n > 0 && n < nn ? sel_index(n) : -1; }       /* <select>: selected option index */
+
+/* ---------- frames ----------
+ * An <iframe> is a struct frame (iframe.c draws and feeds it) over its own struct jsst: a JSContext in the same runtime, a node tree of
+ * its own, scripts, timers, fetches. The document it shows is fetched by the PARENT's fetch queue (script == 2) and booted in place when
+ * it lands, so the frame keeps its slot (fid) while its window changes. contentWindow/parent/top hand out the other realm's global
+ * object when the two are same-origin and a restricted proxy (iframe.c's prelude) when not. postMessage serialises in the sender's
+ * realm (JS_GetCallerContext tells which), queues, and the receiving frame's pump deserialises and dispatches. */
+enum { SB_ON = 1, SB_SCRIPTS = 2, SB_SAME = 4, SB_TOP = 8, SB_FORMS = 16 };
+static struct { int to, from, port; char *json; char origin[160]; } MQ[64];   /* port: the MessagePort it is for (0 = the window / the Worker object) */
+static const char *evo(struct jsst *s) { return !strncmp(s->origin, "file:", 5) ? "null" : s->origin; }   /* event.origin: a local file's is "null" */
+static struct { int owner, peer; } PT[256];                /* MessagePorts: which context holds each end, and the other end */
+
+
+static struct jsst *st_by_fid(int fid) { return fid == 0 ? (top_st.s_active ? &top_st : 0) : fid > 0 && fid <= MAXFR ? FS[fid - 1] : 0; }
+static struct jsst *par_of(struct jsst *s) { return s->fr && s->fr->par ? s->fr->par->st : &top_st; }
+static int same_origin(struct jsst *a, struct jsst *b) { return a == b || (strcmp(a->origin, "null") && !strcmp(a->origin, b->origin)); }
+
+static void origin_of(const char *url, const char *inherit, char *out, int cap) {
+    if (!strncasecmp(url, "http://", 7) || !strncasecmp(url, "https://", 8)) {
+        const char *a = strstr(url, "://") + 3, *e = a + strcspn(a, "/?#"), *at = memchr(a, '@', e - a);
+        if (at) a = at + 1;
+        snprintf(out, cap, "%.*s://%.*s", (int)(strstr(url, "://") - url), url, (int)(e - a), a);
+        for (char *q = out; *q; q++) *q = tolower((unsigned char)*q);
+        size_t n = strlen(out);                                  /* the default port is not part of the origin */
+        if (n > 4 && !strcmp(out + n - 4, ":443") && out[4] == 's') out[n - 4] = 0;
+        else if (n > 3 && !strcmp(out + n - 3, ":80") && out[4] == ':') out[n - 3] = 0;
+    } else if (!strncasecmp(url, "file:", 5)) {                /* every local file is an origin of its own (an opaque one in a real browser) */
+        snprintf(out, cap, "%.*s", (int)strcspn(url, "?#"), url);
+    }
+    else if (inherit && !strncasecmp(url, "about:", 6)) strlcpy(out, inherit, cap);
+    else strlcpy(out, "null", cap);
+}
+
+static int sandbox_of(int id) {
+    const char *v = attr(id, "sandbox");
+    if (!v) return 0;
+    return SB_ON | (strstr(v, "allow-scripts") ? SB_SCRIPTS : 0) | (strstr(v, "allow-same-origin") ? SB_SAME : 0) |
+           (strstr(v, "allow-top-navigation") ? SB_TOP : 0) | (strstr(v, "allow-forms") ? SB_FORMS : 0);
+}
+
+static struct jsst *frame_of(struct jsst *par, int node) {
+    for (int i = 0; i < MAXFR; i++) if (FS[i] && par_of(FS[i]) == par && FS[i]->fr->node == node) return FS[i];
+    return 0;
+}
+
+static struct jsst *frame_new(int node) {                    /* J = the parent; not booted yet */
+    int i = 0;
+    while (i < MAXFR && FS[i]) i++;
+    if (i == MAXFR) return 0;
+    struct jsst *st = calloc(1, sizeof *st);
+    struct frame *f = calloc(1, sizeof *f);
+    if (!st || !f) { free(st); free(f); return 0; }
+    f->st = st; f->par = J->fr; f->node = node; f->redo = 1; f->fo = f->cb = f->hover = -1;
+    st->fr = f; st->fid = i + 1; st->sandbox = sandbox_of(node);
+    FS[i] = st;
+    return st;
+}
+
+static void frame_free(struct frame *f) {                    /* the frame and its document, not its children */
+    struct jsst *st = f->st, *sv = J;
+    frame_gone(f);
+    J = st;
+    st_free();
+    free(st->lkey);
+    doc_free(&f->doc);
+    for (int i = 0; i < f->nfs; i++) free(f->fs[i].val);
+    free(f->fs);
+    for (int i = 0; i < nmq; ) if (MQ[i].to == st->fid) { free(MQ[i].json); MQ[i] = MQ[--nmq]; } else i++;
+    FS[st->fid - 1] = 0;
+    J = sv == st ? &top_st : sv;
+    free(st);
+    free(f);
+}
+
+static void frame_destroy(struct jsst *ch) {                 /* with the frames inside it */
+    for (int i = 0; i < MAXFR; i++) if (FS[i] && FS[i] != ch && par_of(FS[i]) == ch) frame_destroy(FS[i]);
+    frame_free(ch->fr);
+}
+
+/* put a new document into the frame, in place */
+static int frame_boot(struct jsst *ch, const char *html, size_t n, const char *url) {
+    struct jsst *sv = J, *pa = par_of(ch);
+    char org[160];
+    origin_of(url, pa->origin, org, sizeof org);
+    if ((ch->sandbox & SB_ON) && !(ch->sandbox & SB_SAME)) strlcpy(org, "null", sizeof org);
+    for (int i = 0; i < MAXFR; i++) if (FS[i] && FS[i] != ch && par_of(FS[i]) == ch) frame_destroy(FS[i]);
+    struct frame *f = ch->fr;
+    J = pa;
+    const char *nmv = f->node ? attr(f->node, "name") : 0;      /* window.name = the iframe's name attribute */
+    char wname[160];
+    strlcpy(wname, nmv ? nmv : "", sizeof wname);
+    J = ch;
+    st_free();
+    doc_free(&f->doc);
+    for (int i = 0; i < f->nfs; i++) free(f->fs[i].val);
+    free(f->fs); f->fs = 0; f->nfs = 0;
+    f->ready = 0; f->redo = 1; f->sy = f->ty = 0; f->fo = f->cb = f->hover = -1; f->selp = 0; f->pnode = f->pbtn = 0; f->pmx = f->pmy = -1;
+    strlcpy(J->origin, org, sizeof J->origin);
+    int ok = page_boot(html, n, url, !(ch->sandbox & SB_ON) || (ch->sandbox & SB_SCRIPTS));
+    if (ok && wname[0]) { JSValue g = JS_GetGlobalObject(ctx); JS_SetPropertyStr(ctx, g, "name", str(wname)); JS_FreeValue(ctx, g); }
+    J = sv;
+    return ok;
+}
+static void frame_blank(struct jsst *ch) { frame_boot(ch, "<body></body>", 13, "about:blank"); }
+
+static void owner_event(const char *type) {                  /* J = the frame: load/error on its <iframe> element, in the parent's realm */
+    struct jsst *ch = J, *pa = par_of(ch);
+    ch->owner_load = 1;
+    J = pa;
+    if (pa->s_ctx && !pa->s_dead) fire(ch->fr->node, type);
+    J = ch;
+}
+
+/* does one frame-ancestors source expression allow the ancestor with origin `anc` (the framed document's own origin is `self`)? */
+static int fa_match(const char *tok, const char *anc, const char *self) {
+    if (!strcmp(tok, "*")) return strncmp(anc, "http", 4) == 0;
+    if (!strcasecmp(tok, "'self'")) return strcmp(self, "null") && !strcmp(self, anc);
+    if (!strcasecmp(tok, "'none'")) return 0;
+    size_t tl = strlen(tok);
+    if (tl && tok[tl - 1] == ':') return !strncasecmp(anc, tok, tl);
+    const char *sch = strstr(tok, "://"), *th = sch ? sch + 3 : tok;
+    if (sch && strncasecmp(anc, tok, sch - tok + 3)) return 0;
+    const char *ah = strstr(anc, "://");
+    if (!ah) return 0;
+    ah += 3;
+    char t[160], a[160];
+    snprintf(t, sizeof t, "%.*s", (int)strcspn(th, "/"), th);
+    snprintf(a, sizeof a, "%s", ah);
+    char *tc = strchr(t, ':');
+    int hp = tc && strcmp(tc, ":*");
+    if (tc && !hp) *tc = 0;
+    if (!hp) { char *ac = strchr(a, ':'); if (ac) *ac = 0; }       /* no port in the source: any port */
+    if (t[0] == '*' && t[1] == '.') { size_t n = strlen(t + 1), m = strlen(a); return m > n && !strcasecmp(a + m - n, t + 1); }
+    return !strcasecmp(t, a);
+}
+static int frame_may_load(struct jsst *ch, const char *url, const char *hdrs) {   /* X-Frame-Options and CSP frame-ancestors of the response */
+    if (!hdrs || !*hdrs) return 1;
+    char self[160], v[1024];
+    origin_of(url, 0, self, sizeof self);
+    int csp = 0;
+    if (hdr_get(hdrs, strlen(hdrs), "Content-Security-Policy", v, sizeof v)) {
+        char *fa = 0;
+        for (char *q = v; *q && !fa; q++) if (!strncasecmp(q, "frame-ancestors", 15)) fa = q;
+        if (fa) {
+            csp = 1;
+            fa += 15;
+            size_t dl = strcspn(fa, ";");
+            char dir[1024];
+            snprintf(dir, sizeof dir, "%.*s", (int)dl, fa);
+            for (struct jsst *an = par_of(ch);; an = par_of(an)) {
+                int ok = 0;
+                char *cp = strdup(dir), *tk, *sp;
+                for (tk = strtok_r(cp, " \t", &sp); tk && !ok; tk = strtok_r(0, " \t", &sp)) ok = fa_match(tk, an->origin, self);
+                free(cp);
+                if (!ok) return 0;
+                if (an == &top_st) break;
+            }
+        }
+    }
+    if (!csp && hdr_get(hdrs, strlen(hdrs), "X-Frame-Options", v, sizeof v)) {
+        if (!strncasecmp(v, "deny", 4)) return 0;
+        if (!strncasecmp(v, "sameorigin", 10))
+            for (struct jsst *an = par_of(ch);; an = par_of(an)) {
+                if (!strcmp(self, "null") || strcmp(self, an->origin)) return 0;
+                if (an == &top_st) break;
+            }
+    }
+    return 1;
+}
+
+static void frame_loaded(int id, int status, const char *ctype, const char *body, size_t blen, int bad, const char *url, const char *hdrs) {   /* J = the parent */
+    struct jsst *ch = 0, *pa = J;
+    for (int i = 0; i < MAXFR; i++) if (FS[i] && FS[i]->lfid == id && par_of(FS[i]) == pa) ch = FS[i];
+    if (!ch) return;
+    ch->lfid = 0;
+    if (bad) { jlog(1, "iframe %s failed to load", url); J = ch; owner_event("error"); J = pa; return; }
+    if (!frame_may_load(ch, url, hdrs)) {                  /* the page said it must not be framed here */
+        static const char MSG[] = "<body style=\"font:14px sans-serif;color:#555;background:#f4f4f4;margin:12px\"><p>This content is blocked. Contact the site owner to fix the issue.</p></body>";
+        jlog(1, "iframe %s refused to be framed (X-Frame-Options / frame-ancestors)", url);
+        frame_boot(ch, MSG, sizeof MSG - 1, "data:text/html,blocked");
+        return;
+    }
+    struct buf b = { 0 };
+    const char *html = body ? body : "";
+    size_t n = body ? blen : 0;
+    if (ctype[0] && !ci_has(ctype, "html") && !ci_has(ctype, "xml")) {
+        if (!strncasecmp(ctype, "text/", 5) || ci_has(ctype, "json") || ci_has(ctype, "javascript")) {
+            put(&b, "<pre>", 5);
+            for (size_t i = 0; i < n; i++) {
+                if (body[i] == '<') put(&b, "&lt;", 4); else if (body[i] == '&') put(&b, "&amp;", 5); else put(&b, body + i, 1);
+            }
+            put(&b, "</pre>", 6);
+        } else if (!strncasecmp(ctype, "image/", 6)) {
+            put(&b, "<body style=\"margin:0\"><img src=\"", 33);
+            for (const char *u = url; *u; u++) if (*u != '"') put(&b, u, 1);
+            put(&b, "\"></body>", 9);
+        } else put(&b, "<body></body>", 13);
+        html = b.p ? b.p : ""; n = b.n;
+    }
+    frame_boot(ch, html, n, url);
+    free(b.p);
+}
+
+static int frame_nav_url(const char *src, const char *post) {   /* J = the parent: queue the document at src (a POST with this body if post); the fetch id */
+    size_t cap = strlen(src) + strlen(page_url) + 8;
+    char *abs = malloc(cap);
+    if (!abs) return 0;
+    url_resolve(base_of(J), src, abs, cap);
+    int id;
+    if (post) {
+        static const char H[] = "POST\0Content-Type: application/x-www-form-urlencoded";
+        size_t pl = strlen(post), hl = sizeof H;                /* "POST\0headers\0" (H's own NUL ends the headers), then the body */
+        char *blob = malloc(hl + pl + 1);
+        if (!blob) { free(abs); return 0; }
+        memcpy(blob, H, hl); memcpy(blob + hl, post, pl + 1);
+        id = fetch_queue(abs, 2, blob, 1);
+        free(blob);
+    } else id = fetch_queue(abs, 2, 0, 0);
+    free(abs);
+    return id < 0 ? 0 : id;
+}
+
+static void name_frame(struct jsst *ch, int id) {            /* J = the parent: window[name] (and parent.frames[name]) is the frame called name */
+    const char *nm = attr(id, "name");
+    if (!nm || !*nm || !ctx || JS_IsUndefined(J->fn_nf)) return;
+    JSValue a[2] = { str(nm), JS_NewInt32(ctx, ch->fid) };
+    JSValue r = JS_Call(ctx, J->fn_nf, JS_UNDEFINED, 2, a);
+    JS_FreeValue(ctx, a[0]); JS_FreeValue(ctx, a[1]); JS_FreeValue(ctx, r);
+}
+
+static void frames_scan(void) {                              /* J: start the loads that are due, drop frames whose element left the document */
+    if (!J->scan) return;
+    J->scan = 0;
+    for (int i = 0; i < J->nifr; i++) {
+        int id = J->ifr[i];
+        struct jsst *ch = frame_of(J, id);
+        if (!connected(id)) { if (ch) frame_destroy(ch); continue; }
+        const char *sd = attr(id, "srcdoc"), *src = attr(id, "src");
+        const char *want = sd ? sd : src && *src ? src : 0;
+        if (ch) name_frame(ch, id);
+        if (!want) continue;
+        if (!ch) { ch = frame_new(id); if (!ch) continue; frame_blank(ch); name_frame(ch, id); }
+        char *k = malloc(strlen(want) + 2);
+        if (!k) continue;
+        k[0] = sd ? 'D' : 'S'; strcpy(k + 1, want);
+        if (ch->lkey && !strcmp(ch->lkey, k)) { free(k); continue; }
+        free(ch->lkey); ch->lkey = k;
+        ch->lfid = 0;
+        if (sd) frame_boot(ch, sd, strlen(sd), "about:srcdoc");
+        else if (!strncasecmp(src, "javascript:", 11)) continue;
+        else if (!strcasecmp(src, "about:blank")) frame_blank(ch);
+        else ch->lfid = frame_nav_url(src, 0);
+    }
+}
+
+/* ---- the API iframe.c and main.c use ---- */
+void js_use(struct frame *f) { J = f ? f->st : &top_st; }
+struct frame *js_cur(void) { return J->fr; }
+int js_nframes(void) { int n = 0; for (int i = 0; i < MAXFR; i++) n += FS[i] != 0; return n; }
+struct frame *js_frame_nth(int k) { for (int i = 0; i < MAXFR; i++) if (FS[i] && !k--) return FS[i]->fr; return 0; }
+struct frame *js_frame_find(const struct doc *pdoc, int node) {
+    for (int i = 0; i < MAXFR; i++) {
+        struct jsst *s = FS[i];
+        if (s && s->fr->node == node && pdoc == (s->fr->par ? &s->fr->par->doc : top_st.s_live)) return s->fr;
+    }
+    return 0;
+}
+const char *js_frame_url(struct frame *f) { return base_of((struct jsst *)f->st); }
+void js_frame_navigate_post(struct frame *f, const char *url, const char *post) {   /* a link, form or location change inside the frame */
+    struct jsst *ch = f->st, *sv = J;
+    J = par_of(ch);
+    if (!strcasecmp(url, "about:blank")) frame_blank(ch);
+    else if (strncasecmp(url, "javascript:", 11) && strncmp(url, "vibe:", 5)) ch->lfid = frame_nav_url(url, post);
+    J = sv;
+}
+void js_frame_navigate(struct frame *f, const char *url) { js_frame_navigate_post(f, url, 0); }
+
+/* target= of a link or form: _self, _parent, _top, _blank (a new tab, asked of main.c through js_open_url) or the name of a frame.
+ * from = the frame the link is in (NULL = the page). 1 = handled here; 0 = the caller navigates its own document. A POST body (form) is
+ * kept for frames; a top-level or new-tab navigation from a frame is a GET. */
+static char open_req[URL_MAX];
+const char *js_open_url(void) {
+    static char o[URL_MAX];
+    if (!open_req[0]) return 0;
+    strlcpy(o, open_req, sizeof o);
+    open_req[0] = 0;
+    return o;
+}
+int js_goto_target(struct frame *from, const char *tg, const char *url, const char *post) {
+    struct frame *dest = from;
+    int top = 0;
+    if (!tg || !*tg || !strcasecmp(tg, "_self")) { if (!from) return 0; }
+    else if (!strcasecmp(tg, "_top")) { if (!from) return 0; top = 1; dest = 0; }
+    else if (!strcasecmp(tg, "_parent")) { if (!from) return 0; dest = from->par; top = !dest; }
+    else if (!strcasecmp(tg, "_blank") || !strcasecmp(tg, "_new")) { strlcpy(open_req, url, sizeof open_req); return 1; }
+    else {
+        dest = 0;
+        struct jsst *sv = J;
+        for (int i = 0; i < MAXFR; i++) {
+            struct jsst *s = FS[i];
+            if (!s || !s->fr->node) continue;
+            J = par_of(s);
+            const char *nm = attr(s->fr->node, "name");
+            if (nm && !strcmp(nm, tg)) { dest = s->fr; break; }
+        }
+        J = sv;
+        if (!dest) { strlcpy(open_req, url, sizeof open_req); return 1; }      /* no such window: a new one */
+    }
+    if (top) {
+        struct jsst *src = from ? from->st : &top_st;
+        if ((src->sandbox & SB_ON) && !(src->sandbox & SB_TOP)) return 1;      /* sandbox without allow-top-navigation */
+        strlcpy(top_st.s_nav, url, sizeof top_st.s_nav);
+        return 1;
+    }
+    js_frame_navigate_post(dest, url, post);
+    return 1;
+}
+static const char *base_target(void) { int bs = by_tag(1, "base"); return bs ? attr(bs, "target") : 0; }
+const char *js_link_target(int node) {                       /* J's tree: target of the link that holds `node`, else <base target> */
+    for (int a = node; a > 0 && a < nn; a = N[a].parent)
+        if (N[a].type == 1 && (!strcmp(N[a].tag, "a") || !strcmp(N[a].tag, "area")) && attr(a, "href")) { const char *t = attr(a, "target"); return t ? t : base_target(); }
+    return 0;
+}
+const char *js_form_target(int node) { const char *t = node > 0 && node < nn ? attr(node, "target") : 0; return t ? t : base_target(); }
+int js_frame_is_worker(struct frame *f) { return !f->node; }
+int js_frame_sandbox(struct frame *f) { return ((struct jsst *)f->st)->sandbox; }
+
+/* ---- natives ---- */
+static JSValue win_for(struct jsst *from, struct jsst *to) {   /* the window `to`, as `from` may see it */
+    if (!to || !to->s_ctx || !from->s_ctx) return JS_NULL;
+    if (same_origin(from, to)) return JS_GetGlobalObject(to->s_ctx);
+    if (JS_IsUndefined(from->fn_xwin)) return JS_NULL;
+    JSValue a = JS_NewInt32(from->s_ctx, to->fid);
+    return JS_Call(from->s_ctx, from->fn_xwin, JS_UNDEFINED, 1, &a);
+}
+static struct jsst *st_of_global(JSValueConst g) {
+    if (!JS_IsObject(g)) return 0;
+    for (int i = -1; i < MAXFR; i++) {
+        struct jsst *s = i < 0 ? &top_st : FS[i];
+        if (!s || !s->s_ctx) continue;
+        JSValue o = JS_GetGlobalObject(s->s_ctx);
+        int eq = JS_VALUE_GET_PTR(o) == JS_VALUE_GET_PTR(g);
+        JS_FreeValue(s->s_ctx, o);
+        if (eq) return s;
+    }
+    return 0;
+}
+NATIVE(n_reg) {
+    JS_FreeValue(c, J->fn_wrap); JS_FreeValue(c, J->fn_msg); JS_FreeValue(c, J->fn_xwin); JS_FreeValue(c, J->fn_ser); JS_FreeValue(c, J->fn_nf);
+    J->fn_nf = argc > 4 ? JS_DupValue(c, argv[4]) : JS_UNDEFINED;
+    J->fn_wrap = JS_DupValue(c, argv[0]); J->fn_msg = JS_DupValue(c, argv[1]); J->fn_xwin = JS_DupValue(c, argv[2]); J->fn_ser = JS_DupValue(c, argv[3]);
+    return JS_UNDEFINED;
+}
+NATIVE(n_fwin) {                                           /* iframe element -> its window (created blank on first ask, as a browser does) */
+    int id = ARGID(0);
+    if (!id || strcmp(N[id].tag, "iframe") || !connected(id)) return JS_NULL;
+    struct jsst *ch = frame_of(J, id);
+    if (!ch) {
+        ch = frame_new(id);
+        if (!ch) return JS_NULL;
+        const char *sd = attr(id, "srcdoc"), *src = attr(id, "src");
+        ch->lkey = sd || (src && *src) ? 0 : strdup("");
+        J->scan = 1;
+        frame_blank(ch);
+        name_frame(ch, id);
+    }
+    return win_for(J, ch);
+}
+NATIVE(n_fwindow) { int32_t f = -1; JS_ToInt32(c, &f, argv[0]); return win_for(J, st_by_fid(f)); }
+NATIVE(n_fself) { return JS_NewInt32(c, J->fid); }
+NATIVE(n_fparent) {                                        /* the parent window's id (this window's, or the one given); -1 = none */
+    int32_t f = J->fid;
+    if (argc && !JS_IsUndefined(argv[0])) JS_ToInt32(c, &f, argv[0]);
+    struct jsst *s = st_by_fid(f);
+    return JS_NewInt32(c, s && s->fr ? par_of(s)->fid : -1);
+}
+NATIVE(n_fcount) { int n = 0; for (int i = 0; i < MAXFR; i++) n += FS[i] && FS[i]->fr->node && par_of(FS[i]) == J; return JS_NewInt32(c, n); }
+NATIVE(n_fchild) { int32_t k = 0; JS_ToInt32(c, &k, argv[0]); for (int i = 0; i < MAXFR; i++) if (FS[i] && FS[i]->fr->node && par_of(FS[i]) == J && !k--) return JS_NewInt32(c, FS[i]->fid); return JS_NewInt32(c, -1); }
+NATIVE(n_fel) {                                            /* frameElement */
+    if (!J->fr || !J->fr->node) return JS_NULL;
+    struct jsst *pa = par_of(J);
+    if (!same_origin(J, pa) || !pa->s_ctx) return JS_NULL;
+    JSValue a = JS_NewInt32(pa->s_ctx, J->fr->node);
+    return JS_Call(pa->s_ctx, pa->fn_wrap, JS_UNDEFINED, 1, &a);
+}
+NATIVE(n_forigin) { int32_t f = -1; JS_ToInt32(c, &f, argv[0]); struct jsst *s = st_by_fid(f); return str(s ? s->origin : "null"); }
+NATIVE(n_fnav) {                                           /* location = url on a window we may not be able to read */
+    int32_t f = -1; JS_ToInt32(c, &f, argv[0]);
+    struct jsst *t = st_by_fid(f);
+    CSTR(u, 1);
+    if (t && strncasecmp(u, "javascript:", 11) && !((J->sandbox & SB_ON) && t == &top_st && !(J->sandbox & SB_TOP))) url_resolve(base_of(J), u, t->s_nav, sizeof t->s_nav);
+    JS_FreeCString(c, u);
+    return JS_UNDEFINED;
+}
+
+static void ports_move(JSContext *c, JSValueConst tr, int fid) {   /* a transfer list (array, or {transfer}): the MessagePorts in it now belong to context fid */
+    if (!JS_IsObject(tr)) return;
+    JSValue arr = tr, own = JS_UNDEFINED;
+    if (!JS_IsArray(c, tr)) { own = arr = JS_GetPropertyStr(c, tr, "transfer"); if (!JS_IsObject(arr)) { JS_FreeValue(c, own); return; } }
+    JSValue lv = JS_GetPropertyStr(c, arr, "length");
+    int32_t n = 0;
+    JS_ToInt32(c, &n, lv);
+    JS_FreeValue(c, lv);
+    for (int32_t i = 0; i < n && i < 16; i++) {
+        JSValue e = JS_GetPropertyUint32(c, arr, i), p = JS_IsObject(e) ? JS_GetPropertyStr(c, e, "__pid") : JS_UNDEFINED;
+        int32_t id = 0;
+        if (JS_IsNumber(p) && JS_ToInt32(c, &id, p) == 0 && id > 0 && id < npt) PT[id].owner = fid;
+        JS_FreeValue(c, e); JS_FreeValue(c, p);
+    }
+    JS_FreeValue(c, own);
+}
+static JSValue post_to(struct jsst *cs, struct jsst *tg, JSContext *c, JSValueConst msg, JSValueConst topt, JSValueConst tr) {
+    if (!tg || !tg->s_ctx) return JS_UNDEFINED;
+    char tmp[200] = "/";
+    JSValue ov = JS_UNDEFINED, tv = JS_UNDEFINED;
+    if (JS_IsObject(topt)) { ov = JS_GetPropertyStr(c, topt, "targetOrigin"); tv = JS_GetPropertyStr(c, topt, "transfer"); if (JS_IsUndefined(tr)) tr = tv; topt = ov; }
+    if (!JS_IsUndefined(topt)) { const char *t = JS_ToCString(c, topt); if (t) { strlcpy(tmp, t, sizeof tmp); JS_FreeCString(c, t); } }
+    JS_FreeValue(c, ov);
+    if (!strncasecmp(tmp, "http", 4) || !strncasecmp(tmp, "file:", 5)) { char o2[200]; origin_of(tmp, 0, o2, sizeof o2); strlcpy(tmp, o2, sizeof tmp); }   /* "https://a.com:443/x" is the origin https://a.com */
+    if (strcmp(tmp, "*") && !((!strcmp(tmp, "/") && same_origin(cs, tg)) || !strcmp(tmp, tg->origin))) {
+        jlog(1, "postMessage: the target origin %s does not match the recipient (%s)", tmp, tg->origin);
+        JS_FreeValue(c, tv);
+        return JS_UNDEFINED;
+    }
+    JSValueConst sa[2] = { msg, tr };
+    JSValue js = JS_Call(cs->s_ctx, cs->fn_ser, JS_UNDEFINED, 2, sa);
+    if (JS_IsException(js)) { JS_FreeValue(c, tv); return js; }
+    const char *j = JS_ToCString(c, js);
+    JS_FreeValue(cs->s_ctx, js);
+    if (!j) { JS_FreeValue(c, tv); return JS_EXCEPTION; }
+    ports_move(c, tr, tg->fid);
+    if (nmq < 64) { MQ[nmq].to = tg->fid; MQ[nmq].port = 0; MQ[nmq].from = cs->fid; MQ[nmq].json = strdup(j); strlcpy(MQ[nmq].origin, evo(cs), sizeof MQ[0].origin); nmq++; }
+    JS_FreeCString(c, j);
+    JS_FreeValue(c, tv);
+    return JS_UNDEFINED;
+}
+static struct jsst *caller_st(JSContext *c) {
+    JSContext *cc = JS_GetCallerContext(c);
+    struct jsst *s = cc ? JS_GetContextOpaque(cc) : 0;
+    return s ? s : JS_GetContextOpaque(c);
+}
+NATIVE(n_postmsg) {                                        /* window.postMessage(message, targetOrigin | {targetOrigin}) */
+    struct jsst *cs = caller_st(c);
+    struct jsst *tg = JS_IsObject(this_val) ? st_of_global(this_val) : 0;
+    if (!tg) tg = J;
+    return post_to(cs, tg, c, argv[0], argc > 1 ? argv[1] : JS_UNDEFINED, argc > 2 ? argv[2] : JS_UNDEFINED);
+}
+NATIVE(n_fpost) {                                          /* the cross-origin proxy's postMessage: fpost(fid, message, targetOrigin) */
+    int32_t f = -1; JS_ToInt32(c, &f, argv[0]);
+    return post_to(J, st_by_fid(f), c, argv[1], argc > 2 ? argv[2] : JS_UNDEFINED, argc > 3 ? argv[3] : JS_UNDEFINED);
+}
+static void msgs_deliver(void) {                             /* J: messages addressed to this window */
+    if (J->fr && !J->fr->node && !J->wready) return;          /* a worker's script has not run yet */
+    for (int i = 0; i < nmq; ) {
+        if (MQ[i].to != J->fid) { i++; continue; }
+        char *json = MQ[i].json;
+        char org[160];
+        int from = MQ[i].from, port = MQ[i].port;
+        strlcpy(org, MQ[i].origin, sizeof org);
+        memmove(MQ + i, MQ + i + 1, (--nmq - i) * sizeof *MQ);   /* (in order: a port arrives before the messages on it) */
+        if (ctx && !dead && !JS_IsUndefined(J->fn_msg)) {
+            JSValue a[4] = { str(json), str(org), JS_NewInt32(ctx, from), JS_NewInt32(ctx, port) };
+            call(J->fn_msg, 4, a);
+        }
+        free(json);
+        i = 0;
+    }
+}
+/* ---- workers: a context with no document of its own, in the frame table (node 0), pumped like a frame ---- */
+NATIVE(n_isworker) { return JS_NewBool(c, J->fr && !J->fr->node); }
+NATIVE(n_wnew) {                                           /* new Worker(url): the fid, or -1 */
+    CSTR(u, 0);
+    char abs[URL_MAX];
+    url_resolve(base_of(J), u, abs, sizeof abs);
+    JS_FreeCString(c, u);
+    struct jsst *ch = frame_new(0);
+    if (!ch) return JS_NewInt32(c, -1);
+    ch->owner_load = 1;
+    if (!frame_boot(ch, "<body></body>", 13, abs)) { frame_free(ch->fr); return JS_NewInt32(c, -1); }
+    ch->lfid = fetch_queue(abs, 3, 0, 0);
+    return JS_NewInt32(c, ch->fid);
+}
+static void worker_loaded(int id, int status, const char *body, size_t blen, int bad, const char *url) {   /* J = the creator */
+    struct jsst *ch = 0, *pa = J;
+    for (int i = 0; i < MAXFR; i++) if (FS[i] && FS[i]->lfid == id && par_of(FS[i]) == pa) ch = FS[i];
+    if (!ch) return;
+    ch->lfid = 0;
+    if (bad || status >= 400 || !body) { jlog(2, "failed to load worker script %s", url); return; }
+    J = ch;
+    run_script(body, blen, url, 0);
+    ch->wready = 1;
+    J = pa;
+}
+NATIVE(n_wterm) {
+    int32_t f = -1; JS_ToInt32(c, &f, argv[0]);
+    struct jsst *w = st_by_fid(f);
+    if (w && w->fr && !w->fr->node && par_of(w) == J) frame_destroy(w);
+    return JS_UNDEFINED;
+}
+NATIVE(n_wsend) {                                          /* self.postMessage(json) in a worker: to its creator's Worker object */
+    CSTR(j, 0);
+    ports_move(c, argc > 1 ? argv[1] : JS_UNDEFINED, J->fr ? par_of(J)->fid : 0);
+    if (J->fr && nmq < 64) { MQ[nmq].to = par_of(J)->fid; MQ[nmq].port = 0; MQ[nmq].from = -J->fid; MQ[nmq].json = strdup(j); strlcpy(MQ[nmq].origin, evo(J), sizeof MQ[0].origin); nmq++; }
+    JS_FreeCString(c, j);
+    return JS_UNDEFINED;
+}
+
+NATIVE(n_pnew) {                                           /* new MessageChannel(): two entangled port ids */
+    if (npt + 2 > 256) return JS_ThrowInternalError(c, "too many message ports");
+    int a = npt++, b = npt++;
+    PT[a].peer = b; PT[b].peer = a; PT[a].owner = PT[b].owner = J->fid;
+    JSValue r = JS_NewArray(c);
+    JS_SetPropertyUint32(c, r, 0, JS_NewInt32(c, a)); JS_SetPropertyUint32(c, r, 1, JS_NewInt32(c, b));
+    return r;
+}
+NATIVE(n_ppost) {                                          /* port.postMessage: ppost(id, json, transfer) goes to the other end, wherever it lives */
+    int32_t id = 0; JS_ToInt32(c, &id, argv[0]);
+    CSTR(j, 1);
+    if (id > 0 && id < npt && nmq < 64) {
+        int peer = PT[id].peer, to = PT[peer].owner;
+        ports_move(c, argc > 2 ? argv[2] : JS_UNDEFINED, to);
+        MQ[nmq].to = to; MQ[nmq].port = peer; MQ[nmq].from = J->fid; MQ[nmq].json = strdup(j); strlcpy(MQ[nmq].origin, evo(J), sizeof MQ[0].origin); nmq++;
+    }
+    JS_FreeCString(c, j);
+    return JS_UNDEFINED;
+}
+static void reg_frame_natives(JSContext *c, JSValue d) {
+    static const JSCFunctionListEntry FN[] = {
+        JS_CFUNC_DEF("pnew", 0, n_pnew), JS_CFUNC_DEF("ppost", 3, n_ppost),
+        JS_CFUNC_DEF("isworker", 0, n_isworker), JS_CFUNC_DEF("wnew", 1, n_wnew), JS_CFUNC_DEF("wterm", 1, n_wterm), JS_CFUNC_DEF("wsend", 1, n_wsend),
+        JS_CFUNC_DEF("reg", 5, n_reg), JS_CFUNC_DEF("fwin", 1, n_fwin), JS_CFUNC_DEF("fwindow", 1, n_fwindow), JS_CFUNC_DEF("fself", 0, n_fself),
+        JS_CFUNC_DEF("fparent", 0, n_fparent), JS_CFUNC_DEF("fcount", 0, n_fcount), JS_CFUNC_DEF("fchild", 1, n_fchild), JS_CFUNC_DEF("fel", 0, n_fel),
+        JS_CFUNC_DEF("forigin", 1, n_forigin), JS_CFUNC_DEF("fnav", 2, n_fnav), JS_CFUNC_DEF("fpost", 3, n_fpost), JS_CFUNC_DEF("postMessage", 2, n_postmsg),
+    };
+    JS_SetPropertyFunctionList(c, d, FN, sizeof FN / sizeof *FN);
+}
