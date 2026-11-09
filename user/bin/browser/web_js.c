@@ -317,7 +317,63 @@ function fetch(input, init) {
     });
 }
 def(g, { Headers, Request, Response, fetch });
-def(g, { ReadableStream: class ReadableStream { constructor(s) { const q = []; let closed = false; const c = { enqueue: v => q.push(v), close: () => { closed = true; }, error() {} }; if (s && s.start) s.start(c); this.getReader = () => ({ read: () => Promise.resolve(q.length ? { done: false, value: q.shift() } : { done: true, value: undefined }), releaseLock() {}, cancel: () => Promise.resolve() }); } } });
+// streams: ReadableStream (queue + pull, readers, pipeTo/pipeThrough/tee, async iteration), WritableStream, TransformStream
+class ReadableStreamDefaultController {
+    constructor(st) { this.__s = st; }
+    get desiredSize() { return this.__s.closed ? 0 : this.__s.hwm - this.__s.q.length; }
+    enqueue(v) { const s = this.__s; if (s.closed || s.errored) throw new TypeError('Cannot enqueue a chunk into a closed readable stream'); if (s.waiters.length) s.waiters.shift().resolve({ done: false, value: v }); else s.q.push(v); }
+    close() { const s = this.__s; s.closed = true; if (!s.q.length) while (s.waiters.length) s.waiters.shift().resolve({ done: true, value: undefined }); }
+    error(e) { const s = this.__s; s.errored = true; s.err = e; while (s.waiters.length) s.waiters.shift().reject(e); }
+}
+class ReadableStream {
+    constructor(src = {}, strat = {}) {
+        const st = this.__st = { q: [], waiters: [], closed: false, errored: false, err: undefined, locked: false, hwm: strat.highWaterMark === undefined ? 1 : strat.highWaterMark, src, pulling: false };
+        st.c = new ReadableStreamDefaultController(st);
+        st.started = Promise.resolve().then(() => src.start && src.start(st.c)).catch(e => st.c.error(e));
+    }
+    __pull() { const st = this.__st; if (st.pulling || st.closed || st.errored || !st.src.pull) return; st.pulling = true; st.started.then(() => st.src.pull(st.c)).then(() => { st.pulling = false; if (st.waiters.length) this.__pull(); }, e => { st.pulling = false; st.c.error(e); }); }
+    get locked() { return this.__st.locked; }
+    getReader() {
+        const st = this.__st, self = this; if (st.locked) throw new TypeError('ReadableStream is locked'); st.locked = true;
+        return { read: () => new Promise((resolve, reject) => {
+            if (st.errored && !st.q.length) return reject(st.err);
+            if (st.q.length) { resolve({ done: false, value: st.q.shift() }); if (st.closed && !st.q.length) while (st.waiters.length) st.waiters.shift().resolve({ done: true, value: undefined }); else self.__pull(); return; }
+            if (st.closed) return resolve({ done: true, value: undefined });
+            st.waiters.push({ resolve, reject }); self.__pull();
+        }), releaseLock() { st.locked = false; }, cancel(r) { st.closed = true; st.q.length = 0; st.src.cancel && st.src.cancel(r); while (st.waiters.length) st.waiters.shift().resolve({ done: true, value: undefined }); return Promise.resolve(); }, closed: new Promise(() => {}) };
+    }
+    cancel(r) { const rd = this.getReader(); const p = rd.cancel(r); rd.releaseLock(); return p; }
+    async pipeTo(dest, opt = {}) { const r = this.getReader(), w = dest.getWriter(); try { for (;;) { const x = await r.read(); if (x.done) break; await w.write(x.value); } if (!opt.preventClose) await w.close(); } catch (e) { if (!opt.preventAbort) await w.abort(e); throw e; } finally { r.releaseLock(); w.releaseLock(); } }
+    pipeThrough(t, opt) { this.pipeTo(t.writable, opt).catch(() => {}); return t.readable; }
+    tee() { const r = this.getReader(); let c1, c2; const mk = f => new ReadableStream({ start(c) { f(c); }, pull: async () => { const x = await r.read(); if (x.done) { c1.close(); c2.close(); } else { c1.enqueue(x.value); c2.enqueue(x.value); } } }); return [mk(c => c1 = c), mk(c => c2 = c)]; }
+    values() { const r = this.getReader(); return { next: () => r.read(), return: () => { r.releaseLock(); return Promise.resolve({ done: true }); }, [Symbol.asyncIterator]() { return this; } }; }
+    [Symbol.asyncIterator]() { return this.values(); }
+    static from(it) { const i = it[Symbol.asyncIterator] ? it[Symbol.asyncIterator]() : it[Symbol.iterator](); return new ReadableStream({ async pull(c) { const x = await i.next(); x.done ? c.close() : c.enqueue(x.value); } }); }
+}
+class WritableStream {
+    constructor(sink = {}) { const st = this.__st = { sink, locked: false, chain: Promise.resolve(), closed: false }; st.c = { error() {}, signal: new AbortController().signal }; st.started = Promise.resolve().then(() => sink.start && sink.start(st.c)); }
+    get locked() { return this.__st.locked; }
+    getWriter() {
+        const st = this.__st; if (st.locked) throw new TypeError('WritableStream is locked'); st.locked = true;
+        const run = f => st.chain = st.chain.then(() => st.started).then(f);
+        return { write: v => run(() => st.sink.write && st.sink.write(v, st.c)), close: () => run(() => { st.closed = true; return st.sink.close && st.sink.close(); }), abort: r => run(() => st.sink.abort && st.sink.abort(r)), releaseLock() { st.locked = false; }, ready: Promise.resolve(), closed: new Promise(() => {}), desiredSize: 1 };
+    }
+    abort(r) { const w = this.getWriter(); const p = w.abort(r); w.releaseLock(); return p; } close() { const w = this.getWriter(); const p = w.close(); w.releaseLock(); return p; }
+}
+class TransformStream {
+    constructor(tr = {}, ws, rs) {
+        let rc; const self = this;
+        this.readable = new ReadableStream({ start(c) { rc = c; } }, rs);
+        const ctl = { enqueue: v => rc.enqueue(v), terminate: () => rc.close(), error: e => rc.error(e), get desiredSize() { return rc.desiredSize; } };
+        const started = Promise.resolve().then(() => tr.start && tr.start(ctl));
+        this.writable = new WritableStream({ start: () => started, write: v => tr.transform ? tr.transform(v, ctl) : ctl.enqueue(v), close: async () => { if (tr.flush) await tr.flush(ctl); rc.close(); }, abort: e => rc.error(e) }, ws);
+    }
+}
+class TextDecoderStream extends TransformStream { constructor(enc, o) { const d = new TextDecoder(enc, o); super({ transform: (v, c) => { const t = d.decode(v, { stream: true }); if (t) c.enqueue(t); }, flush: c => { const t = d.decode(); if (t) c.enqueue(t); } }); } }
+class TextEncoderStream extends TransformStream { constructor() { const e = new TextEncoder(); super({ transform: (v, c) => c.enqueue(e.encode(v)) }); } }
+class ByteLengthQueuingStrategy { constructor(o) { this.highWaterMark = o.highWaterMark; } size(c) { return c.byteLength; } }
+class CountQueuingStrategy { constructor(o) { this.highWaterMark = o.highWaterMark; } size() { return 1; } }
+def(g, { ReadableStream, ReadableStreamDefaultReader: function ReadableStreamDefaultReader() {}, ReadableStreamDefaultController, WritableStream, TransformStream, TextDecoderStream, TextEncoderStream, ByteLengthQueuingStrategy, CountQueuingStrategy });
 
 // ---------- XMLHttpRequest ----------
 class XMLHttpRequestEventTarget extends D.EventTarget {}
@@ -521,6 +577,39 @@ class CSSStyleSheet {
     addRule(s, r, i) { this.insertRule(s + '{' + r + '}', i === undefined ? this.cssRules.length : i); return -1; } removeRule(i) { this.deleteRule(i); }
     replace(t) { this.replaceSync(t); return Promise.resolve(this); } replaceSync(t) { this.__r = splitRules(t).map(x => mkRule(x, this)); this.__sync(); }
 }
+// geometry: DOMPoint, DOMMatrix (4x4, column-major like the spec), Path2D (records nothing; the canvas is a stub)
+class DOMPoint { constructor(x = 0, y = 0, z = 0, w = 1) { this.x = +x; this.y = +y; this.z = +z; this.w = +w; } static fromPoint(p) { return new DOMPoint(p.x, p.y, p.z, p.w); } toJSON() { return { x: this.x, y: this.y, z: this.z, w: this.w }; } matrixTransform(m) { return m.transformPoint(this); } }
+const MK = ['m11', 'm12', 'm13', 'm14', 'm21', 'm22', 'm23', 'm24', 'm31', 'm32', 'm33', 'm34', 'm41', 'm42', 'm43', 'm44'];
+class DOMMatrix {
+    constructor(init) {
+        this.__m = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+        if (typeof init === 'string') {
+            const t = init.trim(); if (!t || t === 'none') return;
+            const m = /^matrix(3d)?\(([^)]*)\)$/.exec(t); if (!m) throw new SyntaxError("Failed to construct 'DOMMatrix': Failed to parse '" + init + "'.");
+            const v = m[2].split(',').map(Number);
+            if (m[1] && v.length === 16) this.__m = v; else if (v.length === 6) { const q = this.__m; q[0] = v[0]; q[1] = v[1]; q[4] = v[2]; q[5] = v[3]; q[12] = v[4]; q[13] = v[5]; }
+        } else if (init && init.length === 6) { const q = this.__m; q[0] = init[0]; q[1] = init[1]; q[4] = init[2]; q[5] = init[3]; q[12] = init[4]; q[13] = init[5]; }
+        else if (init && init.length === 16) this.__m = [...init].map(Number);
+    }
+    get is2D() { const q = this.__m; return !(q[2] || q[3] || q[6] || q[7] || q[8] || q[9] || q[11] || q[14]) && q[10] === 1 && q[15] === 1; }
+    get isIdentity() { return this.__m.every((x, i) => x === (i % 5 ? 0 : 1)); }
+    multiplySelf(o) { const a = this.__m, b = (o instanceof DOMMatrix ? o : new DOMMatrix([o.a, o.b, o.c, o.d, o.e, o.f])).__m, r = new Array(16).fill(0); for (let c = 0; c < 4; c++) for (let rr = 0; rr < 4; rr++) for (let k = 0; k < 4; k++) r[c * 4 + rr] += a[k * 4 + rr] * b[c * 4 + k]; this.__m = r; return this; }
+    preMultiplySelf(o) { const r = new DOMMatrix(o.__m || [o.a, o.b, o.c, o.d, o.e, o.f]).multiplySelf(this); this.__m = r.__m; return this; }
+    multiply(o) { return new this.constructor(this.__m).multiplySelf(o); }
+    translateSelf(x = 0, y = 0, z = 0) { return this.multiplySelf(new DOMMatrix([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1])); } translate(x, y, z) { return new this.constructor(this.__m).translateSelf(x, y, z); }
+    scaleSelf(x = 1, y = x, z = 1, ox = 0, oy = 0, oz = 0) { this.translateSelf(ox, oy, oz); this.multiplySelf(new DOMMatrix([x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1])); return this.translateSelf(-ox, -oy, -oz); } scale(x, y, z, ox, oy, oz) { return new this.constructor(this.__m).scaleSelf(x, y, z, ox, oy, oz); }
+    rotateSelf(a = 0, b, c) { if (b === undefined && c === undefined) { c = a; a = 0; b = 0; } const r = Math.PI / 180, cz = Math.cos(c * r), sz = Math.sin(c * r); return this.multiplySelf(new DOMMatrix([cz, sz, 0, 0, -sz, cz, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])); } rotate(a, b, c) { return new this.constructor(this.__m).rotateSelf(a, b, c); }
+    inverse() { const m = this.__m; if (this.is2D) { const [a, b, c, d, e, f] = [m[0], m[1], m[4], m[5], m[12], m[13]], det = a * d - b * c; if (!det) return new DOMMatrix(Array(16).fill(NaN)); return new DOMMatrix([d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det]); } return new DOMMatrix(m); } invertSelf() { this.__m = this.inverse().__m; return this; }
+    transformPoint(p = {}) { const m = this.__m, x = p.x || 0, y = p.y || 0, z = p.z || 0, w = p.w === undefined ? 1 : p.w; return new DOMPoint(m[0] * x + m[4] * y + m[8] * z + m[12] * w, m[1] * x + m[5] * y + m[9] * z + m[13] * w, m[2] * x + m[6] * y + m[10] * z + m[14] * w, m[3] * x + m[7] * y + m[11] * z + m[15] * w); }
+    toFloat32Array() { return new Float32Array(this.__m); } toFloat64Array() { return new Float64Array(this.__m); }
+    toString() { const m = this.__m; return this.is2D ? 'matrix(' + [m[0], m[1], m[4], m[5], m[12], m[13]].join(', ') + ')' : 'matrix3d(' + m.join(', ') + ')'; }
+    toJSON() { const o = {}; MK.forEach(k => o[k] = this[k]); return o; }
+    static fromMatrix(o) { return new DOMMatrix(o.m11 !== undefined ? MK.map(k => o[k]) : [o.a, o.b, o.c, o.d, o.e, o.f]); } static fromFloat32Array(a) { return new DOMMatrix(a); } static fromFloat64Array(a) { return new DOMMatrix(a); }
+}
+MK.forEach((k, i) => Object.defineProperty(DOMMatrix.prototype, k, { get() { return this.__m[i]; }, set(v) { this.__m[i] = +v; }, configurable: true }));
+['a', 'b', 'c', 'd', 'e', 'f'].forEach((k, i) => { const j = [0, 1, 4, 5, 12, 13][i]; Object.defineProperty(DOMMatrix.prototype, k, { get() { return this.__m[j]; }, set(v) { this.__m[j] = +v; }, configurable: true }); });
+class Path2D { constructor() {} addPath() {} closePath() {} moveTo() {} lineTo() {} bezierCurveTo() {} quadraticCurveTo() {} arc() {} arcTo() {} ellipse() {} rect() {} roundRect() {} }
+def(g, { DOMPoint, DOMPointReadOnly: DOMPoint, DOMMatrix, DOMMatrixReadOnly: DOMMatrix, WebKitCSSMatrix: DOMMatrix, Path2D });
 def(g, { CSS, CSSStyleSheet, CSSRule: function CSSRule() {}, StyleSheet: CSSStyleSheet });
 
 // ---------- Range, Selection, TreeWalker ----------
