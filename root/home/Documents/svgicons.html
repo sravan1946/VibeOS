@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html><head><title>SVG icons</title>
+<style>
+body{font:16px sans-serif;margin:20px}
+.ic{width:32px;height:32px;fill:currentColor;vertical-align:middle}
+.btn{border:1px solid #888;background:#eee;padding:6px;border-radius:6px;color:#c00}
+.mk{display:inline-block;width:32px;height:32px;background-color:#08c;-webkit-mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='10'/></svg>") no-repeat center/contain;mask:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='10'/></svg>") no-repeat center/contain}
+</style></head><body>
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+ <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z"/></symbol>
+ <symbol id="i-heart" viewBox="0 0 16 16"><path d="M8 14S1 9 1 5a3.5 3.5 0 0 1 7-1 3.5 3.5 0 0 1 7 1c0 4-7 9-7 9z"/></symbol>
+</svg>
+<p>1. icon-only button (red star expected):
+<button class="btn" aria-label="star"><svg class="ic" viewBox="0 0 24 24"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z"/></svg></button></p>
+<p>2. sprite use, currentColor green: <span style="color:green"><svg class="ic"><use href="#i-star"/></svg></span>
+ xlink purple: <span style="color:purple"><svg class="ic"><use xlink:href="#i-heart"></use></svg></span></p>
+<p>3. button + sprite: <button class="btn"><svg class="ic"><use href="#i-heart"/></svg></button> text button: <button>Go</button></p>
+<p>4. mask icon (blue circle): <span class="mk"></span></p>
+</body></html>

@@ -152,16 +152,16 @@ static void draw_box(struct canvas *cc, const struct doc *d, const struct item *
         }
         if (tw < 1) tw = 1;
         if (th < 1) th = 1;
-        const uint32_t *p2 = img_pixels(it->ref, tw, th, d->bg);
+        const uint32_t *p2 = img_pixels(it->ref, tw, th, 0);
         if (p2) {
             struct canvas c2 = *cc;
             canvas_clip(&c2, x, y, it->w, it->h);
-            gfx_blit(&c2, x + (it->w - tw) / 2, y + (it->h - th) / 2, p2, tw, th, tw);
+            (img_translucent(it->ref) ? gfx_blit_alpha : gfx_blit)(&c2, x + (it->w - tw) / 2, y + (it->h - th) / 2, p2, tw, th, tw);
             return;
         }
     }
-    const uint32_t *px = img_pixels(it->ref, it->w, it->h, d->bg);
-    if (px) { gfx_blit(cc, x, y, px, it->w, it->h, it->w); return; }
+    const uint32_t *px = img_pixels(it->ref, it->w, it->h, 0);
+    if (px) { (img_translucent(it->ref) ? gfx_blit_alpha : gfx_blit)(cc, x, y, px, it->w, it->h, it->w); return; }
     int w, h, st = img_info(it->ref, &w, &h);           /* not ready: an outline with the alt text */
     color_t dim = mix(d->fg, d->bg, 130);
     gfx_fill(cc, x, y, it->w, it->h, mix(d->bg, d->fg, 14));
@@ -201,8 +201,15 @@ static void draw_decor(struct canvas *cc, const struct doc *d, const struct deco
         if (th < 1) th = 1;
         if (tw > 4096 || th > 4096) return;
         long ox = r->kx == K_PCT ? (W - tw) * r->px / 10000 : r->px, oy = r->ky == K_PCT ? (H - th) * r->py / 10000 : r->py;
-        const uint32_t *px = img_pixels(r->img - 1, (int)tw, (int)th, (r->col >> 24) == 0xFF ? r->col : d->bg);
+        const uint32_t *px = img_pixels(r->img - 1, (int)tw, (int)th, r->msk ? 0 : (r->col >> 24) == 0xFF ? r->col : d->bg);
         if (!px) return;
+        uint32_t *tint = 0;
+        if (r->msk) {                                    /* mask-image: the box colour through the picture's alpha */
+            tint = malloc((size_t)tw * th * 4);
+            if (!tint) return;
+            for (long k = 0, m = tw * th; k < m; k++) tint[k] = (((px[k] >> 24) * (r->col >> 24) / 255) << 24) | (r->col & 0xFFFFFF);
+            px = tint;
+        }
         int rx = r->rep == REP_REPEAT || r->rep == REP_X, ry = r->rep == REP_REPEAT || r->rep == REP_Y;
         long x0 = rx ? ox - ((ox + tw - 1) / tw) * tw : ox, y0 = ry ? oy - ((oy + th - 1) / th) * th : oy, n = 0;
         if (x0 > 0 && rx) x0 -= ((x0 + tw - 1) / tw) * tw;
@@ -214,6 +221,7 @@ static void draw_decor(struct canvas *cc, const struct doc *d, const struct deco
             }
             if (!ry) break;
         }
+        free(tint);
         return;
     }
     if (r->ring) gfx_rrect_ring(c, vx + r->x, y, r->w, r->h, RADII(r->rad, r->rad, r->rad, r->rad), r->ring, r->col);

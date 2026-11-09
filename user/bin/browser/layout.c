@@ -56,7 +56,7 @@ struct bx {
     uint8_t halign, valn, lt;
     int txp, typ;
     int aspect, txv, tyv, sh[4], outw, outo; color_t shc, outc, markc; uint8_t tt;   /* box-shadow x/y/blur/spread, outline */         /* aspect-ratio (w/h x1000), transform: translate() */         /* table cell: horizontal / vertical alignment */
-    int bgi; uint8_t brep, bkx, bky, bkw, bkh, objfit; int bpx, bpy, bsw, bsh;   /* background-image (img index + 1) and its repeat/position/size; object-fit for images */
+    int bgi; uint8_t msk, brep, bkx, bky, bkw, bkh, objfit; int bpx, bpy, bsw, bsh;   /* background-image (img index + 1) and its repeat/position/size; object-fit for images */
     int x, y, w, h, base;         /* border box, document coordinates; base: baseline offset from the top (-1 = bottom edge) */
     int m[4], p[4];               /* used margins and paddings (t r b l) */
     int imin, imax; uint8_t iv;
@@ -1687,15 +1687,15 @@ static void paint_bg(struct bx *b, int ox, int oy) {
             emit_decor(x + b->sh[0] - g, y + b->sh[1] - g, w + 2 * g, h + 2 * g, c, b->rad + g, 0);
         }
     }
-    if (b->bg) emit_decor(x, y, w, h, b->bg, b->rad, 0);
+    if (b->bg && !b->msk) emit_decor(x, y, w, h, b->bg, b->rad, 0);
     if (b->bgi && w > 0 && h > 0) {                      /* background-image, placed in the padding box */
         int l = b->bw[3], t = b->bw[0];
-        color_t under = (b->bg >> 24) == 0xFF ? b->bg : 1;       /* the box's own colour: what a transparent picture is drawn over */
+        color_t under = b->msk || (b->bg >> 24) == 0xFF ? b->bg : 1;       /* the box's own colour: what a transparent picture is drawn over */
         emit_decor(x + l, y + t, w - l - b->bw[1], h - t - b->bw[2], under, 0, 0);
         struct decor *r = &D->dc[D->ndc - 1];
         if (D->ndc && r->it == D->nit && r->col == under && !r->img) {
             r->img = b->bgi; r->rep = b->brep; r->kx = b->bkx; r->ky = b->bky; r->kw = b->bkw; r->kh = b->bkh;
-            r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh;
+            r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh; r->msk = b->msk;
         }
     }
     if (b->outw && b->outc >> 24) emit_decor(x - b->outo - b->outw, y - b->outo - b->outw, w + 2 * (b->outo + b->outw), h + 2 * (b->outo + b->outw), b->outc, b->rad, b->outw);
@@ -2160,7 +2160,6 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     lenset(S, L_W, cp, P_WIDTH); lenset(S, L_H, cp, P_HEIGHT); lenset(S, L_MINW, cp, P_MINW); lenset(S, L_MAXW, cp, P_MAXW);
     lenset(S, L_MINH, cp, P_MINH); lenset(S, L_MAXH, cp, P_MAXH); lenset(S, L_BASIS, cp, P_FBASIS);
     S->bg = cp->v[P_BG];
-    if (cp->k[P_MASKIMG] != K_NONE) S->bg = 0;                    /* mask-image icons: the colour is shown through a picture we can't apply; better nothing than a black square */
     if (cp->k[P_SHC] != K_NONE && !cp->v[P_SHI] && (cp->v[P_SHC] >> 24)) { S->shc = cp->v[P_SHC]; S->sh[0] = css_len(cp, P_SHX, 0); S->sh[1] = css_len(cp, P_SHY, 0); S->sh[2] = css_len(cp, P_SHB, 0); S->sh[3] = css_len(cp, P_SHS, 0); }
     if (cp->v[P_OUTS] != BS_NONE && cp->v[P_OUTW] > 0) { S->outw = cp->v[P_OUTW]; S->outc = cp->v[P_OUTC]; S->outo = css_len(cp, P_OUTO, 0); }
     ni->tt = cp->v[P_TT];
@@ -2174,6 +2173,12 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
         S->brep = cp->v[P_BGREP];
         S->bkx = cp->k[P_BGPX]; S->bpx = cp->v[P_BGPX]; S->bky = cp->k[P_BGPY]; S->bpy = cp->v[P_BGPY];
         S->bkw = cp->k[P_BGSW]; S->bsw = cp->v[P_BGSW]; S->bkh = cp->k[P_BGSH]; S->bsh = cp->v[P_BGSH];
+    }
+    S->msk = 0;
+    if (cp->k[P_MASKIMG] != K_NONE) {                    /* mask-image icon: the background colour shows through the picture's alpha; no usable picture -> no square */
+        int ix = cp->k[P_MASKIMG] == K_STR ? img_ref_ex(css_str(cp->v[P_MASKIMG]), "lazy") : -1;
+        if (ix >= 0 && S->bg >> 24) { S->bgi = ix + 1; S->msk = 1; S->brep = REP_NONE; S->bkx = S->bky = K_PCT; S->bpx = S->bpy = 5000; S->bkw = S->bkh = K_CONTAIN; }
+        else S->bg = 0;
     }
     S->objfit = cp->v[P_OBJFIT];
     S->rad = cp->v[P_RTL] > 0 ? css_len(cp, P_RTL, 100) : 0;
@@ -2268,6 +2273,12 @@ static void text_of(int dn, char *out, int cap) {
 }
 
 static int tw_ui(const char *s) { return gfx_text_width(&font_ui, s); }
+
+static int has_icon(int dn) {
+    for (int c = DN(dn).first; c >= 0; c = DN(c).next)
+        if (DN(c).type == 1 && (DN(c).tag == T_SVG || DN(c).tag == T_IMG || has_icon(c))) return 1;
+    return 0;
+}
 
 /* returns the control index and sets b's size; -1 for hidden inputs */
 static int build_ctl(int dn, int tag, struct bx *b, const struct bctx *cx, const struct inh *ni) {
@@ -2418,7 +2429,21 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
 static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
     int c = HD.n[dn].first;
     if (c < 0) return;
-    int idx = img_svg_inline(hd_str(HD.n[c].nm), HD.n[c].tn, ni->col & 0xFFFFFF), iw = 0, ih = 0;
+    const char *mk = hd_str(HD.n[c].nm);
+    size_t mn = HD.n[c].tn;
+    char *res = 0;
+    if (svg_mem(mk, mn, "<use", 4)) {                         /* sprite references: copy the <symbol>/element from this or another inline svg */
+        static const char *dp[64]; static size_t dl[64];
+        int nd = 0;
+        for (int j = 0; j < HD.nn && nd < 64; j++) {
+            int f = HD.n[j].type == 1 && HD.n[j].tag == T_SVG && j != dn ? HD.n[j].first : -1;
+            if (f >= 0 && HD.n[f].tn > 32 && svg_mem(hd_str(HD.n[f].nm), HD.n[f].tn, "<symbol", 7)) { dp[nd] = hd_str(HD.n[f].nm); dl[nd++] = HD.n[f].tn; }
+        }
+        size_t rn = 0;
+        if ((res = svg_resolve_use(mk, mn, dp, dl, nd, &rn))) { mk = res; mn = rn; }
+    }
+    int idx = img_svg_inline(mk, mn, ni->col & 0xFFFFFF), iw = 0, ih = 0;
+    free(res);
     if (idx < 0 || img_info(idx, &iw, &ih) != IMG_READY || iw <= 0 || ih <= 0) return;
     const char *aw = ATTR(dn, "width"), *ah = ATTR(dn, "height");
     int bi = bx_new();
@@ -2549,7 +2574,9 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
     }
     if (tag == T_IMG) { build_img(dn, pb, &S, &ni); return; }
     if (tag == T_SVG) { build_svg(dn, pb, &S, &ni); return; }
-    if (tag == T_INPUT || tag == T_TEXTAREA || tag == T_SELECT || tag == T_BUTTON) {
+    int iconbtn = 0;                                          /* <button><svg/></button>: lay the children out as an inline-block instead of a text control */
+    if (tag == T_BUTTON && has_icon(dn)) { char t[8]; text_of(dn, t, sizeof t); iconbtn = !t[0]; if (iconbtn && S.inner == IN_INLINE) S.inner = IN_FLOW; }
+    if (!iconbtn && (tag == T_INPUT || tag == T_TEXTAREA || tag == T_SELECT || tag == T_BUTTON)) {
         int bi = bx_new();
         if (bi >= 0) {
             B[bi] = S;
