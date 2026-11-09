@@ -575,7 +575,7 @@ struct pdef { const char *n; uint8_t p, ty, fl; const char *kw; };
 #define ALK "normal|start|end|center|space-between|space-around|space-evenly|stretch|baseline|flex-start:1|flex-end:2|left:1|right:2|self-start:1|self-end:2|first baseline:8|last baseline:8|safe center:3|unsafe center:3|legacy:0|safe flex-start:1|safe flex-end:2"
 #define BSL "none|solid|dashed|dotted|double|groove|ridge|inset|outset|hidden:0"
 static const struct pdef PD[] = {
-    COL("color", P_COLOR), COL("background-color", P_BG),
+    COL("color", P_COLOR), COL("background-color", P_BG), COL("fill", P_FILL), COL("stroke", P_STROKE), LEN("stroke-width", P_STROKEW, 0),
     COL("border-top-color", P_BCT), COL("border-right-color", P_BCR), COL("border-bottom-color", P_BCB), COL("border-left-color", P_BCL),
     LEN("margin-top", P_MT, F_AUTO | F_NEG | F_PCT), LEN("margin-right", P_MR, F_AUTO | F_NEG | F_PCT),
     LEN("margin-bottom", P_MB, F_AUTO | F_NEG | F_PCT), LEN("margin-left", P_ML, F_AUTO | F_NEG | F_PCT),
@@ -1203,6 +1203,7 @@ static void decl(char *name, char *val, int imp) {
         switch (pd->ty) {
         case Y_COLOR:
             if (parse_color_val(val, &k, &v)) put(pd->p, pd->p == P_COLOR && k == K_CUR ? K_INHERIT : k, v);
+            else if ((pd->p == P_FILL || pd->p == P_STROKE) && !strcasecmp(val, "none")) put(pd->p, K_PX, 0);
             break;
         case Y_KW: {
             int i = kwi(pd->kw, val);
@@ -1210,7 +1211,10 @@ static void decl(char *name, char *val, int imp) {
             if (i == 100) put(pd->p, K_AUTO, 0); else put(pd->p, K_PX, i);
             break;
         }
-        case Y_LEN: if (lenv(val, pd->fl, &k, &v)) put(pd->p, k, v); break;
+        case Y_LEN:
+            if (lenv(val, pd->fl, &k, &v)) put(pd->p, k, v);
+            else if (pd->p == P_STROKEW) { char *e; double x = strtod(val, &e); if (e != val && !*e && x >= 0) put(pd->p, K_PX, rnd(x)); }   /* unitless: user units */
+            break;
         case Y_NUM: { char *e; double x = strtod(val, &e); if (e != val && !*e && x >= 0) put(pd->p, K_NUM, rnd(x * 100)); break; }
         case Y_INT: {
             if (!strcasecmp(val, "auto")) { if (pd->p == P_ZINDEX) put(pd->p, K_AUTO, 0); break; }
@@ -2239,7 +2243,7 @@ static int inherited_slow(int p) {
     switch (p) {
     case P_COLOR: case P_FSIZE: case P_FWEIGHT: case P_FAMILY: case P_ITALIC: case P_BOLD: case P_MONO: case P_LH: case P_LS: case P_WSP: case P_TIND:
     case P_ALIGN: case P_TT: case P_WS: case P_WBRK: case P_LISTT: case P_LISTP: case P_LIST: case P_VISIB: case P_CURSOR: case P_DIR:
-    case P_COLLAPSE: case P_SPACING: case P_SPACINGY: case P_PEV:
+    case P_COLLAPSE: case P_SPACING: case P_SPACINGY: case P_PEV: case P_FILL: case P_STROKE: case P_STROKEW:
         return 1;
     }
     return 0;
@@ -2259,6 +2263,7 @@ void css_initial(struct cprops *o) {
     o->k[P_CONTENT] = K_NONE; o->k[P_GCOLS] = o->k[P_GROWS] = o->k[P_GACOLS] = o->k[P_GAROWS] = o->k[P_GAREAS] = o->k[P_GAREA] = K_NONE;
     o->k[P_GCS] = o->k[P_GCE] = o->k[P_GRS] = o->k[P_GRE] = K_AUTO; o->k[P_ASPECT] = K_AUTO;
     o->k[P_BCT] = o->k[P_BCR] = o->k[P_BCB] = o->k[P_BCL] = K_CUR; o->k[P_OUTC] = K_CUR; o->v[P_OUTW] = 3;
+    o->k[P_FILL] = o->k[P_STROKE] = o->k[P_STROKEW] = K_AUTO;
     o->k[P_SHC] = K_NONE; o->k[P_MASKIMG] = K_NONE; o->k[P_BG2IMG] = K_NONE; o->k[P_BG2SW] = o->k[P_BG2SH] = K_AUTO; o->k[P_BG2PX] = o->k[P_BG2PY] = K_PCT; o->v[P_TRSX] = o->v[P_TRSY] = 1000; o->k[P_CRESET] = o->k[P_CINC] = K_NONE; o->k[P_OBJPX] = o->k[P_OBJPY] = K_PCT; o->v[P_OBJPX] = o->v[P_OBJPY] = 5000;
     o->v[P_BWT] = o->v[P_BWR] = o->v[P_BWB] = o->v[P_BWL] = 3;
 }

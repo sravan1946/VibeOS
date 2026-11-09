@@ -2747,7 +2747,7 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
     if (oof(b)) abs_reg(bi);
 }
 
-static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
+static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni, const struct cprops *cp) {
     int c = HD.n[dn].first;
     if (c < 0) return;
     const char *mk = hd_str(HD.n[c].nm);
@@ -2763,8 +2763,31 @@ static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
         size_t rn = 0;
         if ((res = svg_resolve_use(mk, mn, dp, dl, nd, &rn))) { mk = res; mn = rn; }
     }
+    char *styled = 0;
+    if (cp->k[P_FILL] == K_PX || cp->k[P_STROKE] == K_PX || cp->k[P_STROKEW] == K_PX) {   /* CSS fill/stroke on the svg (or inherited): a style attribute at the end of the root tag */
+        const char *gt = memchr(mk, '>', mn);
+        if (gt) {
+            char st[120];
+            int sl = 0;
+            for (int w = 0; w < 3; w++) {
+                int p = w == 0 ? P_FILL : w == 1 ? P_STROKE : P_STROKEW;
+                if (cp->k[p] != K_PX) continue;
+                if (w == 2) sl += snprintf(st + sl, sizeof st - sl, "stroke-width:%d;", cp->v[p]);
+                else if (!(cp->v[p] >> 24)) sl += snprintf(st + sl, sizeof st - sl, "%s:none;", w ? "stroke" : "fill");
+                else sl += snprintf(st + sl, sizeof st - sl, "%s:#%06X;", w ? "stroke" : "fill", (unsigned)cp->v[p] & 0xFFFFFF);
+            }
+            size_t at = gt - mk - (gt > mk && gt[-1] == '/');
+            if ((styled = malloc(mn + sl + 16))) {
+                size_t o = at;
+                memcpy(styled, mk, at);
+                o += snprintf(styled + o, sl + 16, " style=\"%s\"", st);
+                memcpy(styled + o, mk + at, mn - at);
+                mk = styled; mn = mn + (o - at);
+            }
+        }
+    }
     int idx = img_svg_inline(mk, mn, ni->col & 0xFFFFFF), iw = 0, ih = 0;
-    free(res);
+    free(res); free(styled);
     if (idx < 0 || img_info(idx, &iw, &ih) != IMG_READY || iw <= 0 || ih <= 0) return;
     const char *aw = ATTR(dn, "width"), *ah = ATTR(dn, "height");
     int bi = bx_new();
@@ -2895,7 +2918,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
         return;
     }
     if (tag == T_IMG) { build_img(dn, pb, &S, &ni); return; }
-    if (tag == T_SVG) { build_svg(dn, pb, &S, &ni); return; }
+    if (tag == T_SVG) { build_svg(dn, pb, &S, &ni, cp); return; }
     int iconbtn = 0;                                          /* <button><svg/></button>: lay the children out as an inline-block instead of a text control */
     if (tag == T_BUTTON && has_icon(dn)) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
         const char *ty2 = ATTR(dn, "type");
