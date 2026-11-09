@@ -420,6 +420,7 @@ static void finish_fetch(void) {
     struct response rs;
     fetch_finish(&fe, &rs);
     loading = false;
+    blog("NAV %.100s -> %d %.100s", pend_url, rs.status, rs.loc);
     if (rs.err[0]) { net_error(pend_url, rs.err); return; }
     if (rs.status >= 300 && rs.status < 400 && rs.loc[0]) {
         char next[URL_MAX];

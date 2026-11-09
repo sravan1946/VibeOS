@@ -980,6 +980,16 @@ NATIVE(n_sync_get) {
     free(b);
     return v;
 }
+NATIVE(n_rand) {                                           /* crypto.getRandomValues: n bytes of /dev/urandom as an ArrayBuffer */
+    int32_t n = 0; JS_ToInt32(c, &n, argv[0]);
+    if (n < 0 || n > 65536) n = 0;
+    uint8_t *b = malloc(n + 1); int fd = open("/dev/urandom", O_RDONLY), got = 0;
+    if (fd >= 0) { while (got < n) { int r = read(fd, b + got, n - got); if (r <= 0) break; got += r; } close(fd); }
+    for (; got < n; got++) b[got] = (uint8_t)rand();
+    JSValue r = JS_NewArrayBufferCopy(c, b, n);
+    free(b);
+    return r;
+}
 NATIVE(n_ua) { return str(BROWSER_UA); }
 NATIVE(n_cookie_get) { char b[4096]; cookie_get(page_url, b, sizeof b); return str(b); }
 NATIVE(n_cookie_set) { CSTR(v, 0); cookie_set(page_url, v); JS_FreeCString(c, v); return JS_UNDEFINED; }
@@ -1197,7 +1207,7 @@ static const JSCFunctionListEntry NATIVES[] = {
     JS_CFUNC_DEF("createComment", 1, n_create_comment), JS_CFUNC_DEF("docwrite", 1, n_docwrite), JS_CFUNC_DEF("curScript", 0, n_cur_script),
     JS_CFUNC_DEF("ready", 0, n_ready), JS_CFUNC_DEF("setUrl", 2, n_set_url), JS_CFUNC_DEF("scrollTo", 2, n_scroll_to),
     JS_CFUNC_DEF("view", 0, n_view), JS_CFUNC_DEF("rect", 1, n_rect), JS_CFUNC_DEF("media", 1, n_media),
-    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("gen", 0, n_gen), JS_CFUNC_DEF("cvar", 2, n_cvar), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
+    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("gen", 0, n_gen), JS_CFUNC_DEF("cvar", 2, n_cvar), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("rand", 1, n_rand), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
 };
 
 /* ---------- running JS ---------- */

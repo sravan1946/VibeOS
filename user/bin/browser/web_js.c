@@ -518,21 +518,90 @@ def(g, { IntersectionObserver, ResizeObserver, PerformanceObserver, matchMedia }
 def(g, { MutationObserver: D.MutationObserver });
 
 // ---------- performance, crypto, navigator, screen ----------
-const marks = [];
+const marks = [], PT0 = Date.now();
 def(g, { performance: Object.assign(new D.EventTarget(), {
     now: () => d.now() - V.T0, timeOrigin: Date.now() - (d.now() - V.T0), toJSON() { return {}; },
     mark(n) { const e = { name: n, entryType: 'mark', startTime: d.now() - V.T0, duration: 0 }; marks.push(e); return e; },
     measure(n, a, b) { const f = x => { const m = marks.filter(e => e.name === x).pop(); return m ? m.startTime : 0; }; const s = a ? f(a) : 0, e = b ? f(b) : d.now() - V.T0; const r = { name: n, entryType: 'measure', startTime: s, duration: e - s }; marks.push(r); return r; },
     clearMarks() { marks.length = 0; }, clearMeasures() {}, getEntries: () => marks.slice(), getEntriesByName: n => marks.filter(e => e.name === n), getEntriesByType: t => marks.filter(e => e.entryType === t),
-    timing: { navigationStart: Date.now(), fetchStart: Date.now(), domContentLoadedEventEnd: Date.now(), loadEventEnd: Date.now() }, navigation: { type: 0, redirectCount: 0 },
-    memory: { usedJSHeapSize: 0, totalJSHeapSize: 0, jsHeapSizeLimit: 64 << 20 } }) });
+    timing: Object.fromEntries(['navigationStart', 'unloadEventStart', 'unloadEventEnd', 'redirectStart', 'redirectEnd', 'fetchStart', 'domainLookupStart', 'domainLookupEnd', 'connectStart', 'connectEnd', 'secureConnectionStart', 'requestStart', 'responseStart', 'responseEnd', 'domLoading', 'domInteractive', 'domContentLoadedEventStart', 'domContentLoadedEventEnd', 'domComplete', 'loadEventStart', 'loadEventEnd'].map(k => [k, /^(unload|redirect)/.test(k) ? 0 : PT0 + (k === 'navigationStart' || k === 'fetchStart' ? 0 : 1)])), navigation: { type: 0, redirectCount: 0 },
+    memory: { usedJSHeapSize: 10000000, totalJSHeapSize: 16000000, jsHeapSizeLimit: 2172649472 } }) });
 const hex = n => { let s = ''; for (let i = 0; i < n; i++) s += ((Math.random() * 16) | 0).toString(16); return s; };
-def(g, { crypto: {
-    getRandomValues(a) { for (let i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 4294967296); return a; },
-    randomUUID() { return hex(8) + '-' + hex(4) + '-4' + hex(3) + '-' + '89ab'[(Math.random() * 4) | 0] + hex(3) + '-' + hex(12); },
-    subtle: undefined } });
-def(g, { navigator: { userAgent: d.ua(), appName: 'Netscape', appVersion: '5.0 (VibeOS)', appCodeName: 'Mozilla', product: 'Gecko', vendor: '', platform: 'VibeOS', language: 'en-US', languages: ['en-US', 'en'],
-    onLine: true, cookieEnabled: true, doNotTrack: null, hardwareConcurrency: 1, maxTouchPoints: 0, deviceMemory: 0.5, webdriver: false, pdfViewerEnabled: false, plugins: [], mimeTypes: [],
+// SHA-1 / SHA-256 over bytes (crypto.subtle.digest); the other algorithms reject like an engine without them
+const sha = (alg, m) => {
+    const L = m.length, n = ((L + 8) >> 6) + 1, w = new Uint32Array(n * 16), rot = (x, k) => (x << k) | (x >>> (32 - k)), rr = (x, k) => (x >>> k) | (x << (32 - k));
+    for (let i = 0; i < L; i++) w[i >> 2] |= m[i] << (24 - 8 * (i & 3));
+    w[L >> 2] |= 0x80 << (24 - 8 * (L & 3)); w[n * 16 - 1] = (L * 8) >>> 0; w[n * 16 - 2] = Math.floor(L / 536870912);
+    let H;
+    if (alg === 'SHA-1') {
+        H = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+        for (let o = 0; o < w.length; o += 16) {
+            const x = new Uint32Array(80); x.set(w.subarray(o, o + 16));
+            for (let i = 16; i < 80; i++) x[i] = rot(x[i - 3] ^ x[i - 8] ^ x[i - 14] ^ x[i - 16], 1);
+            let [a, b, c, d2, e] = H;
+            for (let i = 0; i < 80; i++) {
+                const f = i < 20 ? (b & c) | (~b & d2) : i < 40 ? b ^ c ^ d2 : i < 60 ? (b & c) | (b & d2) | (c & d2) : b ^ c ^ d2, k = i < 20 ? 0x5A827999 : i < 40 ? 0x6ED9EBA1 : i < 60 ? 0x8F1BBCDC : 0xCA62C1D6;
+                const t = (rot(a, 5) + f + e + k + x[i]) | 0; e = d2; d2 = c; c = rot(b, 30); b = a; a = t;
+            }
+            H = [H[0] + a | 0, H[1] + b | 0, H[2] + c | 0, H[3] + d2 | 0, H[4] + e | 0];
+        }
+    } else {
+        const pr = [], K = [];
+        for (let p = 2; pr.length < 64; p++) { let ok = 1; for (let q = 2; q * q <= p; q++) if (p % q === 0) ok = 0; if (ok) pr.push(p); }
+        for (const p of pr) K.push(Math.floor((Math.cbrt(p) % 1) * 4294967296));
+        H = pr.slice(0, 8).map(p => Math.floor((Math.sqrt(p) % 1) * 4294967296));
+        for (let o = 0; o < w.length; o += 16) {
+            const x = new Uint32Array(64); x.set(w.subarray(o, o + 16));
+            for (let i = 16; i < 64; i++) { const s0 = rr(x[i - 15], 7) ^ rr(x[i - 15], 18) ^ (x[i - 15] >>> 3), s1 = rr(x[i - 2], 17) ^ rr(x[i - 2], 19) ^ (x[i - 2] >>> 10); x[i] = x[i - 16] + s0 + x[i - 7] + s1 | 0; }
+            let [a, b, c, d2, e, f, g2, h] = H;
+            for (let i = 0; i < 64; i++) {
+                const t1 = h + (rr(e, 6) ^ rr(e, 11) ^ rr(e, 25)) + ((e & f) ^ (~e & g2)) + K[i] + x[i] | 0, t2 = (rr(a, 2) ^ rr(a, 13) ^ rr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c)) | 0;
+                h = g2; g2 = f; f = e; e = d2 + t1 | 0; d2 = c; c = b; b = a; a = t1 + t2 | 0;
+            }
+            H = [H[0] + a | 0, H[1] + b | 0, H[2] + c | 0, H[3] + d2 | 0, H[4] + e | 0, H[5] + f | 0, H[6] + g2 | 0, H[7] + h | 0];
+        }
+    }
+    const out = new Uint8Array(H.length * 4);
+    H.forEach((v, i) => { out[4 * i] = v >>> 24; out[4 * i + 1] = v >>> 16; out[4 * i + 2] = v >>> 8; out[4 * i + 3] = v; });
+    return out.buffer;
+};
+const bytesOf = data => data instanceof ArrayBuffer ? new Uint8Array(data) : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null;
+class SubtleCrypto {
+    digest(alg, data) {
+        const name = String(typeof alg === 'object' && alg ? alg.name : alg).toUpperCase(), m = bytesOf(data);
+        if (!m) return Promise.reject(new TypeError("Failed to execute 'digest' on 'SubtleCrypto': 2nd argument is not instance of ArrayBuffer, Buffer, TypedArray, or DataView."));
+        if (name !== 'SHA-1' && name !== 'SHA-256') return Promise.reject(new DOMException('Unrecognized name.', 'NotSupportedError'));
+        return Promise.resolve(sha(name, m));
+    }
+}
+const subtle = new SubtleCrypto();
+class Crypto {
+    getRandomValues(a) {
+        if (!ArrayBuffer.isView(a) || a instanceof Float32Array || a instanceof Float64Array || a instanceof DataView) throw new DOMException('The data argument must be an integer-type TypedArray', 'TypeMismatchError');
+        if (a.byteLength > 65536) throw new DOMException("The ArrayBufferView's byte length (" + a.byteLength + ') exceeds the number of bytes of entropy available via this API (65536).', 'QuotaExceededError');
+        new Uint8Array(a.buffer, a.byteOffset, a.byteLength).set(new Uint8Array(d.rand(a.byteLength)));
+        return a;
+    }
+    randomUUID() { const b = new Uint8Array(d.rand(16)); b[6] = b[6] & 15 | 64; b[8] = b[8] & 63 | 128; const h = Array.from(b, x => (x + 256).toString(16).slice(1)).join(''); return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20); }
+    get subtle() { return subtle; }
+}
+def(g, { SubtleCrypto, Crypto, crypto: new Crypto() });
+// plugins / mimeTypes: Firefox's fixed PDF-viewer list (what a real browser reports with its built-in viewer)
+class MimeType {} class Plugin {} class PluginArray {} class MimeTypeArray {}
+const mtl = ['application/pdf', 'text/pdf'].map(type => Object.assign(Object.create(MimeType.prototype), { type, suffixes: 'pdf', description: 'Portable Document Format' }));
+const pll = ['PDF Viewer', 'Chrome PDF Viewer', 'Chromium PDF Viewer', 'Microsoft Edge PDF Viewer', 'WebKit built-in PDF'].map(name => {
+    const p = Object.create(Plugin.prototype);
+    Object.assign(p, { name, filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: mtl.length });
+    mtl.forEach((m, i) => { p[i] = m; Object.defineProperty(m, 'enabledPlugin', { value: p, configurable: true }); });
+    p.item = i => mtl[i] || null; p.namedItem = n => mtl.find(m => m.type === n) || null; return p;
+});
+const arrLike = (C, list, key) => { const a = Object.create(C.prototype); list.forEach((x, i) => { a[i] = x; }); Object.defineProperty(a, 'length', { value: list.length });
+    Object.defineProperty(a, 'item', { value: i => list[i] || null }); Object.defineProperty(a, 'namedItem', { value: n => list.find(x => x[key] === n) || null });
+    Object.defineProperty(a, Symbol.iterator, { value: () => list[Symbol.iterator]() }); if (C === PluginArray) Object.defineProperty(a, 'refresh', { value() {} }); return a; };
+def(g, { MimeType, Plugin, PluginArray, MimeTypeArray });
+for (const C of [MimeType, Plugin, PluginArray, MimeTypeArray]) Object.defineProperty(C.prototype, Symbol.toStringTag, { value: C.name });
+def(g, { navigator: { userAgent: d.ua(), appName: 'Netscape', appVersion: '5.0 (X11)', appCodeName: 'Mozilla', product: 'Gecko', productSub: '20100101', vendor: '', vendorSub: '', platform: 'Linux i686', oscpu: 'Linux i686', buildID: '20181001000000', language: 'en-US', languages: ['en-US', 'en'],
+    onLine: true, cookieEnabled: true, doNotTrack: null, hardwareConcurrency: 4, maxTouchPoints: 0, webdriver: false, pdfViewerEnabled: true, plugins: arrLike(PluginArray, pll, 'name'), mimeTypes: arrLike(MimeTypeArray, mtl, 'type'),
     clipboard: { writeText: () => Promise.resolve(), readText: () => Promise.resolve(''), write: () => Promise.resolve(), read: () => Promise.resolve([]) },
     permissions: { query: () => Promise.resolve({ state: 'denied', addEventListener() {} }) }, sendBeacon: () => true, vibrate: () => false, share: undefined,
     connection: { effectiveType: '4g', downlink: 10, rtt: 50, saveData: false, addEventListener() {} }, userAgentData: undefined, getBattery: undefined,
@@ -873,5 +942,27 @@ def(g, { Intl: { NumberFormat: callable(NumberFormat), DateTimeFormat: callable(
 // ---------- unhandled rejections are logged by the host; window.onerror is wired in dom_js.c ----------
 delete g.__d;
 delete g.__v;
+// everything above is JavaScript, but a browser's built-ins print as native code: Function.prototype.toString says so for every function reachable from the global
+{
+    const nat = new WeakMap(), seen = new WeakSet(), orig = Function.prototype.toString;
+    const walk = (o, depth) => {
+        if (!o || (typeof o !== 'object' && typeof o !== 'function') || seen.has(o)) return;
+        seen.add(o);
+        if (typeof o === 'function') nat.set(o, o.name || '');
+        if (depth > 3) return;
+        for (const k of Reflect.ownKeys(o)) {
+            let ds; try { ds = Object.getOwnPropertyDescriptor(o, k); } catch (e) { continue; }
+            if (!ds) continue;
+            if (typeof ds.get === 'function') nat.set(ds.get, 'get ' + String(k));
+            if (typeof ds.set === 'function') nat.set(ds.set, 'set ' + String(k));
+            if ('value' in ds && k !== 'constructor') walk(ds.value, depth + 1);
+        }
+        try { walk(Object.getPrototypeOf(o), depth + 1); } catch (e) {}
+    };
+    for (const k of Object.getOwnPropertyNames(g)) { if (k === 'globalThis' || k === 'window' || k === 'self') continue; const ds = Object.getOwnPropertyDescriptor(g, k); if (ds && 'value' in ds) walk(ds.value, 0); }
+    const ts = { toString() { const n = nat.get(this); return n === undefined ? orig.call(this) : 'function ' + n + '() { [native code] }'; } }.toString;
+    nat.set(ts, 'toString');
+    Object.defineProperty(Function.prototype, 'toString', { value: ts, writable: true, configurable: true });
+}
 })(globalThis);
 )JS";
