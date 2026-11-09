@@ -60,6 +60,7 @@ static struct scr S[MAXSCR], D[MAXDYN];
 static int nscr, cur_scr, cur_def, cur_script, rstate, idle, strikes, url_changed, scroll_req_y = -1, vscroll, vw = 900, vh = 580;
 static char anchor_req[128];
 static int submit_req;
+static char *blob_get(const char *url, size_t *len);
 static char *sync_get(const char *url, size_t *len);
 static void add_script(int id, int where);
 static void scan_scripts(int id, int where);
@@ -123,9 +124,11 @@ static int new_text(const char *s, int n) {
     return id;
 }
 
+static unsigned tgen;                                    /* bumped by every tree/attribute change: live NodeLists/HTMLCollections re-query when it moved */
 static void unlink_node(int c) {
     struct node *x = &N[c];
     if (!x->parent) return;
+    tgen++;
     if (x->prev) N[x->prev].next = x->next; else N[x->parent].first = x->next;
     if (x->next) N[x->next].prev = x->prev; else N[x->parent].last = x->prev;
     x->parent = x->prev = x->next = 0;
@@ -133,6 +136,7 @@ static void unlink_node(int c) {
 
 static void insert_before(int p, int c, int ref) {       /* ref 0 = append */
     unlink_node(c);
+    tgen++;
     struct node *x = &N[c];
     x->parent = p;
     if (!ref) {
@@ -692,14 +696,14 @@ NATIVE(n_set_attr) {
     if (!id || N[id].type != 1) return JS_UNDEFINED;
     CSTR(n, 1);
     const char *v = JS_ToCString(c, argv[2]);
-    if (v && set_attr(id, n, v) && paints(n)) touch(id);
+    if (v && set_attr(id, n, v)) { tgen++; if (paints(n)) touch(id); }
     JS_FreeCString(c, n); JS_FreeCString(c, v);
     return JS_UNDEFINED;
 }
 NATIVE(n_del_attr) {
     int id = ARGID(0);
     CSTR(n, 1);
-    if (id && del_attr(id, n) && paints(n)) touch(id);
+    if (id && del_attr(id, n)) { tgen++; if (paints(n)) touch(id); }
     JS_FreeCString(c, n);
     return JS_UNDEFINED;
 }
@@ -1000,6 +1004,7 @@ NATIVE(n_assigned) {
     for (int i = 0; i < n; i++) JS_SetPropertyUint32(c, a, i, JS_NewInt32(c, buf[i]));
     return a;
 }
+NATIVE(n_gen) { return JS_NewUint32(c, tgen); }
 NATIVE(n_connected) { int id = ARGID(0); return JS_NewBool(c, id && connected(id)); }
 NATIVE(n_cur_script) { return JS_NewInt32(c, cur_script); }
 NATIVE(n_ready) { return JS_NewInt32(c, rstate); }
@@ -1164,7 +1169,7 @@ static const JSCFunctionListEntry NATIVES[] = {
     JS_CFUNC_DEF("createComment", 1, n_create_comment), JS_CFUNC_DEF("docwrite", 1, n_docwrite), JS_CFUNC_DEF("curScript", 0, n_cur_script),
     JS_CFUNC_DEF("ready", 0, n_ready), JS_CFUNC_DEF("setUrl", 2, n_set_url), JS_CFUNC_DEF("scrollTo", 2, n_scroll_to),
     JS_CFUNC_DEF("view", 0, n_view), JS_CFUNC_DEF("rect", 1, n_rect), JS_CFUNC_DEF("media", 1, n_media),
-    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
+    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("gen", 0, n_gen), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
 };
 
 /* ---------- running JS ---------- */
@@ -1403,12 +1408,12 @@ static int fetch_queue(const char *url, int script, const char *blob, int has_bl
 
 static void read_file(struct jf *f) {
     if (!strncasecmp(f->url, "blob:", 5)) {            /* a script from URL.createObjectURL(new Blob([...])) */
-        JSValue a = str(f->url), r = ctx && !dead ? JS_Call(ctx, fn_blob, JS_UNDEFINED, 1, &a) : JS_EXCEPTION;
-        JS_FreeValue(ctx, a);
+        size_t n = 0;
+        char *t = blob_get(f->url, &n);
         f->used = 0;
-        if (JS_IsString(r)) { size_t n; const char *t = JS_ToCStringLen(ctx, &n, r); deliver(f->id, f->script, 200, "OK", "", t, n, 0, f->url, ""); JS_FreeCString(ctx, t); }
+        if (t) deliver(f->id, f->script, 200, "OK", "", t, n, 0, f->url, "");
         else deliver(f->id, f->script, 0, "", "", 0, 0, "blob not found", f->url, "");
-        JS_FreeValue(ctx, r);
+        free(t);
         return;
     }
     char path[PATH_MAX];
@@ -1540,7 +1545,17 @@ static void fire(int node, const char *type) {            /* script load/error e
 }
 
 /* blocking GET for module imports (QuickJS wants the source back from the loader); ponytail: freezes the page for the download */
+static char *blob_get(const char *url, size_t *len) {      /* URL.createObjectURL(blob) contents (kept by web_js.c), malloc'd */
+    if (!ctx || dead || JS_IsUndefined(fn_blob)) return 0;
+    JSValue a = str(url), r = JS_Call(ctx, fn_blob, JS_UNDEFINED, 1, &a);
+    char *b = 0;
+    if (JS_IsString(r)) { size_t n; const char *t = JS_ToCStringLen(ctx, &n, r); if (t) { b = malloc(n + 1); if (b) { memcpy(b, t, n); b[n] = 0; *len = n; } JS_FreeCString(ctx, t); } }
+    JS_FreeValue(ctx, a); JS_FreeValue(ctx, r);
+    return b;
+}
+
 static char *sync_get(const char *url, size_t *len) {
+    if (!strncasecmp(url, "blob:", 5)) return blob_get(url, len);
     char cur[URL_MAX];
     strlcpy(cur, url, sizeof cur);
     for (int hop = 0; hop < 6; hop++) {

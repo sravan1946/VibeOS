@@ -497,7 +497,9 @@ def(g, { navigator: { userAgent: d.ua(), appName: 'Netscape', appVersion: '5.0 (
     clipboard: { writeText: () => Promise.resolve(), readText: () => Promise.resolve(''), write: () => Promise.resolve(), read: () => Promise.resolve([]) },
     permissions: { query: () => Promise.resolve({ state: 'denied', addEventListener() {} }) }, sendBeacon: () => true, vibrate: () => false, share: undefined,
     connection: { effectiveType: '4g', downlink: 10, rtt: 50, saveData: false, addEventListener() {} }, userAgentData: undefined, getBattery: undefined,
-    registerProtocolHandler() {}, javaEnabled: () => false } });
+    registerProtocolHandler() {}, javaEnabled: () => false,
+    serviceWorker: { controller: null, ready: new Promise(() => {}), register: () => Promise.reject(new DOMException('Service workers are not available here', 'SecurityError')), getRegistration: () => Promise.resolve(undefined), getRegistrations: () => Promise.resolve([]), addEventListener() {}, removeEventListener() {}, startMessages() {} },
+    storage: { estimate: () => Promise.resolve({ quota: 0, usage: 0 }), persist: () => Promise.resolve(false), persisted: () => Promise.resolve(false) } } });
 def(g, { screen: { width: 1280, height: 800, availWidth: 1280, availHeight: 760, colorDepth: 24, pixelDepth: 24, availLeft: 0, availTop: 0, orientation: { type: 'landscape-primary', angle: 0, addEventListener() {} } },
     visualViewport: Object.assign(new D.EventTarget(), { get width() { return innerWidth; }, get height() { return innerHeight; }, scale: 1, offsetLeft: 0, offsetTop: 0, pageLeft: 0, get pageTop() { return scrollY; } }),
     Notification: Object.assign(function Notification() {}, { permission: 'denied', requestPermission: () => Promise.resolve('denied') }),
