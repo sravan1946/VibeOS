@@ -11,7 +11,7 @@
 
 #define NSLOT 4
 #define MAXSHEET 32
-#define SHEET_MAX (512u << 10)           /* bytes kept per sheet; the rest is cut off */
+#define SHEET_MAX (2u << 20)             /* bytes kept per sheet; the rest is cut off */
 #define SHEET_TIMEOUT 8000               /* ms without a byte */
 #define MAX_HOPS 4
 
