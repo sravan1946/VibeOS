@@ -201,6 +201,16 @@ static void draw_decor(struct canvas *cc, const struct doc *d, const struct deco
     if (y >= vy + vh || y + r->h <= vy) return;
     struct canvas c2 = *cc, *c = cc;
     if (r->clip) { const struct cliprect *k = &d->cl[r->clip]; c2 = *cc; canvas_clip(&c2, vx + k->x, vy + k->y - scroll + (r->clip >= c0 && r->clip < c1 ? sh : 0), k->w, k->h); c = &c2; }
+    if (r->gdir == 3) {                                  /* angled/radial/conic gradient or one with rounded corners: per pixel */
+        static uint32_t *gb; static size_t gcap;
+        int y0 = y < vy ? vy - y : 0, y1 = y + r->h > vy + vh ? vy + vh - y : r->h, w = r->w;
+        if (w > 3000 || y1 <= y0) return;
+        size_t need = (size_t)w * (y1 - y0);
+        if (need > gcap) { uint32_t *nb = realloc(gb, need * 4); if (!nb) return; gb = nb; gcap = need; }
+        grad_render(css_str(r->px), w, r->h, r->rad, y0, y1, gb, need > 120000 ? 3 : need > 40000 ? 2 : 1);
+        gfx_blit_alpha(c, vx + r->x, y + y0, gb, w, y1 - y0, w);
+        return;
+    }
     if (r->img) {                                        /* background-image: sized, positioned, tiled, clipped to the box */
         int iw, ih;
         struct canvas c3 = *c;

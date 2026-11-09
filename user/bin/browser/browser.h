@@ -157,6 +157,7 @@ void css_cnt_enter(const struct cprops *style, int depth);
 void css_cnt_leave(int depth);
 int  css_counter_format(int lt, int n, char *out, int cap);    /* n in a list-style-type LT_*: "iv", "c", "07", a bullet...; returns length */
 int  css_len(const struct cprops *p, int prop, int base);      /* a length property in px: px, % of base, calc(); auto/none -> 0 */
+void grad_render(const char *s, int w, int h, int rad, int y0, int y1, uint32_t *out, int step);   /* layout.c: gdir 3 decors */
 const char *css_str(int id);                      /* text of a K_STR value (grid track lists, content, url of background-image) */
 int  css_match_node(const char *sel, int node);
 /* Restyle scoping (after a change, which part of the tree needs css_compute again; hover must not restyle the page).
