@@ -124,10 +124,12 @@ static void sb_esc(struct sb *b, const char *s) {
 
 /* internal pages take the window colours; the tag has a fixed length so a theme change can rewrite it in place */
 static void body_tag(char *t, int cap) {
-    snprintf(t, cap, "<body bgcolor=\"#%06X\" text=\"#%06X\" link=\"#%06X\">", (unsigned)(ui_th.window & 0xFFFFFF),
-             (unsigned)(ui_th.text & 0xFFFFFF), (unsigned)(ui_th.accent_text & 0xFFFFFF));
+    unsigned w = ui_th.window & 0xFFFFFF, x = ui_th.text & 0xFFFFFF, a = ui_th.accent_text & 0xFFFFFF;
+    /* the <style> is author CSS, so these colours beat the UA sheet's black text and blue links */
+    snprintf(t, cap, "<body bgcolor=\"#%06X\" text=\"#%06X\" link=\"#%06X\"><style>body{max-width:880px;margin:14px auto;padding:0 20px;"
+             "color:#%06X;background:#%06X}a:link,a:visited{color:#%06X}</style>", w, x, a, x, w, a);
 }
-static void sb_body(struct sb *b) { char t[80]; body_tag(t, sizeof t); sb_add(b, t); }
+static void sb_body(struct sb *b) { char t[260]; body_tag(t, sizeof t); sb_add(b, t); }
 
 static const char HOME_HTML[] =
     "<center><h1>Vibe Browser</h1>"
@@ -858,7 +860,7 @@ static void zoom_by(int d) {
 }
 
 static void retheme(void) {                  /* EV_THEME: recolour our own pages */
-    char *p = internal && pg.raw ? strstr(pg.raw, "<body bgcolor=\"#") : 0, t[80];
+    char *p = internal && pg.raw ? strstr(pg.raw, "<body bgcolor=\"#") : 0, t[260];
     if (!p) return;
     body_tag(t, sizeof t);
     memcpy(p, t, strlen(t));
