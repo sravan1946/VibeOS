@@ -79,7 +79,7 @@ static int nlog;
 
 /* ---------- console ---------- */
 static void jlog(int kind, const char *fmt, ...) {
-    char b[200];
+    char b[900];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(b, sizeof b, fmt, ap);
@@ -90,7 +90,7 @@ static void jlog(int kind, const char *fmt, ...) {
     LOG[nlog++].kind = kind;
     static int kfd = -2;                                   /* /dev/kmsg = serial: tests read the page's verdict there */
     if (kfd == -2) kfd = open("/dev/kmsg", O_WRONLY);
-    if (kfd >= 0) { char l[240]; int k = snprintf(l, sizeof l, "[js%d] %s\n", kind, b); write(kfd, l, k); }
+    if (kfd >= 0) { char l[940]; int k = snprintf(l, sizeof l, "[js%d] %s\n", kind, b); write(kfd, l, k); }
     browser_status(kind == 2, "%s%s", kind == 2 ? "JS: " : "console: ", b);
 }
 int js_log_count(void) { return nlog; }
@@ -1237,7 +1237,7 @@ static void flush_rejections(void) {
         const char *m = JS_ToCString(ctx, rs);
         JSValue st = JS_IsError(ctx, rs) ? JS_GetPropertyStr(ctx, rs, "stack") : JS_UNDEFINED;
         const char *sk = JS_IsUndefined(st) ? 0 : JS_ToCString(ctx, st);
-        jlog(2, "Uncaught (in promise) %s%s%.60s", m ? m : "", sk ? " " : "", sk ? sk : "");
+        jlog(2, "Uncaught (in promise) %s%s%.900s", m ? m : "", sk ? " " : "", sk ? sk : "");
         JS_FreeCString(ctx, m); JS_FreeCString(ctx, sk); JS_FreeValue(ctx, st);
         JS_FreeValue(ctx, RJ[nrj].p); JS_FreeValue(ctx, rs);
     }

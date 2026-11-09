@@ -195,6 +195,7 @@ g.__dispatch = (id, type, x) => {
     const ev = new (type.startsWith('key') ? KeyboardEvent : MOUSE.has(type) ? MouseEvent : type.startsWith('pointer') ? PointerEvent : type === 'wheel' ? WheelEvent :
         type === 'input' ? InputEvent : type.startsWith('focus') || type === 'blur' ? FocusEvent : Event)(type, o);
     ev.isTrusted = true;
+    if (id && type === 'focus') document.__active = wrap(id); else if (id && type === 'blur' && document.__active === wrap(id)) document.__active = null;
     const keep = trusted;
     trusted = type === 'click' || type === 'submit' || type.startsWith('key') || type === 'mousedown' || type === 'mouseup';
     try { return !dispatch(id ? wrap(id) : (type === 'DOMContentLoaded' || type === 'readystatechange') ? document : g, ev); } finally { trusted = keep; }

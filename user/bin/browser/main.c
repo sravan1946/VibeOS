@@ -1330,7 +1330,15 @@ int main(int argc, char **argv) {
             if (!step) step = d > 0 ? 1 : -1;
             scroll += step;
         }
-        if (js_active() && fo != cb_ord) { field_commit(); cb_ord = fo; field_base(); }      /* focus left a field: its change event */
+        if (js_active() && fo != cb_ord) {
+            int oc = cb_ord >= 0 ? ctl_by_ord(cb_ord) : -1, on = oc >= 0 ? doc.ct[oc].node : 0;
+            field_commit();
+            if (on) { js_event(on, "blur", 0, 0, 0); js_event(on, "focusout", 0, 0, 0); }
+            cb_ord = fo; field_base();
+            int nc = fo >= 0 ? ctl_by_ord(fo) : -1;
+            if (nc >= 0) { js_event(doc.ct[nc].node, "focus", 0, 0, 0); js_event(doc.ct[nc].node, "focusin", 0, 0, 0); }
+        }
+        /* (focus left a field: change, blur; entered: focus) */
         js_viewport(scroll, vw, vh);
         { static int last_scroll, last_vw, last_vh;
           if (scroll != last_scroll) { last_scroll = scroll; js_event(1, "scroll", 0, 0, 0); }

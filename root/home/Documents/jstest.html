@@ -247,6 +247,7 @@ document.title = 'JavaScript tests';
 }
 check('getComputedStyle', (() => { const e = document.createElement('div'); e.setAttribute('hidden', ''); document.body.appendChild(e); const r = [getComputedStyle(e).display, getComputedStyle($('#p1')).backgroundColor, getComputedStyle($('#p1')).display]; e.remove(); return r; })(), ['none', 'rgb(238, 238, 238)', 'block']);
 check('geometry', (() => { const r = $('#p1').getBoundingClientRect(); return [r.width > 50, r.height > 5, $('#p1').offsetHeight === r.height, typeof window.scrollY, innerWidth > 100]; })(), [true, true, true, 'number', true]);
+check('control geometry (jQuery :visible)', [$('#t').offsetWidth > 0, $('#t').offsetHeight > 0, $('#btn').getClientRects().length, $('#s').offsetWidth > 0, $('#ta').offsetHeight > 0], [true, true, 1, true, true]);
 check('matchMedia', [matchMedia('(min-width: 100px)').matches, matchMedia('(max-width: 10px)').matches], [true, false]);
 check('script isolation + document.write', [window.afterThrow, !!document.getElementById('written'), window.rsAtParse], [1, true, 'loading']);
 check('dynamic inline script runs at once', (() => { const s = document.createElement('script'); s.textContent = 'window.dynInline = (window.dynInline||0) + 1'; document.head.appendChild(s); return window.dynInline; })(), 1);
