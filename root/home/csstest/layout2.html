@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><title>Layout 2: regressions from real sites</title>
+<style>
+body { margin: 8px; font-family: sans-serif; font-size: 14px; }
+.t { margin: 0 0 10px; border: 1px solid #888; }
+/* abs-positioned control (ddg search button) */
+.srch { position: relative; height: 40px; padding-right: 6em; box-sizing: border-box; background: #fff; }
+.srch input[type=text] { display: block; width: 100%; border: 0; height: 30px; }
+.srch input[type=submit] { position: absolute; top: 0; bottom: 0; right: 2px; left: auto; margin: auto; width: 1em; padding: 0 .6em; }
+.fx { display: flex; border: 1px solid #a9a9a9; align-items: stretch; }
+.fx input[type=search] { border: 0; padding-left: 24px; width: 100%; flex: 1; }
+.fx input[type=submit] { height: 100%; border: 0; }
+</style></head><body>
+<div class="t"><form class="srch"><input type="text"><input type="submit" value=""></form></div>
+<!-- flex form: controls are flex items (blockified, flex:1 beats width:100%) -->
+<div class="t" style="width:400px"><form class="fx">
+<input type="search"><input type="submit" value="Go"></form></div>
+<!-- grid: minmax(15rem,1fr) keeps its minimum, minmax(0,48rem) is capped by the room left -->
+<div class="t" style="display:grid;grid-template-columns:minmax(15rem,1fr) 2rem minmax(0,48rem) minmax(0,1fr)"><div style="background:#fcc">side</div><div></div><div style="background:#cfc">content</div><div></div></div>
+</body></html>

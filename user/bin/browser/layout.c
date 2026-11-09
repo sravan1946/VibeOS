@@ -1008,7 +1008,7 @@ static void lay_flex(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
  * Tracks from grid-template-columns (px, %, fr, auto, minmax(), repeat(n|auto-fill, ...)), items placed by named areas,
  * line numbers/spans or auto-flow (row-major, sparse), columns sized fixed -> auto (max-content) -> fr, rows by content
  * (or their px size). ponytail: no subgrid, no dense packing, no implicit column tracks beyond the explicit count. */
-struct trk { uint8_t kind; int v; };       /* 0 px, 1 fr (x100), 2 auto, 3 percent */
+struct trk { uint8_t kind; int v, mn; };   /* 0 px, 1 fr (x100), 2 auto, 3 percent; mn: minmax()'s fixed minimum (px) */
 #define GMAXC 24
 #define GMAXR 400
 
@@ -1024,6 +1024,8 @@ static int track_one(const char *t, int len, struct trk *o, int cw) {
     if (len >= (int)sizeof b) len = sizeof b - 1;
     memcpy(b, t, len); b[len] = 0;
     char *p = b;
+    o->mn = -1;
+    if (!strncmp(p, "minmax(", 7)) { const char *a = p + 7; while (*a == ' ') a++; if (isdigit((unsigned char)*a) && strcspn(a, "%,") == strcspn(a, ",")) o->mn = css_px(a); }
     if (!strncmp(p, "minmax(", 7) || !strncmp(p, "fit-content(", 12)) {
         char *c = strrchr(p, ',');
         p = c ? c + 1 : strchr(p, '(') + 1;
@@ -1174,15 +1176,33 @@ static void lay_grid(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
         } else frsum += ct[i].v;
         if (ct[i].kind != 1) fixed += cwid[i];
     }
+    for (int i = 0; i < nc; i++) if (ct[i].kind == 0 && ct[i].mn >= 0 && ct[i].mn < ct[i].v) { fixed -= cwid[i] - ct[i].mn; cwid[i] = ct[i].mn; }   /* minmax(a,b): start at a */
+    int fmin = 0;
+    for (int i = 0; i < nc; i++) if (ct[i].kind == 1 && ct[i].mn > 0) fmin += ct[i].mn;
     int room = cw - gaps - fixed;
+    {                                                                /* minmax(a,b) tracks grow towards b with what the fr minimums leave */
+        int extra = 0, give = imax_(room - fmin, 0);
+        for (int i = 0; i < nc; i++) if (ct[i].kind == 0 && ct[i].mn >= 0 && ct[i].mn < ct[i].v) extra += ct[i].v - cwid[i];
+        if (extra > 0 && give > 0) {
+            give = imin_(give, extra);
+            for (int i = 0; i < nc; i++) if (ct[i].kind == 0 && ct[i].mn >= 0 && ct[i].mn < ct[i].v) { int g = (int)((long long)give * (ct[i].v - cwid[i]) / extra); cwid[i] += g; fixed += g; }
+            room = cw - gaps - fixed;
+        }
+    }
     if (room < 0 && fixed > 0) {                                  /* auto tracks overflow: shrink them, never below 0 */
         int autos = 0;
         for (int i = 0; i < nc; i++) if (ct[i].kind == 2) autos += cwid[i];
         if (autos > 0) { int take = imin_(-room, autos); for (int i = 0; i < nc; i++) if (ct[i].kind == 2) cwid[i] -= (int)((long long)take * cwid[i] / autos); room += take; }
     }
     if (frsum) {
-        int rem = imax_(room, 0), used = 0, lastfr = -1;
-        for (int i = 0; i < nc; i++) if (ct[i].kind == 1) { cwid[i] = (int)((long long)rem * ct[i].v / frsum); used += cwid[i]; lastfr = i; }
+        int rem = imax_(room, 0), used = 0, lastfr = -1, fs = frsum;
+        uint8_t frz[GMAXC] = { 0 };
+        for (int again = 1; again;) {                                /* an fr track whose share is under its minimum freezes at the minimum */
+            again = 0;
+            for (int i = 0; i < nc; i++) if (ct[i].kind == 1 && !frz[i] && ct[i].mn > 0 && fs > 0 && (long long)rem * ct[i].v / fs < ct[i].mn) { frz[i] = 1; cwid[i] = ct[i].mn; rem -= ct[i].mn; fs -= ct[i].v; again = 1; }
+            if (rem < 0) rem = 0;
+        }
+        for (int i = 0; i < nc; i++) if (ct[i].kind == 1 && !frz[i]) { cwid[i] = fs > 0 ? (int)((long long)rem * ct[i].v / fs) : 0; used += cwid[i]; lastfr = i; }
         if (lastfr >= 0) cwid[lastfr] += rem - used;
     }
     int colx[GMAXC + 1], x = cx;
@@ -1233,7 +1253,7 @@ static void lay_block(struct bx *b, int cx, int cw, int y, struct bfc *pf, int *
     if (b->inner == IN_IMG || b->inner == IN_CTL) {
         int W, H;
         repl_size(b, cw - ml - mr, &W, &H);
-        cwid = W;
+        cwid = fw >= 0 ? fw : W;                              /* a flex item's / abs box's resolved main size wins */
     } else if (b->inner == IN_TABLE) {
         int avail = imax_(cw - ml - mr - hed, 1);
         cwid = tab_plan(b, avail, fw >= 0 ? fw : sw);
@@ -2006,9 +2026,12 @@ static void fix_table_kids(int p, int want_row, int want_cell) {   /* rows under
 
 static void fix_items(int p) {                                  /* flex / grid: every in-flow child is a block item */
     int c = B[p].first, prev = -1;
+    for (int q = c; q >= 0; q = B[q].next) {
+        struct bx *x = &B[q];
+        if (!out_of_flow_or_float(x) && x->outer == OUT_INLINE && x->inner != IN_TEXT && x->inner != IN_BR && x->inner != IN_INLINE) x->outer = OUT_BLOCK;   /* atoms are blockified */
+    }
     while (c >= 0) {
         struct bx *x = &B[c];
-        if (!out_of_flow_or_float(x) && x->outer == OUT_INLINE && x->inner != IN_TEXT && x->inner != IN_BR && x->inner != IN_INLINE) x->outer = OUT_BLOCK;   /* atoms are blockified */
         if (x->flt || oof(x) || x->outer == OUT_BLOCK) { prev = c; c = B[c].next; continue; }
         int e = c, real = 0;
         while (e >= 0 && !(B[e].flt || oof(&B[e]) || B[e].outer == OUT_BLOCK)) { if (!is_ws_text(&B[e])) real = 1; e = B[e].next; }
@@ -2413,6 +2436,7 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
     if (aw && strchr(aw, '%') && !cssw && atoi(aw) > 0) { b->k[L_W] = K_PCT; b->v[L_W] = atoi(aw); }
     if (alt && *alt) { b->toff = (uint32_t)(alt - HD.pool); b->tlen = strlen(alt); }
     bx_append(pb, bi);
+    if (oof(b)) abs_reg(bi);
 }
 
 static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
@@ -2431,6 +2455,7 @@ static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
     if (b->k[L_W] == K_AUTO && aw && atoi(aw) > 0 && !strchr(aw, '%')) { b->k[L_W] = K_PX; b->v[L_W] = atoi(aw); }
     if (b->k[L_H] == K_AUTO && ah && atoi(ah) > 0 && !strchr(ah, '%')) { b->k[L_H] = K_PX; b->v[L_H] = atoi(ah); }
     bx_append(pb, bi);
+    if (oof(b)) abs_reg(bi);
 }
 
 static int bg_from_html;
@@ -2560,6 +2585,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
                 b->outer = S.flt || oof(&S) || S.outer == OUT_BLOCK ? OUT_BLOCK : OUT_INLINE;
                 b->inner = IN_CTL; b->ref = ci; b->li = 0;
                 bx_append(pb, bi);
+                if (oof(b)) abs_reg(bi);
             }
         }
         return;

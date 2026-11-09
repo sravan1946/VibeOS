@@ -1,0 +1,18 @@
+? o1 i0 p0 f0 [0,0 600x134]  fr0@0,0
+  html o1 i0 p0 f0 [0,8 600x116]  fr0@0,0
+    body o1 i0 p0 f0 [8,8 584x116]  fr0@0,0
+      div.t o1 i0 p0 f0 [8,8 584x42]  fr0@0,0
+        form.srch o1 i0 p1 f0 [9,9 582x40]  fr0@0,0
+          input o1 i11 p0 f0 [9,9 498x30]  fr0@0,0
+          input o1 i11 p2 f0 [559,9 30x40]  fr0@0,0
+      div.t o1 i0 p0 f0 [8,60 402x30]  fr0@0,0
+        form.fx o1 i2 p0 f0 [9,61 400x28]  fr0@0,0
+          input o1 i11 p0 f0 [10,62 350x26]  fr0@0,0
+          input o1 i11 p0 f0 [360,62 48x26]  fr0@0,0
+      div.t o1 i3 p0 f0 [8,100 584x24]  fr0@0,0
+        div o1 i0 p0 f0 [9,101 240x22]  fr1@9,101
+          #text o0 i9 p0 f0 [0,101 0x0]  fr0@0,0
+        div o1 i0 p0 f0 [249,101 32x22]  fr0@0,0
+        div o1 i0 p0 f0 [281,101 310x22]  fr1@281,101
+          #text o0 i9 p0 f0 [0,101 0x0]  fr0@0,0
+        div o1 i0 p0 f0 [591,101 0x22]  fr0@0,0
