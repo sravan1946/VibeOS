@@ -691,7 +691,11 @@ function ruleStyle(rule, body) {
         set(t, k, v) { if (k === 'cssText') t.cssText = v; else if (typeof k === 'string') t.setProperty(k, v); return true; },
     });
 }
-const mkRule = (r, sh) => { const i = r.indexOf('{'), sel = i < 0 ? r : r.slice(0, i).trim(), body = i < 0 ? '' : r.slice(i + 1, r.lastIndexOf('}')); const o = { cssText: r, selectorText: sel, parentStyleSheet: sh, type: sel[0] === '@' ? 4 : 1 }; o.style = sel[0] === '@' ? { cssText: body.trim() } : ruleStyle(o, body); if (sel[0] === '@') { o.conditionText = sel.replace(/^@\w+\s*/, ''); o.cssRules = splitRules(body).map(x => mkRule(x, sh)); } return o; };
+class CSSRule { get parentRule() { return null; } }
+for (const [k, v] of Object.entries({ STYLE_RULE: 1, CHARSET_RULE: 2, IMPORT_RULE: 3, MEDIA_RULE: 4, FONT_FACE_RULE: 5, PAGE_RULE: 6, KEYFRAMES_RULE: 7, KEYFRAME_RULE: 8, NAMESPACE_RULE: 10, SUPPORTS_RULE: 12 })) CSSRule[k] = CSSRule.prototype[k] = v;
+class CSSStyleRule extends CSSRule {} class CSSMediaRule extends CSSRule {} class CSSFontFaceRule extends CSSRule {} class CSSKeyframesRule extends CSSRule {} class CSSImportRule extends CSSRule {} class CSSSupportsRule extends CSSRule {} class CSSPageRule extends CSSRule {}
+const ruleProto = sel => (sel[0] !== '@' ? CSSStyleRule : /^@media/i.test(sel) ? CSSMediaRule : /^@font-face/i.test(sel) ? CSSFontFaceRule : /^@(-\w+-)?keyframes/i.test(sel) ? CSSKeyframesRule : /^@import/i.test(sel) ? CSSImportRule : /^@supports/i.test(sel) ? CSSSupportsRule : CSSRule).prototype;
+const mkRule = (r, sh) => { const i = r.indexOf('{'), sel = i < 0 ? r : r.slice(0, i).trim(), body = i < 0 ? '' : r.slice(i + 1, r.lastIndexOf('}')); const o = Object.assign(Object.create(ruleProto(sel)), { cssText: r, selectorText: sel, parentStyleSheet: sh, type: sel[0] === '@' ? 4 : 1 }); o.style = sel[0] === '@' ? { cssText: body.trim() } : ruleStyle(o, body); if (sel[0] === '@') { o.conditionText = sel.replace(/^@\w+\s*/, ''); o.cssRules = splitRules(body).map(x => mkRule(x, sh)); } return o; };
 class CSSStyleSheet {
     constructor(o) { this.__o = o || null; this.__r = null; this.disabled = false; this.href = null; this.ownerNode = o || null; this.media = { mediaText: '' }; this.type = 'text/css'; }
     get cssRules() { if (!this.__r) this.__r = this.__o ? splitRules(this.__o.textContent).map(x => mkRule(x, this)) : []; return this.__r; }
@@ -741,7 +745,7 @@ class DOMMatrix {
 MK.forEach((k, i) => Object.defineProperty(DOMMatrix.prototype, k, { get() { return this.__m[i]; }, set(v) { this.__m[i] = +v; }, configurable: true }));
 ['a', 'b', 'c', 'd', 'e', 'f'].forEach((k, i) => { const j = [0, 1, 4, 5, 12, 13][i]; Object.defineProperty(DOMMatrix.prototype, k, { get() { return this.__m[j]; }, set(v) { this.__m[j] = +v; }, configurable: true }); });
 def(g, { DOMPoint, DOMPointReadOnly: DOMPoint, DOMMatrix, DOMMatrixReadOnly: DOMMatrix, WebKitCSSMatrix: DOMMatrix });
-def(g, { CSS, CSSStyleSheet, CSSRule: function CSSRule() {}, StyleSheet: CSSStyleSheet });
+def(g, { CSS, CSSStyleSheet, CSSRule, CSSStyleRule, CSSMediaRule, CSSFontFaceRule, CSSKeyframesRule, CSSImportRule, CSSSupportsRule, CSSPageRule, StyleSheet: CSSStyleSheet });
 
 // ---------- Range, Selection, TreeWalker ----------
 class Range {
