@@ -2159,9 +2159,14 @@ static int cv_value(int i, int depth) {
     return val;
 }
 
-static int subst(const char *in, int head, char *out, int cap, int depth) {
+static int subst(const char *in0, int head, char *out, int cap, int depth) {
     int k = 0;
     if (depth > 8) return 0;
+    char inb[2048];                                       /* in0 may live in the string pool, which intern() below can move */
+    size_t il = strlen(in0);
+    if (il >= sizeof inb) return 0;
+    memcpy(inb, in0, il + 1);
+    const char *in = inb;
     for (const char *p = in; *p; ) {
         if ((p[0] | 32) == 'v' && !strncasecmp(p, "var(", 4) && (p == in || !(isalnum((unsigned char)p[-1]) || p[-1] == '-' || p[-1] == '_'))) {
             const char *a = p + 4, *e = a;
