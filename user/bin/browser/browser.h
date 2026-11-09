@@ -333,6 +333,7 @@ void js_reset(void);                              /* leave the page */
 /* dispatch `type` (bubbling) at node (0 = window); k: key event or NULL. Returns 1 if a handler called preventDefault */
 int  js_event(int node, const char *type, const struct gui_event *k, int x, int y);
 int  js_active(void);
+int  js_hit(int x, int y, int hint);              /* the element a click at document point x,y landed on (empty boxes included); hint = the display item's node */
 const char *js_nav(void);                         /* location set by a script: navigate there (consumes it), or NULL */
 int  js_focus_req(void);                          /* element.focus() target (consumes it), or 0 */
 char *js_alert(void);                             /* pending alert() text (malloc'd, consumed), or NULL */
@@ -381,6 +382,7 @@ struct frame *js_frame_nth(int i);
 struct frame *js_frame_find(const struct doc *pdoc, int node);   /* the frame of the <iframe> `node` in the document pdoc, or NULL */
 const char *js_frame_url(struct frame *f);
 void js_frame_navigate(struct frame *f, const char *url);
+int  js_frame_is_worker(struct frame *f);          /* a Web Worker's context (no document) */
 int  js_frame_sandbox(struct frame *f);           /* SB_* flags of its sandbox attribute (0 = none) */
 void frame_relayout(struct frame *f);             /* iframe.c: lay the frame's document out (js.c calls it when a script reads a size) */
 void frame_paint(struct canvas *c, const struct doc *d, const struct item *it, int x, int y);   /* iframe.c: draw the frame of the FL_FRM item at x,y (screen; c already clipped) */

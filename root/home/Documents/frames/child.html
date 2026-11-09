@@ -15,6 +15,7 @@ document.getElementById('btn').addEventListener('click', function () {
 });
 window.addEventListener('message', function (e) {
   console.log('child got ' + e.data + ' from ' + e.origin);
+  if (e.data === 'chan') e.ports[0].postMessage('via-port:' + e.ports.length + ':' + typeof MessagePort);
   if (e.data === 'ping') e.source.postMessage('pong:' + e.origin, '*');
 });
 document.cookie = 'framecookie=child1; path=/';

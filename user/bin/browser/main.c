@@ -1230,6 +1230,7 @@ int main(int argc, char **argv) {
             int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
             fo = -1;
             mk.from_it = mk.to_it = -1;
+            if (node) node = js_hit(dx, dy, node); else if (js_active()) node = js_hit(dx, dy, 0);
             js_event(node, "mousedown", 0, dx, dy);
             if (ci >= 0) {                                   /* the page sees the click first; preventDefault skips our part */
                 const struct ctl *c = &doc.ct[ci];

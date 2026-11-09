@@ -939,6 +939,7 @@ def(g, { Intl: { NumberFormat: callable(NumberFormat), DateTimeFormat: callable(
 }
 
 // ---------- unhandled rejections are logged by the host; window.onerror is wired in dom_js.c ----------
+if (V.late) V.late();                           // iframe.c: MessageChannel and friends, over the real ones
 delete g.__d;
 delete g.__v;
 // everything above is JavaScript, but a browser's built-ins print as native code: Function.prototype.toString says so for every function reachable from the global

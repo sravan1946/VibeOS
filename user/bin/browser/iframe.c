@@ -90,7 +90,7 @@ void frames_pump(void) {
         free(al);
         leave(f, own);
         if (d) f->redo = 1;
-        if (nav[0]) js_frame_navigate(f, nav);
+        if (nav[0] && !js_frame_is_worker(f)) js_frame_navigate(f, nav);
         if (f->redo && f->w > 0 && f->ready) frame_relayout(f);
     }
 }
@@ -124,6 +124,7 @@ static void point(struct frame *f, int dx, int dy, int ev) {
     int own = enter(f);
     int x = lx, y = doc_unstick(&f->doc, ly + f->sy, f->sy), node = doc_node_at(&f->doc, x, y);
     struct frame *ch = node ? js_frame_find(&f->doc, node) : 0;
+    if (ev == 1 && !ch) node = js_hit(x, y, node);
     if (ch) {                                                /* a frame inside the frame */
         f->hover = -1;
         point(ch, x, y, ev);
@@ -273,8 +274,10 @@ const self = d.fself();
 // ---- structured clone: tagged JSON, rebuilt in the receiving realm ----
 const hex = u8 => { let s = ''; for (let i = 0; i < u8.length; i++) s += (u8[i] < 16 ? '0' : '') + u8[i].toString(16); return s; };
 const unhex = s => { const u = new Uint8Array(s.length >> 1); for (let i = 0; i < u.length; i++) u[i] = parseInt(s.substr(i * 2, 2), 16); return u; };
-function ser(v) {
-    const seen = new Map();
+let MP = null;                                  // MessagePort (made once the page's own preludes are done: see V.late)
+const PM = new Map(), mkport = id => PM.get(id) || new MP(id);
+function ser(v, tr) {
+    const seen = new Map(), xfer = new Set(Array.isArray(tr) ? tr : []);
     const bad = x => new g.DOMException(String(typeof x === 'function' ? x : typeof x) + ' could not be cloned.', 'DataCloneError');
     const enc = (x, depth) => {
         if (x === null || typeof x === 'boolean' || typeof x === 'string') return x;
@@ -291,13 +294,14 @@ function ser(v) {
         if (x instanceof Map) return { $: 'm', v: [...x].map(([a, b]) => [enc(a, depth + 1), enc(b, depth + 1)]) };
         if (x instanceof Set) return { $: 's', v: [...x].map(a => enc(a, depth + 1)) };
         if (x instanceof Error) return { $: 'e', n: x.name, v: x.message };
+        if (MP && x instanceof MP) { if (!xfer.has(x)) throw bad(x); return { $: 'p', v: x.__pid }; }
         if (x.nodeType !== undefined && typeof x.nodeName === 'string' || x === x.window) throw bad(x);
         if (Array.isArray(x)) return { $: 'a', v: Array.from(x, a => enc(a, depth + 1)) };
         const o = {};
         for (const k of Object.keys(x)) o[k] = enc(x[k], depth + 1);
         return { $: 'o', v: o };
     };
-    return JSON.stringify(enc(v, 0));
+    return JSON.stringify({ v: enc(v, 0), t: [...xfer].filter(p => p && p.__pid).map(p => p.__pid) });
 }
 function deser(json) {
     const objs = [];
@@ -306,6 +310,7 @@ function deser(json) {
         switch (x.$) {
         case 'n': return x.v === '-0' ? -0 : Number(x.v);
         case 'u': return undefined;
+        case 'p': return mkport(x.v);
         case 'bi': return BigInt(x.v);
         case 'r': return objs[x.v];
         case 'd': { const o = new Date(x.v); objs.push(o); return o; }
@@ -319,7 +324,8 @@ function deser(json) {
         default: { const o = {}; objs.push(o); for (const k of Object.keys(x.v)) o[k] = dec(x.v[k]); return o; }
         }
     };
-    return dec(JSON.parse(json));
+    const e = JSON.parse(json);
+    return { data: dec(e.v), ports: (e.t || []).map(mkport) };
 }
 // ---- a window we may not look inside ----
 const XW = new Map();
@@ -335,7 +341,7 @@ function xwin(fid) {
     const get = {
         window: () => p, self: () => p, frames: () => p, closed: () => false, length: () => 0, opener: () => null,
         top: () => d.fwindow(0), parent: () => { const q = d.fparent(fid); return q < 0 ? p : d.fwindow(q); }, location: () => loc,
-        postMessage: () => (m, o) => d.fpost(fid, m, o), focus: () => () => {}, blur: () => () => {}, close: () => () => {},
+        postMessage: () => (m, o, tr) => d.fpost(fid, m, o, tr), focus: () => () => {}, blur: () => () => {}, close: () => () => {},
     };
     p = new Proxy({}, {
         get(t, k) { if (typeof k === 'string' && get[k]) return get[k](); if (k === Symbol.toStringTag) return 'Window'; if (k === Symbol.toPrimitive) return undefined; throw err('property "' + String(k) + '"'); },
@@ -347,14 +353,43 @@ function xwin(fid) {
     XW.set(fid, p);
     return p;
 }
-function msg(json, origin, from) {
-    let data;
-    try { data = deser(json); } catch (e) { g.dispatchEvent(new D.MessageEvent('messageerror', { origin })); return; }
-    g.dispatchEvent(new D.MessageEvent('message', { data, origin, source: d.fwindow(from) }));
+const isW = d.isworker(), WK = new Map();
+function msg(json, origin, from, port) {
+    let r;
+    try { r = deser(json); } catch (e) { g.dispatchEvent(new D.MessageEvent('messageerror', { origin })); return; }
+    if (port > 0) { const p = PM.get(port); if (p) p.__deliver(r.data, r.ports); return; }       // a message on a MessagePort
+    const ev = new D.MessageEvent('message', { data: r.data, origin, source: from < 0 || isW ? null : d.fwindow(from) });
+    ev.ports = r.ports;
+    if (from < 0) { const w = WK.get(-from); if (w) w.dispatchEvent(ev); return; }   // from a worker we made
+    g.dispatchEvent(ev);
 }
-d.reg(id => V.wrap(id), msg, xwin, ser);
+d.reg(id => V.wrap(id), msg, xwin, ser, (name, fid) => { Object.defineProperty(g, name, { get() { return d.fwindow(fid) || undefined; }, configurable: true }); });
+// ---- workers: a Worker here; in a worker, no window or document, importScripts and a postMessage to the creator ----
+if (isW) {
+    for (const k of ['window', 'document', 'parent', 'top', 'frames', 'frameElement', 'opener', 'alert', 'confirm', 'prompt', 'open', 'print']) try { delete g[k]; } catch (e) {}
+    g.importScripts = (...us) => { for (const u of us) { const a = d.resolve(String(u)), s = d.syncGet(a); if (s === null || s === undefined) throw new g.DOMException('Failed to execute \'importScripts\' on \'WorkerGlobalScope\': The script at \'' + a + '\' failed to load.', 'NetworkError'); (0, g.eval)(s + '\n//# sourceURL=' + a); } };
+    g.postMessage = (m, tr) => d.wsend(ser(m, tr), tr);
+    g.close = () => {};
+    g.WorkerGlobalScope = class WorkerGlobalScope {};
+    Object.setPrototypeOf(g, g.WorkerGlobalScope.prototype);
+} else {
+    class Worker extends D.EventTarget {
+        constructor(url) {
+            super();
+            if (arguments.length < 1) throw new TypeError("Failed to construct 'Worker': 1 argument required, but only 0 present.");
+            this.__fid = d.wnew(String(url));
+            if (this.__fid < 0) throw new g.DOMException("Failed to construct 'Worker'", 'SecurityError');
+            WK.set(this.__fid, this);
+        }
+        postMessage(m, tr) { d.fpost(this.__fid, m, '*', tr); }
+        terminate() { d.wterm(this.__fid); WK.delete(this.__fid); }
+    }
+    for (const t of ['message', 'error', 'messageerror']) Object.defineProperty(Worker.prototype, 'on' + t, { get() { return this['__on' + t] || null; }, set(f) { const k = '__on' + t; if (this[k]) this.removeEventListener(t, this[k]); this[k] = typeof f === 'function' ? f : null; if (this[k]) this.addEventListener(t, f); }, configurable: true, enumerable: true });
+    Object.defineProperty(g, 'Worker', { value: Worker, writable: true, configurable: true });
+}
 // ---- window relationships ----
 const def = (k, get) => Object.defineProperty(g, k, { get, configurable: true, enumerable: true });
+if (!isW) {
 def('parent', () => self ? d.fwindow(d.fparent()) : g);
 def('top', () => self ? d.fwindow(0) : g);
 def('frames', () => g);
@@ -362,6 +397,7 @@ def('length', () => d.fcount());
 def('frameElement', () => d.fel());
 for (let i = 0; i < 16; i++) def(i, () => { const f = d.fchild(i); return f < 0 ? undefined : d.fwindow(f); });
 Object.defineProperty(g, 'postMessage', { value: d.postMessage, writable: true, configurable: true });
+}
 // ---- <iframe> ----
 const P = D.HTMLIFrameElement.prototype;
 const attr = (n, a) => Object.defineProperty(P, n, { get() { return this.getAttribute(a || n) || ''; }, set(v) { this.setAttribute(a || n, String(v)); }, configurable: true, enumerable: true });
@@ -371,6 +407,25 @@ Object.defineProperties(P, {
     contentDocument: { get() { const w = d.fwin(this.__id); if (!w) return null; try { return w.document; } catch (e) { return null; } }, configurable: true, enumerable: true },
 });
 P.getSVGDocument = function () { return null; };
-if (!g.Worker) g.Worker = class Worker extends D.EventTarget { constructor(u) { super(); d.log(1, 'new Worker(' + u + ')'); } postMessage() {} terminate() {} };
+// MessageChannel / MessagePort across contexts (after web_js.c, which has a same-realm stand-in)
+V.late = () => {
+    class MessagePort extends D.EventTarget {
+        constructor(id) {
+            super();
+            Object.defineProperties(this, { __pid: { value: id }, __q: { value: [] }, __st: { value: false, writable: true } });
+            PM.set(id, this);
+        }
+        postMessage(m, tr) { const l = Array.isArray(tr) ? tr : tr && tr.transfer; d.ppost(this.__pid, ser(m, l), l); }
+        start() { if (this.__st) return; this.__st = true; for (const q of this.__q.splice(0)) this.__fire(q); }
+        close() { PM.delete(this.__pid); }
+        __deliver(data, ports) { if (this.__st) this.__fire([data, ports]); else this.__q.push([data, ports]); }
+        __fire(q) { const ev = new D.MessageEvent('message', { data: q[0] }); ev.ports = q[1]; this.dispatchEvent(ev); }
+    }
+    for (const t of ['message', 'messageerror']) Object.defineProperty(MessagePort.prototype, 'on' + t, { get() { return this['__on' + t] || null; }, set(f) { const k = '__on' + t; if (this[k]) this.removeEventListener(t, this[k]); this[k] = typeof f === 'function' ? f : null; if (this[k]) { this.addEventListener(t, f); if (t === 'message') this.start(); } }, configurable: true, enumerable: true });
+    class MessageChannel { constructor() { const [a, b] = d.pnew(); this.port1 = new MessagePort(a); this.port2 = new MessagePort(b); } }
+    MP = MessagePort;
+    Object.defineProperty(g, 'MessagePort', { value: MessagePort, writable: true, configurable: true });
+    Object.defineProperty(g, 'MessageChannel', { value: MessageChannel, writable: true, configurable: true });
+};
 })(globalThis);
 )JS";
