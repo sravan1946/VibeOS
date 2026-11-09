@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><title>Layout test</title>
+<style>
+body { margin: 12px; font-family: sans-serif; }
+h2 { margin: 14px 0 6px; font-size: 18px; }
+.box { border: 1px solid #888; padding: 6px; background: #eef; }
+.fl { float: left; width: 90px; height: 60px; background: #fc8; margin: 0 10px 4px 0; }
+.fr { float: right; width: 70px; height: 40px; background: #8cf; margin: 0 0 4px 10px; }
+.clear { clear: both; }
+.flex { display: flex; gap: 8px; border: 1px solid #484; padding: 4px; }
+.flex > div { background: #cfc; padding: 6px; }
+.grow { flex: 1; }
+.right { margin-left: auto; }
+.col { display: flex; flex-direction: column; height: 150px; justify-content: space-between; border: 1px solid #a44; width: 200px; }
+.center { display: flex; justify-content: center; align-items: center; height: 80px; background: #ddd; }
+.rel { position: relative; height: 90px; background: #eee; border: 1px solid #999; }
+.abs1 { position: absolute; top: 10px; left: 20px; width: 80px; height: 40px; background: rgba(255,0,0,.5); z-index: 2; }
+.abs2 { position: absolute; top: 25px; left: 60px; width: 80px; height: 40px; background: #0a0; z-index: 1; }
+.abs3 { position: absolute; right: 8px; bottom: 8px; background: #fa0; padding: 4px; }
+.clip { width: 160px; height: 40px; overflow: hidden; border: 1px solid #333; }
+.ib { display: inline-block; width: 100px; height: 50px; background: #fdb; vertical-align: top; margin: 2px; }
+.mc { background: #fee; }
+.mc p { margin: 20px 0; background: #eef; }
+.round { border-radius: 14px; background: #6a6; color: #fff; padding: 8px 14px; display: inline-block; }
+.grid { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 6px; }
+.grid div { background: #dde; padding: 4px; }
+.span { grid-column: 1 / span 2; }
+.badge { background: #36c; color: #fff; padding: 1px 6px; border-radius: 8px; }
+</style></head><body>
+<h2>float</h2>
+<div class="box"><div class="fl"></div><div class="fr"></div>Text wraps around the left and right floats, then continues under them once the floats end. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco.<div class="clear"></div></div>
+<h2>flex row, grow, margin-left:auto</h2>
+<div class="flex"><div>one</div><div class="grow">two (grow)</div><div class="right">three</div></div>
+<h2>flex column space-between / centred</h2>
+<div style="display:flex;gap:12px"><div class="col"><div>top</div><div>mid</div><div>bottom</div></div><div class="center" style="flex:1">centred</div></div>
+<h2>position</h2>
+<div class="rel"><div class="abs2">green z1</div><div class="abs1">red z2</div><div class="abs3">bottom right</div></div>
+<h2>overflow hidden, inline-block, radius, margin collapse, badge</h2>
+<div class="clip">This text is much longer than the box, so it must be clipped at the border of the box and not leak out.</div>
+<div><span class="ib">ib 1</span><span class="ib" style="height:30px">ib 2</span><span class="ib">ib 3</span> after <span class="badge">3</span> <span class="round">rounded</span></div>
+<div class="mc"><p>margins 20 collapse</p><p>between these</p></div>
+<h2>grid</h2>
+<div class="grid"><div class="span">span 2</div><div>c</div><div>a</div><div>b</div><div>c</div></div>
+</body></html>

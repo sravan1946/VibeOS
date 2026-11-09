@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html><head><title>Shadow DOM</title></head>
+<body>
+<h2>Declarative shadow DOM</h2>
+<x-card><template shadowrootmode="open"><div style="border:2px solid #36c;padding:6px"><b>shadow header</b> <slot name="title">(no title)</slot><hr><slot>(fallback body)</slot></div></template>
+<span slot="title">light title</span><p>light body text, slotted</p><p slot="unused">never shown</p></x-card>
+<h2>Imperative</h2>
+<div id="h"><em>slotted em</em></div>
+<script>
+const sr = document.getElementById('h').attachShadow({ mode: 'open' });
+sr.innerHTML = '<div style="background:#fe9;padding:4px">before [<slot></slot>] after</div>';
+</script>
+</body></html>

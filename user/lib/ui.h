@@ -64,7 +64,7 @@ struct ui {
     struct gui_window *win;
     struct canvas *c;
     int mx, my, buttons;            /* pointer in client coords */
-    bool pressed, released, rpressed; /* left down / up, right down this frame */
+    bool pressed, released, rpressed, mpressed; /* left down / up, right down, middle down this frame */
     bool dbl;                       /* this press is a double click */
     int scroll;                     /* wheel this frame (+ = down) */
     struct gui_event keys[32];      /* key presses this frame, consumed by widgets */

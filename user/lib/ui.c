@@ -160,7 +160,7 @@ static void overlay_input(struct ui *ui) {
 
 bool ui_poll(struct ui *ui, int timeout_ms) {
     if (ui->closed) return false;
-    ui->pressed = ui->released = ui->rpressed = ui->dbl = ui->resized = ui->timeout = ui->dropped = ui->themed = false;
+    ui->pressed = ui->released = ui->rpressed = ui->mpressed = ui->dbl = ui->resized = ui->timeout = ui->dropped = ui->themed = false;
     ui->scroll = 0;
     ui->nkeys = 0;
     ui->nups = 0;
@@ -181,6 +181,7 @@ bool ui_poll(struct ui *ui, int timeout_ms) {
         case EV_MOUSE_DOWN:
             ui->mx = ev.x; ui->my = ev.y;
             if (ev.button == 2) { ui->rpressed = true; break; }
+            if (ev.button == 4) { ui->mpressed = true; break; }
             ui->pressed = true; ui->buttons |= 1;
             ui->dbl = ui->now - ui->last_click_ms < 400 && abs(ev.x - ui->last_click_x) < 5 && abs(ev.y - ui->last_click_y) < 5;
             ui->last_click_ms = ui->dbl ? 0 : ui->now;

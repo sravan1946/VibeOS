@@ -15,6 +15,19 @@
 <select id="s"><option value="a">A<option value="b" selected>B<option value="c">C</select>
 <textarea id="ta">area text</textarea> <button id="btn" type="button">btn</button></form></div>
 <ol id="results"></ol>
+<script>window.order = ['inline1'];</script>
+<script src="jstest-dyn.js"></script>
+<script defer src="jstest-defer.js"></script>
+<script async src="jstest-async.js"></script>
+<script type="importmap">{"imports":{"mapped":"./jstest-mod2.js","pre/":"./"}}</script>
+<script type="module">import { twice } from "mapped"; import { half as h2 } from "pre/jstest-mod.js"; window.mapRes = twice(4) + h2(2); window.metaUrl = import.meta.url;</script>
+<script type="module">import { half } from './jstest-mod.js'; window.modResult = half(84); window.order.push('module');</script>
+<script>window.order.push('inline2'); document.write('<i id="written">w</i>'); window.rsAtParse = document.readyState;
+document.addEventListener('DOMContentLoaded', () => window.order.push('DCL')); window.addEventListener('load', () => window.order.push('load'));</script>
+<script>throw new Error("isolated: this error is expected");</script>
+<script>window.afterThrow = 1;</script>
+<noscript><p id="ns">no script</p></noscript>
+<template id="tpl"><li class="t">from template</li></template>
 
 <script>
 const results = document.getElementById('results');
@@ -43,7 +56,7 @@ check('getElementsByClassName', document.getElementsByClassName('x y').length, 1
 check('getElementsByTagName', document.getElementsByTagName('li').length >= 3, true);
 check('matches/closest', [$('#list li').matches('.x'), $('b').closest('p').id], [true, 'p1']);
 check('parentNode/siblings', [$('#list').firstElementChild.nextElementSibling.textContent, $('b').parentNode.id], ['two', 'p1']);
-check('bad selector throws', (() => { try { document.querySelector('a:hover'); return 'no'; } catch (e) { return e.name; } })(), 'SyntaxError');
+check('bad selector throws', (() => { try { document.querySelector('a['); return 'no'; } catch (e) { return e.name; } })(), 'SyntaxError');
 
 // ---- changing the tree ----
 const div = document.createElement('div');
@@ -80,7 +93,7 @@ check('classList', [p.className, p.classList.contains('b'), p.classList.toggle('
 check('style read', p.style.color, 'red');
 p.style.backgroundColor = '#EEE';
 p.style.color = '';
-check('style write', p.getAttribute('style'), 'background-color: #EEE');
+check('style write', p.getAttribute('style'), 'background-color: #EEE;');
 check('dataset', [p.dataset.userId, (p.dataset.extra = 'x', p.getAttribute('data-extra'))], ['7', 'x']);
 
 // ---- form controls ----
@@ -108,7 +121,7 @@ $('#btn').addEventListener('click', () => once.push(1), { once: true });
 $('#btn').click(); $('#btn').click();
 check('once', once.length, 1);
 $('#btn').addEventListener('custom', e => { e.preventDefault(); e.stopPropagation(); });
-const ev = new CustomEvent('custom', { bubbles: true, detail: 42 });
+const ev = new CustomEvent('custom', { bubbles: true, cancelable: true, detail: 42 });
 check('preventDefault', [$('#btn').dispatchEvent(ev), ev.defaultPrevented, ev.detail], [false, true, 42]);
 let inl = 0;
 window.inlineHit = () => inl++;
@@ -121,10 +134,142 @@ check('onclick property', inl, 11);
 
 // ---- misc globals ----
 check('location', [location.protocol, location.pathname.endsWith('jstest.html')], ['file:', true]);
-check('navigator', /VibeOS/.test(navigator.userAgent), true);
+check('navigator', /VibeBrowser/.test(navigator.userAgent), true);
 check('localStorage', (localStorage.setItem('k', 1), localStorage.getItem('k')), '1');
 check('a.href resolves', (() => { const a = document.createElement('a'); a.setAttribute('href', 'js.html'); return a.href.endsWith('/home/Documents/js.html'); })(), true);
 document.title = 'JavaScript tests';
+
+
+// ---- events: capture, phases, passive, stopImmediatePropagation, focus ----
+{
+    const ph = [];
+    const o = document.createElement('div'), m = document.createElement('div'), n = document.createElement('button');
+    o.appendChild(m); m.appendChild(n); document.body.appendChild(o);
+    o.addEventListener('click', e => ph.push('o-cap' + e.eventPhase), true);
+    o.addEventListener('click', e => ph.push('o-bub' + e.eventPhase));
+    m.addEventListener('click', e => { ph.push('m-bub'); e.stopPropagation(); });
+    n.addEventListener('click', e => ph.push('n' + e.eventPhase));
+    n.addEventListener('click', e => ph.push('nb'));
+    n.click();
+    check('capture, target, bubble order, stopPropagation', ph, ['o-cap1', 'n2', 'nb', 'm-bub']);
+    const imm = [];
+    n.addEventListener('keydown', e => { imm.push(1); e.stopImmediatePropagation(); });
+    n.addEventListener('keydown', () => imm.push(2));
+    n.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+    check('stopImmediatePropagation', imm, [1]);
+    const pv = new Event('x', { cancelable: true });
+    n.addEventListener('x', e => e.preventDefault(), { passive: true });
+    n.dispatchEvent(pv);
+    check('passive ignores preventDefault', pv.defaultPrevented, false);
+    const rm = []; const f = () => rm.push(1);
+    n.addEventListener('y', f, true); n.removeEventListener('y', f); n.dispatchEvent(new Event('y'));
+    n.removeEventListener('y', f, true); n.dispatchEvent(new Event('y'));
+    check('removeEventListener honours capture', rm, [1]);
+    check('KeyboardEvent', [new KeyboardEvent('keyup', { key: 'q', ctrlKey: true }).key, new MouseEvent('click', { clientX: 5 }).clientX, new Event('z').bubbles], ['q', 5, false]);
+    $('#t').focus();
+    check('focus/activeElement', document.activeElement === $('#t'), true);
+    const tgt = new EventTarget(); let got = 0; tgt.addEventListener('ping', () => got++); tgt.dispatchEvent(new Event('ping'));
+    check('EventTarget constructor', got, 1);
+    o.remove();
+}
+
+// ---- shadow DOM ----
+{
+    const host = document.createElement('div');
+    host.innerHTML = '<b slot="a">A</b><i>default</i>';
+    document.body.appendChild(host);
+    const sr = host.attachShadow({ mode: 'open' });
+    sr.innerHTML = '<p><slot name="a"></slot>-<slot></slot><slot name="none">fallback</slot></p>';
+    const slots = sr.querySelectorAll('slot');
+    check('shadow root basics', [host.shadowRoot === sr, sr.host === host, sr.mode, sr.isConnected, document.querySelector('p slot')], [true, true, 'open', true, null]);
+    check('slot assignment', [slots[0].assignedNodes().map(n => n.nodeName), slots[1].assignedNodes().map(n => n.nodeName), slots[2].assignedNodes().length, host.firstChild.assignedSlot === slots[0]], [['B'], ['I'], 0, true]);
+    const path = [];
+    sr.querySelector('p').addEventListener('click', e => path.push(e.composedPath().includes(host)));
+    host.addEventListener('click', e => path.push('host'));
+    sr.querySelector('p').dispatchEvent(new Event('click', { bubbles: true, composed: true }));
+    check('events cross the shadow boundary', path, [true, 'host']);
+    check('closed root hidden', (() => { const h2 = document.createElement('div'); h2.attachShadow({ mode: 'closed' }); return h2.shadowRoot; })(), null);
+    const tpl = document.createElement('div'); tpl.innerHTML = '<x-dsd><template shadowrootmode="open"><span id="in">inside</span></template>light</x-dsd>';
+    document.body.appendChild(tpl);
+    check('declarative shadow DOM', [tpl.firstChild.shadowRoot && tpl.firstChild.shadowRoot.querySelector('#in').textContent, document.getElementById('in')], ['inside', null]);
+    host.remove(); tpl.remove();
+}
+
+// ---- DOM API breadth ----
+{
+    const box = document.createElement('div');
+    box.innerHTML = '<p class="a">one</p><!--c--><p>two</p>';
+    document.body.appendChild(box);
+    check('comment nodes', [box.childNodes.length, box.childNodes[1].nodeType, box.childNodes[1].data, box.innerHTML], [3, 8, 'c', '<p class="a">one</p><!--c--><p>two</p>']);
+    check('createComment', document.createComment('hi').nodeValue, 'hi');
+    box.insertAdjacentHTML('afterbegin', '<b>x</b>'); box.insertAdjacentHTML('beforeend', '<i>y</i>'); box.insertAdjacentText('beforeend', 'z');
+    box.firstElementChild.insertAdjacentElement('afterend', document.createElement('u'));
+    check('insertAdjacent*', box.innerHTML, '<b>x</b><u></u><p class="a">one</p><!--c--><p>two</p><i>y</i>z');
+    const p1 = box.querySelector('p');
+    p1.replaceWith('text', document.createElement('s'));
+    box.querySelector('s').before('B'); box.querySelector('s').after('A');
+    check('replaceWith/before/after', box.innerHTML, '<b>x</b><u></u>textB<s></s>A<!--c--><p>two</p><i>y</i>z');
+    check('contains/compareDocumentPosition', [box.contains(box.querySelector('s')), box.querySelector('b').compareDocumentPosition(box.querySelector('i')) & 4, box.querySelector('s').closest('div') === box], [true, 4, true]);
+    const c1 = box.cloneNode(true);
+    check('cloneNode/isEqualNode', [c1.isEqualNode(box), c1 === box, c1.childNodes.length], [true, false, box.childNodes.length]);
+    box.textContent = 'a'; box.appendChild(document.createTextNode('b')); box.normalize();
+    check('normalize', [box.childNodes.length, box.textContent], [1, 'ab']);
+    box.replaceChildren('q', document.createElement('br'));
+    check('replaceChildren', box.innerHTML, 'q<br>');
+    box.innerHTML = '<div>l1</div><div>l2<br>l3</div><span>s1</span><span>s2</span>';
+    check('innerText', box.innerText, 'l1\nl2\nl3\ns1s2');
+    box.remove();
+    const el = document.createElement('div');
+    el.classList.add('a', 'b'); el.classList.replace('a', 'c');
+    check('classList.replace/value', [el.className, el.classList.length, [...el.classList].join()], ['c b', 2, 'c,b']);
+    el.style.cssText = 'color: red; margin: 1px';
+    el.style.setProperty('padding', '2px', 'important');
+    check('style cssText/setProperty/priority', [el.style.length, el.style.getPropertyPriority('padding'), el.style.margin, el.style.getPropertyValue('padding')], [3, 'important', '1px', '2px']);
+    el.dataset.fooBar = '1'; el.dataset.x = '2';
+    check('dataset keys', Object.keys(el.dataset), ['fooBar', 'x']);
+    el.id = 'q'; el.setAttribute('data-n', '5');
+    check('attributes', [[...el.attributes].map(a => a.name + '=' + a.value).sort().join(), el.hasAttributes()], ['class=c b,data-foo-bar=1,data-n=5,data-x=2,id=q,style=color: red; margin: 1px; padding: 2px !important;', true]);
+    document.body.appendChild(el);
+    check('attribute selectors', [document.querySelector('[data-n="5"]') === el, document.querySelectorAll('input[type=checkbox]').length, document.querySelector('[id^=q]') === el], [true, 1, true]);
+    el.remove();
+    const img = document.createElement('img'); img.src = 'img/a.png';
+    check('reflected props', [img.src.endsWith('/home/Documents/img/a.png'), img instanceof HTMLImageElement, img instanceof HTMLElement, img instanceof Element, img instanceof Node, img instanceof EventTarget, document.createElement('div').constructor.name, document.createElement('foo').constructor.name], [true, true, true, true, true, true, 'HTMLDivElement', 'HTMLUnknownElement']);
+    const a = document.createElement('a'); a.href = 'https://user@example.com:8080/p/a?x=1#h';
+    check('anchor URL parts', [a.protocol, a.hostname, a.port, a.pathname, a.search, a.hash, a.origin], ['https:', 'example.com', '8080', '/p/a', '?x=1', '#h', 'https://example.com:8080']);
+    const sel = document.createElement('select'); sel.innerHTML = '<option>a<option value=b selected>B';
+    check('select options', [sel.options.length, sel.value, sel.selectedIndex, sel.options[1].text], [2, 'b', 1, 'B']);
+    const tpl = document.getElementById('tpl');
+    check('template content', [tpl.content.querySelector('.t').textContent, document.querySelector('.t')], ['from template', null]);
+    check('noscript is inert', [document.querySelector('#ns'), document.querySelector('noscript').textContent.includes('no script')], [null, true]);
+    const form = $('#f');
+    const fd = new FormData(form);
+    check('FormData from form', [fd.get('t'), fd.has('nope'), form.elements.length >= 5], ['changed', false, true]);
+}
+check('getComputedStyle', (() => { const e = document.createElement('div'); e.setAttribute('hidden', ''); document.body.appendChild(e); const r = [getComputedStyle(e).display, getComputedStyle($('#p1')).backgroundColor, getComputedStyle($('#p1')).display]; e.remove(); return r; })(), ['none', 'rgb(238, 238, 238)', 'block']);
+check('geometry', (() => { const r = $('#p1').getBoundingClientRect(); return [r.width > 50, r.height > 5, $('#p1').offsetHeight === r.height, typeof window.scrollY, innerWidth > 100]; })(), [true, true, true, 'number', true]);
+check('matchMedia', [matchMedia('(min-width: 100px)').matches, matchMedia('(max-width: 10px)').matches], [true, false]);
+check('script isolation + document.write', [window.afterThrow, !!document.getElementById('written'), window.rsAtParse], [1, true, 'loading']);
+check('dynamic inline script runs at once', (() => { const s = document.createElement('script'); s.textContent = 'window.dynInline = (window.dynInline||0) + 1'; document.head.appendChild(s); return window.dynInline; })(), 1);
+check('innerHTML script does not run', (() => { const dv = document.createElement('div'); dv.innerHTML = '<script>window.nope = 1<\/script>'; document.body.appendChild(dv); dv.remove(); return window.nope; })(), undefined);
+{
+    const ce = [];
+    customElements.define('x-greet', class extends HTMLElement { connectedCallback() { ce.push('in:' + this.localName); this.textContent = 'hi ' + (this.getAttribute('who') || ''); } disconnectedCallback() { ce.push('out'); } static get observedAttributes() { return ['who']; } attributeChangedCallback(n, o, v) { ce.push('attr:' + n + ':' + v); } });
+    const g1 = document.createElement('x-greet'); g1.setAttribute('who', 'bob'); document.body.appendChild(g1);
+    check('custom elements', [g1.textContent, g1 instanceof HTMLElement, ce], ['hi bob', true, ['attr:who:bob', 'in:x-greet']]);
+    g1.remove();
+}
+{
+    const u = new URL('../b/c.html?q=1&r=a%20b#f', 'http://Example.com:80/x/y/z');
+    u.searchParams.append('s', 'x y');
+    check('URL', [u.href, u.host, u.pathname, u.searchParams.get('r'), URL.canParse('nope')], ['http://example.com/x/b/c.html?q=1&r=a+b&s=x+y#f', 'example.com', '/x/b/c.html', 'a b', false]);
+    const sp = new URLSearchParams({ a: '1', b: 'two words' }); sp.append('a', '3');
+    check('URLSearchParams', [sp.toString(), sp.getAll('a'), [...sp.keys()]], ['a=1&b=two+words&a=3', ['1', '3'], ['a', 'b', 'a']]);
+}
+check('btoa/atob/TextEncoder/TextDecoder', [btoa('hello'), atob('aGVsbG8='), new TextEncoder().encode('hé').length, new TextDecoder().decode(new TextEncoder().encode('€ uni'))], ['aGVsbG8=', 'hello', 3, '€ uni']);
+check('Headers/Request/Response', (() => { const h = new Headers({ 'Content-Type': 'a/b' }); h.append('X-A', '1'); h.append('x-a', '2'); const r = new Request('x.json', { method: 'post', body: 'b' }); return [h.get('content-type'), h.get('X-A'), r.method, r.url.endsWith('/x.json'), new Response('t', { status: 404 }).ok]; })(), ['a/b', '1, 2', 'POST', true, false]);
+check('structuredClone', (() => { const o = { a: [1, { b: 2 }], d: new Date(5), m: new Map([[1, 2]]) }; o.self = o; const c = structuredClone(o); return [c !== o, c.a[1].b, c.d.getTime(), c.m.get(1), c.self === c]; })(), [true, 2, 5, 2, true]);
+check('Intl', [new Intl.NumberFormat('en-US').format(1234567.891), new Intl.NumberFormat('en', { style: 'currency', currency: 'USD' }).format(5), (1234.5).toLocaleString(), new Intl.PluralRules().select(1)], ['1,234,567.891', '$5.00', '1,234.5', 'one']);
+check('history.pushState/state', (() => { const was = location.pathname; history.pushState({ n: 1 }, '', 'pushed.html?a=1'); const r = [location.pathname.endsWith('/pushed.html'), location.search, history.state.n, history.length]; history.replaceState(null, '', was); return r; })(), [true, '?a=1', 1, 2]);
 
 // ---- async: timers, promises, fetch ----
 const order = [];
@@ -151,6 +296,63 @@ const t0 = performance.now();
     catch (e) { check('fetch missing rejects', e instanceof TypeError, true); }
     try { const j = await (await fetch('data:,x')).json(); check('fetch json', j, 'x'); }
     catch (e) { check('bad URL rejects', true, true); }
+
+    check('script load order (defer < module < DCL < load; dynamic src ran in place)', [window.order.filter(x => x !== 'async'), window.order.includes('async'), window.dynCurrent, window.rsAtDefer, window.modResult],
+          [['inline1', 'dyn', 'inline2', 'defer', 'module', 'DCL', 'load'], true, 'jstest-dyn.js', 'interactive', 42]);
+    check('readyState complete', document.readyState, 'complete');
+    check('import maps', window.mapRes, 9);
+    check('import.meta.url', window.metaUrl, location.href);
+    let winLoads = 0; const wl = () => winLoads++; addEventListener('load', wl, true);
+    await new Promise(res => { const s = document.createElement('script'); s.src = 'jstest-dyn2.js'; s.onload = res; s.onerror = res; document.head.appendChild(s); });
+    check('dynamic external script + onload', window.dyn2, 1);
+    check('element load events stop at the document', winLoads, 0); removeEventListener('load', wl, true);
+    await new Promise(res => { const s = document.createElement('script'); s.src = 'nope-missing.js'; s.onerror = () => res(window.errFired = 1); document.head.appendChild(s); });
+    check('script onerror', window.errFired, 1);
+    {
+        const recs = [];
+        const t = document.createElement('div'); document.body.appendChild(t);
+        const mo = new MutationObserver(r => recs.push(...r)); mo.observe(t, { childList: true, attributes: true, subtree: true });
+        t.appendChild(document.createElement('i')); t.setAttribute('k', 'v'); t.firstChild.textContent = 'zz';
+        await Promise.resolve();
+        check('MutationObserver', recs.map(r => r.type + (r.attributeName ? ':' + r.attributeName : '')), ['childList', 'attributes:k', 'childList']);
+        t.remove();
+    }
+    {
+        const hs = []; const onh = () => hs.push(location.hash); addEventListener('hashchange', onh);
+        location.hash = 'sec2';
+        const pop = [];
+        addEventListener('popstate', e => pop.push(e.state));
+        await new Promise(r => setTimeout(r, 20));
+        history.back();
+        await new Promise(r => setTimeout(r, 20));
+        check('hashchange + popstate', [hs[0], pop.length >= 1], ['#sec2', true]);
+        removeEventListener('hashchange', onh);
+    }
+    {
+        let ioFired = 0, roFired = 0;
+        new IntersectionObserver(es => { ioFired = es[0].isIntersecting; }).observe($('#p1')); new ResizeObserver(() => roFired++).observe($('#p1'));
+        const ts = await new Promise(r => requestAnimationFrame(r));
+        await new Promise(r => setTimeout(r, 20));
+        check('IntersectionObserver/ResizeObserver/rAF', [ioFired, roFired, typeof ts], [true, 1, 'number']);
+    }
+    {
+        const x = new XMLHttpRequest(); const st = [];
+        x.onreadystatechange = () => st.push(x.readyState);
+        const done = new Promise(r => { x.onload = r; x.onerror = r; });
+        x.open('GET', 'todo.txt'); x.send(); await done;
+        check('XMLHttpRequest', [x.status, x.responseText.includes('boot'), st.join()], [200, true, '1,2,3,4']);
+        const xs = new XMLHttpRequest(); xs.open('GET', 'todo.txt', false); xs.send();
+        check('XMLHttpRequest sync', [xs.status, xs.responseText.length > 10], [200, true]);
+        const r2 = await fetch('todo.txt', { signal: AbortSignal.timeout(5000) });
+        check('fetch headers/url', [r2.headers.get('content-type') !== undefined, r2.url.endsWith('todo.txt')], [true, true]);
+        const ac = new AbortController(); ac.abort();
+        check('fetch abort', await fetch('todo.txt', { signal: ac.signal }).then(() => 'ok', e => e.name), 'AbortError');
+        check('fetch data: URL', await (await fetch('data:text/plain;base64,aGk=')).text(), 'hi');
+    }
+    localStorage.setItem('k2', 'v2'); localStorage.foo = 'bar';
+    check('localStorage proxy', [localStorage.k2, localStorage.getItem('foo'), localStorage.length >= 3, Object.keys(localStorage).includes('k2')], ['v2', 'bar', true, true]);
+    localStorage.clear();
+    check('Promise combinators', [await Promise.all([1, Promise.resolve(2)]), (await Promise.allSettled([Promise.reject(1)]))[0].status, await Promise.race([new Promise(r => setTimeout(() => r('slow'), 30)), 'fast'])], [[1, 2], 'rejected', 'fast']);
     const s = document.getElementById('summary');
     s.textContent = fail ? `${pass} passed, ${fail} FAILED` : `all ${pass} tests passed`;
     s.className = fail ? 'fail' : 'pass';

@@ -1,0 +1,1 @@
+window.order.push('async');

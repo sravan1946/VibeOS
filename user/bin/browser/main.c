@@ -17,6 +17,7 @@
 #include "../benchutil.h"
 
 #define TB H_TOOLBAR       /* toolbar height */
+#define CT (TB + (ntabs > 1 ? H_TAB : 0))   /* top of the page: under the tab strip, which only shows with 2+ tabs */
 #define SB 12              /* scrollbar column */
 #define STH H_STATUS       /* status bar height */
 #define FB H_TOOLBAR       /* find bar height (when open) */
@@ -27,19 +28,44 @@
 
 static struct gui_window *win;
 static struct doc doc;
-static struct { char *raw; size_t n; int html, have; } pg;
+struct pgst { char *raw; size_t n; int html, have; };
+static struct pgst pg;
 static char cur_url[URL_MAX], pend_url[URL_MAX], addr[URL_MAX];
 static char status[200];
 static bool status_bad;
-static struct { char url[URL_MAX]; int scroll; } hist[HMAX];
+struct hent { char url[URL_MAX]; int scroll; };
+/* tabs: hist/nhist/hcur point at the current tab's session history. A tab you leave keeps its laid-out page, images, stylesheets, form
+ * values and scroll (live) unless it runs scripts (the QuickJS context is a single global: those reload on switch) or MAXLIVE others are
+ * already live (the oldest is dropped and reloads). */
+#define MAXTAB 8
+#define MAXLIVE 3                            /* background tabs that keep their page in memory; the least recently used are evicted (reloaded on switch) */
+static struct tab {
+    struct hent *h; int nh, hc; char title[40];
+    bool live, internal;                     /* live: doc/pg/caches below hold the page as it was left */
+    struct doc doc; struct pgst pg; char url[URL_MAX]; int scroll, lw; void *im, *fs, *sh; uint32_t used;
+} tabs[MAXTAB];
+static int ntabs = 1, curtab;
+static struct hent *hist;
 static int nhist, hcur = -1;
+static char dl_toast[96];                    /* a finished download, shown as a toast next frame */
+/* downloads: a response that isn't a page (octet-stream, zip, pdf, audio/video, Content-Disposition: attachment) streams to ~/Downloads as it
+ * arrives, so size is no object; about:downloads lists them */
+struct dlrec { char name[64], path[128]; long size, total; int state; };   /* state: 0 done, 1 running, 2 failed or cancelled */
+static struct dlrec dls[40];
+static int ndl;
+static struct { int fd, rec, tried; long got, total; } dl = { -1 };
+static void dl_try(void);
+static int dl_service(int r);
+static void dl_abort(const char *why);
+static bool want_src;                        /* the next page loaded is shown as source (view-source:) */
+int doc_zoom = 100;                          /* page zoom in percent (Ctrl+= / Ctrl+-); html.c's layout scales by it */
 static struct fetch fe;
 static bool loading;
 static int pend_push, pend_restore = -1, hops, layout_w;
 static int scroll, target;
 static uint32_t load_t0;
 static char post_body[2048];                 /* body for the next http fetch (form POST), consumed by start_fetch */
-static bool has_post;
+static bool has_post, was_post;               /* was_post: the fetch in flight is a POST (a 307/308 redirect repeats it) */
 /* page interaction state */
 static int fo = -1, caret;                   /* focused control (ordinal) and caret byte offset */
 static int sel_ci = -1, sel_scroll;          /* open <select> dropdown (control index) */
@@ -121,21 +147,28 @@ static const char HOME_HTML[] =
     "<li><a href=\"file:///home/Documents/js.html\">JavaScript demo</a> &ndash; counter, todo list, timer, fetch; <a href=\"file:///home/Documents/jstest.html\">JavaScript tests</a>"
     "<li><a href=\"file:///home/welcome.txt\">welcome.txt</a> &ndash; plain text in a mono font"
     "<li><a href=\"file:///home/\">/home</a> &ndash; a directory listing"
-    "<li><a href=\"about:blank\">about:blank</a>"
+    "<li><a href=\"about:bookmarks\">Bookmarks</a> &ndash; Ctrl+D adds the current page &middot; <a href=\"about:downloads\">Downloads</a> (Ctrl+J) &middot; <a href=\"about:blank\">about:blank</a>"
     "</ul>"
     "<h2>Keys</h2>"
     "<blockquote>"
     "<b>Ctrl+L</b> address bar &middot; <b>Ctrl+R</b> or <b>F5</b> reload &middot; <b>Alt+&larr;</b> / <b>Alt+&rarr;</b> history<br>"
-    "<b>Space</b>, <b>PgDn</b>, <b>PgUp</b>, <b>Home</b>, <b>End</b>, arrows and the wheel scroll &middot; <b>Ctrl+F</b> find &middot; <b>Esc</b> stops loading &middot; <b>F12</b> console"
+    "<b>Space</b>, <b>PgDn</b>, <b>PgUp</b>, <b>Home</b>, <b>End</b>, arrows and the wheel scroll &middot; <b>Ctrl+F</b> find &middot; <b>Esc</b> stops loading &middot; <b>F12</b> console<br>"
+    "<b>Ctrl+T</b> / <b>Ctrl+W</b> / <b>Ctrl+Tab</b> tabs, middle-click a link for a background tab &middot; <b>Ctrl+D</b> bookmark &middot; <b>Ctrl+B</b> bookmarks &middot; <b>Ctrl+U</b> view source &middot; <b>Ctrl+=</b> / <b>Ctrl+-</b> / <b>Ctrl+0</b> zoom"
     "</blockquote>"
     "</body></html>";
 
 /* ---------- page lifecycle ---------- */
+/* zoom: baked fonts can't scale, so the page is laid out and drawn at (window size * 100 / zoom) and the picture is scaled to the window.
+ * Scroll and layout are in page ("doc") pixels; zd() takes screen pixels to doc pixels, zs() back. */
+static int zd(int v) { return (int)((long long)v * 100 / doc_zoom); }
+static int zs(int v) { return (int)((long long)v * doc_zoom / 100); }
 static int view_w(void) { return win->w - SB; }
-static int view_h(void) { return win->h - TB - STH - (find_open ? FB : 0); }
+static int view_h(void) { return win->h - CT - STH - (find_open ? FB : 0); }
 static int find_x(void) { return SP_3; }
 static int find_y(void) { return win->h - STH - FB + (FB - H_SEARCH) / 2; }
-static int max_scroll(void) { int m = doc.height - view_h(); return m > 0 ? m : 0; }
+static int vh0(void) { return view_h() / 2; }
+static int lay_w(void) { return zd(view_w()); }
+static int max_scroll(void) { int m = doc.height - zd(view_h()); return m > 0 ? m : 0; }
 static void clamp_scroll(void) {
     int m = max_scroll();
     if (target > m) target = m;
@@ -162,6 +195,7 @@ static void commit(const char *url, char *raw, size_t n, int html) {
         hcur = nhist++;
     }
     strlcpy(cur_url, url, sizeof cur_url);
+    fetch_set_referer(url_is_web(url) && strncasecmp(url, "data:", 5) ? url : 0);   /* Referer for this page's subresources and the next click */
     internal = false;
     if (!keep_imgs) img_reset();
     keep_imgs = false;
@@ -170,15 +204,17 @@ static void commit(const char *url, char *raw, size_t n, int html) {
     fo = sel_ci = -1; mk.from_it = mk.to_it = -1; selecting = false; img_dirty = false;
     last_needle[0] = 0; find_count = 0; mk.find = 0;
     doc.title[0] = 0;
-    layout_w = view_w();
+    layout_w = lay_w();
+    if (html && url_is_web(url)) fetch_preconnect(raw, n, url);     /* overlap the handshakes with layout */
     free(alert_msg);
     alert_msg = 0;
-    if (html && js_page(pg.raw, pg.n, url)) {          /* scripts: lay out the DOM (js.c) instead of the source */
-        free(pg.raw);
-        pg.raw = js_html(&pg.n);
-    } else js_reset();
-    doc_layout(&doc, pg.raw, pg.n, html, layout_w, cur_url);
+    if (html && js_page(pg.raw, pg.n, url)) doc_layout_js(&doc, layout_w, cur_url);     /* scripts: lay out the DOM (js.c) itself, no HTML round trip */
+    else { js_reset(); doc_layout(&doc, pg.raw, pg.n, html, layout_w, cur_url); }
     js_attach(&doc);
+    for (int i = 0; i < doc.nct; i++) {                    /* autofocus: the first text field that asks */
+        const struct ctl *c = &doc.ct[i];
+        if ((c->fl & CF_AUTO) && (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA)) { fo = c->ord; caret = strlen(fs_get(&doc, i)->val ?: ""); break; }
+    }
     if (!doc.title[0]) {
         const char *b = base_name(url);
         strlcpy(doc.title, *b ? b : url, sizeof doc.title);
@@ -326,7 +362,7 @@ static void load_file(const char *url) {
         load_dir(u, path);
         return;
     }
-    if (ext_is(path, ".png.bmp.ppm.pgm.jpg.jpeg.gif")) {                      /* open the picture itself */
+    if (ext_is(path, ".png.bmp.ppm.pgm.jpg.jpeg.gif.svg")) {                      /* open the picture itself */
         char key[URL_MAX];
         url_resolve("about:blank", url, key, sizeof key);
         show_image(url, key);
@@ -356,15 +392,21 @@ static void load_file(const char *url) {
 
 /* ---------- http ---------- */
 static void load_url(const char *url);
+static void bm_del(int i);
+static void bookmarks_page(const char *url);
+static void downloads_page(const char *url);
+static void download(const char *url, const char *ct, char *body, size_t n, int truncated);
 
 static void start_fetch(const char *url) {
+    dl.tried = 0;
     strlcpy(pend_url, url, sizeof pend_url);
     const char *pb = has_post ? post_body : 0;
+    was_post = has_post;
     has_post = false;
     if (fetch_start(&fe, url, pb) < 0) { net_error(url, "net:couldn't start the network helper"); return; }
     loading = true;
     load_t0 = fe.last;
-    char host[128], path[8];
+    char host[128] = "", path[8];
     int port;
     url_split_http(url, host, sizeof host, &port, path, sizeof path);
     say(false, "Looking up %s...", host);
@@ -380,7 +422,15 @@ static void finish_fetch(void) {
         url_resolve(pend_url, rs.loc, next, sizeof next);
         free(rs.body);
         if (++hops > MAX_REDIRECTS) { net_error(pend_url, "net:too many redirects"); return; }
+        bool ws = want_src;
+        if (was_post && (rs.status == 307 || rs.status == 308)) has_post = true;     /* 301/302/303 turn a POST into a GET; 307/308 keep it (post_body is still there) */
         load_url(next);
+        want_src = ws && loading;
+        return;
+    }
+    if (rs.status == 204 || rs.status == 205) {        /* no content: stay where we are */
+        free(rs.body);
+        say(false, "%d %s - staying on this page", rs.status, rs.text);
         return;
     }
     int html = -1;
@@ -396,28 +446,24 @@ static void finish_fetch(void) {
             say(false, "%d %s - %s", rs.status, rs.text, ct);
             return;
         }
-        unsupported(pend_url, ct, rs.blen); free(rs.body); return;
+        download(pend_url, ct, rs.body, rs.blen, rs.truncated); return;
     }
-    if (!strncmp(ct, "audio/", 6) || !strncmp(ct, "video/", 6)) { unsupported(pend_url, ct, rs.blen); free(rs.body); return; }
+    if (!strncmp(ct, "audio/", 6) || !strncmp(ct, "video/", 6)) { download(pend_url, ct, rs.body, rs.blen, rs.truncated); return; }
     if (strstr(ct, "html")) html = 1;
     else if (!ct[0]) { const char *s = rs.body; while (isspace((unsigned char)*s)) s++; html = *s == '<'; }
     else if (!strncmp(ct, "text/", 5) || strstr(ct, "json") || strstr(ct, "xml") || strstr(ct, "javascript")) html = 0;
     for (size_t i = 0; html < 0 || (i < rs.blen && i < 512); i++) {
-        if (html < 0 || !rs.body[i]) { unsupported(pend_url, ct[0] ? ct : "This content", rs.blen); free(rs.body); return; }
-    }
-    if (rs.latin1) {                                    /* ISO-8859-1 / cp1252 -> UTF-8 */
-        char *u = malloc(rs.blen * 2 + 1);
-        if (u) {
-            size_t o = 0;
-            for (size_t i = 0; i < rs.blen; i++) {
-                unsigned char c = rs.body[i];
-                if (c < 0x80) u[o++] = c; else { u[o++] = 0xC0 | c >> 6; u[o++] = 0x80 | (c & 63); }
-            }
-            u[o] = 0;
-            free(rs.body); rs.body = u; rs.blen = o;
-        }
+        if (html < 0 || !rs.body[i]) { if (rs.body) download(pend_url, ct, rs.body, rs.blen, rs.truncated); else unsupported(pend_url, ct[0] ? ct : "This content", 0); return; }
     }
     size_t n = rs.blen;
+    if (want_src) {                                     /* view-source: the same bytes as plain text */
+        char su[URL_MAX];
+        snprintf(su, sizeof su, "view-source:%s", pend_url);
+        want_src = false;
+        commit(su, rs.body, n, 0);
+        say(false, "Source of %s", pend_url);
+        return;
+    }
     commit(pend_url, rs.body, n, html);
     say(rs.status >= 400, "%d %s - %lu bytes%s", rs.status, rs.text, (unsigned long)n, rs.truncated ? " (truncated at 2 MiB)" : "");
 }
@@ -425,6 +471,8 @@ static void finish_fetch(void) {
 static void service_fetch(void) {
     int r = fetch_pump(&fe);
     uint32_t now = uptime_ms();
+    if (!dl.tried && fe.hdr_end && r == 0) dl_try();
+    if (dl.fd >= 0 && dl_service(r)) return;
     if (r == 0) {
         if (now - fe.last > TIMEOUT_MS) { fetch_cancel(&fe); loading = false; net_error(pend_url, "timeout:"); }
         else if (fe.len) say(false, "Loading... %lu KB", (unsigned long)(fe.len / 1024));
@@ -436,12 +484,21 @@ static void service_fetch(void) {
 
 static void cancel_load(void) {
     if (!loading) return;
+    if (dl.fd >= 0) dl_abort("Download cancelled");
     fetch_cancel(&fe);
     loading = false;
 }
 
 static void load_url(const char *url) {
-    if (url_is_web(url)) start_fetch(url);
+    want_src = false;
+    if (!strncmp(url, "view-source:", 12) && url_is_web(url + 12)) { start_fetch(url + 12); want_src = true; }
+    else if (url_is_web(url)) start_fetch(url);
+    else if (!strncmp(url, "about:bm-del?", 13)) {
+        bm_del(atoi(url + 13));
+        bookmarks_page("about:bookmarks");
+    }
+    else if (!strcmp(url, "about:bookmarks")) bookmarks_page(url);
+    else if (!strcmp(url, "about:downloads")) downloads_page(url);
     else if (!strncasecmp(url, "file:", 5)) load_file(url);
     else if (!strcmp(url, "about:home")) {
         struct sb b = { 0 };
@@ -494,7 +551,311 @@ static void follow(int link) {
     navigate(u, 1, -1);
 }
 
+/* ---------- tabs, bookmarks, downloads, view-source ---------- */
+static bool quit_req;
+
+static void tab_drop(struct tab *t) {                    /* free a live tab's page */
+    if (!t->live) return;
+    doc_free(&t->doc); free(t->pg.raw); img_drop(t->im); fs_drop(t->fs); sheet_drop(t->sh);
+    t->live = false; t->pg.raw = 0; t->im = t->fs = t->sh = 0;
+}
+static void tab_save(void) {                             /* history and title of the current tab */
+    struct tab *t = &tabs[curtab];
+    if (hcur >= 0 && pg.have && !loading) hist[hcur].scroll = scroll;
+    t->nh = nhist; t->hc = hcur;
+    strlcpy(t->title, doc.title, sizeof t->title);
+}
+static void tab_park(void) {                             /* leaving the current tab: move its page out so it survives */
+    struct tab *t = &tabs[curtab];
+    if (!pg.have || loading || js_active() || sheet_busy()) return;
+    t->doc = doc; t->pg = pg; memset(&doc, 0, sizeof doc); memset(&pg, 0, sizeof pg);
+    strlcpy(t->url, cur_url, sizeof t->url);
+    t->scroll = scroll; t->lw = layout_w; t->internal = internal; t->used = uptime_ms();
+    t->im = img_save(); t->fs = fs_save(); t->sh = sheet_save();
+    t->live = true;
+    int nlive = 0, old = -1;
+    for (int i = 0; i < ntabs; i++) if (tabs[i].live) { nlive++; if (i != curtab && (old < 0 || (int32_t)(tabs[i].used - tabs[old].used) < 0)) old = i; }
+    if (nlive > MAXLIVE && old >= 0) tab_drop(&tabs[old]);
+}
+static void tab_load(int n) {
+    curtab = n; hist = tabs[n].h; nhist = tabs[n].nh; hcur = tabs[n].hc;
+    cancel_load();
+    struct tab *t = &tabs[n];
+    if (t->live) {                                       /* back as it was: no fetch, no layout */
+        doc_free(&doc); free(pg.raw); img_reset(); fs_reset(); sheet_reset(); js_reset();
+        doc = t->doc; pg = t->pg;
+        img_restore(t->im); fs_restore(t->fs); sheet_restore(t->sh);
+        t->live = false; t->im = t->fs = t->sh = 0; memset(&t->doc, 0, sizeof t->doc); memset(&t->pg, 0, sizeof t->pg);
+        strlcpy(cur_url, t->url, sizeof cur_url);
+        scroll = target = t->scroll; layout_w = t->lw; internal = t->internal;
+        fo = sel_ci = -1; mk.from_it = mk.to_it = -1; mk.find = 0; mk.find_it = -1; last_needle[0] = 0; find_count = 0; selecting = false;
+        img_dirty = false; loading = false;
+        clamp_scroll();
+        say(false, "%s", cur_url);
+        return;
+    }
+    cur_url[0] = 0;                                      /* so a #fragment URL isn't taken for "same page" */
+    if (hcur >= 0) navigate(hist[hcur].url, 0, hist[hcur].scroll); else navigate("about:home", 1, -1);
+}
+static void tab_new(const char *url, bool fg) {
+    if (ntabs == MAXTAB) { say(true, "Too many tabs"); return; }
+    struct hent *h = calloc(HMAX, sizeof *h);
+    if (!h) return;
+    tab_save();
+    struct tab *t = &tabs[ntabs];
+    memset(t, 0, sizeof *t);
+    t->h = h; t->nh = 1; t->hc = 0;
+    strlcpy(h[0].url, url, sizeof h[0].url);
+    strlcpy(t->title, url, sizeof t->title);
+    ntabs++;
+    if (fg) { tab_park(); tab_load(ntabs - 1); }
+}
+static void tab_close(int i) {
+    if (ntabs == 1) { quit_req = true; return; }
+    if (i == curtab) cancel_load();
+    tab_drop(&tabs[i]);
+    free(tabs[i].h);
+    memmove(tabs + i, tabs + i + 1, (ntabs - i - 1) * sizeof *tabs);
+    ntabs--;
+    if (i == curtab) tab_load(i < ntabs ? i : ntabs - 1);
+    else if (i < curtab) curtab--;
+}
+static void tab_go(int n) { if (n == curtab || n < 0 || n >= ntabs) return; tab_save(); tab_park(); tab_load(n); }
+
+#define BMFILE "/home/.bookmarks"
+#define MAXBM 200
+static struct bm { char url[256], title[96]; } bms[MAXBM];
+static int nbm;
+static void bm_load(void) {
+    static char buf[48 << 10];
+    nbm = 0;
+    int fd = open(BMFILE, O_RDONLY);
+    if (fd < 0) return;
+    int n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return;
+    buf[n] = 0;
+    for (char *l = buf, *e; *l && nbm < MAXBM; l = e) {
+        e = l + strcspn(l, "\n");
+        if (*e) *e++ = 0;
+        char *t = strchr(l, '\t');
+        if (!t) continue;
+        *t++ = 0;
+        strlcpy(bms[nbm].url, l, sizeof bms[0].url);
+        strlcpy(bms[nbm++].title, t, sizeof bms[0].title);
+    }
+}
+static void bm_save(void) {
+    int fd = open(BMFILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    for (int i = 0; i < nbm; i++) {
+        char l[sizeof bms[0].url + sizeof bms[0].title + 4];
+        int n = snprintf(l, sizeof l, "%s\t%s\n", bms[i].url, bms[i].title);
+        write(fd, l, n);
+    }
+    close(fd);
+}
+static void bm_del(int i) {
+    bm_load();
+    if (i >= 0 && i < nbm) { memmove(bms + i, bms + i + 1, (--nbm - i) * sizeof *bms); bm_save(); }
+}
+static void bm_toggle(void) {                            /* Ctrl+D */
+    bm_load();
+    for (int i = 0; i < nbm; i++)
+        if (!strcmp(bms[i].url, cur_url)) {
+            memmove(bms + i, bms + i + 1, (--nbm - i) * sizeof *bms);
+            bm_save();
+            strlcpy(dl_toast, "Bookmark removed", sizeof dl_toast);
+            return;
+        }
+    if (nbm == MAXBM || !strncmp(cur_url, "about:", 6) || strlen(cur_url) >= sizeof bms[0].url) { say(true, "Can't bookmark this page"); return; }
+    strlcpy(bms[nbm].url, cur_url, sizeof bms[0].url);
+    strlcpy(bms[nbm].title, doc.title, sizeof bms[0].title);
+    for (char *c = bms[nbm].title; *c; c++) if (*c == '\t' || *c == '\n') *c = ' ';
+    nbm++;
+    bm_save();
+    strlcpy(dl_toast, "Bookmarked", sizeof dl_toast);
+}
+static void bookmarks_page(const char *url) {
+    bm_load();
+    struct sb b = { 0 };
+    sb_add(&b, "<html><head><title>Bookmarks</title></head>"); sb_body(&b); sb_add(&b, "<h1>Bookmarks</h1>");
+    if (!nbm) sb_add(&b, "<p>No bookmarks yet. Press Ctrl+D on a page to add it.</p>");
+    sb_add(&b, "<ul>");
+    for (int i = 0; i < nbm; i++) {
+        char n[24];
+        snprintf(n, sizeof n, "%d", i);
+        sb_add(&b, "<li><a href=\""); sb_esc(&b, bms[i].url); sb_add(&b, "\">"); sb_esc(&b, bms[i].title[0] ? bms[i].title : bms[i].url);
+        sb_add(&b, "</a> &ndash; <a href=\"about:bm-del?"); sb_add(&b, n); sb_add(&b, "\">remove</a>");
+    }
+    sb_add(&b, "</ul>" ); sb_add(&b, HOME_LINK); sb_add(&b, "</body></html>");
+    commit(url, b.p, b.n, 1);
+    internal = true;
+    say(false, "%d bookmarks", nbm);
+}
+
+/* where a download goes: ~/Downloads/NAME (NAME from Content-Disposition, else the URL; "-2", "-3" ... before the extension if taken) */
+static int dl_open(const char *url, const char *cd, char *path, int pcap, char *name, int ncap) {
+    mkdir("/home/Downloads", 0755);
+    char raw[URL_MAX], nm[96] = "";
+    const char *f = cd ? strstr(cd, "filename=") : 0;
+    if (f) {                                             /* filename="x" or filename=x (filename*=... is left alone) */
+        f += 9;
+        int q = *f == '"';
+        snprintf(raw, sizeof raw, "%.*s", (int)strcspn(f + q, q ? "\"" : ";"), f + q);
+        url_unescape(raw, nm, sizeof nm);
+    }
+    if (!nm[0]) {
+        snprintf(raw, sizeof raw, "%.*s", (int)strcspn(base_name(url), "?#"), base_name(url));
+        url_unescape(raw, nm, sizeof nm);
+    }
+    for (char *c = nm; *c; c++) if (*c == '/' || *c == '\\' || *c < 32) *c = '_';
+    if (!nm[0] || !strcmp(nm, ".") || !strcmp(nm, "..")) strcpy(nm, "download");
+    char *dot = strrchr(nm, '.');
+    int stem = dot && dot != nm ? (int)(dot - nm) : (int)strlen(nm);
+    struct stat st;
+    snprintf(path, pcap, "/home/Downloads/%s", nm);
+    for (int k = 2; !stat(path, &st) && k < 100; k++) snprintf(path, pcap, "/home/Downloads/%.*s-%d%s", stem, nm, k, nm + stem);
+    strlcpy(name, strrchr(path, '/') + 1, ncap);
+    return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+}
+static int dl_record(const char *name, const char *path) {
+    if (ndl == (int)(sizeof dls / sizeof *dls)) { memmove(dls, dls + 1, sizeof dls - sizeof *dls); ndl--; }
+    struct dlrec *r = &dls[ndl];
+    memset(r, 0, sizeof *r);
+    strlcpy(r->name, name, sizeof r->name); strlcpy(r->path, path, sizeof r->path);
+    return ndl++;
+}
+
+/* a body that is already complete in memory and not showable (or the streaming path wasn't possible) */
+static void download(const char *url, const char *ct, char *body, size_t n, int truncated) {
+    char path[128], name[64];
+    int fd = dl_open(url, 0, path, sizeof path, name, sizeof name), rec = dl_record(name, path);
+    size_t put = 0;
+    while (fd >= 0 && put < n) { ssize_t w = write(fd, body + put, n - put); if (w <= 0) break; put += w; }
+    if (fd >= 0) close(fd);
+    free(body);
+    dls[rec].size = dls[rec].total = put;
+    if (fd < 0 || put < n) { dls[rec].state = 2; say(true, "Can't save %s", path); return; }
+    snprintf(dl_toast, sizeof dl_toast, "Saved %s to Downloads%s", name, truncated ? " (cut: the response was over its size limit)" : "");
+    if (!pg.have) { pend_push = 1; pend_restore = -1; downloads_page("about:downloads"); }
+    say(false, "Downloaded %s (%s, %lu bytes)", path, ct[0] ? ct : "unknown type", (unsigned long)n);
+}
+
+/* headers are in and the response is still coming: if it is a file rather than a page, start streaming it to disk */
+static void dl_try(void) {
+    dl.tried = 1;
+    char ct[96] = "", cd[256] = "", ce[32] = "";
+    fetch_hdr(&fe, "content-type", ct, sizeof ct);
+    fetch_hdr(&fe, "content-disposition", cd, sizeof cd);
+    fetch_hdr(&fe, "content-encoding", ce, sizeof ce);
+    for (char *c = ct; *c; c++) *c = tolower((unsigned char)*c);
+    int attach = !strncasecmp(cd, "attachment", 10);
+    int file = attach || !strncmp(ct, "audio/", 6) || !strncmp(ct, "video/", 6) ||
+               (!strncmp(ct, "application/", 12) && !strstr(ct, "json") && !strstr(ct, "xml") && !strstr(ct, "javascript") && !strstr(ct, "xhtml") && !strstr(ct, "html"));
+    if (!file || fe.status < 200 || fe.status > 299 || fe.chunked || (ce[0] && strcasecmp(ce, "identity"))) return;   /* chunked / compressed: the buffered path handles it */
+    char path[128], name[64];
+    int fd = dl_open(pend_url, cd, path, sizeof path, name, sizeof name);
+    if (fd < 0) return;
+    dl.fd = fd; dl.got = 0; dl.total = fe.clen; dl.rec = dl_record(name, path);
+    dls[dl.rec].state = 1; dls[dl.rec].total = fe.clen;
+}
+static void dl_stop(int state) {
+    if (dl.fd >= 0) close(dl.fd);
+    dl.fd = -1;
+    dls[dl.rec].state = state; dls[dl.rec].size = dl.got;
+    if (state == 2) unlink(dls[dl.rec].path);
+}
+static void dl_abort(const char *why) { dl_stop(2); say(false, "%s", why); }
+/* r: what fetch_pump said. Returns 1 when the load is over (the caller must not go on) */
+static int dl_service(int r) {
+    size_t bl = fe.len - fe.hdr_end;
+    for (size_t put = 0; put < bl; ) {
+        ssize_t w = write(dl.fd, fe.buf + fe.hdr_end + put, bl - put);
+        if (w <= 0) { fetch_cancel(&fe); loading = false; dl_stop(2); say(true, "Can't write %s", dls[dl.rec].path); return 1; }
+        put += w;
+    }
+    dl.got += bl;
+    fe.len = fe.hdr_end;                                    /* the headers stay, the body goes to disk: memory stays flat */
+    if (r < 0 || (r == 0 && uptime_ms() - fe.last > TIMEOUT_MS)) { fetch_cancel(&fe); loading = false; dl_stop(2); say(true, "Download of %s failed", dls[dl.rec].name); return 1; }
+    if (r == 1) {
+        fetch_cancel(&fe); loading = false;
+        dl_stop(0);
+        snprintf(dl_toast, sizeof dl_toast, "Saved %s to Downloads (%ld KB)", dls[dl.rec].name, dl.got / 1024);
+        if (!pg.have) { pend_push = 1; pend_restore = -1; downloads_page("about:downloads"); }   /* nothing on screen: show the list */
+        say(false, "Downloaded %s", dls[dl.rec].path);
+        return 1;
+    }
+    if (dl.total > 0) say(false, "Downloading %s: %ld of %ld KB (%d%%)", dls[dl.rec].name, dl.got / 1024, dl.total / 1024, (int)(dl.got * 100 / dl.total));
+    else say(false, "Downloading %s: %ld KB", dls[dl.rec].name, dl.got / 1024);
+    dls[dl.rec].size = dl.got;
+    return 0;
+}
+static void downloads_page(const char *url) {
+    struct sb b = { 0 };
+    sb_add(&b, "<html><head><title>Downloads</title></head>"); sb_body(&b); sb_add(&b, "<h1>Downloads</h1>");
+    if (!ndl) sb_add(&b, "<p>Nothing downloaded yet. Files that aren't pages are saved to <a href=\"file:///home/Downloads/\">Downloads</a>.</p>");
+    sb_add(&b, "<ul>");
+    for (int i = ndl - 1; i >= 0; i--) {
+        char t[64], u[200];
+        snprintf(u, sizeof u, "file://%s", dls[i].path);
+        sb_add(&b, "<li>");
+        if (dls[i].state == 0) { sb_add(&b, "<a href=\""); sb_esc(&b, u); sb_add(&b, "\">"); sb_esc(&b, dls[i].name); sb_add(&b, "</a>"); }
+        else sb_esc(&b, dls[i].name);
+        snprintf(t, sizeof t, " &ndash; %ld KB%s", dls[i].size / 1024, dls[i].state == 1 ? " so far, downloading..." : dls[i].state == 2 ? " &ndash; failed or cancelled" : "");
+        sb_add(&b, t);
+    }
+    sb_add(&b, "</ul><p><a href=\"file:///home/Downloads/\">Open the Downloads folder</a></p>"); sb_add(&b, HOME_LINK); sb_add(&b, "</body></html>");
+    commit(url, b.p, b.n, 1);
+    internal = true;
+    say(false, "%d downloads", ndl);
+}
+
+static void view_source(void) {                          /* Ctrl+U */
+    if (!pg.have || !pg.raw || !pg.html || !strncmp(cur_url, "view-source:", 12)) { say(false, "Nothing to show the source of"); return; }
+    char u[URL_MAX];
+    snprintf(u, sizeof u, "view-source:%s", cur_url);
+    char *copy = malloc(pg.n + 1);
+    if (!copy) return;
+    memcpy(copy, pg.raw, pg.n); copy[pg.n] = 0;
+    if (hcur >= 0) hist[hcur].scroll = scroll;
+    pend_push = 1; pend_restore = -1;
+    commit(u, copy, pg.n, 0);
+    say(false, "Source of %s", u + 12);
+}
+
 static void relayout(void);
+static uint32_t *zbuf; static size_t zcap;
+/* the page at doc size into a scratch canvas, then scaled (area average when zooming out, bilinear in) into the window */
+static void zoom_draw(struct ui *ui, int vw, int vh, int hover) {
+    int dw = zd(vw), dh = zd(vh);
+    size_t need = (size_t)dw * dh * 4;
+    if (need > zcap) { free(zbuf); zbuf = malloc(need); zcap = zbuf ? need : 0; }
+    if (!zbuf) { doc_draw(ui, &doc, 0, CT, vw, vh, scroll, hover, &mk, fo, caret); return; }
+    struct canvas t;
+    canvas_init(&t, zbuf, dw, dh, dw);
+    struct ui u2 = *ui;
+    u2.c = &t;
+    doc_draw(&u2, &doc, 0, 0, dw, dh, scroll, hover, &mk, fo, caret);
+    struct image im = { dw, dh, zbuf };
+    image_sample(&im, ui->c->px + (size_t)CT * ui->c->stride, vw, vh, ui->c->stride, 0, 0, doc_zoom / 100.0f, 1);
+}
+
+static void zoom_by(int d) {
+    static const short Z[] = { 30, 50, 67, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300 };
+    int i = 0, n = sizeof Z / sizeof *Z;
+    if (!d) doc_zoom = 100;
+    else {
+        while (i < n - 1 && Z[i] < doc_zoom) i++;
+        if (d > 0 && Z[i] <= doc_zoom) i++;
+        if (d < 0 && i && Z[i] >= doc_zoom) i--;
+        doc_zoom = Z[i >= n ? n - 1 : i];
+    }
+    if (doc_zoom == 100) { free(zbuf); zbuf = 0; zcap = 0; }
+    if (pg.have) relayout();
+    say(false, "Zoom %d%%", doc_zoom);
+}
+
 static void retheme(void) {                  /* EV_THEME: recolour our own pages */
     char *p = internal && pg.raw ? strstr(pg.raw, "<body bgcolor=\"#") : 0, t[80];
     if (!p) return;
@@ -505,8 +866,8 @@ static void retheme(void) {                  /* EV_THEME: recolour our own pages
 
 static void relayout(void) {
     int old = doc.height ? doc.height : 1;
-    layout_w = view_w();
-    doc_layout(&doc, pg.raw, pg.n, pg.html, layout_w, cur_url);
+    layout_w = lay_w();
+    if (js_active()) doc_layout_js(&doc, layout_w, cur_url); else doc_layout(&doc, pg.raw, pg.n, pg.html, layout_w, cur_url);
     last_relayout = uptime_ms();
     mk.from_it = mk.to_it = -1; mk.find_it = -1; last_needle[0] = 0;
     if (!doc.title[0]) strlcpy(doc.title, base_name(cur_url), sizeof doc.title);
@@ -516,7 +877,22 @@ static void relayout(void) {
 }
 
 /* ---------- forms, selection, find ---------- */
+static int ctl_by_ord(int ord);
+static const struct item *ctl_item(int ci);
+static int fo_drag;                          /* dragging a selection inside the focused field */
+static void scroll_to_y(int y, int vh);
+
 static void submit(int btn, int form) {
+    char vmsg[64];
+    int bad = form >= 0 ? form_check(&doc, form, vmsg, sizeof vmsg) : -1;
+    if (bad >= 0) {                                       /* required / email: focus the field and say why, don't submit */
+        const struct ctl *c = &doc.ct[bad];
+        if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = strlen(fs_get(&doc, bad)->val ?: ""); }
+        const struct item *it = ctl_item(bad);
+        if (it) scroll_to_y(it->y, zd(view_h()));
+        strlcpy(dl_toast, vmsg, sizeof dl_toast);
+        return;
+    }
     if (form < 0 || js_event(doc.fm[form].node, "submit", 0, 0, 0)) return;
     char url[URL_MAX], body[sizeof post_body];
     int post = form_submit(&doc, form, btn, cur_url, url, sizeof url, body, sizeof body);
@@ -532,15 +908,29 @@ static void scroll_to_y(int y, int vh) { target = y - vh / 3; clamp_scroll(); }
 
 static int ctl_by_node(int node) { for (int i = 0; node && i < doc.nct; i++) if (doc.ct[i].node == node) return i; return -1; }
 
+/* `change` for text fields: fired on Enter and when focus leaves, if the value differs from what it was on focus */
+static int cb_ord = -1;
+static char *cb_val;
+static int ctl_by_ord(int ord);
+static void field_base(void) {
+    free(cb_val); cb_val = 0;
+    int ci = cb_ord >= 0 ? ctl_by_ord(cb_ord) : -1;
+    if (ci >= 0 && fs_get(&doc, ci)->val) cb_val = strdup(fs_get(&doc, ci)->val);
+}
+static void field_commit(void) {
+    int ci = cb_ord >= 0 ? ctl_by_ord(cb_ord) : -1;
+    if (ci < 0) return;
+    const char *v = fs_get(&doc, ci)->val;
+    if (strcmp(v ? v : "", cb_val ? cb_val : "")) { field_base(); js_event(doc.ct[ci].node, "change", 0, 0, 0); }
+}
+
 /* a script changed the DOM: lay out the new tree, keeping the scroll position and the focused field */
 static void js_relayout(void) {
     int ci = ctl_by_ord(fo), fnode = ci >= 0 ? doc.ct[ci].node : 0;
     js_sync();
-    free(pg.raw);
-    pg.raw = js_html(&pg.n);
     fs_reset();
-    layout_w = view_w();
-    doc_layout(&doc, pg.raw, pg.n, 1, layout_w, cur_url);
+    layout_w = lay_w();
+    doc_layout_js(&doc, layout_w, cur_url);
     last_relayout = uptime_ms();
     mk.from_it = mk.to_it = -1; mk.find_it = -1; last_needle[0] = 0;
     sel_ci = -1;
@@ -556,7 +946,7 @@ static bool alert_box(struct ui *ui, const char *text) {
 
 /* F12: the last console lines over the bottom of the page */
 static void console_panel(struct ui *ui, int vw, int vh) {
-    int ph = vh / 3 < 120 ? 120 : vh / 3, y0 = TB + vh - ph, hh = H_TAB, rh = T_MONO->height + SP_1, rows = (ph - hh - SP_2) / rh, n = js_log_count();
+    int ph = vh / 3 < 120 ? 120 : vh / 3, y0 = CT + vh - ph, hh = H_TAB, rh = T_MONO->height + SP_1, rows = (ph - hh - SP_2) / rh, n = js_log_count();
     gfx_fill(ui->c, 0, y0, vw, ph, ui_th.base);
     gfx_hline(ui->c, 0, y0, vw, UI_LINE);
     gfx_hline(ui->c, 0, y0 + hh - 1, vw, UI_LINE);
@@ -621,25 +1011,61 @@ static void bench(struct ui *ui, const char *arg) {
     url_from_input(arg, u, sizeof u);
     uint64_t t = tsc();
     navigate(u, 1, -1);
-    blog("BROWSER %s load+layout %u us, %d items, height %d", arg, us(tsc() - t), doc.nit, doc.height);
+    uint32_t t0 = uptime_ms();                              /* the page, its stylesheets and scripts arrive asynchronously: pump like the main loop until settled */
+    int quiet = 0;
+    while (uptime_ms() - t0 < 60000 && quiet < 8) {
+        struct pollfd pf = { fe.fd, POLLIN, 0 };
+        poll(&pf, loading ? 1 : 0, 40);
+        fetch_reap();
+        if (loading) service_fetch();
+        int ch = pg.have && sheet_pump();
+        if (ch) relayout();
+        quiet = loading || ch || (sheet_busy() && uptime_ms() - t0 < 20000) ? 0 : quiet + 1;
+    }
+    blog("BROWSER %s load (%u ms wall), layout %u us, %d items, height %d", arg, uptime_ms() - t0, us(tsc() - t), doc.nit, doc.height);
     for (int pass = 0; pass < 2; pass++) {
         t = tsc();
-        for (int i = 0; i < 8; i++) { ui_clear(ui); doc_draw(ui, &doc, 0, TB, view_w(), view_h(), i * max_scroll() / 8, -1, &mk, -1, 0); }
+        for (int i = 0; i < 8; i++) { ui_clear(ui); doc_draw(ui, &doc, 0, CT, view_w(), view_h(), i * max_scroll() / 8, -1, &mk, -1, 0); }
         blog("BROWSER %s paint x8 %s %u us", arg, pass ? "warm" : "cold", us(tsc() - t));
     }
     
     for (int w = 0; w < 4; w++) { t = tsc(); doc_layout(&doc, pg.raw, pg.n, pg.html, w & 1 ? 700 : view_w(), cur_url); blog("BROWSER %s relayout w=%d %u us", arg, w & 1 ? 700 : view_w(), us(tsc() - t)); }
 }
 
+/* `browser --fetch URL...`: the whole network path (keep-alive pool, cache, gzip, charset, cookies) without a window, for tests:
+ * per URL "STATUS text [ctype] bytes ms" and the response headers on stderr; the last body (as the parser would get it) on stdout */
+static int fetch_cli(int n, char **urls) {
+    int rc = 0;
+    for (int i = 0; i < n; i++) {
+        struct fetch f;
+        struct response rs;
+        if (fetch_start(&f, urls[i], 0) < 0) { fprintf(stderr, "ERR start\n"); return 1; }
+        uint32_t t0 = uptime_ms();
+        int r;
+        while (!(r = fetch_pump(&f)) && uptime_ms() - t0 < 60000) usleep(2000);
+        if (r <= 0) { fprintf(stderr, "ERR timeout/read\n"); return 1; }
+        fetch_finish(&f, &rs);
+        if (rs.err[0]) { fprintf(stderr, "ERR %s\n", rs.err); rc = 1; continue; }
+        fprintf(stderr, "%d %s [%s] %lu bytes %u ms%s\n%s", rs.status, rs.text, rs.ctype, (unsigned long)rs.blen, uptime_ms() - t0, rs.truncated ? " truncated" : "", n == 1 ? rs.hdrs : "");
+        if (i == n - 1) for (size_t o = 0; o < rs.blen; ) { ssize_t w = write(1, rs.body + o, rs.blen - o); if (w <= 0) break; o += w; }
+        free(rs.body);
+    }
+    return rc;
+}
+
 /* ---------- main loop ---------- */
 static void drop_key(struct ui *ui, int i) { memmove(ui->keys + i, ui->keys + i + 1, (--ui->nkeys - i) * sizeof ui->keys[0]); }
 
 int main(int argc, char **argv) {
+    if (argc > 2 && !strcmp(argv[1], "--fetch")) return fetch_cli(argc - 2, argv + 2);
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;
     ui_init(&ui, win); ui.own_w = true;
     char start[URL_MAX] = "about:home";
+    tabs[0].h = hist = calloc(HMAX, sizeof *hist);
+    if (!hist) return 1;
+    cookie_init();
     if (argc > 2 && !strcmp(argv[1], "--bench")) { bench(&ui, argv[2]); return 0; }
     if (argc > 1) url_from_input(argv[1], start, sizeof start);
     navigate(start, 1, -1);
@@ -648,18 +1074,22 @@ int main(int argc, char **argv) {
     for (;;) {
         int timeout = loading || img_busy() || sheet_busy() || js_busy() ? 40 : -1, jt = js_timeout();
         if (jt >= 0 && (timeout < 0 || jt < timeout)) timeout = jt;
+        int at = img_anim_due();
+        if (at >= 0 && (timeout < 0 || at < timeout)) timeout = at;
         if (scroll != target) timeout = 16;
         struct pollfd pf[2] = { { win->fd, POLLIN, 0 }, { fe.fd, POLLIN, 0 } };
         poll(pf, loading ? 2 : 1, timeout);
-        if (!ui_poll(&ui, 0)) break;
+        if (!ui_poll(&ui, 0) || quit_req) break;
+        uint32_t frame_t0 = uptime_ms();
         fetch_reap();
         if (loading) service_fetch();
+        img_hold(abs(target - scroll) > vh0());
         if (pg.have && img_pump()) img_dirty = true;
         if (pg.have && sheet_pump()) { relayout(); img_dirty = false; }    /* a stylesheet arrived (or failed): lay the page out again */
         if (img_dirty && pg.have && (!img_busy() || uptime_ms() - last_relayout > 400)) { relayout(); img_dirty = false; }
 
-        int W = win->w, H = win->h, vw = view_w(), vh = view_h();
-        if (pg.have && vw != layout_w) relayout();
+        int W = win->w, H = win->h, vw = view_w(), vh = view_h(), vhd = zd(vh);
+        if (pg.have && lay_w() != layout_w) relayout();
         if (ui.themed) retheme();
         int aw = W - AX - SP_3, ay = (TB - H_CTL) / 2;
         uint32_t aid = ui_id(AX, ay, aw, H_CTL);
@@ -669,12 +1099,24 @@ int main(int argc, char **argv) {
             struct gui_event k = ui.keys[i];
             int c = k.key | 32, ctrl = k.mods & MOD_CTRL, handled = 1;
             if (ctrl && (c == 'l' || k.ch == 12)) { ui.focus = aid; addr[0] = 0; }
-            else if ((ctrl && (c == 'r' || k.ch == 18)) || k.key == KEY_F5) navigate(hist[hcur].url, 0, scroll);
+            else if ((ctrl && (c == 'r' || k.ch == 18)) || k.key == KEY_F5) { fetch_cache_drop(hist[hcur].url); navigate(hist[hcur].url, 0, scroll); }
             else if ((k.mods & MOD_ALT) && k.key == KEY_LEFT) go_hist(-1);
             else if ((k.mods & MOD_ALT) && k.key == KEY_RIGHT) go_hist(1);
             else if (ctrl && (c == 'f' || k.ch == 6)) { find_open = true; ui.focus = ui_id(find_x(), find_y(), 240, H_SEARCH); fo = -1; }
-            else if (k.key == KEY_F3 || (ctrl && (c == 'g' || k.ch == 7))) { if (find_open) find_go((k.mods & MOD_SHIFT) ? -1 : 1, vh, false); else handled = 0; }
+            else if (k.key == KEY_F3 || (ctrl && (c == 'g' || k.ch == 7))) { if (find_open) find_go((k.mods & MOD_SHIFT) ? -1 : 1, vhd, false); else handled = 0; }
             else if (k.key == KEY_F12) console_open = !console_open;
+            else if (ctrl && c == 't') { tab_new("about:home", true); ui.focus = aid; addr[0] = 0; }
+            else if (ctrl && c == 'w') { tab_close(curtab); ui.focus = 0; }
+            else if (ctrl && k.key == KEY_TAB) { tab_go((curtab + ((k.mods & MOD_SHIFT) ? ntabs - 1 : 1)) % ntabs); ui.focus = 0; }
+            else if (ctrl && k.key == KEY_PGDN) tab_go((curtab + 1) % ntabs);
+            else if (ctrl && k.key == KEY_PGUP) tab_go((curtab + ntabs - 1) % ntabs);
+            else if (ctrl && c == 'd') bm_toggle();
+            else if (ctrl && c == 'b') navigate("about:bookmarks", 1, -1);
+            else if (ctrl && c == 'j') navigate("about:downloads", 1, -1);
+            else if (ctrl && c == 'u') view_source();
+            else if (ctrl && (k.key == '=' || k.key == '+')) zoom_by(1);
+            else if (ctrl && k.key == '-') zoom_by(-1);
+            else if (ctrl && k.key == '0') zoom_by(0);
             else if (k.key == KEY_ESC) {
                 if (sel_ci >= 0) sel_ci = -1;
                 else if (find_open) { find_open = false; mk.find = 0; }
@@ -697,7 +1139,7 @@ int main(int argc, char **argv) {
         tx += H_CTL + SP_2;
         if (ui_icon_button(&ui, tx, ay, loading ? ICON_CLOSE : ICON_REFRESH, 0, loading ? "Stop \u00b7 Esc" : "Reload \u00b7 Ctrl+R")) {
             if (loading) { cancel_load(); say(false, "Stopped"); }
-            else if (hcur >= 0) navigate(hist[hcur].url, 0, scroll);
+            else if (hcur >= 0) { fetch_cache_drop(hist[hcur].url); navigate(hist[hcur].url, 0, scroll); }
         }
         tx += H_CTL + SP_2;
         if (ui_icon_button(&ui, tx, ay, ICON_HOME, 0, "Start page")) navigate("about:home", 1, -1);
@@ -710,15 +1152,31 @@ int main(int argc, char **argv) {
             navigate(u, 1, -1);
         }
         if (loading) {                                   /* indeterminate progress on the toolbar's bottom edge */
+            long got = dl.fd >= 0 ? dl.got : (long)fe.len - fe.hdr_end, tot = dl.fd >= 0 ? dl.total : fe.clen;
+            if (tot > 0 && fe.hdr_end && got > 0) {   /* length known: a real bar */
+                gfx_round_fill(ui.c, 0, TB - SP_1, (int)((long long)W * (got > tot ? tot : got) / tot) + 1, SP_1, R_1, ui_th.accent_line);
+            } else {
             int span = W * 3 / 10, px = (int)((uptime_ms() - load_t0) * (uint32_t)(W + span) / 1200 % (uint32_t)(W + span)) - span;
             gfx_round_fill(ui.c, px < 0 ? 0 : px, TB - SP_1, px < 0 ? span + px : span, SP_1, R_1, ui_th.accent_line);
+            }
         }
+
+        if (ntabs > 1) {                                 /* tab strip under the toolbar */
+            static char tn[MAXTAB][40];
+            const char *names[MAXTAB];
+            for (int i = 0; i < ntabs; i++) { strlcpy(tn[i], i == curtab ? doc.title : tabs[i].title, sizeof tn[i]); names[i] = tn[i]; }
+            int sel = curtab, r = ui_tabbar_ex(&ui, 0, TB, W, names, ntabs, &sel, UI_TAB_CLOSE | UI_TAB_NEW, 0);
+            if (r == UI_TAB_ADD) tab_new("about:home", true);
+            else if (r >= 0) tab_close(r);
+            else if (sel != curtab) tab_go(sel);
+        }
+        if (dl_toast[0]) { ui_toast(&ui, dl_toast, NULL); dl_toast[0] = 0; }
 
         /* content */
         int hover = -1;
         int fx = find_x(), fy = find_y(); uint32_t fid = ui_id(fx, fy, 240, H_SEARCH);
         bool modal = alert_msg != 0;
-        bool in_view = !modal && ui.mx >= 0 && ui.mx < vw && ui.my >= TB && ui.my < TB + vh;
+        bool in_view = !modal && ui.mx >= 0 && ui.mx < vw && ui.my >= CT && ui.my < CT + vh;
         if (ui.focus == aid) fo = -1;
         bool consumed = false;
         int px = 0, py = 0, pw = 0, prows = 0;
@@ -729,9 +1187,9 @@ int main(int argc, char **argv) {
             else {
                 int no = doc.ct[sel_ci].no;
                 prows = no < 12 ? no : 12;
-                px = it->x; pw = it->w < 120 ? 120 : it->w;
-                py = TB + it->y - scroll + it->h;
-                if (py + prows * rh > H - STH) py = TB + it->y - scroll - prows * rh;
+                px = zs(it->x); pw = zs(it->w) < 120 ? 120 : zs(it->w);
+                py = CT + zs(it->y - scroll + it->h);
+                if (py + prows * rh > H - STH) py = CT + zs(it->y - scroll) - prows * rh;
                 bool inp = ui.mx >= px && ui.mx < px + pw && ui.my >= py && ui.my < py + prows * rh;
                 if (inp && ui.scroll) { sel_scroll += ui.scroll; ui.scroll = 0; }
                 if (sel_scroll > no - prows) sel_scroll = no - prows;
@@ -743,15 +1201,24 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (in_view && sel_ci < 0) hover = doc_hit(&doc, ui.mx, ui.my - TB + scroll);
+        if (in_view && sel_ci < 0) hover = doc_hit(&doc, zd(ui.mx), zd(ui.my - CT) + scroll);
+        if (js_active()) {                                   /* mouseover/out on node changes, mousemove, mouseup */
+            static int pnode, pmx = -1, pmy = -1, pbtn;
+            int dx = zd(ui.mx), dy = zd(ui.my - CT) + scroll, nn = in_view && sel_ci < 0 ? doc_node_at(&doc, dx, dy) : 0;
+            if (nn != pnode) { if (pnode) js_event(pnode, "mouseout", 0, dx, dy); if (nn) js_event(nn, "mouseover", 0, dx, dy); pnode = nn; }
+            if (in_view && (ui.mx != pmx || ui.my != pmy)) { pmx = ui.mx; pmy = ui.my; js_event(nn, "mousemove", 0, dx, dy); }
+            if (pbtn && !(ui.buttons & 1)) js_event(nn, "mouseup", 0, dx, dy);
+            pbtn = ui.buttons & 1;
+        }
         if (ui.pressed && !consumed && in_view) {
-            int dx = ui.mx, dy = ui.my - TB + scroll, ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
+            int dx = zd(ui.mx), dy = zd(ui.my - CT) + scroll, ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
             fo = -1;
             mk.from_it = mk.to_it = -1;
+            js_event(node, "mousedown", 0, dx, dy);
             if (ci >= 0) {                                   /* the page sees the click first; preventDefault skips our part */
                 const struct ctl *c = &doc.ct[ci];
                 const struct item *it = ctl_item(ci);
-                if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = ctl_caret_at(&doc, ci, dx - it->x, dy - it->y); js_event(node, "click", 0, dx, dy); }
+                if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = ctl_caret_at(&doc, ci, dx - it->x, dy - it->y); fs_get(&doc, ci)->anc1 = caret + 1; fo_drag = 1; js_event(node, "click", 0, dx, dy); }
                 else if (c->kind == C_BTN) { if (!js_event(node, "click", 0, dx, dy)) { if (c->sub == 1) submit(ci, c->form); else if (c->sub == 2) form_reset(&doc, c->form); } }
                 else if (c->kind == C_CHECK || c->kind == C_RADIO) {
                     struct fstate *fs = fs_get(&doc, ci);
@@ -768,11 +1235,17 @@ int main(int argc, char **argv) {
                 if (doc_pos_at(&doc, dx, dy, &anc_it, &anc_ch)) { selecting = true; sel_moved = false; }
             }
         }
+        if (fo_drag) {                                       /* drag-select inside a text field */
+            int fci = ctl_by_ord(fo);
+            const struct item *fit = fci >= 0 ? ctl_item(fci) : 0;
+            if ((ui.buttons & 1) && fit) caret = ctl_caret_at(&doc, fci, zd(ui.mx) - fit->x, zd(ui.my - CT) + scroll - fit->y);
+            else fo_drag = 0;
+        }
         if (selecting) {
             if (ui.buttons & 1) {
-                int my = ui.my < TB ? TB : ui.my > TB + vh - 1 ? TB + vh - 1 : ui.my, i, ch;
-                if (ui.my < TB + 6) target -= 24; else if (ui.my > TB + vh - 6) target += 24;
-                if (doc_pos_at(&doc, ui.mx, my - TB + scroll, &i, &ch)) {
+                int my = ui.my < CT ? CT : ui.my > CT + vh - 1 ? CT + vh - 1 : ui.my, i, ch;
+                if (ui.my < CT + 6) target -= 24; else if (ui.my > CT + vh - 6) target += 24;
+                if (doc_pos_at(&doc, zd(ui.mx), zd(my - CT) + scroll, &i, &ch)) {
                     if (i != anc_it || ch != anc_ch) sel_moved = true;
                     if (sel_moved) set_sel(anc_it, anc_ch, i, ch);
                 }
@@ -780,7 +1253,8 @@ int main(int argc, char **argv) {
         }
         char hover_url[URL_MAX];
         if (hover >= 0) url_resolve(cur_url, doc.link[hover], hover_url, sizeof hover_url);
-        if (ui.scroll && ui.my >= TB) target += ui.scroll * 64;
+        if (ui.mpressed && hover >= 0 && !modal) tab_new(hover_url, false);   /* middle-click: link in a background tab */
+        if (ui.scroll && ui.my >= CT) target += ui.scroll * 64;
         struct gui_event k;
         bool find_focus = find_open && ui.focus == fid;
         while (!modal && ui_key(&ui, &k)) {
@@ -795,7 +1269,7 @@ int main(int argc, char **argv) {
             }
             if (find_focus) {
                 int n = strlen(needle);
-                if (k.key == KEY_ENTER) find_go(shift ? -1 : 1, vh, false);
+                if (k.key == KEY_ENTER) find_go(shift ? -1 : 1, vhd, false);
                 else if (k.key == KEY_BACKSPACE || k.ch == 8) { if (n) needle[n - 1] = 0; }
                 else if (k.ch == 21) needle[0] = 0;
                 else if (ctrl && (k.key | 32) == 'v') {
@@ -809,14 +1283,15 @@ int main(int argc, char **argv) {
             if (fo >= 0) {                                    /* typing into a form field: keydown, the edit, input */
                 int ci = ctl_by_ord(fo), node = ci >= 0 ? doc.ct[ci].node : 0;
                 if (js_event(node, "keydown", &k, 0, 0)) continue;
-                if (k.key == KEY_TAB) focus_next(shift ? -1 : 1, vh);
+                if (k.key == KEY_TAB) focus_next(shift ? -1 : 1, vhd);
                 else if (ci >= 0) {
                     struct fstate *fs = fs_get(&doc, ci);
                     char *before = js_active() && fs->val ? strdup(fs->val) : 0;
                     int enter = ctl_key(&doc, ci, &k, &caret);
                     if (before && fs->val && strcmp(before, fs->val)) js_event(node, "input", 0, 0, 0);
                     free(before);
-                    if (enter) submit(-1, doc.ct[ci].form);
+                    js_event(node, "keyup", &k, 0, 0);
+                    if (enter) { field_commit(); if (!js_event(node, "keypress", &k, 0, 0)) submit(-1, doc.ct[ci].form); }
                 }
                 continue;
             }
@@ -824,12 +1299,12 @@ int main(int argc, char **argv) {
             switch (k.key) {
             case KEY_DOWN: target += 48; break;
             case KEY_UP: target -= 48; break;
-            case KEY_PGDN: target += vh - 40; break;
-            case KEY_PGUP: target -= vh - 40; break;
-            case ' ': target += shift ? 40 - vh : vh - 40; break;
+            case KEY_PGDN: target += vhd - 40; break;
+            case KEY_PGUP: target -= vhd - 40; break;
+            case ' ': target += shift ? 40 - vhd : vhd - 40; break;
             case KEY_HOME: target = 0; break;
             case KEY_END: target = max_scroll(); break;
-            case KEY_TAB: focus_next(shift ? -1 : 1, vh); break;
+            case KEY_TAB: focus_next(shift ? -1 : 1, vhd); break;
             default:
                 if (ctrl && (k.key | 32) == 'c') copy_sel();
                 else if (ctrl && (k.key | 32) == 'a' && doc.nit) set_sel(0, 0, doc.nit - 1, 1 << 20);
@@ -840,7 +1315,7 @@ int main(int argc, char **argv) {
                 strlcpy(last_needle, needle, sizeof last_needle);
                 find_count = doc_count(&doc, needle);
                 mk.find_it = -1;
-                find_go(1, vh, true);
+                find_go(1, vhd, true);
             }
             mk.find = needle[0] ? needle : 0;
         } else mk.find = 0;
@@ -850,14 +1325,32 @@ int main(int argc, char **argv) {
             if (!step) step = d > 0 ? 1 : -1;
             scroll += step;
         }
+        if (js_active() && fo != cb_ord) { field_commit(); cb_ord = fo; field_base(); }      /* focus left a field: its change event */
+        js_viewport(scroll, vw, vh);
+        { static int last_scroll, last_vw, last_vh;
+          if (scroll != last_scroll) { last_scroll = scroll; js_event(1, "scroll", 0, 0, 0); }
+          if (vw != last_vw || vh != last_vh) { if (last_vw) js_event(0, "resize", 0, 0, 0); last_vw = vw; last_vh = vh; } }
         if (pg.have && js_pump()) js_relayout();           /* scripts, timers, fetches; one relayout per frame */
+        { int sy = js_scroll_req(); if (sy >= 0) { target = sy; clamp_scroll(); }
+          const char *an = js_anchor_req(); int ay2;
+          if (an && (!*an ? (ay2 = 0, 1) : (ay2 = doc_anchor(&doc, an)) >= 0)) { target = ay2 > 8 ? ay2 - 8 : 0; clamp_scroll(); }
+          const char *uc = js_url_change();
+          if (uc) { strlcpy(cur_url, uc, sizeof cur_url); if (hcur >= 0) strlcpy(hist[hcur].url, uc, sizeof hist[0].url); }
+          int sf = js_submit_req();
+          if (sf) for (int i = 0; i < doc.nfm; i++) if (doc.fm[i].node == sf) { char u[URL_MAX], body[sizeof post_body];
+              int post = form_submit(&doc, i, -1, cur_url, u, sizeof u, body, sizeof body);
+              if (post && url_is_web(u)) { strlcpy(post_body, body, sizeof post_body); has_post = true; }
+              navigate(u, 1, -1); has_post = false; break; } }
         int fr = js_focus_req(), fci = ctl_by_node(fr);
         if (fci >= 0) { fo = doc.ct[fci].ord; caret = fs_get(&doc, fci)->val ? strlen(fs_get(&doc, fci)->val) : 0; }
         char *al = js_alert();
         if (al) { free(alert_msg); alert_msg = al; }
         const char *jn = js_nav();
-        if (jn) { char u[URL_MAX]; strlcpy(u, jn, sizeof u); navigate(u, 1, -1); }
-        doc_draw(&ui, &doc, 0, TB, vw, vh, scroll, hover, &mk, fo, caret);
+        if (jn && !strcmp(jn, "vibe:back")) go_hist(-1);
+        else if (jn && !strcmp(jn, "vibe:forward")) go_hist(1);
+        else if (jn) { char u[URL_MAX]; strlcpy(u, jn, sizeof u); navigate(u, 1, -1); }
+        if (doc_zoom == 100) doc_draw(&ui, &doc, 0, CT, vw, vh, scroll, hover, &mk, fo, caret);
+        else zoom_draw(&ui, vw, vh, hover);
         if (sel_ci >= 0 && prows) {                      /* dropdown on top of the page */
             const struct ctl *c = &doc.ct[sel_ci];
             struct fstate *fsx = fs_get(&doc, sel_ci);
@@ -876,22 +1369,22 @@ int main(int argc, char **argv) {
             }
         }
         if (find_open) {                                 /* find bar between the page and the status bar */
-            int by = TB + vh, iy = by + (FB - H_CTL) / 2, bx = fx + 240 + SP_3;
+            int by = CT + vh, iy = by + (FB - H_CTL) / 2, bx = fx + 240 + SP_3;
             gfx_fill(ui.c, 0, by, W, FB, ui_th.window);
             gfx_hline(ui.c, 0, by, W, UI_LINE);
             ui_search(&ui, fx, fy, 240, needle, sizeof needle, "Find in page");
-            if (ui_icon_button(&ui, bx, iy, ICON_CHEVRON_UP, find_count ? 0 : UI_DISABLED, "Previous \u00b7 Shift+F3")) find_go(-1, vh, false);
-            if (ui_icon_button(&ui, bx + H_CTL + SP_2, iy, ICON_CHEVRON_DOWN, find_count ? 0 : UI_DISABLED, "Next \u00b7 F3")) find_go(1, vh, false);
+            if (ui_icon_button(&ui, bx, iy, ICON_CHEVRON_UP, find_count ? 0 : UI_DISABLED, "Previous \u00b7 Shift+F3")) find_go(-1, vhd, false);
+            if (ui_icon_button(&ui, bx + H_CTL + SP_2, iy, ICON_CHEVRON_DOWN, find_count ? 0 : UI_DISABLED, "Next \u00b7 F3")) find_go(1, vhd, false);
             char fc[40];
             snprintf(fc, sizeof fc, !needle[0] ? "" : find_count ? "%d match%s" : "No matches", find_count, find_count == 1 ? "" : "es");
             gfx_text(ui.c, T_BODY, bx + 2 * H_CTL + SP_2 + SP_4, by + (FB - T_BODY->height) / 2, fc, !needle[0] || find_count ? UI_TEXT2 : UI_BAD);
             if (ui_icon_button(&ui, W - SP_3 - H_CTL, iy, ICON_CLOSE, 0, "Close \u00b7 Esc")) { find_open = false; mk.find = 0; ui.focus = 0; }
         }
         if (console_open) console_panel(&ui, vw, vh);
-        gfx_fill(ui.c, vw, TB, SB, vh, ui_th.window);
-        int sp = scroll;
-        ui_vscroll(&ui, vw + 1, TB, vh, doc.height, vh, &sp);
-        if (sp != scroll) scroll = target = sp;
+        gfx_fill(ui.c, vw, CT, SB, vh, ui_th.window);
+        int sp = zs(scroll);
+        ui_vscroll(&ui, vw + 1, CT, vh, zs(doc.height), vh, &sp);
+        if (sp != zs(scroll)) scroll = target = zd(sp);
 
         /* status bar */
         ui_status(&ui, 0, H - STH, W, NULL, NULL);
@@ -903,6 +1396,7 @@ int main(int argc, char **argv) {
         snprintf(t, sizeof t, strcmp(doc.title, "Vibe Browser") ? "%s \u2014 Vibe Browser" : "%s", doc.title);
         if (strcmp(t, last_title)) { gui_set_title(win, t); strlcpy(last_title, t, sizeof last_title); }
         ui_end(&ui);
+        if (uptime_ms() - frame_t0 > 40) blog("BROWSER slow frame %u ms (%d items)", (unsigned)(uptime_ms() - frame_t0), doc.nit);
     }
     cancel_load();
     js_reset();

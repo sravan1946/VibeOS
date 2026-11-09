@@ -69,10 +69,21 @@ static void split(const char *u, int *sl, const char **auth, int *al, int *has_a
 
 void url_resolve(const char *base, const char *ref, char *out, int cap) {
     char r[URL_MAX];
-    int n = 0;
+    int n = 0, infrag = 0;
     while (isspace((unsigned char)*ref)) ref++;
-    for (; *ref && n < URL_MAX - 1; ref++) if (*ref != '\n' && *ref != '\r' && *ref != '\t') r[n++] = *ref;
-    while (n && r[n - 1] == ' ') n--;
+    if (!strncasecmp(ref, "data:", 5)) {                /* data: URLs are opaque and can be long: copy what fits (callers with a big buffer get it all) */
+        for (n = 0; *ref && n < cap - 1; ref++) if (*ref != '\n' && *ref != '\r' && *ref != '\t') out[n++] = *ref;
+        out[n] = 0;
+        return;
+    }
+    for (; *ref && n < URL_MAX - 4; ref++) {            /* spaces, controls, non-ASCII and unsafe ASCII -> %XX (not in the #fragment: anchors match raw names) */
+        unsigned char c = *ref;
+        if (c == '\n' || c == '\r' || c == '\t') continue;
+        if (c == '#') infrag = 1;
+        if (!infrag && (c <= ' ' || c >= 0x7f || strchr("\"<>\\^`{|}", c))) { r[n++] = '%'; r[n++] = "0123456789ABCDEF"[c >> 4]; r[n++] = "0123456789ABCDEF"[c & 15]; }
+        else r[n++] = c;
+    }
+    while (n >= 3 && !strncmp(r + n - 3, "%20", 3) && !infrag) n -= 3;   /* trailing spaces */
     r[n] = 0;
     int sl, al, ha;
     const char *auth, *rest;
@@ -119,7 +130,7 @@ void url_from_input(const char *in, char *out, int cap) {
     url_resolve("about:blank", t, out, cap);
 }
 
-int url_is_web(const char *url) { return !strncasecmp(url, "http://", 7) || !strncasecmp(url, "https://", 8); }
+int url_is_web(const char *url) { return !strncasecmp(url, "http://", 7) || !strncasecmp(url, "https://", 8) || !strncasecmp(url, "data:", 5); }
 
 int url_split_http(const char *url, char *host, int hcap, int *port, char *path, int pcap) {
     int tls = !strncasecmp(url, "https://", 8);

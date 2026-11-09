@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 #define CA_FILE "/etc/ssl/cert.pem"
 
@@ -128,6 +129,35 @@ static void set_err(struct tls *t) {
     else snprintf(errbuf, sizeof errbuf, "TLS error %d", e);
 }
 
+/* Session resumption across processes: every fetch is its own process, so the master secret of a finished handshake is kept in
+ * /tmp/tlssess/HOST and offered next time (abbreviated handshake: no key exchange or certificate work, one round trip less).
+ * ponytail: plain files, one per host, no expiry beyond the server's own (a refused session just does a full handshake); the
+ * secrets sit in /tmp in the clear, fine on a single-user toy OS and wrong anywhere else. */
+#define SESS_DIR "/tmp/tlssess"
+static void sess_path(char *o, int cap, const char *host) { snprintf(o, cap, SESS_DIR "/%.80s", host); }
+
+static int sess_load(const char *host, br_ssl_session_parameters *sp) {
+    char p[128];
+    sess_path(p, sizeof p, host);
+    int fd = open(p, O_RDONLY);
+    if (fd < 0) return 0;
+    int ok = read(fd, sp, sizeof *sp) == (ssize_t)sizeof *sp && sp->session_id_len > 0 && sp->session_id_len <= 32;
+    close(fd);
+    return ok;
+}
+
+static void sess_save(const char *host, const br_ssl_session_parameters *sp) {
+    char p[128];
+    sess_path(p, sizeof p, host);
+    mkdir(SESS_DIR, 0700);
+    int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return;
+    if (write(fd, sp, sizeof *sp) != (ssize_t)sizeof *sp) unlink(p);
+    close(fd);
+}
+
+static const char *alpn[] = { "http/1.1" };       /* we speak nothing newer: say so, or some servers pick h2 */
+
 struct tls *tls_open(int fd, const char *host) {
     if (!ntas && load_anchors() < 0) return 0;
     struct tls *t = malloc(sizeof *t);
@@ -135,9 +165,18 @@ struct tls *tls_open(int fd, const char *host) {
     t->fd = fd;
     br_ssl_client_init_full(&t->sc, &t->xc, tas, ntas);
     br_ssl_engine_set_buffer(&t->sc.eng, t->buf, sizeof t->buf, 1);
-    if (!br_ssl_client_reset(&t->sc, host, 0)) { set_err(t); free(t); return 0; }
+    br_ssl_engine_set_protocol_names(&t->sc.eng, alpn, 1);
+    br_ssl_session_parameters sp;
+    int resume = sess_load(host, &sp);
+    if (resume) br_ssl_engine_set_session_parameters(&t->sc.eng, &sp);
+    if (!br_ssl_client_reset(&t->sc, host, resume)) { set_err(t); free(t); return 0; }
     br_sslio_init(&t->io, &t->sc.eng, sock_read, &t->fd, sock_write, &t->fd);
-    if (br_sslio_flush(&t->io) < 0 || br_ssl_engine_current_state(&t->sc.eng) == BR_SSL_CLOSED) { set_err(t); free(t); return 0; }
+    if (br_sslio_flush(&t->io) < 0 || br_ssl_engine_current_state(&t->sc.eng) == BR_SSL_CLOSED) {
+        if (resume) { char p[128]; sess_path(p, sizeof p, host); unlink(p); }       /* don't offer a session that broke the handshake */
+        set_err(t); free(t); return 0;
+    }
+    br_ssl_engine_get_session_parameters(&t->sc.eng, &sp);
+    if (sp.session_id_len > 0) sess_save(host, &sp);
     return t;
 }
 
