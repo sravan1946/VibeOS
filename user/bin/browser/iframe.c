@@ -371,5 +371,6 @@ Object.defineProperties(P, {
     contentDocument: { get() { const w = d.fwin(this.__id); if (!w) return null; try { return w.document; } catch (e) { return null; } }, configurable: true, enumerable: true },
 });
 P.getSVGDocument = function () { return null; };
+if (!g.Worker) g.Worker = class Worker extends D.EventTarget { constructor(u) { super(); d.log(1, 'new Worker(' + u + ')'); } postMessage() {} terminate() {} };
 })(globalThis);
 )JS";

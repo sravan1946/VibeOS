@@ -2067,6 +2067,9 @@ static void origin_of(const char *url, const char *inherit, char *out, int cap) 
         if (at) a = at + 1;
         snprintf(out, cap, "%.*s://%.*s", (int)(strstr(url, "://") - url), url, (int)(e - a), a);
         for (char *q = out; *q; q++) *q = tolower((unsigned char)*q);
+        size_t n = strlen(out);                                  /* the default port is not part of the origin */
+        if (n > 4 && !strcmp(out + n - 4, ":443") && out[4] == 's') out[n - 4] = 0;
+        else if (n > 3 && !strcmp(out + n - 3, ":80") && out[4] == ':') out[n - 3] = 0;
     } else if (!strncasecmp(url, "file:", 5)) strlcpy(out, "file://", cap);
     else if (inherit && !strncasecmp(url, "about:", 6)) strlcpy(out, inherit, cap);
     else strlcpy(out, "null", cap);
@@ -2303,8 +2306,7 @@ static JSValue post_to(struct jsst *cs, struct jsst *tg, JSContext *c, JSValueCo
     if (JS_IsObject(topt)) { ov = JS_GetPropertyStr(c, topt, "targetOrigin"); topt = ov; }
     if (!JS_IsUndefined(topt)) { const char *t = JS_ToCString(c, topt); if (t) { strlcpy(tmp, t, sizeof tmp); JS_FreeCString(c, t); } }
     JS_FreeValue(c, ov);
-    size_t ol = strlen(tmp);
-    if (ol > 1 && tmp[ol - 1] == '/') tmp[ol - 1] = 0;
+    if (!strncasecmp(tmp, "http", 4) || !strncasecmp(tmp, "file:", 5)) { char o2[200]; origin_of(tmp, 0, o2, sizeof o2); strlcpy(tmp, o2, sizeof tmp); }   /* "https://a.com:443/x" is the origin https://a.com */
     if (strcmp(tmp, "*") && !((!strcmp(tmp, "/") && same_origin(cs, tg)) || !strcmp(tmp, tg->origin))) {
         jlog(1, "postMessage: the target origin %s does not match the recipient (%s)", tmp, tg->origin);
         return JS_UNDEFINED;
