@@ -253,6 +253,7 @@ struct form { uint32_t action; uint8_t post; int node; };
 #define FL_STRIKE 2
 #define FL_IMG 4
 #define FL_CTL 8
+#define FL_FRM 16   /* an <iframe>: item.node is the element; frame_paint draws it */
 struct item { int x, y; short w, h, clip; uint8_t font, flags, fit; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
 struct decor { int x, y, w, h; color_t col, g1; int it; short clip; uint8_t rad, ring, msk, gdir;   /* gdir 1/2: linear gradient col -> g1 down / right across the rect */
                int img; uint8_t rep, kx, ky, kw, kh; int px, py, sw, sh; };   /* img: background-image (image cache index + 1; col is then unused): repeat, position and size as k (K_PX/K_PCT[x100]/K_AUTO/K_COVER/K_CONTAIN) + value */   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */
@@ -286,6 +287,8 @@ void doc_layout_js(struct doc *d, int width, const char *base);   /* the same fo
 struct docmark { int from_it, from_ch, to_it, to_ch; const char *find; int find_it, find_off; };
 void doc_draw(struct ui *ui, const struct doc *d, int vx, int vy, int vw, int vh, int scroll, int hover,
               const struct docmark *mk, int focus_ord, int caret);
+void doc_draw_c(struct canvas *c, const struct doc *d, int vx, int vy, int vw, int vh, int scroll, int hover,
+                const struct docmark *mk, int focus_ord, int caret);   /* the same onto a canvas (an iframe's document) */
 int  doc_unstick(const struct doc *d, int y, int scroll);   /* a document y under a drawn sticky box -> where that box was laid out */
 int  doc_hit(const struct doc *d, int x, int y);          /* link index at document coords, or -1 */
 int  doc_pos_at(const struct doc *d, int x, int y, int *item, int *ch);   /* text run + byte offset nearest the point (for selecting) */
@@ -306,6 +309,7 @@ void fs_reset(void);
 void *fs_save(void);                                     /* same trio as img_save: field values of a background tab */
 void fs_restore(void *h);
 void fs_drop(void *h);
+void fs_swap(struct fstate **pf, int *pn);               /* exchange the table with another (an iframe's fields) */
 void ctl_draw(struct canvas *c, const struct doc *d, const struct ctl *t, int x, int y, int w, int h, int focused, int caret);
 int  ctl_key(const struct doc *d, int ci, const struct gui_event *k, int *caret);   /* 1 = Enter pressed */
 int  ctl_caret_at(const struct doc *d, int ci, int rx, int ry);
@@ -353,3 +357,41 @@ int  js_submit_req(void);                         /* form.submit() was called: t
 extern const char js_prelude[];
 extern const char js_prelude2[];                  /* web_js.c: URL, fetch, XHR, storage, observers, Intl ... (runs after js_prelude) */                   /* dom_js.c: the DOM classes over the natives */
 void browser_status(int bad, const char *fmt, ...);   /* main.c: the status bar */
+/* ---- frames: <iframe>. js.c owns the browsing contexts (each a JSContext + node tree in the shared runtime), iframe.c draws them, routes
+ * input to them and lays them out. A frame's document is a struct doc like the page's; it is laid out at the size of its <iframe> box
+ * and never makes the parent lay out again. ---- */
+struct frame {
+    struct doc doc;
+    struct fstate *fs; int nfs;       /* its form fields (form.c's table is swapped for it while it is in use) */
+    struct frame *par;                /* the frame it is in; NULL = the top page */
+    int node;                         /* its <iframe> element in the parent's tree */
+    int w, h;                         /* viewport = content box of the <iframe> (document pixels of the parent) */
+    int sy, ty;                       /* scroll position and where it is easing to */
+    int lw, lh, redo, ready;           /* size laid out for; needs a layout; has been laid out */
+    int fo, caret, cb;                /* focused control (ordinal), caret, control `change` base */
+    int hover, pnode, pmx, pmy, pbtn, focus;          /* pointer state; focus: the frame holds keyboard focus */
+    int bx, by, in;                   /* its box in the parent's document (set when drawn); fs table is swapped in */
+    void *st;                         /* js.c's state */
+};
+extern const char js_prelude_fr[];                /* iframe.c: window.parent/top/frames/postMessage over the natives (runs between js_prelude and js_prelude2) */
+void js_use(struct frame *f);                     /* the js_* / dom_* calls that follow work on this frame (NULL = the top page) */
+struct frame *js_cur(void);
+int  js_nframes(void);
+struct frame *js_frame_nth(int i);
+struct frame *js_frame_find(const struct doc *pdoc, int node);   /* the frame of the <iframe> `node` in the document pdoc, or NULL */
+const char *js_frame_url(struct frame *f);
+void js_frame_navigate(struct frame *f, const char *url);
+int  js_frame_sandbox(struct frame *f);           /* SB_* flags of its sandbox attribute (0 = none) */
+void frame_relayout(struct frame *f);             /* iframe.c: lay the frame's document out (js.c calls it when a script reads a size) */
+void frame_paint(struct canvas *c, const struct doc *d, const struct item *it, int x, int y);   /* iframe.c: draw the frame of the FL_FRM item at x,y (screen; c already clipped) */
+void frame_gone(struct frame *f);                 /* js.c: this frame is being freed */
+void frames_pump(void);                           /* iframe.c: run every frame's scripts, timers and fetches */
+/* input (iframe.c). node = what doc_node_at found at the point (dx, dy), document coordinates of d. ev: 0 move, 1 press, 2 release. 1 = a frame took it */
+int  frame_pointer(const struct doc *d, int node, int dx, int dy, int ev);
+void frame_leave(void);                           /* the pointer is not over a frame any more */
+int  frame_wheel(const struct doc *d, int node, int dx, int dy, int delta);   /* 1 = the frame scrolled (else the page should) */
+struct frame *frame_focused(void);                /* the frame holding the keyboard, or NULL */
+void frame_unfocus(void);
+void frame_key(const struct gui_event *k);
+void frames_dirty(void);                          /* images/stylesheets arrived: every frame lays out again */
+

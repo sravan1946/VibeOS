@@ -874,6 +874,7 @@ static void relayout(void) {
     layout_w = lay_w();
     if (js_active()) doc_layout_js(&doc, layout_w, cur_url); else doc_layout(&doc, pg.raw, pg.n, pg.html, layout_w, cur_url);
     last_relayout = uptime_ms();
+    frames_dirty();
     mk.from_it = mk.to_it = -1; mk.find_it = -1; last_needle[0] = 0;
     if (!doc.title[0]) strlcpy(doc.title, base_name(cur_url), sizeof doc.title);
     scroll = (int)((long long)scroll * doc.height / old);
@@ -1184,7 +1185,7 @@ int main(int argc, char **argv) {
         int fx = find_x(), fy = find_y(); uint32_t fid = ui_id(fx, fy, 240, H_SEARCH);
         bool modal = alert_msg != 0;
         bool in_view = !modal && ui.mx >= 0 && ui.mx < vw && ui.my >= CT && ui.my < CT + vh;
-        if (ui.focus == aid) fo = -1;
+        if (ui.focus == aid) { fo = -1; frame_unfocus(); }
         bool consumed = false;
         int px = 0, py = 0, pw = 0, prows = 0;
         const int rh = 22;
@@ -1214,10 +1215,18 @@ int main(int argc, char **argv) {
             int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), nn = in_view && sel_ci < 0 ? doc_node_at(&doc, dx, dy) : 0;
             if (nn != pnode) { if (pnode) js_event(pnode, "mouseout", 0, dx, dy); if (nn) js_event(nn, "mouseover", 0, dx, dy); pnode = nn; }
             if (in_view && (ui.mx != pmx || ui.my != pmy)) { pmx = ui.mx; pmy = ui.my; js_event(nn, "mousemove", 0, dx, dy); }
-            if (pbtn && !(ui.buttons & 1)) js_event(nn, "mouseup", 0, dx, dy);
+            int infr = nn && frame_pointer(&doc, nn, dx, dy, 0);          /* an <iframe> under the pointer gets the motion too */
+            if (!infr) frame_leave();
+            if (pbtn && !(ui.buttons & 1)) { js_event(nn, "mouseup", 0, dx, dy); if (infr) frame_pointer(&doc, nn, dx, dy, 2); }
             pbtn = ui.buttons & 1;
         }
-        if (ui.pressed && !consumed && in_view) {
+        bool fpress = false;
+        if (ui.pressed && !consumed && in_view && js_active()) {         /* a click inside an <iframe> belongs to that frame */
+            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), nd = doc_node_at(&doc, dx, dy);
+            if (nd && frame_pointer(&doc, nd, dx, dy, 1)) { fpress = true; fo = -1; hover = -1; mk.from_it = mk.to_it = -1; }
+            else frame_unfocus();
+        }
+        if (ui.pressed && !consumed && in_view && !fpress) {
             int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
             fo = -1;
             mk.from_it = mk.to_it = -1;
@@ -1261,11 +1270,16 @@ int main(int argc, char **argv) {
         char hover_url[URL_MAX];
         if (hover >= 0) url_resolve(cur_url, doc.link[hover], hover_url, sizeof hover_url);
         if (ui.mpressed && hover >= 0 && !modal) tab_new(hover_url, false);   /* middle-click: link in a background tab */
+        if (ui.scroll && in_view && js_active()) {                       /* the wheel over an <iframe> scrolls it first */
+            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), nd = doc_node_at(&doc, dx, dy);
+            if (nd && frame_wheel(&doc, nd, dx, dy, ui.scroll)) ui.scroll = 0;
+        }
         if (ui.scroll && ui.my >= CT) target += ui.scroll * 64;
         struct gui_event k;
         bool find_focus = find_open && ui.focus == fid;
         while (!modal && ui_key(&ui, &k)) {
             bool shift = k.mods & MOD_SHIFT, ctrl = k.mods & MOD_CTRL;
+            if (frame_focused() && !find_focus && sel_ci < 0) { frame_key(&k); continue; }   /* the keyboard is inside an <iframe> */
             if (sel_ci >= 0) {                                /* dropdown keys */
                 struct fstate *fsx = fs_get(&doc, sel_ci);
                 if (k.key == KEY_DOWN && fsx->sel < doc.ct[sel_ci].no - 1) fsx->sel++;
@@ -1346,6 +1360,7 @@ int main(int argc, char **argv) {
           if (scroll != last_scroll) { last_scroll = scroll; js_event(1, "scroll", 0, 0, 0); }
           if (vw != last_vw || vh != last_vh) { if (last_vw) js_event(0, "resize", 0, 0, 0); last_vw = vw; last_vh = vh; } }
         if (pg.have && js_pump()) js_relayout();           /* scripts, timers, fetches; one relayout per frame */
+        if (pg.have && js_active() && js_nframes()) frames_pump();   /* the same for each <iframe> (each lays out by itself) */
         { int sy = js_scroll_req(); if (sy >= 0) { target = sy; clamp_scroll(); }
           const char *an = js_anchor_req(); int ay2;
           if (an && (!*an ? (ay2 = 0, 1) : (ay2 = doc_anchor(&doc, an)) >= 0)) { target = ay2 > 8 ? ay2 - 8 : 0; clamp_scroll(); }

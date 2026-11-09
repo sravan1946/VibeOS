@@ -1294,7 +1294,6 @@ Object.defineProperties(HTMLMediaElement.prototype, { paused: { get() { return t
     currentTime: { get() { return 0; }, set() {} }, volume: { get() { return 1; }, set() {} }, error: { get() { return null; } }, networkState: { get() { return 0; } } });
 reflect(HTMLVideoElement, { poster: 'poster' }, { playsInline: 'playsinline' }, { width: 'width', height: 'height' });
 reflect(HTMLIFrameElement, { name: 'name', allow: 'allow', loading: 'loading', sandbox: 'sandbox', referrerPolicy: 'referrerpolicy' }, { allowFullscreen: 'allowfullscreen' }, { width: 'width', height: 'height' }, { src: 'src' });
-Object.defineProperties(HTMLIFrameElement.prototype, { contentWindow: { get() { return null; } }, contentDocument: { get() { return null; } } });
 reflect(HTMLDialogElement, {}, { open: 'open' });
 Object.assign(HTMLDialogElement.prototype, { show() { this.setAttribute('open', ''); }, showModal() { this.setAttribute('open', ''); }, close(r) { this.removeAttribute('open'); if (r !== undefined) this.returnValue = r; this.dispatchEvent(new Event('close')); } });
 reflect(HTMLDetailsElement, {}, { open: 'open' });
@@ -1519,7 +1518,7 @@ function raf(f) {                               // callbacks registered before a
 }
 raf.n = 0;
 
-V.go = go; V.show = show; V.d = d; V.timer = timer; V.W = W; V.document = document; V.T0 = T0; V.EventTarget = EventTarget; V.ET = EventTarget.prototype;
+V.wrap = wrap; V.go = go; V.show = show; V.d = d; V.timer = timer; V.W = W; V.document = document; V.T0 = T0; V.EventTarget = EventTarget; V.ET = EventTarget.prototype;
 V.classes = { Event, UIEvent, MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, FocusEvent, InputEvent, CustomEvent, ErrorEvent, MessageEvent, HashChangeEvent, PopStateEvent, ProgressEvent, PromiseRejectionEvent, StorageEvent,
     TransitionEvent, AnimationEvent, Animation, ClipboardEvent, DragEvent, TouchEvent, EventTarget, Node, CharacterData, Text, Comment, CDATASection, Element, Document, DocumentFragment, ShadowRoot, DocumentType, MutationObserver, DOMTokenList, DOMRect, Attr,
     HTMLAnchorElement, HTMLImageElement, HTMLInputElement, HTMLButtonElement, HTMLFormElement, HTMLSelectElement, HTMLOptionElement, HTMLTextAreaElement, HTMLLabelElement, HTMLScriptElement, HTMLLinkElement,

@@ -44,7 +44,7 @@ struct frag {                     /* one painted piece of a line: a text run, an
 struct bx {
     int par, first, last, next;
     uint8_t outer, inner, pos, flt, clr, ovf, vis, bsz, ws, align, valign, font, flags, nul, li, anon;
-    uint8_t fdir, fwrap, just, ali, als, hasneg, zset, hdr;
+    uint8_t fdir, fwrap, just, ali, als, hasneg, zset, hdr, frm;   /* frm: an <iframe> (IN_IMG, no image) */
     int order, grow, shrink, gapr, gapc, zi, gcols, grows, gareas, garea, g[4];
     uint8_t gk[4];
     color_t col, bg, bc[4];
@@ -2252,7 +2252,11 @@ static void paint_frags(struct bx *b, int ox, int oy) {
 static void paint_replaced(struct bx *b, int ox, int oy) {
     int x = b->x + b->bw[3] + b->p[3] + ox, y = b->y + b->bw[0] + b->p[0] + oy;
     int w = b->w - hedge(b), h = b->h - vedge(b);
-    if (b->inner == IN_IMG) {
+    if (b->frm) {
+        struct item *it = emit_item();
+        it->x = x; it->y = y; it->w = w; it->h = h; it->flags = FL_FRM; it->node = b->node; it->link = -1;
+        if (it->h > D->maxh) D->maxh = it->h;
+    } else if (b->inner == IN_IMG) {
         struct item *it = emit_item();
         it->x = x; it->y = y; it->w = w; it->h = h; it->flags = FL_IMG; it->ref = b->ref; it->node = b->node; it->fit = b->objfit;
         if (b->tlen) { it->len = imin_(b->tlen, 200); it->off = arena(hd_str(b->toff), it->len); }
@@ -2919,6 +2923,22 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni, int cv
     if (oof(b)) abs_reg(bi);
 }
 
+/* <iframe>: a replaced box, 300x150 unless width/height (attributes or CSS) say otherwise; iframe.c draws what is inside */
+static void build_frame(int dn, int pb, struct bx *S, const struct inh *ni) {
+    const char *aw = ATTR(dn, "width"), *ah = ATTR(dn, "height");
+    int bi = bx_new();
+    if (bi < 0) return;
+    B[bi] = *S;
+    struct bx *b = &B[bi];
+    b->outer = b->flt || oof(b) || S->outer == OUT_BLOCK ? OUT_BLOCK : OUT_INLINE; b->inner = IN_IMG; b->ref = -1; b->frm = 1;
+    b->link = ni->link; b->node = ni->node; b->vis = ni->vis; b->col = ni->col; b->font = ni->font;
+    b->iw = 300; b->ih = 150;
+    if (b->k[L_W] == K_AUTO) { if (aw && atoi(aw) > 0) { b->k[L_W] = strchr(aw, '%') ? K_PCT : K_PX; b->v[L_W] = strchr(aw, '%') ? atoi(aw) : atoi(aw); } else { b->k[L_W] = K_PX; b->v[L_W] = 300; } }
+    if (b->k[L_H] == K_AUTO) { if (ah && atoi(ah) > 0 && !strchr(ah, '%')) { b->k[L_H] = K_PX; b->v[L_H] = atoi(ah); } else { b->k[L_H] = K_PX; b->v[L_H] = 150; } }
+    bx_append(pb, bi);
+    if (oof(b)) abs_reg(bi);
+}
+
 static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni, const struct cprops *cp) {
     int c = HD.n[dn].first;
     if (c < 0) return;
@@ -3090,6 +3110,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
         if (bi >= 0) { B[bi] = S; B[bi].outer = OUT_INLINE; B[bi].inner = IN_BR; bx_append(pb, bi); }
         return;
     }
+    if (tag == T_IFRAME) { if (is_js) build_frame(dn, pb, &S, &ni); return; }
     int is_cv = !pe && tag == T_SKIP && !strcmp(hd_str(DN(dn).nm), "canvas");
     if (tag == T_IMG || is_cv) { build_img(dn, pb, &S, &ni, is_cv ? (ni.node > 0 ? ni.node : -1) : 0); return; }
     if (tag == T_SVG) { build_svg(dn, pb, &S, &ni, cp); return; }

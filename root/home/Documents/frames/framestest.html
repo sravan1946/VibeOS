@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><title>Frames test</title>
+<style>body{font:14px sans-serif;margin:10px}iframe{vertical-align:top;margin:0 6px 6px 0}#log{white-space:pre;font:12px monospace}</style></head>
+<body>
+<h2>iframe tests</h2>
+<iframe id="f1" src="child.html" width="300" height="150"></iframe>
+<iframe id="f2" srcdoc="<body style='font:14px sans-serif;background:#fffbe0'><p id=x>srcdoc frame</p><script>parent.postMessage('hello from srcdoc', '*')</script>" width="200" height="80"></iframe>
+<iframe id="f3" src="nested.html" width="320" height="170"></iframe>
+<iframe id="f4" src="data:text/html,<body style='font:14px sans-serif;background:%23fde'>cross-origin<script>parent.postMessage({a:[1,2,3],s:'x',u:new Uint8Array([7,8,9]),b:new Uint8Array([4,5]).buffer},'*')</script>" width="200" height="80"></iframe>
+<iframe id="f5" sandbox src="child2.html" width="200" height="60"></iframe>
+<div id="log"></div>
+<script>
+var pass = 0, fail = 0, lines = [];
+function ok(c, name) { if (c) pass++; else { fail++; console.log('framestest FAIL: ' + name); } lines.push((c ? 'ok   ' : 'FAIL ') + name); }
+function show() { document.getElementById('log').textContent = lines.join('\n'); }
+var loads = {}, msgs = [];
+['f1', 'f2', 'f3', 'f4', 'f5'].forEach(function (id) { document.getElementById(id).addEventListener('load', function () { loads[id] = (loads[id] || 0) + 1; }); });
+window.addEventListener('message', function (e) { msgs.push(e); if (e.data && e.data.type === 'clicked') { console.log('framestest: click received from frame, n=' + e.data.n); lines.push('click from frame: ' + e.data.n); show(); } });
+var f1 = document.getElementById('f1'), f2 = document.getElementById('f2'), f3 = document.getElementById('f3'), f4 = document.getElementById('f4'), f5 = document.getElementById('f5');
+function wait(cond, ms) { return new Promise(function (res) { var t0 = Date.now(); (function p() { if (cond() || Date.now() - t0 > (ms || 15000)) res(); else setTimeout(p, 50); })(); }); }
+function thrown(fn) { try { fn(); } catch (e) { return e; } return null; }
+(async function () {
+  await wait(function () { return loads.f1 && loads.f2 && loads.f3 && loads.f4 && loads.f5; });
+  ok(loads.f1 === 1 && loads.f2 === 1 && loads.f3 === 1 && loads.f4 === 1, 'load events fired once per frame');
+  var d1 = f1.contentDocument;
+  ok(d1 && d1.getElementById('title').textContent === 'Child', 'same-origin contentDocument reads the frame DOM');
+  ok(f1.contentWindow.parent === window && f1.contentWindow.top === window, 'frame parent/top are the page window');
+  ok(f1.contentWindow.frameElement === f1, 'frameElement is the iframe element');
+  ok(f1.contentWindow !== window && f1.contentWindow.clicks === 0, 'frames have their own globals');
+  ok(typeof window.clicks === 'undefined', 'frame globals do not leak into the page');
+  ok(d1.title === 'Child frame', 'document.title of the frame');
+  ok(d1.URL.slice(-10) === 'child.html' && d1.URL === f1.contentWindow.location.href && d1.URL !== location.href, 'document URL of a frame is the frame URL: ' + d1.URL);
+  ok(f2.contentDocument.getElementById('x').textContent === 'srcdoc frame', 'srcdoc frame content');
+  await wait(function () { return msgs.length >= 2; });
+  var m2 = msgs.filter(function (e) { return e.data === 'hello from srcdoc'; })[0];
+  ok(m2 && m2.source === f2.contentWindow, 'postMessage from srcdoc: data and event.source');
+  ok(m2 && m2.origin === location.origin, 'srcdoc inherits the page origin: ' + (m2 && m2.origin));
+  f1.contentWindow.postMessage('ping', '*');
+  await wait(function () { return msgs.some(function (e) { return typeof e.data === 'string' && e.data.indexOf('pong:') === 0; }); });
+  var pong = msgs.filter(function (e) { return typeof e.data === 'string' && e.data.indexOf('pong:') === 0; })[0];
+  ok(pong && pong.source === f1.contentWindow && pong.data === 'pong:' + location.origin, 'postMessage both ways, child sees event.origin ' + (pong && pong.data));
+  ok(f3.contentWindow.length === 1 && f3.contentWindow.frames[0] === f3.contentDocument.getElementById('inner').contentWindow, 'nested frame: window.length and frames[0]');
+  ok(f3.contentWindow.frames[0].document.getElementById('info').textContent === 'depth: 2, top is parent: false', 'nested child: depth 2, top !== parent: ' + f3.contentWindow.frames[0].document.getElementById('info').textContent);
+  ok(window.length === 5 && window.frames[0] === f1.contentWindow, 'window.length and window.frames[i] on the page');
+  var e4 = thrown(function () { return f4.contentWindow.document; });
+  ok(e4 && e4.name === 'SecurityError', 'cross-origin contentWindow.document throws SecurityError: ' + (e4 && e4.name));
+  ok(f4.contentDocument === null, 'cross-origin contentDocument is null');
+  ok(thrown(function () { return f4.contentWindow.location.href; }) !== null, 'cross-origin location.href read throws');
+  ok(thrown(function () { f4.contentWindow.postMessage('to data frame', '*'); }) === null, 'cross-origin postMessage works');
+  ok(f4.contentWindow.closed === false && f4.contentWindow.parent === window && f4.contentWindow.top === window, 'cross-origin closed/parent/top readable');
+  var m4 = msgs.filter(function (e) { return e.data && e.data.a; })[0];
+  ok(m4 && m4.data.a.join() === '1,2,3' && m4.data.s === 'x' && m4.origin === 'null', 'structured clone from a cross-origin frame (json) origin=' + (m4 && m4.origin));
+  ok(m4 && m4.data.u instanceof Uint8Array && m4.data.u.join() === '7,8,9' && m4.data.b instanceof ArrayBuffer && new Uint8Array(m4.data.b).join() === '4,5', 'typed arrays and ArrayBuffer survive postMessage');
+  ok(m4 && m4.source === f4.contentWindow, 'source of a cross-origin message is its contentWindow proxy');
+  ok(f5.contentDocument === null || f5.contentDocument.getElementById('info').textContent === '', 'sandboxed frame: no scripts, opaque origin');
+  ok(typeof document.domain === 'string', 'document.domain readable');
+  f1.src = 'child2.html';
+  await wait(function () { return loads.f1 === 2; });
+  ok(f1.contentDocument.title === 'Child two', 'changing iframe.src navigates the frame');
+  var nf = document.createElement('iframe'); nf.width = 120; nf.height = 40; document.body.appendChild(nf);
+  var nd = nf.contentWindow.document; nd.open(); nd.write('<p id=w>written</p>'); nd.close();
+  ok(nf.contentDocument.getElementById('w') && nf.contentDocument.getElementById('w').textContent === 'written', 'new iframe: contentWindow.document.write');
+  nf.remove();
+  ok(nf.contentWindow === null, 'removed iframe has no contentWindow');
+  show();
+  console.log('framestest: ' + pass + ' passed, ' + fail + ' failed');
+})();
+</script>
+</body></html>

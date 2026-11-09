@@ -2654,6 +2654,23 @@ void *JS_GetContextOpaque(JSContext *ctx)
     return ctx->user_opaque;
 }
 
+/* VibeOS patch: the realm of the code that called the running C function (NULL when C did, e.g. JS_Call from the host).
+   postMessage needs the sender's realm, and a C function's own realm is the one it was created in. */
+static BOOL js_class_has_bytecode(JSClassID class_id);
+JSContext *JS_GetCallerContext(JSContext *ctx)
+{
+    JSStackFrame *sf = ctx->rt->current_stack_frame;
+    JSObject *p;
+    if (!sf || !sf->prev_frame || JS_VALUE_GET_TAG(sf->prev_frame->cur_func) != JS_TAG_OBJECT)
+        return NULL;
+    p = JS_VALUE_GET_OBJ(sf->prev_frame->cur_func);
+    if (js_class_has_bytecode(p->class_id))
+        return p->u.func.function_bytecode->realm;
+    if (p->class_id == JS_CLASS_C_FUNCTION)
+        return p->u.cfunc.realm;
+    return NULL;
+}
+
 void JS_SetContextOpaque(JSContext *ctx, void *opaque)
 {
     ctx->user_opaque = opaque;
