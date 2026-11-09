@@ -503,7 +503,7 @@ class IntersectionObserver {
 }
 class ResizeObserver {
     constructor(cb) { this.__cb = cb; this.__els = new Set(); }
-    observe(e) { if (this.__els.has(e)) return; this.__els.add(e); setTimeout(() => { if (!this.__els.has(e)) return; const r = e.getBoundingClientRect(); const s = [{ inlineSize: r.width, blockSize: r.height }]; try { this.__cb([{ target: e, contentRect: r, borderBoxSize: s, contentBoxSize: s, devicePixelContentBoxSize: s }], this); } catch (x) { report(x); } }, 0); }
+    observe(e) { if (!e || !e.getBoundingClientRect) throw new TypeError("ResizeObserver.observe: parameter 1 is not of type Element"); if (this.__els.has(e)) return; this.__els.add(e); setTimeout(() => { if (!this.__els.has(e)) return; const r = e.getBoundingClientRect(); const s = [{ inlineSize: r.width, blockSize: r.height }]; try { this.__cb([{ target: e, contentRect: r, borderBoxSize: s, contentBoxSize: s, devicePixelContentBoxSize: s }], this); } catch (x) { report(x); } }, 0); }
     unobserve(e) { this.__els.delete(e); } disconnect() { this.__els.clear(); }
 }
 class PerformanceObserver { constructor(cb) { this.__cb = cb; } observe() {} disconnect() {} takeRecords() { return []; } static get supportedEntryTypes() { return []; } }

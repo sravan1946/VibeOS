@@ -625,9 +625,19 @@ static void ls_close(void *u, struct bx *b) {
     ls_chunk_add(s, &(struct lit){ .t = LT_CLOSE, .b = b - B, .w = b->m[1] + b->bw[1] + b->p[1] }, 0);
 }
 
+/* height: N% of an image: the containing block's height when that is known before layout (a px height, or an aspect-ratio box of width cw) */
+static int repl_pct_h(const struct bx *b, int cw) {
+    int p = b->par;
+    if (oof(b)) while (p >= 0 && B[p].pos == POS_STATIC && B[p].par >= 0) p = B[p].par;
+    if (p < 0) return -1;
+    const struct bx *q = &B[p];
+    int e = oof(b) ? 0 : hedge(q), ph = q->k[L_H] == K_PX ? q->v[L_H] : q->aspect > 0 ? (int)((long long)(cw - e) * 1000 / q->aspect) : -1;
+    return ph < 0 ? -1 : pctof(b->v[L_H], ph);
+}
+
 static void repl_size(struct bx *b, int cw, int *W, int *H) {
     int nw = b->iw, nh = b->ih;
-    int w = b->k[L_W] == K_AUTO ? -1 : rl(b, L_W, cw), h = b->k[L_H] == K_PX ? b->v[L_H] : -1;
+    int w = b->k[L_W] == K_AUTO ? -1 : rl(b, L_W, cw), h = b->k[L_H] == K_PX ? b->v[L_H] : b->k[L_H] == K_PCT ? repl_pct_h(b, cw) : -1;
     if (b->inner == IN_CTL) { w = w >= 0 ? w : nw; h = h >= 0 ? h : nh; }
     else if (w < 0 && h < 0) { w = nw; h = nh; }
     else if (w < 0) w = nh ? (int)((long long)nw * h / nh) : nw;
@@ -659,7 +669,9 @@ static void ls_atom(void *u, struct bx *b) {
         lay_block(b, s->cx, s->cw, s->y, 0, &c0, LB_ABSY | LB_ROOT);
     }
     int ow = b->w + b->m[1] + b->m[3];
+    if (b->ws != 1) chunk_flush(s);                              /* an atomic inline is a line break opportunity on both sides, space or not (label<input width:100%> wraps) */
     ls_chunk_add(s, &(struct lit){ .t = LT_BOX, .b = b - B, .w = ow }, b->ws == 1);
+    if (b->ws != 1) chunk_flush(s);
 }
 static void ls_flt(void *u, struct bx *b) {
     struct ls *s = u;
@@ -2157,7 +2169,7 @@ static void paint_bg(struct bx *b, int ox, int oy) {
             if (mid > 0) { emit_decor(sx, sy + top, l, mid, c, 0, 0); emit_decor(sx + sw - r, sy + top, r, mid, c, 0, 0); }
         }
     }
-    if (b->bg && !b->msk) emit_decor(x, y, w, h, b->bg, b->rad, 0);
+    if (b->bg && !b->msk) emit_decor(x, y, w, h, b->opacity == 255 ? b->bg : (b->bg & 0xFFFFFF) | (b->bg >> 24) * b->opacity / 255 << 24, b->rad, 0);   /* opacity: only the box's own paint is faded (no group compositing), enough for translucent overlays */
     if (b->bgi && w > 0 && h > 0) {                      /* background-image, placed in the padding box */
         int l = b->bw[3], t = b->bw[0];
         color_t under = b->msk || (b->bg >> 24) == 0xFF ? b->bg : 1;       /* the box's own colour: what a transparent picture is drawn over */
@@ -2165,7 +2177,7 @@ static void paint_bg(struct bx *b, int ox, int oy) {
         struct decor *r = &D->dc[D->ndc - 1];
         if (D->ndc && r->it == D->nit && r->col == under && !r->img) {
             r->img = b->bgi; r->rep = b->brep; r->kx = b->bkx; r->ky = b->bky; r->kw = b->bkw; r->kh = b->bkh;
-            r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh; r->msk = b->msk;
+            r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh; r->msk = b->msk; r->opq = 255 - b->opacity;
         }
     }
     if (b->grd && w > 0 && h > 0) paint_grad(b, x + b->bw[3], y + b->bw[0], w - b->bw[1] - b->bw[3], h - b->bw[0] - b->bw[2]);
@@ -2307,12 +2319,13 @@ static void paint_box(int bi, int ox, int oy) {
     if (b->opacity == 0 || (b->inner == IN_CTL && b->ref < 0)) return;
     int positioned = b->pos != POS_STATIC, mark = npe;
     struct stick *sg = 0;
-    if (b->pos == POS_STICKY && !in_stk && D->nsk < MAXSTK && b->k[L_TOP] != K_AUTO) {       /* moved at draw time: remember what it emits */
+    int fixd = b->pos == POS_FIXED;                                      /* fixed = sticky with top = where it sits at scroll 0 and no parent limit */
+    if ((fixd || (b->pos == POS_STICKY && b->k[L_TOP] != K_AUTO)) && !in_stk && D->nsk < MAXSTK) {       /* moved at draw time: remember what it emits */
         int ph = b->par >= 0 ? B[b->par].h : VIEWH;
         sg = &D->sk[D->nsk++];
         struct bx *pp = b->par >= 0 ? &B[b->par] : 0;
-        *sg = (struct stick){ .i0 = D->nit, .d0 = D->ndc, .c0 = imax_(D->ncl, 1), .y0 = b->y + oy, .h = b->h, .top = rl(b, L_TOP, ph),
-                              .lim = pp ? pp->y + oy + pp->h - pp->bw[2] - pp->p[2] : 1 << 30 };
+        *sg = (struct stick){ .i0 = D->nit, .d0 = D->ndc, .c0 = imax_(D->ncl, 1), .y0 = b->y + oy, .h = b->h, .top = fixd ? b->y + oy : rl(b, L_TOP, ph),
+                              .lim = pp && !fixd ? pp->y + oy + pp->h - pp->bw[2] - pp->p[2] : 1 << 30 };
         in_stk = 1;
     }
     if (b->pos == POS_REL) { int dx, dy; rel_offset(b, &dx, &dy); ox += dx; oy += dy; }
@@ -2624,11 +2637,11 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     if (tag == T_CENTER) cx2->incenter = 1;
     int disp = cp->v[P_DISPLAY];
     int bold = cp->v[P_BOLD], mono = cp->v[P_FAMILY] == FAM_MONO, size = cp->v[P_FSIZE];
-    ni->font = mono ? (bold ? F_MONOB : F_MONO) : size >= 22 ? F_TITLE : bold ? F_UIB : F_UI;
+    ni->font = mono ? (bold ? F_MONOB : F_MONO) : size >= 22 ? (size <= 23 ? F_TITLE : font_scaled(size)) : bold ? F_UIB : F_UI;
     ni->col = cp->v[P_COLOR];
     ni->align = cp->v[P_ALIGN] == TA_CENTER ? 1 : cp->v[P_ALIGN] == TA_RIGHT ? 2 : 0;
     ni->ws = cp->v[P_WS] == WS_BREAK_SPACES ? 3 : cp->v[P_WS];
-    ni->flags = in->flags | ((cp->v[P_DECO] & DECO_UNDERLINE) ? FL_UL : 0) | ((cp->v[P_DECO] & DECO_LINETHROUGH) ? FL_STRIKE : 0);
+    ni->flags = in->flags | (cp->v[P_BLEND] ? FL_DIFF : 0) | ((cp->v[P_DECO] & DECO_UNDERLINE) ? FL_UL : 0) | ((cp->v[P_DECO] & DECO_LINETHROUGH) ? FL_STRIKE : 0);
     ni->nul = 1;
     ni->vis = cp->v[P_VISIB] != 0 || cp->v[P_CLIP];
     ni->icon = cp->v[P_FAMILY] == FAM_ICON;
@@ -2767,6 +2780,11 @@ static int tw_ui(const char *s) { return gfx_text_width(&font_ui, s); }
 static int has_icon(int dn) {
     for (int c = DN(dn).first; c >= 0; c = DN(c).next)
         if (DN(c).type == 1 && (DN(c).tag == T_SVG || DN(c).tag == T_IMG || has_icon(c))) return 1;
+    return 0;
+}
+
+static int has_elem(int dn) {                              /* an element child (<button><span>..</span></button>: author-styled content, not a label) */
+    for (int c = DN(dn).first; c >= 0; c = DN(c).next) if (DN(c).type == 1) return 1;
     return 0;
 }
 
@@ -3115,7 +3133,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
     if (tag == T_IMG || is_cv) { build_img(dn, pb, &S, &ni, is_cv ? (ni.node > 0 ? ni.node : -1) : 0); return; }
     if (tag == T_SVG) { build_svg(dn, pb, &S, &ni, cp); return; }
     int iconbtn = 0;                                          /* <button><svg/></button>: lay the children out as an inline-block instead of a text control */
-    if (tag == T_BUTTON && has_icon(dn)) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
+    if (tag == T_BUTTON && (has_icon(dn) || S.inner == IN_FLEX || S.inner == IN_GRID || has_elem(dn))) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
         const char *ty2 = ATTR(dn, "type");
         iconbtn = S.bg || S.bw[0] | S.bw[1] | S.bw[2] | S.bw[3] || !(ty2 && !strcasecmp(ty2, "submit"));
         if (iconbtn && S.inner == IN_INLINE) S.inner = IN_FLOW;
@@ -3130,6 +3148,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
                 struct bx *b = &B[bi];
                 b->outer = S.flt || oof(&S) || S.outer == OUT_BLOCK ? OUT_BLOCK : OUT_INLINE;
                 b->inner = IN_CTL; b->ref = ci; b->li = 0;
+                if (b->bw[2] && !b->bw[0] && !b->bw[1] && !b->bw[3] && (tag == T_INPUT || tag == T_TEXTAREA)) D->ct[ci].fl |= CF_FLAT;
                 bx_append(pb, bi);
                 if (oof(b)) abs_reg(bi);
             }

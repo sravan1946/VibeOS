@@ -8,7 +8,63 @@
 #include <stdio.h>
 #include <ctype.h>
 
-const struct font *const FT[] = { &font_ui, &font_ui_bold, &font_title, &font_mono, &font_mono_bold };
+/* Only one proportional heading face is baked (Inter 20/26), so page text bigger than that (a 96 px hero) is drawn from enlarged copies of it,
+ * built on first use for a few sizes (bilinear-resampled glyph alphas, scaled metrics) and slotted into FT after the five real faces; layout
+ * only ever sees a font index, so nothing else knows. A colour (emoji) glyph keeps its native size. */
+#define NBIG 9
+static const uint8_t bigpx[NBIG] = { 24, 28, 32, 40, 48, 64, 80, 96, 128 };
+static struct font bigf[NBIG];
+const struct font *FT[5 + NBIG] = { &font_ui, &font_ui_bold, &font_title, &font_mono, &font_mono_bold };
+
+static void big_build(struct font *o, int px) {
+    const struct font *s = &font_title;
+    int ns = 95 + s->nx;
+    struct glyph *gs = malloc(ns * sizeof *gs);
+    long tot = 0;
+    if (!gs) { *o = *s; return; }
+    double k = px / 20.0, gain = k > 2 ? 1 + (k - 2) * .4 : 1;
+    if (gain > 2.5) gain = 2.5;
+    for (int i = 0; i < ns; i++) {
+        const struct glyph *g = i < 95 ? &s->g[i] : &s->xg[i - 95];
+        struct glyph *d = &gs[i];
+        *d = *g;
+        if (g->off >= GLYPH_FB_COLOR) continue;
+        int w = (int)(g->w * k + .999), h = (int)(g->h * k + .999);
+        d->w = w > 255 ? 255 : w; d->h = h > 255 ? 255 : h;
+        d->xoff = (int8_t)(g->xoff * k); d->yoff = (int8_t)(g->yoff * k);
+        d->adv = (uint8_t)(g->adv * k + .5); d->adv64 = (uint16_t)(g->adv64 * k + .5);
+        d->off = tot; tot += d->w * d->h;
+    }
+    uint8_t *al = malloc(tot + 1);
+    if (!al) { free(gs); *o = *s; return; }
+    for (int i = 0; i < ns; i++) {
+        const struct glyph *g = i < 95 ? &s->g[i] : &s->xg[i - 95], *d = &gs[i];
+        if (g->off >= GLYPH_FB_COLOR || !g->w || !g->h) continue;
+        const uint8_t *src = s->alpha + g->off;
+        for (int y = 0; y < d->h; y++) {
+            double fy = (y + .5) * g->h / d->h - .5; int y0 = (int)(fy < 0 ? 0 : fy), y1 = y0 + 1 < g->h ? y0 + 1 : y0; double ty = fy < 0 ? 0 : fy - y0;
+            for (int x = 0; x < d->w; x++) {
+                double fx = (x + .5) * g->w / d->w - .5; int x0 = (int)(fx < 0 ? 0 : fx), x1 = x0 + 1 < g->w ? x0 + 1 : x0; double tx = fx < 0 ? 0 : fx - x0;
+                double a = src[y0 * g->w + x0] * (1 - tx) + src[y0 * g->w + x1] * tx, b = src[y1 * g->w + x0] * (1 - tx) + src[y1 * g->w + x1] * tx;
+                double v = (a * (1 - ty) + b * ty - (gain > 1 ? 100 : 128)) * gain + 128;   /* an enlarged edge is a wide ramp: steepen it so big text stays crisp */
+                al[d->off + y * d->w + x] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v + .5);
+            }
+        }
+    }
+    memcpy(o->g, gs, 95 * sizeof *gs);
+    o->height = (int)(s->height * k + .5); o->ascent = (int)(s->ascent * k + .5);
+    o->alpha = al; o->nx = s->nx; o->xcp = s->xcp; o->xg = s->nx ? memcpy(malloc(s->nx * sizeof *gs), gs + 95, s->nx * sizeof *gs) : 0;
+    free(gs);
+}
+
+/* font index for text of `px` CSS px (>= 22): the nearest enlarged size */
+int font_scaled(int px) {
+    int b = 0;
+    for (int i = 1; i < NBIG; i++) if (abs(px - bigpx[i]) < abs(px - bigpx[b])) b = i;
+    if (!bigf[b].alpha) { big_build(&bigf[b], bigpx[b]); if (!bigf[b].alpha) return F_TITLE; }
+    FT[5 + b] = &bigf[b];
+    return 5 + b;
+}
 
 void doc_free(struct doc *d) {
     for (int i = 0; i < d->nlink; i++) free(d->link[i]);
@@ -231,9 +287,15 @@ static void draw_decor(struct canvas *cc, const struct doc *d, const struct deco
         if (th < 1) th = 1;
         if (tw > 4096 || th > 4096) return;
         long ox = r->kx == K_PCT ? (W - tw) * r->px / 10000 : r->px, oy = r->ky == K_PCT ? (H - th) * r->py / 10000 : r->py;
-        const uint32_t *px = img_pixels(r->img - 1, (int)tw, (int)th, r->msk ? 0 : (r->col >> 24) == 0xFF ? r->col : d->bg);
+        const uint32_t *px = img_pixels(r->img - 1, (int)tw, (int)th, 0);      /* keep the picture's alpha: gfx_blit_alpha blends it over whatever is really behind (a pre-blend with the page colour made a translucent overlay a solid slab) */
         if (!px) return;
         uint32_t *tint = 0;
+        if (r->opq && !r->msk) {                         /* opacity < 1 on the box: fade the picture */
+            tint = malloc((size_t)tw * th * 4);
+            if (!tint) return;
+            for (long k = 0, m = tw * th; k < m; k++) tint[k] = (((px[k] >> 24) * (255 - r->opq) / 255) << 24) | (px[k] & 0xFFFFFF);
+            px = tint;
+        }
         if (r->msk) {                                    /* mask-image: the box colour through the picture's alpha */
             tint = malloc((size_t)tw * th * 4);
             if (!tint) return;
@@ -299,6 +361,14 @@ static void draw_item(struct canvas *cc, const struct doc *d, int i, int vx, int
         k += nl - 1;
     }
     color_t col = it->link >= 0 && it->link == hover ? d->hoverc : it->col;
+    if (it->flags & FL_DIFF) {                                               /* mix-blend-mode: difference: |backdrop - colour|, with the backdrop sampled mid-item */
+        int sx = vx + it->x + it->w / 2, sy = y + it->h / 2;
+        if (sx >= cv->cx0 && sx < cv->cx1 && sy >= cv->cy0 && sy < cv->cy1) {
+            color_t bgp = cv->px[sy * cv->stride + sx];
+            int r = abs((int)((bgp >> 16) & 255) - (int)((col >> 16) & 255)), g = abs((int)((bgp >> 8) & 255) - (int)((col >> 8) & 255)), b = abs((int)(bgp & 255) - (int)(col & 255));
+            col = (col & 0xFF000000u) | r << 16 | g << 8 | b;
+        }
+    }
     gfx_text_n(cv, f, vx + it->x, y, txt, it->len, col);
     if (it->flags & FL_UL) gfx_fill(cv, vx + it->x, y + f->ascent + 2, it->w, 1, col);
     if (it->flags & FL_STRIKE) gfx_fill(cv, vx + it->x, y + f->height * 55 / 100, it->w, 1, col);

@@ -274,9 +274,11 @@ void ctl_draw(struct canvas *cv, const struct doc *d, const struct ctl *t, int x
     struct canvas c2 = *cv;
     switch (t->kind) {
     case C_TEXT: case C_PASS: case C_AREA: {
-        gfx_round_fill(cv, x, y, w, h, 4, fill);
-        gfx_round_rect(cv, x, y, w, h, 4, ring);
-        if (focused) gfx_ring_out(cv, x, y, w, h, 4, ring);
+        if (!(t->fl & CF_FLAT)) {
+            gfx_round_fill(cv, x, y, w, h, 4, fill);
+            gfx_round_rect(cv, x, y, w, h, 4, ring);
+            if (focused) gfx_ring_out(cv, x, y, w, h, 4, ring);
+        }
         canvas_clip(&c2, x + 4, y + 2, w - 8, h - 4);
         const char *v = s->val ? s->val : "";
         char *shown = 0;
