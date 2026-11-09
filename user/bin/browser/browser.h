@@ -56,6 +56,8 @@ struct response {
     char *body; size_t blen;       /* malloc'd, NUL-terminated; caller frees. Already inflated (gzip/deflate) and, for text, always UTF-8 */
     int truncated, latin1;         /* latin1: unused (always 0): the charset conversion happens in fetch_finish */
 };
+/* b[0..*n) in the page's charset (BOM, ctype charset, <meta charset>, else UTF-8 if valid, else cp1252) -> UTF-8; may free b and return a new buffer */
+unsigned char *text_to_utf8(unsigned char *b, size_t *n, const char *ctype);
 int  fetch_main(const char *url, const char *post);   /* the child (user/bin/vfetch); post = form body for a POST, or NULL */
 int  fetch_start(struct fetch *f, const char *url, const char *post);
 /* any request (fetch()/XHR): method (NULL = GET, or POST with a body), hdrs ("Name: v\r\nName: v" or NULL; Host, Cookie,

@@ -389,6 +389,7 @@ static void load_file(const char *url) {
     if (ext_is(path, ".html.htm.xhtml")) html = 1;
     else if (ext_is(path, ".txt.md.c.h.css.js.json.conf.log.sh.py.xml.csv.ini")) html = 0;
     else { const char *s = buf; while (isspace((unsigned char)*s)) s++; html = *s == '<'; }
+    buf = (char *)text_to_utf8((unsigned char *)buf, &got, html ? "text/html" : "text/plain");   /* same charset rules as fetched pages */
     commit(url, buf, got, html);
     say(false, "%s - %lu bytes%s", path, (unsigned long)got, st.st_size > MAX_PAGE ? " (truncated at 8 MiB)" : "");
 }
