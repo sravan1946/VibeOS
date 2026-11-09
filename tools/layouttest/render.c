@@ -48,7 +48,7 @@ int sheet_busy(void) { return 0; }
 void sheet_reset(void) {}
 int img_ref(const char *u) { return 0; }
 int img_ref_ex(const char *u, const char *l) { return 0; }
-int img_info(int i, int *w, int *h) { return IMG_LOADING; }
+int img_info(int i, int *w, int *h) { const char *e = getenv("LT_IMG"); int a, b; if (e && sscanf(e, "%dx%d", &a, &b) == 2) { *w = a; *h = b; return IMG_READY; } return IMG_LOADING; }   /* LT_IMG=WxH: every image is loaded at that natural size */
 const uint32_t *img_pixels(int i, int w, int h, color_t bg) { return 0; }
 int img_translucent(int i) { return 0; }
 const char *svg_mem(const char *h, size_t hn, const char *nd, size_t nn) { for (; hn >= nn; h++, hn--) if (!memcmp(h, nd, nn)) return h; return 0; }

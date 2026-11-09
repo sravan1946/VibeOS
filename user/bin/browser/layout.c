@@ -1426,7 +1426,7 @@ static void lay_block(struct bx *b, int cx, int cw, int y, struct bfc *pf, int *
     b->m[3] = ml; b->m[1] = mr;
     /* vertical position */
     int top;
-    int empty = b->inner == IN_FLOW && b->first < 0 && b->k[L_H] == K_AUTO && b->k[L_MINH] == K_AUTO && !vedge(b) && !root && !b->li;
+    int empty = b->inner == IN_FLOW && b->first < 0 && b->aspect <= 0 && b->k[L_H] == K_AUTO && b->k[L_MINH] == K_AUTO && !vedge(b) && !root && !b->li;
     if (flags & LB_ABSY) top = y + b->m[0];
     else if (flags & LB_TOPDONE) top = y;
     else if (empty) top = y;
@@ -2572,12 +2572,12 @@ static int build_ctl(int dn, int tag, struct bx *b, const struct bctx *cx, const
         else if (!strcmp(k, "reset")) { c.kind = C_BTN; c.sub = 2; }
         else if (!strcmp(k, "button")) c.kind = C_BTN;
         else c.kind = C_TEXT;
-        if (c.kind == C_BTN) strlcpy(lab, val[0] || (ATTR(dn, "value") && strcmp(k, "image")) ? val : c.sub == 1 ? "Submit" : c.sub == 2 ? "Reset" : "Button", sizeof lab);
+        if (c.kind == C_BTN) strlcpy(lab, val[0] || (ATTR(dn, "value") && strcmp(k, "image")) ? val : c.sub == 1 ? "Submit" : c.sub == 2 ? "Reset" : "", sizeof lab);
     } else if (tag == T_BUTTON) {
         c.kind = C_BTN;
         c.sub = ty && !strcasecmp(ty, "reset") ? 2 : ty && !strcasecmp(ty, "button") ? 0 : 1;
         text_of(dn, lab, sizeof lab);
-        if (!lab[0]) strcpy(lab, "Button");
+        /* an empty <button> stays empty (the label "Button" is not a browser default) */
     } else if (tag == T_TEXTAREA) {
         c.kind = C_AREA;
         c.cols = (v = ATTR(dn, "cols")) && atoi(v) > 0 ? atoi(v) : 30;

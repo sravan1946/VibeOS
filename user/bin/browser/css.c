@@ -1022,7 +1022,9 @@ static void special(const struct pdef *d, char *val) {
         if (!strcasecmp(tk[0], "auto")) { i = 1; if (n == 1) { put(p, K_AUTO, 0); break; } }
         if (i >= n) break;
         double a = atof(tk[i]), b = 1;
-        if (i + 2 < n && !strcmp(tk[i + 1], "/")) b = atof(tk[i + 2]);
+        const char *sl = strchr(tk[i], 0x2f);
+        if (sl) b = atof(sl + 1); else if (i + 2 < n && !strcmp(tk[i + 1], "/")) b = atof(tk[i + 2]);   /* "16/9" or "16 / 9" */
+        else if (i + 1 < n && tk[i + 1][0] == 0x2f) b = atof(tk[i + 1] + 1);
         if (a > 0 && b > 0) put(p, K_PX, rnd(a / b * 1000));
         break;
     }
