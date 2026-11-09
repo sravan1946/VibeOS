@@ -1,0 +1,9 @@
+<!doctype html><style>
+.g{display:grid;width:600px;--w:calc(100% - (2 * 24px));--pw:min(1344px, var(--w));--cw:min(calc(800px + (2 * 12px)), var(--pw));--half:calc((var(--cw) - (3 * 12px)) / 2);--rail:calc((var(--pw) - var(--cw)) / 2);
+grid-template-columns:[full-bleed-start] minmax(0, 1fr) [full-start] 24px [content-start] var(--rail) 12px [center-start] minmax(0, var(--half)) [center-mid-start] 12px [center-mid-end] minmax(0, var(--half)) [center-end] 12px var(--rail) [content-end] 24px [full-end] minmax(0, 1fr) [full-bleed-end]}
+.g>div{grid-column:center-start / center-end;background:#cdf}
+.h{display:grid;width:600px;grid-template-columns:24px calc((100% - 48px) / 2) minmax(0, calc((100% - 48px) / 2)) 24px}
+.h>div{grid-column:2/4;background:#fdc}
+</style>
+<div class="g"><div>center area text should be wide</div></div>
+<div class="h"><div>second grid should be wide too</div></div>

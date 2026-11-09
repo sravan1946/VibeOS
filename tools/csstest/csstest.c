@@ -71,6 +71,14 @@ static int col(const char *s) { color_t c = 0; return css_color(s, &c, 0) ? (int
 
 static void new_page(const char *css) { css_reset(); css_dom_set(&DOMT); css_viewport_size(1000, 600); css_base("http://x/"); if (css) css_add_from(css, strlen(css), "http://x/"); }
 
+static int cpx(const char *t, int base) { int o = -999; return css_calc_px(t, base, &o) ? o : -999; }
+static void test_calc_px(void) {                                  /* grid track sizes: calc()/min() with % against the container */
+    CHECK(cpx("calc((100% - 48px) / 2)", 600) == 276);
+    CHECK(cpx("min(1344px, calc(100% - (2 * 24px)))", 600) == 552);
+    CHECK(cpx("calc((min(calc(800px + (2 * 12px)), min(1344px, calc(100% - (2 * 24px)))) - (3 * 12px)) / 2)", 600) == 258);
+    CHECK(cpx("12px", 600) == 12 && cpx("50%", 600) == 300 && cpx("1fr", 600) == -999);
+}
+
 static void test_colors(void) {
     CHECK(col("#f00") == (int)0xFFFF0000u);
     CHECK(col("#00ff0080") == (int)0x8000FF00u);
@@ -464,6 +472,7 @@ static void bench(int n, int rules) {
 
 int main(int argc, char **argv) {
     test_colors();
+    test_calc_px();
     test_selectors();
     test_cascade();
     test_vars_media();

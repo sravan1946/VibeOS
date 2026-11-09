@@ -544,6 +544,15 @@ static int calc_compile(const char *s, double fs, double rfs, int *k, int *v) {
     return 1;
 }
 
+/* a calc()/min()/max()/clamp() text (or a plain px / % length) in px, % of base (grid track sizes); 0 if it isn't one */
+int css_calc_px(const char *t, int base, int *out) {
+    int k, v, mark = ncn;
+    if (!calc_compile(t, 16, 16, &k, &v)) return 0;
+    *out = k == K_PX ? v : k == K_PCT ? rnd(base * (double)v / 10000) : k == K_CALC ? rnd(cn_eval(v, base)) : 0;
+    ncn = mark;
+    return k == K_PX || k == K_PCT || k == K_CALC;
+}
+
 int css_len(const struct cprops *p, int prop, int base) {
     switch (p->k[prop]) {
     case K_PX: return p->v[prop];

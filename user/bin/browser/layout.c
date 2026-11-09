@@ -1021,32 +1021,64 @@ static int css_px(const char *s) {          /* "12px", "1.5em", "3rem": px (em =
     return (int)(!strncmp(u, "em", 2) || !strncmp(u, "rem", 3) ? v * 16 : v);
 }
 
+static int top_comma(const char *p) {                       /* offset of the last comma directly inside the outer brackets, -1 if none */
+    int d = 0, r = -1;
+    for (int i = 0; p[i]; i++) { if (p[i] == '(') d++; else if (p[i] == ')') d--; else if (p[i] == ',' && d == 1) r = i; }
+    return r;
+}
+static int is_fn_len(const char *p) { return !strncmp(p, "calc(", 5) || !strncmp(p, "min(", 4) || !strncmp(p, "max(", 4) || !strncmp(p, "clamp(", 6); }
+
 static int track_one(const char *t, int len, struct trk *o, int cw) {
-    char b[64];
+    char b[320];
     if (len >= (int)sizeof b) len = sizeof b - 1;
     memcpy(b, t, len); b[len] = 0;
     char *p = b;
     o->mn = -1;
-    if (!strncmp(p, "minmax(", 7)) { const char *a = p + 7; while (*a == ' ') a++; if (isdigit((unsigned char)*a) && strcspn(a, "%,") == strcspn(a, ",")) o->mn = css_px(a); }
-    if (!strncmp(p, "minmax(", 7) || !strncmp(p, "fit-content(", 12)) {
-        char *c = strrchr(p, ',');
-        p = c ? c + 1 : strchr(p, '(') + 1;
-        while (*p == ' ') p++;
-        char *e = strchr(p, ')'); if (e) *e = 0;
+    int px;
+    if (!strncmp(p, "minmax(", 7)) {
+        const char *a = p + 7;
+        while (*a == ' ') a++;
+        if (isdigit((unsigned char)*a) && strcspn(a, "%,") == strcspn(a, ",")) o->mn = css_px(a);
+        else if (is_fn_len(a)) {                                  /* minmax(calc(..), x): the minimum, evaluated against the container */
+            char *mc = (char *)a; int d = 0;
+            while (*mc && (d || *mc != ',')) { if (*mc == '(') d++; else if (*mc == ')') d--; mc++; }
+            if (*mc == ',') { *mc = 0; if (css_calc_px(a, cw, &px)) o->mn = px < 0 ? 0 : px; *mc = ','; }
+        }
     }
-    if (strstr(p, "fr")) { o->kind = 1; o->v = (int)(atof(p) * 100); if (o->v <= 0) o->v = 100; }
+    if (!strncmp(p, "minmax(", 7) || !strncmp(p, "fit-content(", 12)) {
+        int c = top_comma(p);
+        p = c >= 0 ? p + c + 1 : strchr(p, '(') + 1;
+        while (*p == ' ') p++;
+        char *e = p + strlen(p);
+        if (e > p && e[-1] == ')') e[-1] = 0;
+    }
+    if (is_fn_len(p) && css_calc_px(p, cw, &px)) { o->kind = 0; o->v = px < 0 ? 0 : px; }
+    else if (strstr(p, "fr")) { o->kind = 1; o->v = (int)(atof(p) * 100); if (o->v <= 0) o->v = 100; }
     else if (strchr(p, '%')) { o->kind = 3; o->v = (int)atof(p); }
     else if (isdigit((unsigned char)*p) || *p == '.') { o->kind = 0; o->v = css_px(p); }
     else { o->kind = 2; o->v = 0; }
     return 1;
 }
 
+struct gname { char n[24]; int line; };                      /* a named grid line: [name] before track `line` (1-based) */
+static struct gname *gn_out; static int gn_n, gn_max;      /* parse_tracks collects names here when set */
 static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) {
     int n = 0;
     while (s && *s && n < max) {
         while (*s == ' ') s++;
         if (!*s) break;
-        if (*s == '[') { while (*s && *s != ']') s++; if (*s) s++; continue; }
+        if (*s == '[') {
+            const char *q = ++s;
+            while (*q && *q != ']') q++;
+            while (gn_out && s < q) {
+                while (s < q && *s == ' ') s++;
+                const char *w = s;
+                while (s < q && *s != ' ') s++;
+                if (s > w && gn_n < gn_max) { int l = imin_((int)(s - w), 23); memcpy(gn_out[gn_n].n, w, l); gn_out[gn_n].n[l] = 0; gn_out[gn_n++].line = n + 1; }
+            }
+            s = *q ? q + 1 : q;
+            continue;
+        }
         const char *e = s;
         int d = 0;
         while (*e && (*e != ' ' || d)) { if (*e == '(') d++; if (*e == ')') d--; e++; }
@@ -1060,7 +1092,7 @@ static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) 
                 if (sl < 0) sl = 0;
                 if (sl > 159) sl = 159;
                 memcpy(sub, comma + 1, sl); sub[sl] = 0;
-                ni = parse_tracks(sub, in, 8, cw, gap);
+                { struct gname *sv = gn_out; gn_out = 0; ni = parse_tracks(sub, in, 8, cw, gap); gn_out = sv; }
                 if (isdigit((unsigned char)*a)) cnt = atoi(a);
                 else {                                       /* auto-fill / auto-fit: as many as fit */
                     int m = 0;
@@ -1079,7 +1111,12 @@ static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) 
     return n;
 }
 
-static int line_of(uint8_t k, int v, int nlines) {             /* 1-based line from a K_PX line number (negative counts from the end); 0 = auto */
+static int line_of(uint8_t k, int v, int nlines, const struct gname *gn, int ngn) {   /* 1-based line from a K_PX line number (negative counts from the end) or a line name; 0 = auto */
+    if (k == K_STR) {
+        const char *nm = css_str(v);
+        for (int i = 0; i < ngn; i++) if (!strcmp(gn[i].n, nm)) return gn[i].line;
+        return 0;
+    }
     if (k != K_PX) return 0;
     return v > 0 ? v : nlines + 1 + v;
 }
@@ -1088,7 +1125,13 @@ struct gitem { struct bx *b; int r, c, rs, cs; };
 
 static void lay_grid(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *ch) {
     struct trk ct[GMAXC], rt[GMAXR];
-    int nc = parse_tracks(b->gcols ? css_str(b->gcols - 1) : 0, ct, GMAXC, cw, b->gapc), nr_t = parse_tracks(b->grows ? css_str(b->grows - 1) : 0, rt, GMAXR, cw, b->gapr);
+    struct gname cgn[48], rgn[48];
+    int ncgn, nrgn;
+    gn_out = cgn; gn_n = 0; gn_max = 48;
+    int nc = parse_tracks(b->gcols ? css_str(b->gcols - 1) : 0, ct, GMAXC, cw, b->gapc);
+    ncgn = gn_n; gn_out = rgn; gn_n = 0;
+    int nr_t = parse_tracks(b->grows ? css_str(b->grows - 1) : 0, rt, GMAXR, cw, b->gapr);
+    nrgn = gn_n; gn_out = 0;
     if (nc < 1) { nc = 1; ct[0] = (struct trk){ 1, 100 }; }
     /* areas */
     struct { char name[24]; int r0, c0, r1, c1; } ar[32];
@@ -1134,11 +1177,11 @@ static void lay_grid(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
             const char *nm = css_str(x->garea - 1);
             for (int q = 0; q < nar; q++) if (!strcmp(ar[q].name, nm)) { r0 = ar[q].r0; c0 = ar[q].c0; rs = ar[q].r1 - ar[q].r0 + 1; cs = ar[q].c1 - ar[q].c0 + 1; }
         } else {
-            int s = line_of(x->gk[0], x->g[0], nc + 1), e = line_of(x->gk[1], x->g[1], nc + 1);
+            int s = line_of(x->gk[0], x->g[0], nc + 1, cgn, ncgn), e = line_of(x->gk[1], x->g[1], nc + 1, cgn, ncgn);
             if (x->gk[1] == K_SPAN) cs = x->g[1]; else if (s && e > s) cs = e - s;
             if (x->gk[0] == K_SPAN) cs = x->g[0];
             if (s > 0) c0 = s - 1;
-            s = line_of(x->gk[2], x->g[2], nr_t + 1); e = line_of(x->gk[3], x->g[3], nr_t + 1);
+            s = line_of(x->gk[2], x->g[2], nr_t + 1, rgn, nrgn); e = line_of(x->gk[3], x->g[3], nr_t + 1, rgn, nrgn);
             if (x->gk[3] == K_SPAN) rs = x->g[3]; else if (s && e > s) rs = e - s;
             if (x->gk[2] == K_SPAN) rs = x->g[2];
             if (s > 0) r0 = s - 1;

@@ -1,0 +1,7 @@
+? o1 i0 p0 f0 [0,0 700x44]  fr0@0,0
+  div.g o1 i3 p0 f0 [0,0 600x22]  fr0@0,0
+    div o1 i0 p0 f0 [36,0 528x22]  fr1@36,0
+      #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+  div.h o1 i3 p0 f0 [0,22 600x22]  fr0@0,0
+    div o1 i0 p0 f0 [24,22 552x22]  fr1@24,22
+      #text o0 i9 p0 f0 [0,22 0x0]  fr0@0,0
