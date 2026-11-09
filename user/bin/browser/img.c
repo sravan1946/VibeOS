@@ -39,6 +39,7 @@ struct pimg {
     uint32_t *sc; int scw, sch; color_t scbg;
     uint32_t want;                      /* uptime_ms | 1 when last drawn, 0 = never */
     struct image_anim an; int nf, fr, plays; uint32_t t_next;
+    uint8_t hasa;                       /* the scaled copy (sc) has translucent pixels */
     long cur;                           /* currentColor for an inline SVG (-1 = black) */
     uint8_t mode;                       /* loading="": 0 auto (look-ahead window), 1 lazy (only once drawn), 2 eager (now) */
     uint8_t reload;                     /* pixels were dropped (state QUEUED again, size still known): fetched again when drawn, no relayout */
@@ -370,9 +371,12 @@ const uint32_t *img_pixels(int i, int w, int h, color_t bg) {
             free(t);
         }
     }
-    for (long k = 0, n = (long)w * h; k < n; k++) if (ALPHA(o[k]) != 255) o[k] = blend(bg, o[k]);
+    p->hasa = 0;
+    for (long k = 0, n = (long)w * h; k < n; k++) if (ALPHA(o[k]) != 255) { p->hasa = 1; if (bg) o[k] = blend(bg, o[k]); }   /* bg 0: keep the alpha (draw with gfx_blit_alpha) */
     return o;
 }
+/* the last scaled copy of image i has translucent pixels */
+int img_translucent(int i) { return i >= 0 && i < np && P[i].hasa; }
 
 /* ---- srcset / sizes ---- */
 /* a CSS length in px at viewport width vw: 12px, 50vw, 3em, 40%, calc(100vw - 2em); advances *sp */
