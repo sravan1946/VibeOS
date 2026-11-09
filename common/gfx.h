@@ -67,6 +67,14 @@ void gfx_blit_premul(struct canvas *c, int x, int y, const uint32_t *src, int w,
 void gfx_blit_scaled(struct canvas *c, int x, int y, int dw, int dh, const uint32_t *src, int sw, int sh, int stride);
 
 int  gfx_char(struct canvas *c, const struct font *f, int x, int y, uint32_t cp, color_t col);  /* codepoint; returns advance */
+/* A program can set font_fallback to supply glyphs the baked faces lack (the browser's CJK/Hebrew/Thai file): it returns a
+ * glyph whose pixels (w*h bytes, at most GFX_FB_MAX) it wrote to gfx_fb_alpha and whose off is GLYPH_FB, or NULL. The glyph
+ * is only valid until the next font_glyph call. */
+#define GLYPH_FB 0xFFFFFFFFu           /* off of an 8-bit coverage glyph in gfx_fb_alpha */
+#define GLYPH_FB_COLOR 0xFFFFFFFEu     /* off of a colour glyph: w*h ARGB pixels in gfx_fb_alpha (so GFX_FB_MAX >= 4*w*h) */
+#define GFX_FB_MAX 1024
+extern const struct glyph *(*font_fallback)(const struct font *f, uint32_t cp);
+extern uint8_t gfx_fb_alpha[GFX_FB_MAX] __attribute__((aligned(4)));
 const struct glyph *font_glyph(const struct font *f, uint32_t cp);   /* the wide faces' missing-glyph box, else '?' */
 int  utf8_decode(const char *s, int n, uint32_t *cp);                 /* bytes consumed, >= 1 */
 /* proportional faces use a 1/64 px pen (glyph adv64), monospaced ones whole-pixel cells; returns the advance */

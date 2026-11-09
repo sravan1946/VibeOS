@@ -6,5 +6,5 @@ root=$here/../..
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 gcc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -Wall -Wextra -Wno-unused-parameter \
-    -I"$root/user/lib" "$here/imagetest.c" "$root/user/lib/image.c" "$root/user/lib/jpeg.c" "$root/user/lib/gif.c" -lm -o "$out/imagetest"
+    -I"$root/user/lib" "$here/imagetest.c" "$root/user/lib/image.c" "$root/user/lib/jpeg.c" "$root/user/lib/gif.c" "$root/user/lib/webp.c" -lm -o "$out/imagetest"
 python3 "$here/test.py" "$out/imagetest"

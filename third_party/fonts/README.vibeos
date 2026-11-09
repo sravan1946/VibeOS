@@ -16,3 +16,7 @@ SHA-256 : 29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031  Inte
 Unmodified copies of the upstream release files (the same ones the redesign mockups were rendered with). They are
 not used by the build: tools/mkfont.py instances them (opsz = size, wght per face, Inter's tnum digits; docs/DESIGN.md 3.1) and bakes
 8-bit glyph tables into common/fonts.c and common/termfonts.c, which are committed. Re-run it after changing fonts.
+
+root/usr/share/vibeos/uni15.bin.gz (tools/mkcjk.py) is a 15 px, 4-bit bake of Noto Sans CJK (Regular, SC/JP face: GB2312 + Big5 level 1 +
+JIS X 0208 kanji, kana, Hangul KS X 1001, fullwidth forms), Noto Sans Hebrew and Noto Sans Thai, also SIL OFL 1.1 (the Noto OFL
+text in NotoSans-OFL.txt applies). Only /bin/browser reads it, when a page shows those scripts.

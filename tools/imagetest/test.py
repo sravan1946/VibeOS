@@ -465,6 +465,40 @@ check_enc("grad", photoish(300, 200, "RGB")); check_enc("alpha", photoish(123, 7
 check_enc("noise", Image.frombytes("RGBA", (200, 150), bytes(rnd.randrange(256) for _ in range(200 * 150 * 4))))
 check_enc("noise-opaque", Image.frombytes("RGB", (97, 83), bytes(rnd.randrange(256) for _ in range(97 * 83 * 3))))
 
+# ---------- WebP (Pillow's libwebp is the reference): lossless exactly, lossy within WEBP_TOL ----------
+WEBP_TOL = 0
+def check_webp(name, im, tol=0, **kw):
+    path = os.path.join(tmp, name + ".webp")
+    im.save(path, "WEBP", **kw)
+    ref = Image.open(path); ref.load()
+    check_dec("webp " + name, path, ref) if tol == 0 else check_jpeg("webp " + name, path, ref, tol)
+    return path
+
+wp = []
+for w, h in ((1, 1), (2, 3), (16, 16), (17, 33), (100, 75), (203, 121)):
+    sc = scene(w, h)
+    wp.append(check_webp(f"ll_{w}x{h}", sc, lossless=True))
+    wp.append(check_webp(f"ll_a_{w}x{h}", photoish(w, h, "RGBA"), lossless=True, exact=True))
+    for q in (5, 50, 90, 100):
+        wp.append(check_webp(f"lossy_{w}x{h}_q{q}", sc, WEBP_TOL, quality=q, method=2))
+    wp.append(check_webp(f"lossy_a_{w}x{h}", photoish(w, h, "RGBA"), WEBP_TOL, quality=70, alpha_quality=100))
+wp.append(check_webp("lossy_m6", scene(160, 90), WEBP_TOL, quality=60, method=6))
+wp.append(check_webp("lossy_noise", Image.frombytes("RGB", (97, 83), bytes(rnd.randrange(256) for _ in range(97 * 83 * 3))), WEBP_TOL, quality=75))
+wp.append(check_webp("ll_noise", Image.frombytes("RGBA", (64, 48), bytes(rnd.randrange(256) for _ in range(64 * 48 * 4))), lossless=True, exact=True))
+pal = Image.new("P", (90, 60)); pal.putpalette([c for i in range(16) for c in (i * 16, 255 - i * 16, (i * 37) % 256)] + [0] * (768 - 48))
+for y in range(60):
+    for x in range(90): pal.putpixel((x, y), (x // 6 + y // 5) % 16)
+wp.append(check_webp("ll_pal16", pal, lossless=True))
+tiny = Image.new("P", (40, 30)); tiny.putpalette([0, 0, 0, 255, 255, 255, 255, 0, 0] + [0] * 759)
+for y in range(30):
+    for x in range(40): tiny.putpixel((x, y), (x // 3 + y) % 3)
+wp.append(check_webp("ll_pal3", tiny, lossless=True))
+wp.append(check_webp("ll_flat", Image.new("RGB", (300, 200), (10, 200, 30)), lossless=True))
+for f in ("ll_17x33.webp", "lossy_100x75_q50.webp", "lossy_a_100x75.webp", "ll_pal16.webp", "lossy_m6.webp"):
+    count += 1
+    r = run("fuzz", os.path.join(tmp, f))
+    if r.returncode: fails += 1; print(f"FAIL fuzz {f}: {r.stderr[:400]}")
+
 # ---------- resampler ----------
 count += 1
 r = run("sample")

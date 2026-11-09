@@ -1,4 +1,4 @@
-/* image.h - PNG/BMP/PPM/JPEG/GIF decoding, PNG encoding, resampling. Pixels are 0xAARRGGBB, not premultiplied
+/* image.h - PNG/BMP/PPM/JPEG/GIF/WebP decoding, PNG encoding, resampling. Pixels are 0xAARRGGBB, not premultiplied
  * (the gfx format). Also builds on the host (tools/imagetest). Link libgui.a before libc.a. */
 #pragma once
 #include <stdint.h>
@@ -14,7 +14,7 @@ struct image_anim { int w, h, n, loop; uint32_t **px; int *delay; };
 int  image_decode(const uint8_t *data, size_t n, struct image *im);
 int  image_load(const char *path, struct image *im);
 void image_free(struct image *im);
-int  image_is_ext(const char *name);           /* 1 if the file name ends in .png/.bmp/.ppm/.pgm/.jpg/.jpeg/.gif */
+int  image_is_ext(const char *name);           /* 1 if the file name ends in .png/.bmp/.ppm/.pgm/.jpg/.jpeg/.gif/.webp */
 
 /* All frames of a GIF (other formats give one frame). 0 / -1. image_decode on a GIF returns the first frame only. */
 int  image_decode_anim(const uint8_t *data, size_t n, struct image_anim *a);
@@ -23,6 +23,7 @@ void image_anim_free(struct image_anim *a);
 
 /* the codecs behind image_decode: JPEG (baseline + progressive, EXIF orientation applied) and GIF (maxf frames, 0 = all) */
 int  jpeg_decode(const uint8_t *d, size_t n, struct image *im);
+int  webp_decode(const uint8_t *d, size_t n, struct image *im);   /* lossy + lossless + alpha; the first frame of an animation */
 int  gif_decode(const uint8_t *d, size_t n, int maxf, struct image_anim *a);
 /* like image_decode / image_load, for a picture that will be shown at most want pixels on its short side: a JPEG whose
  * short side is at least 8 * want comes back shrunk by 8 (block means, much faster); everything else decodes normally */

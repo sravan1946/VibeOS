@@ -454,7 +454,7 @@ static int enc_of(const char *cs) {
         { "iso-8859-15", E_8859_15 }, { "latin9", E_8859_15 }, { "windows-1251", E_1251 }, { "cp1251", E_1251 }, { "x-cp1251", E_1251 },
         { "utf-16", E_U16LE }, { "utf-16le", E_U16LE }, { "utf-16be", E_U16BE } };
     for (unsigned i = 0; i < sizeof T / sizeof *T; i++) if (!strcasecmp(cs, T[i].n)) return T[i].e;
-    return E_OTHER;           /* gbk, shift_jis, koi8-r, iso-8859-2 ...: left alone (ponytail: add tables when a page needs them; koi8-u, windows-1250 would be next) */
+    return E_OTHER;           /* gbk, shift_jis, koi8-r, iso-8859-2 ...: legacy_to_utf8 looks them up in charset.bin.gz */
 }
 
 /* charset name after "charset=" in s (header value or meta tag) */
@@ -493,9 +493,82 @@ static size_t put_utf8(unsigned char *o, unsigned c) {
     return 4;
 }
 
+/* Charsets without a built-in table (GBK, Big5, Shift_JIS, EUC-JP/KR, windows-125x, ISO-8859-x, KOI8-U ...): the tables live in
+ * /usr/share/vibeos/charset.bin.gz (tools/mkcharset.py), read the first time a page declares one. */
+static uint8_t *cs_raw;
+static size_t cs_len;
+static int cs_tried;
+
+static uint32_t cs_rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+
+static const uint8_t *cs_entry(const char *cs) {
+    static const struct { const char *a, *n; } AL[] = {
+        { "gb2312", "gbk" }, { "gb_2312", "gbk" }, { "gb18030", "gbk" }, { "x-gbk", "gbk" }, { "big5-hkscs", "big5" }, { "x-x-big5", "big5" },
+        { "cn-big5", "big5" }, { "sjis", "shift_jis" }, { "shift-jis", "shift_jis" }, { "x-sjis", "shift_jis" }, { "windows-31j", "shift_jis" },
+        { "ms932", "shift_jis" }, { "ms_kanji", "shift_jis" }, { "eucjp", "euc-jp" }, { "x-euc-jp", "euc-jp" }, { "ks_c_5601-1987", "euc-kr" },
+        { "ks_c_5601", "euc-kr" }, { "windows-949", "euc-kr" }, { "cp949", "euc-kr" }, { "korean", "euc-kr" }, { "latin5", "iso-8859-9" },
+        { "tis-620", "windows-874" }, { "iso-8859-11", "windows-874" }, { "cp1250", "windows-1250" }, { "cp1253", "windows-1253" },
+        { "cp1254", "windows-1254" }, { "cp1255", "windows-1255" }, { "cp1256", "windows-1256" }, { "cp1257", "windows-1257" },
+        { "cp866", "ibm866" }, { "x-mac-roman", "macintosh" }, { "mac", "macintosh" }, { "iso8859-9", "iso-8859-9" }, { "iso8859-5", "iso-8859-5" },
+        { "iso8859-7", "iso-8859-7" }, { "iso8859-6", "iso-8859-6" }, { "iso8859-8", "iso-8859-8" }, { "iso8859-4", "iso-8859-4" } };
+    if (!cs_tried) {
+        cs_tried = 1;
+        FILE *f = fopen("/usr/share/vibeos/charset.bin.gz", "rb");
+        if (f) {
+            size_t n = 0, cap = 1 << 18, r;
+            unsigned char *z = malloc(cap);
+            while (z && (r = fread(z + n, 1, cap - n, f)) > 0) {
+                n += r;
+                if (n == cap) { unsigned char *nz = realloc(z, cap *= 2); if (!nz) { free(z); z = 0; } else z = nz; }
+            }
+            fclose(f);
+            if (!z || gunzip_buf(z, n, &cs_raw, &cs_len) < 0 || cs_len < 8 || memcmp(cs_raw, "VCHS", 4)) { free(cs_raw); cs_raw = 0; }
+            free(z);
+        }
+    }
+    if (!cs_raw) return 0;
+    for (unsigned i = 0; i < sizeof AL / sizeof *AL; i++) if (!strcasecmp(cs, AL[i].a)) { cs = AL[i].n; break; }
+    uint32_t cnt = cs_rd32(cs_raw + 4);
+    if ((uint64_t)cnt * 28 + 8 > cs_len) return 0;
+    for (uint32_t i = 0; i < cnt; i++) {
+        const uint8_t *e = cs_raw + 8 + i * 28;
+        if (strncasecmp((const char *)e, cs, 16)) continue;
+        uint32_t off = 8 + cnt * 28 + cs_rd32(e + 24);
+        size_t need = e[16] ? (size_t)(e[19] - e[18] + 1) * (e[21] - e[20] + 1) * 2 : 256;
+        return off + need <= cs_len ? e : 0;
+    }
+    return 0;
+}
+
+/* b[0..*n) in the named table charset -> new malloc'd UTF-8 (b is freed), or NULL when we have no table for it */
+static unsigned char *legacy_to_utf8(unsigned char *b, size_t *n, const char *cs) {
+    const uint8_t *e = cs_entry(cs);
+    if (!e) return 0;
+    const uint16_t *t = (const uint16_t *)(cs_raw + 8 + cs_rd32(cs_raw + 4) * 28 + cs_rd32(e + 24));
+    int dbcs = e[16], kana = e[17], l0 = e[18], l1 = e[19], t0 = e[20], t1 = e[21];
+    unsigned char *u = malloc(*n * 3 + 4);
+    if (!u) return 0;
+    size_t o = 0;
+    for (size_t i = 0; i < *n; i++) {
+        unsigned c = b[i], nx = i + 1 < *n ? b[i + 1] : 0;
+        if (c >= 0x80) {
+            if (!dbcs) c = t[c - 0x80];
+            else if (kana == 1 && c >= 0xA1 && c <= 0xDF) c = 0xFF61 + c - 0xA1;
+            else if (kana == 2 && c == 0x8E && nx >= 0xA1 && nx <= 0xDF) { c = 0xFF61 + nx - 0xA1; i++; }
+            else if (c >= (unsigned)l0 && c <= (unsigned)l1 && nx >= (unsigned)t0 && nx <= (unsigned)t1) { c = t[(c - l0) * (t1 - t0 + 1) + nx - t0]; i++; if (!c) c = 0xFFFD; }
+            else c = 0xFFFD;
+        }
+        o += put_utf8(u + o, c);
+    }
+    u[o] = 0;
+    free(b);
+    *n = o;
+    return u;
+}
+
 /* b[0..*n) in some charset -> UTF-8 (the buffer may be replaced); the parser only ever sees UTF-8.
  * Order: BOM, Content-Type charset, <meta charset> in the first 2 KB (html), else UTF-8 if it validates, else windows-1252. */
-static unsigned char *to_utf8(unsigned char *b, size_t *n, const char *ctype) {
+unsigned char *text_to_utf8(unsigned char *b, size_t *n, const char *ctype) {
     int enc = -1, skip = 0;
     char cs[40];
     if (*n >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF) { enc = E_UTF8; skip = 3; }
@@ -509,7 +582,7 @@ static unsigned char *to_utf8(unsigned char *b, size_t *n, const char *ctype) {
         head[hn] = 0;
         if (strstr(head, "<meta") && find_charset(head, hn, cs, sizeof cs)) enc = enc_of(cs);
     }
-    if (enc == E_OTHER) return b;
+    if (enc == E_OTHER) { unsigned char *l = legacy_to_utf8(b, n, cs); return l ? l : b; }
     if (enc < 0) enc = valid_utf8(b, *n) ? E_UTF8 : E_1252;
     if (enc == E_UTF8) { if (skip) { *n -= skip; memmove(b, b + skip, *n); b[*n] = 0; } return b; }
     size_t len = *n - skip, o = 0;
@@ -663,7 +736,7 @@ void fetch_finish(struct fetch *f, struct response *r) {
         int bin = 0;
         if (!(bl >= 2 && ((b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF))))     /* UTF-16 has NULs by design */
             for (size_t i = 0; i < bl && i < 512; i++) if (!b[i]) bin = 1;         /* an unlabelled blob that isn't text: leave it */
-        if (!bin) b = to_utf8(b, &bl, r->ctype);
+        if (!bin) b = text_to_utf8(b, &bl, r->ctype);
         if (bl > MAX_PAGE) { bl = MAX_PAGE; r->truncated = 1; }
     }
     b[bl] = 0;

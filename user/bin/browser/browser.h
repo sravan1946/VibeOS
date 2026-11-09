@@ -56,6 +56,8 @@ struct response {
     char *body; size_t blen;       /* malloc'd, NUL-terminated; caller frees. Already inflated (gzip/deflate) and, for text, always UTF-8 */
     int truncated, latin1;         /* latin1: unused (always 0): the charset conversion happens in fetch_finish */
 };
+/* b[0..*n) in the page's charset (BOM, ctype charset, <meta charset>, else UTF-8 if valid, else cp1252) -> UTF-8; may free b and return a new buffer */
+unsigned char *text_to_utf8(unsigned char *b, size_t *n, const char *ctype);
 int  fetch_main(const char *url, const char *post);   /* the child (user/bin/vfetch); post = form body for a POST, or NULL */
 int  fetch_start(struct fetch *f, const char *url, const char *post);
 /* any request (fetch()/XHR): method (NULL = GET, or POST with a body), hdrs ("Name: v\r\nName: v" or NULL; Host, Cookie,
@@ -189,7 +191,8 @@ void visited_add(const char *abs_url);
 
 /* ---- sheet.c: external stylesheets (<link rel=stylesheet>, @import): one fetch each, kept until the next page ---- */
 const char *sheet_get(const char *url, size_t *len);   /* the text once loaded; NULL while loading or failed (queues on first use) */
-int  sheet_pump(void);                           /* advance downloads; nonzero when a sheet arrived or failed */
+void uni_init(void);                             /* uni.c: CJK/Hangul/Hebrew/Thai fallback glyphs (font_fallback) */
+int  sheet_pump(void);                          /* advance downloads; nonzero when a sheet arrived or failed */
 int  sheet_busy(void);
 void sheet_reset(void);                          /* new page */
 void *sheet_save(void);                          /* same trio as img_save, for a background tab */

@@ -124,10 +124,12 @@ static void sb_esc(struct sb *b, const char *s) {
 
 /* internal pages take the window colours; the tag has a fixed length so a theme change can rewrite it in place */
 static void body_tag(char *t, int cap) {
-    snprintf(t, cap, "<body bgcolor=\"#%06X\" text=\"#%06X\" link=\"#%06X\">", (unsigned)(ui_th.window & 0xFFFFFF),
-             (unsigned)(ui_th.text & 0xFFFFFF), (unsigned)(ui_th.accent_text & 0xFFFFFF));
+    unsigned w = ui_th.window & 0xFFFFFF, x = ui_th.text & 0xFFFFFF, a = ui_th.accent_text & 0xFFFFFF;
+    /* the <style> is author CSS, so these colours beat the UA sheet's black text and blue links */
+    snprintf(t, cap, "<body bgcolor=\"#%06X\" text=\"#%06X\" link=\"#%06X\"><style>body{max-width:880px;margin:14px auto;padding:0 20px;"
+             "color:#%06X;background:#%06X}a:link,a:visited{color:#%06X}</style>", w, x, a, x, w, a);
 }
-static void sb_body(struct sb *b) { char t[80]; body_tag(t, sizeof t); sb_add(b, t); }
+static void sb_body(struct sb *b) { char t[260]; body_tag(t, sizeof t); sb_add(b, t); }
 
 static const char HOME_HTML[] =
     "<center><h1>Vibe Browser</h1>"
@@ -363,7 +365,7 @@ static void load_file(const char *url) {
         load_dir(u, path);
         return;
     }
-    if (ext_is(path, ".png.bmp.ppm.pgm.jpg.jpeg.gif.svg")) {                      /* open the picture itself */
+    if (ext_is(path, ".png.bmp.ppm.pgm.jpg.jpeg.gif.webp.svg")) {                      /* open the picture itself */
         char key[URL_MAX];
         url_resolve("about:blank", url, key, sizeof key);
         show_image(url, key);
@@ -387,6 +389,7 @@ static void load_file(const char *url) {
     if (ext_is(path, ".html.htm.xhtml")) html = 1;
     else if (ext_is(path, ".txt.md.c.h.css.js.json.conf.log.sh.py.xml.csv.ini")) html = 0;
     else { const char *s = buf; while (isspace((unsigned char)*s)) s++; html = *s == '<'; }
+    buf = (char *)text_to_utf8((unsigned char *)buf, &got, html ? "text/html" : "text/plain");   /* same charset rules as fetched pages */
     commit(url, buf, got, html);
     say(false, "%s - %lu bytes%s", path, (unsigned long)got, st.st_size > MAX_PAGE ? " (truncated at 8 MiB)" : "");
 }
@@ -858,7 +861,7 @@ static void zoom_by(int d) {
 }
 
 static void retheme(void) {                  /* EV_THEME: recolour our own pages */
-    char *p = internal && pg.raw ? strstr(pg.raw, "<body bgcolor=\"#") : 0, t[80];
+    char *p = internal && pg.raw ? strstr(pg.raw, "<body bgcolor=\"#") : 0, t[260];
     if (!p) return;
     body_tag(t, sizeof t);
     memcpy(p, t, strlen(t));
@@ -1059,6 +1062,7 @@ static void drop_key(struct ui *ui, int i) { memmove(ui->keys + i, ui->keys + i 
 
 int main(int argc, char **argv) {
     if (argc > 2 && !strcmp(argv[1], "--fetch")) return fetch_cli(argc - 2, argv + 2);
+    uni_init();
     win = gui_window_create("Vibe Browser", 960, 660, 0);
     if (!win) { fprintf(stderr, "browser: can't open a window\n"); return 1; }
     struct ui ui;
