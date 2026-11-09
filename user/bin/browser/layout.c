@@ -553,7 +553,7 @@ static int split_fit(const struct bx *tb, const char *t, int n, int fit) {   /* 
 static void chunk_flush(struct ls *s) {
     if (!s->nch) return;
     int sp = s->pend && s->any ? s->pendspw : 0;
-    if (s->any && s->used + sp + s->chw > s->rx - s->lx && !s->chnw) { finish_line(s, 0); sp = 0; }
+    if (s->any && s->used + sp + s->chw > s->rx - s->lx) { finish_line(s, 0); sp = 0; }   /* nowrap chunks still move down as a whole */
     if (!s->any) {
         sp = 0;
         while (s->chw > s->rx - s->lx && s->f) {                 /* narrower than the chunk because of floats: drop below them */
@@ -2130,7 +2130,7 @@ static void fix_items(int p) {                                  /* flex / grid: 
     int c = B[p].first, prev = -1;
     for (int q = c; q >= 0; q = B[q].next) {
         struct bx *x = &B[q];
-        if (!out_of_flow_or_float(x) && x->outer == OUT_INLINE && x->inner != IN_TEXT && x->inner != IN_BR && x->inner != IN_INLINE) x->outer = OUT_BLOCK;   /* atoms are blockified */
+        if (!out_of_flow_or_float(x) && x->outer == OUT_INLINE && x->inner != IN_TEXT && x->inner != IN_BR) { x->outer = OUT_BLOCK; if (x->inner == IN_INLINE) x->inner = IN_FLOW; }   /* items (inline elements too) are blockified */
     }
     while (c >= 0) {
         struct bx *x = &B[c];
@@ -2738,7 +2738,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
 
     /* an inline element with nothing to paint or position needs no box of its own: its children join the parent */
     int plain = contents || (S.outer == OUT_BLOCK && 0);
-    if (!plain && S.outer == OUT_INLINE && S.inner == IN_INLINE && S.pos == POS_STATIC && !S.bg && !S.aname && !S.li && !pe) {
+    if (!plain && !(pb >= 0 && (B[pb].inner == IN_FLEX || B[pb].inner == IN_GRID)) && S.outer == OUT_INLINE && S.inner == IN_INLINE && S.pos == POS_STATIC && !S.bg && !S.aname && !S.li && !pe) {
         plain = 1;
         for (int i = 0; i < 4 && plain; i++) if (S.bw[i]) plain = 0;
         for (int i = 0; i < 8 && plain; i++) if (S.k[L_MT + i] == K_AUTO || S.v[L_MT + i]) plain = 0;

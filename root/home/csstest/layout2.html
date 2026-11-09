@@ -25,4 +25,7 @@ body { margin: 8px; font-family: sans-serif; font-size: 14px; }
 <div class="t" style="display:grid;gap:18px;grid-template-columns:repeat(4,minmax(0,25%))"><div>a</div><div>b</div><div>c</div><div>d</div></div>
 <!-- icon-font text (Material ligature names) is not laid out; clip: rect(0 0 0 0) hides skip links; box-shadow stays outside a transparent box -->
 <div class="t" style="box-shadow:0 1px #c8ccd1"><a style="position:absolute;clip:rect(0 0 0 0);overflow:hidden">Skip to content</a>Menu <i style="font-family:'Material Icons'">arrow_drop_down</i> end</div>
+<!-- flex/grid items that are plain inline elements are blockified (gap applies); a nowrap inline (sup.reference) wraps with the word before it, never under a float -->
+<div class="t" style="display:flex;gap:24px"><a>Docs</a><a>Play</a><span>Blog</span></div>
+<div class="t" style="width:200px"><div style="float:right;width:120px;height:40px;background:#ccc"></div>one two three four five six seven eight hardware,<sup style="white-space:nowrap"><a href="#">[2][3]</a></sup> after</div>
 </body></html>
