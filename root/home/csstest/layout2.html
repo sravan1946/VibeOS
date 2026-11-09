@@ -37,4 +37,11 @@ body { margin: 8px; font-family: sans-serif; font-size: 14px; }
 <!-- flex: automatic minimum size is min-content even when flex-basis is 0 (flex:1 beside a 130px media box); grid auto-fit with a % minimum caps at the item count -->
 <div class="t" style="display:flex;gap:12px;width:260px"><a style="display:flex;flex:1"><div style="width:130px;height:30px;background:#ccc"></div></a><a style="display:flex"><span>The retired ocean liner is sunk</span></a></div>
 <div class="t" style="display:grid;gap:24px;grid-template-columns:repeat(auto-fit,minmax(25%,1fr))"><div>a</div><div>b</div><div>c</div></div>
+<!-- grid tracks: newlines inside repeat(), calc() with % and px -->
+<div class="t" style="display:grid;gap:20px;grid-template-columns:repeat(
+  4,calc(
+    (25%) -
+      15px
+  )
+)"><div>a</div><div>b</div><div>c</div><div>d</div></div>
 </body></html>

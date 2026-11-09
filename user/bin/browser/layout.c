@@ -1022,12 +1022,47 @@ static int css_px(const char *s) {          /* "12px", "1.5em", "3rem": px (em =
     return (int)(!strncmp(u, "em", 2) || !strncmp(u, "rem", 3) ? v * 16 : v);
 }
 
+/* calc() in a track size: + - * / and parentheses over px, %, em, rem (ponytail: no min()/max()/clamp() inside) */
+static double gc_sum(const char **p, int cw);
+static double gc_atom(const char **p, int cw) {
+    while (isspace((unsigned char)**p)) (*p)++;
+    if (**p == '(') { (*p)++; double v = gc_sum(p, cw); while (isspace((unsigned char)**p)) (*p)++; if (**p == ')') (*p)++; return v; }
+    char *e;
+    double v = strtod(*p, &e);
+    if (e == *p) { if (**p) (*p)++; return 0; }
+    *p = e;
+    if (**p == '%') { (*p)++; return v * cw / 100; }
+    if (!strncmp(*p, "rem", 3)) { *p += 3; return v * 16; }
+    if (!strncmp(*p, "em", 2)) { *p += 2; return v * 16; }
+    if (!strncmp(*p, "px", 2)) *p += 2;
+    return v;
+}
+static double gc_prod(const char **p, int cw) {
+    double v = gc_atom(p, cw);
+    for (;;) {
+        while (isspace((unsigned char)**p)) (*p)++;
+        if (**p == '*') { (*p)++; v *= gc_atom(p, cw); }
+        else if (**p == '/') { (*p)++; double d = gc_atom(p, cw); if (d != 0) v /= d; }
+        else return v;
+    }
+}
+static double gc_sum(const char **p, int cw) {
+    double v = gc_prod(p, cw);
+    for (;;) {
+        while (isspace((unsigned char)**p)) (*p)++;
+        if (**p == '+') { (*p)++; v += gc_prod(p, cw); }
+        else if (**p == '-') { (*p)++; v -= gc_prod(p, cw); }
+        else return v;
+    }
+}
+
 static int track_one(const char *t, int len, struct trk *o, int cw) {
     char b[64];
+    o->mn = -1;
+    if (!strncmp(t, "calc(", 5)) { const char *q = t + 4; double v = gc_atom(&q, cw); o->kind = 0; o->v = v < 0 ? 0 : (int)v; return 1; }
     if (len >= (int)sizeof b) len = sizeof b - 1;
     memcpy(b, t, len); b[len] = 0;
     char *p = b;
-    o->mn = -1;
     if (!strncmp(p, "minmax(", 7)) { const char *a = p + 7; while (*a == ' ') a++; if (isdigit((unsigned char)*a) && strcspn(a, "%,") == strcspn(a, ",")) o->mn = css_px(a); }
     if (!strncmp(p, "minmax(", 7) || !strncmp(p, "fit-content(", 12)) {
         char *c = strrchr(p, ',');
@@ -1057,7 +1092,21 @@ static int track_min(const char *s, int cw) {   /* minmax()'s minimum: px, %, em
     return *u == '%' ? (int)(v * cw / 100) : css_px(s);
 }
 
-static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) {
+static int parse_tracks_raw(const char *s, struct trk *t, int max, int cw, int gap);
+static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) {   /* whitespace runs (newlines, tabs) -> one space */
+    char buf[600];
+    if (!s) return 0;
+    int k = 0, sp = 0;
+    for (; *s && k < (int)sizeof buf - 1; s++) {
+        if (isspace((unsigned char)*s)) { sp = 1; continue; }
+        if (sp && k && buf[k - 1] != '(' && *s != ')' && *s != ',' && buf[k - 1] != ',' && k < (int)sizeof buf - 2) buf[k++] = ' ';
+        sp = 0;
+        buf[k++] = *s;
+    }
+    buf[k] = 0;
+    return parse_tracks_raw(buf, t, max, cw, gap);
+}
+static int parse_tracks_raw(const char *s, struct trk *t, int max, int cw, int gap) {
     int n = 0;
     while (s && *s && n < max) {
         while (*s == ' ') s++;
