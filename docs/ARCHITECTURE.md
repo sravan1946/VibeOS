@@ -407,6 +407,19 @@ friends, then hides the internals. Selectors and `getComputedStyle` go through c
 change rendering marks the tree dirty; main.c calls `js_pump()` once per frame (timers, fetches, pending scripts) and
 relays out if dirty, keeping scroll and focus. Form state stays in form.c, so typing never relays out. Each entry into JS
 gets 5 s: QuickJS's interrupt handler aborts a runaway script, after which the page's scripts are off.
+The CSSOM is backed by the `<style>` text (`sheet.insertRule`/`deleteRule` rewrite it), so CSS-in-JS libraries work;
+`innerHTML` on `<script>`/`<style>` is raw text. Pages and scripts are capped at 8 MiB and the JS heap at 128 MiB.
+`indexedDB` and `WebAssembly` are stubs that fail cleanly (asynchronously), so feature-detecting code falls back.
+
+**Icons and paint details**: an inline `<svg>` is serialised and handed to nanosvg after `svg_resolve_use` (svg.c) expands
+`<use href>` against same-page `<symbol>`/id elements (copying the symbol's viewBox); an svg root without its own `fill`
+takes the CSS text colour (stands in for `currentColor`). A `<button>` holding an svg/img lays its children out instead of
+drawing a text label. `mask`/`mask-image: url()` paints the background colour through the image's alpha (`decor.msk`), and
+translucent images are alpha-blitted over box backgrounds. `linear-gradient()` becomes consecutive two-colour decors
+(axis-snapped angles; no radial/conic). `position: sticky` boxes are recorded at paint time (`doc.sk`); `doc_draw`
+draws them last, shifted by the scroll and held inside their parent, and `doc_unstick` maps hit-test y back. Grid
+`minmax(min,max)` tracks grow from their minimum toward their maximum; `clip: rect(0 0 0 0)` and icon-font families
+(Material Icons, Font Awesome) are not painted, since their ligature text would show as words.
 
 ## QuickJS
 

@@ -390,8 +390,32 @@ Five agents in parallel (LAYOUT, CSS, JS, NET, MEDIA), coordinating through a sh
   (bar its CJK/Arabic lines) render properly; DuckDuckGo HTML's submit button lands at x < 0; GitHub, MDN and Bootstrap
   are mostly right but icon-only buttons draw as text and SVG sprites (`<use href="#id">`) as solid squares;
   BBC News stays unstyled (`createElement('_')` throws) and tailwindcss.com is blank (a script error).
-- Known gaps: no incremental relayout, `position: sticky` acts as static, CJK and emoji draw as boxes, no WebP,
+- Known gaps: no incremental relayout, `position: sticky` acts as static (done in round 2), CJK and emoji draw as boxes, no WebP,
   `@container` queries the viewport, Tailwind's style computation is slow (~13.5 us per element).
+
+### Browser: round 2 (icons, script-heavy sites, layout fixes)
+Three agents (ICONS, JSFIX, LAYOUT2) on the gaps the first round's site screenshots showed, merged on `perf-usability`.
+- [x] Icons: icon-only `<button>`s draw their svg/img instead of a "Button" label; `<use href>`/`xlink:href` sprites resolve
+  against same-page `<symbol>`s; an svg root without `fill` takes the text colour (`currentColor` icons); `mask-image`
+  icons paint their colour through the mask; transparent images keep alpha over coloured boxes; scripted svgs keep
+  camelCase attributes (`viewBox`). Test page `~/Documents/svgicons.html` with a layout golden.
+- [x] Scripts: lenient element names (`createElement('_')`), a real CSSOM (`insertRule`/`deleteRule` backed by the
+  `<style>` text: emotion/styled-components pages get their styles), raw-text `innerHTML` on script/style, long `data:`
+  script URLs and attribute-selector values, SVG element classes, `'prop' in el.style`, `DOMMatrix`/`DOMPoint`/`Path2D`,
+  real streams, `indexedDB`/`WebAssembly` stubs that fail cleanly, 8 MiB page/script cap, 128 MiB JS heap; fixed a
+  use-after-free in `cloneNode` (python.org crash) and a NULL write loading file modules. `jstest.html` 122/122.
+- [x] Layout: absolutely positioned controls/images are laid out (they sat at 0,0), flex form controls honour the flex
+  size, grid `minmax(min,max)` tracks, `linear-gradient` backgrounds, `position: sticky` (hit tests follow), box-shadow no
+  longer filled through transparent boxes, `clip: rect(0 0 0 0)` and icon-font text (Material Icons, Font Awesome) not
+  painted. Golden page `~/csstest/layout2.html`.
+- Real sites now (VM screenshots, 0 crashes): Bootstrap (gradient navbar, logo, icons), docs.python.org (one-row header),
+  python.org (crashed before), tailwindcss.com (was blank), vuejs.org, GitHub (icons), Wikipedia, HN, DuckDuckGo (button in
+  place) render properly; MDN has proper columns but one "Button" label and an `[image]` banner; BBC News is styled but
+  its story cards collapse to one-character-wide columns.
+- Known gaps: BBC card columns; GitHub's Fork/Star buttons put the count above the label and its file table clips the
+  last column; Tailwind's nav links have no gaps; no radial/conic gradients (angles snap to an axis); nested sticky and
+  sticky in scroll containers; external `sprite.svg#id`; CSS `fill`/`stroke`; mask position/size; `fetch()` of `data:`
+  URLs over 1 KB; theverge.com logs React hydration errors (falls back to client render); apple.com's header flyout.
 
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
