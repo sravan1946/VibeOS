@@ -417,6 +417,31 @@ Three agents (ICONS, JSFIX, LAYOUT2) on the gaps the first round's site screensh
   sticky in scroll containers; external `sprite.svg#id`; CSS `fill`/`stroke`; mask position/size; `fetch()` of `data:`
   URLs over 1 KB; theverge.com logs React hydration errors (falls back to client render); apple.com's header flyout.
 
+### Browser: round 3 (scripts, grid/flex, text and images)
+Three agents (JS, LAYOUT/CSS, MEDIA) on round 2's gaps, merged on `perf-usability` (the two grid implementations that
+round 2 and this round each wrote were reconciled into one: `fn_len` for `calc()`/`min()`/`max()`/`clamp()` tracks).
+- [x] Scripts: live `childNodes`/`children`/`getElementsBy*`, `:scope`, CSSOM `rule.style` writes back and
+  `adoptedStyleSheets` apply, custom properties in `getComputedStyle`, geometry reads after a DOM change force a relayout,
+  a real `IntersectionObserver` (viewport or root box, `rootMargin`, thresholds; re-checked on scroll/resize), `Intl`
+  constructors and `formatToParts`, interface stubs (`History`, `Navigator`, `Audio`, ...), blob:/nomodule scripts,
+  scripts stopped before the heap limit instead of an out-of-memory crash. `jstest.html` 131/131.
+- [x] Layout and CSS: named grid lines, `calc()`/`min()`/`max()`/`clamp()` and `var()`-expanded track lists (templates
+  were cut at 600 bytes), `minmax()` minimums against the container, `auto-fit` collapsing to the item count, flex
+  automatic minimum = min-content, equal-`order` flex items in document order, children of flex/grid containers
+  blockified, inline flex/grid boxes, `aspect-ratio` on empty blocks, angled/radial/conic gradients that follow
+  `border-radius`, CSS `fill`/`stroke` on inline svg, `lab()`/`lch()`/`oklab()`/`oklch()`/`color()`/`color-mix()`,
+  escaped quotes in selectors (Tailwind), tag names up to 63 chars (custom elements), a `var()` use-after-free (web.dev
+  crash), 2 MiB per stylesheet. Absolutely positioned boxes extend the scrollable height (a page couldn't scroll to them).
+- [x] Text and images: CJK, Hangul, kana, Hebrew and Thai fallback glyphs (`uni15.bin.gz`, `tools/mkcjk.py`), colour emoji
+  (`emoji16.bin.gz`, `tools/mkemoji.py`), invisible format characters, a WebP decoder (VP8 lossy, VP8L lossless, alpha,
+  VP8X; bit-exact against libwebp), legacy charsets (GBK, Big5, Shift_JIS, EUC-JP/KR, windows-125x, ISO-8859-x, KOI8-U;
+  `charset.bin.gz` from `tools/mkcharset.py`) for fetched pages and, newly, `file://` pages (they were never converted).
+- Real sites now (VM screenshots, 0 crashes): en.wikipedia, GitHub (Fork/Star buttons, file table and sidebar),
+  tailwindcss.com, Hacker News render properly; web.dev renders its content but the header controls overlap and one
+  devsite script throws (`getCookieNotificationBarElement`).
+- Known gaps: Arabic and other RTL scripts (no glyphs, no bidi or shaping), web.dev's header, Tailwind's "Quick search"
+  button placement, no incremental relayout beyond skipping clean attribute changes.
+
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
 - Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.
