@@ -1,4 +1,4 @@
-<html><body><script>
+<html><head><style>:root{--y: 7px; --z: var(--y)}</style></head><body><script>
 function t(n, f) { try { console.log(n + ' => ' + f()); } catch (e) { console.log(n + ' THROWS ' + e); } }
 const d = new Date(Date.UTC(2026, 10, 8, 22, 54, 50));
 t('tz', () => Intl.DateTimeFormat().resolvedOptions().timeZone + ' off ' + d.getTimezoneOffset());
@@ -30,4 +30,6 @@ t('formdata', () => { const f = document.createElement('form'); f.innerHTML = '<
 t('scope', () => { const e = document.createElement('div'); e.innerHTML = '<div class=a><span class=b></span><p><span class=b id=deep></span></p></div>'; return !!e.querySelector(':scope > .a') + ' ' + e.querySelector('.a').querySelectorAll(':scope > .b').length + ' ' + e.querySelectorAll(':scope .b').length + ' ' + e.firstChild.matches(':scope > .a'); });
 t('scope2', () => { document.body.innerHTML = '<nav id=n><div class=a><span class=b></span></div></nav>'; const n = document.getElementById('n'); return !!n.querySelector(':scope > .a > .b') + ' ' + !!n.querySelector('.a').querySelector(':scope > .b'); });
 t('live', () => { const u = document.createElement('div'); u.innerHTML = '<i></i><b></b><i></i>'; const f = u.childNodes, h = document.createDocumentFragment(); let n = 0; while (f.length && n++ < 10) h.appendChild(f[0]); const g = u.getElementsByTagName('i'); u.innerHTML = '<i></i>'; return n + ' ' + h.childNodes.length + ' ' + g.length + ' ' + [...u.children].length + ' ' + Array.isArray(u.childNodes) + ' ' + Object.keys(h.childNodes); });
+t('cssom', () => { const st = document.createElement('style'); document.head.appendChild(st); const sh = st.sheet, r = sh.cssRules[sh.insertRule(':root{}', 0)]; r.style.setProperty('--x', '5'); r.style.color = 'red'; const c = new CSSStyleSheet(); c.replaceSync('.q{color:blue}'); document.adoptedStyleSheets = [...document.adoptedStyleSheets, c]; return r.cssText + ' | ' + r.style.getPropertyValue('--x') + ' | ' + document.querySelectorAll('style').length + ' | ' + getComputedStyle(document.documentElement).getPropertyValue('--x'); });
+t('cvar', () => getComputedStyle(document.documentElement).getPropertyValue('--y') + '|' + getComputedStyle(document.body).getPropertyValue('--z') + '|' + getComputedStyle(document.body).getPropertyValue('--none') + '|');
 </script></body></html>

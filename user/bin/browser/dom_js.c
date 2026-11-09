@@ -426,17 +426,25 @@ const query = {
     get childElementCount() { let n = 0; for (let c = d.first(this.__id); c; c = d.next(c)) if (d.type(c) === 1) n++; return n; },
     getElementById(id) { id = String(id); for (const e of d.qsa(this.__id, '[id]', false)) if (d.getAttr(e, 'id') === id) return wrap(e); return null; },
 };
+// constructed stylesheets: each adopted sheet gets a hidden <style> in the document head / the shadow root that its rules are written to
+function adopt(root, list) {
+    list = [...list || []];
+    const old = root.__ass || [], where = root.head || root;
+    for (const sh of old) if (!list.includes(sh) && sh.__ad && sh.__o) { sh.__o.remove(); sh.__o = null; sh.__ad = false; }
+    for (const sh of list) if (sh && !sh.__o) { const st = document.createElement('style'); st.setAttribute('data-adopted', ''); where.appendChild(st); sh.__o = st; sh.__ad = true; sh.__sync(); }
+    root.__ass = list;
+}
 function mix(dst, src) { Object.defineProperties(dst, Object.getOwnPropertyDescriptors(src)); }
 
 class DocumentFragment extends Node {
-    get adoptedStyleSheets() { return this.__ass || []; } set adoptedStyleSheets(v) { this.__ass = v; }
+    get adoptedStyleSheets() { return this.__ass || (this.__ass = []); } set adoptedStyleSheets(v) { adopt(this, v); }
     get innerHTML() { return d.html(this.__id, false); }
     set innerHTML(v) { d.setHTML(this.__id, v == null ? '' : String(v)); }
 }
 mix(DocumentFragment.prototype, query);
 class ShadowRoot extends DocumentFragment {
     get mode() { return d.smode(this.__id) === 2 ? 'closed' : 'open'; } get host() { return wrap(d.host(this.__id)); } get delegatesFocus() { return false; }
-    get adoptedStyleSheets() { return this.__ass || []; } set adoptedStyleSheets(v) { this.__ass = v; }
+    get adoptedStyleSheets() { return this.__ass || (this.__ass = []); } set adoptedStyleSheets(v) { adopt(this, v); }
     get activeElement() { return null; } getSelection() { return g.getSelection(); }
 }
 
@@ -969,7 +977,7 @@ class Document extends Node {
     get scripts() { return coll(this.querySelectorAll('script')); }
     get embeds() { return coll([]); } get plugins() { return coll([]); }
     get styleSheets() { return coll([...this.querySelectorAll('style, link[rel~=stylesheet]')].map(e => e.sheet || new g.CSSStyleSheet())); }
-    get adoptedStyleSheets() { return this.__ass || []; } set adoptedStyleSheets(v) { this.__ass = v; }
+    get adoptedStyleSheets() { return this.__ass || (this.__ass = []); } set adoptedStyleSheets(v) { adopt(this, v); }
     get fonts() { return { ready: Promise.resolve(), load: () => Promise.resolve([]), check: () => true, add() {}, forEach() {}, addEventListener() {} }; }
     get cookie() { return g.__cookieGet(); }
     set cookie(v) { g.__cookieSet(String(v)); }
@@ -1185,7 +1193,7 @@ function computedStyle(e) {
         if (base.get('height') === 'auto' && r.h) base.set('height', r.h + 'px');
         for (const [k, v] of parseStyle(e.getAttribute('style') || '')) if (!/^(color|background-color|display|width|height)$/.test(k) || !base.has(k)) base.set(k, v.replace(/\s*!important$/, ''));
     }
-    const api = { getPropertyValue: n => base.get(String(n).toLowerCase()) || '', getPropertyPriority: () => '', item: i => [...base.keys()][i] || '', setProperty() {}, removeProperty() { return ''; } };
+    const api = { getPropertyValue: n => { n = String(n); return n.startsWith('--') ? (e && e.nodeType === 1 ? d.cvar(e.__id, n) : '') : base.get(n.toLowerCase()) || ''; }, getPropertyPriority: () => '', item: i => [...base.keys()][i] || '', setProperty() {}, removeProperty() { return ''; } };
     return new Proxy({}, {
         get(t, k) { if (typeof k !== 'string') return undefined; if (k in api) return api[k]; if (k === 'length') return base.size; if (k === 'cssText') return [...base].map(([a, b]) => a + ': ' + b + ';').join(' ');
             if (k === 'cssFloat') return base.get('float'); return base.get(cssName(k)) ?? ''; },

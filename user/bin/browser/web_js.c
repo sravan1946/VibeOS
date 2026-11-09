@@ -562,12 +562,33 @@ function splitRules(t) {
     }
     return out;
 }
-const mkRule = (r, sh) => { const i = r.indexOf('{'), sel = i < 0 ? r : r.slice(0, i).trim(), body = i < 0 ? '' : r.slice(i + 1, r.lastIndexOf('}')); const o = { cssText: r, selectorText: sel, parentStyleSheet: sh, type: sel[0] === '@' ? 4 : 1, style: { cssText: body.trim() } }; if (sel[0] === '@') { o.conditionText = sel.replace(/^@\w+\s*/, ''); o.cssRules = splitRules(body).map(x => mkRule(x, sh)); } return o; };
+// rule.style: a declaration block that writes back to the rule (and so the sheet's <style>), with camelCase property access
+function ruleStyle(rule, body) {
+    const m = new Map(), kebab = k => k.startsWith('--') ? k : k.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
+    const parse = t => { m.clear(); let dp = 0, q = '', st = 0; const one = e => { const x = t.slice(st, e), i = x.indexOf(':'); if (i > 0) { const k = x.slice(0, i).trim(); m.set(k.startsWith('--') ? k : k.toLowerCase(), x.slice(i + 1).trim()); } st = e + 1; };
+        for (let i = 0; i < t.length; i++) { const c = t[i]; if (q) { if (c === '\\') i++; else if (c === q) q = ''; } else if (c === '"' || c === "'") q = c; else if (c === '(') dp++; else if (c === ')') dp--; else if (c === ';' && dp <= 0) one(i); } one(t.length); };
+    const text = () => [...m].map(([k, v]) => k + ': ' + v + ';').join(' ');
+    const sync = () => { rule.cssText = rule.selectorText + ' { ' + text() + ' }'; const sh = rule.parentStyleSheet; if (sh && sh.__sync) sh.__sync(); };
+    parse(body);
+    const api = {
+        getPropertyValue: n => { const v = m.get(kebab(String(n))); return v === undefined ? '' : v.replace(/\s*!important$/, ''); },
+        getPropertyPriority: n => /!important$/.test(m.get(kebab(String(n))) || '') ? 'important' : '',
+        setProperty(n, v, p) { n = kebab(String(n)); if (v == null || v === '') m.delete(n); else m.set(n, String(v) + (p === 'important' ? ' !important' : '')); sync(); },
+        removeProperty(n) { n = kebab(String(n)); const o = m.get(n) || ''; m.delete(n); sync(); return o; },
+        item: i => [...m.keys()][i] || '', parentRule: rule,
+        get length() { return m.size; }, get cssText() { return text(); }, set cssText(v) { parse(String(v)); sync(); },
+    };
+    return new Proxy(api, {
+        get(t, k) { if (typeof k === 'symbol' || k in t) return Reflect.get(t, k); const v = m.get(kebab(k)); return v === undefined ? '' : v.replace(/\s*!important$/, ''); },
+        set(t, k, v) { if (k === 'cssText') t.cssText = v; else if (typeof k === 'string') t.setProperty(k, v); return true; },
+    });
+}
+const mkRule = (r, sh) => { const i = r.indexOf('{'), sel = i < 0 ? r : r.slice(0, i).trim(), body = i < 0 ? '' : r.slice(i + 1, r.lastIndexOf('}')); const o = { cssText: r, selectorText: sel, parentStyleSheet: sh, type: sel[0] === '@' ? 4 : 1 }; o.style = sel[0] === '@' ? { cssText: body.trim() } : ruleStyle(o, body); if (sel[0] === '@') { o.conditionText = sel.replace(/^@\w+\s*/, ''); o.cssRules = splitRules(body).map(x => mkRule(x, sh)); } return o; };
 class CSSStyleSheet {
     constructor(o) { this.__o = o || null; this.__r = null; this.disabled = false; this.href = null; this.ownerNode = o || null; this.media = { mediaText: '' }; this.type = 'text/css'; }
     get cssRules() { if (!this.__r) this.__r = this.__o ? splitRules(this.__o.textContent).map(x => mkRule(x, this)) : []; return this.__r; }
     get rules() { return this.cssRules; }
-    __sync() { if (this.__o) this.__o.textContent = this.__r.map(x => x.cssText).join('\n'); }
+    __sync() { if (this.__o) this.__o.textContent = this.cssRules.map(x => x.cssText).join('\n'); }
     insertRule(r, i = 0) {
         const L = this.cssRules.length; r = String(r).trim();
         if (i > L || i < 0) throw new DOMException('Failed to execute \'insertRule\' on \'CSSStyleSheet\': The index provided is larger than the number of rules.', 'IndexSizeError');

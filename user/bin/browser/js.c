@@ -1074,17 +1074,28 @@ static void put_col(JSContext *c, JSValue o, const char *name, uint32_t col) {
     else snprintf(b, sizeof b, "rgba(%d, %d, %d, %d.%02d)", (col >> 16) & 255, (col >> 8) & 255, col & 255, a / 255, a * 100 / 255 % 100);
     JS_SetPropertyStr(c, o, name, str(b));
 }
-NATIVE(n_computed) {
-    int id = ARGID(0), chain[128], n = 0;
-    JSValue o = JS_NewObject(c);
-    if (!id || N[id].type != 1) return o;
+static const struct cprops *computed_of(int id) {          /* the cascade down the ancestor chain; the result is a static */
+    int chain[128], n = 0;
     for (int a = id; a && n < 128; a = cd_parent(a)) chain[n++] = a;
     css_dom_set(&CDOM);
     css_base(page_url);
     static struct cprops cp[2];
     int cur = 0;
     for (int i = n - 1; i >= 0; i--) { css_compute(chain[i], PE_NONE, i == n - 1 ? 0 : &cp[cur ^ 1], &cp[cur]); if (i) cur ^= 1; }
-    const struct cprops *p = &cp[cur];
+    return &cp[cur];
+}
+NATIVE(n_cvar) {                                           /* getComputedStyle(e).getPropertyValue('--x') */
+    int id = ARGID(0);
+    CSTR(nm, 1);
+    const char *v = id && N[id].type == 1 ? css_custom(computed_of(id), nm) : 0;
+    JS_FreeCString(c, nm);
+    return str(v ? v : "");
+}
+NATIVE(n_computed) {
+    int id = ARGID(0);
+    JSValue o = JS_NewObject(c);
+    if (!id || N[id].type != 1) return o;
+    const struct cprops *p = computed_of(id);
     static const char *const DN[] = { "", "none", "block", "inline", "inline-block", "flex", "inline-flex", "grid", "inline-grid", "table", "inline-table", "table-row",
         "table-cell", "table-row-group", "table-header-group", "table-footer-group", "table-column", "table-column-group", "table-caption", "list-item", "contents" };
     int dv = p->v[P_DISPLAY];
@@ -1169,7 +1180,7 @@ static const JSCFunctionListEntry NATIVES[] = {
     JS_CFUNC_DEF("createComment", 1, n_create_comment), JS_CFUNC_DEF("docwrite", 1, n_docwrite), JS_CFUNC_DEF("curScript", 0, n_cur_script),
     JS_CFUNC_DEF("ready", 0, n_ready), JS_CFUNC_DEF("setUrl", 2, n_set_url), JS_CFUNC_DEF("scrollTo", 2, n_scroll_to),
     JS_CFUNC_DEF("view", 0, n_view), JS_CFUNC_DEF("rect", 1, n_rect), JS_CFUNC_DEF("media", 1, n_media),
-    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("gen", 0, n_gen), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
+    JS_CFUNC_DEF("computed", 1, n_computed), JS_CFUNC_DEF("hit", 2, n_hit), JS_CFUNC_DEF("attachShadow", 2, n_attach_shadow), JS_CFUNC_DEF("shadow", 1, n_shadow), JS_CFUNC_DEF("host", 1, n_host), JS_CFUNC_DEF("smode", 1, n_smode), JS_CFUNC_DEF("assigned", 1, n_assigned), JS_CFUNC_DEF("connected", 1, n_connected), JS_CFUNC_DEF("gen", 0, n_gen), JS_CFUNC_DEF("cvar", 2, n_cvar), JS_CFUNC_DEF("cookieGet", 0, n_cookie_get), JS_CFUNC_DEF("cookieSet", 1, n_cookie_set), JS_CFUNC_DEF("ua", 0, n_ua), JS_CFUNC_DEF("submit", 1, n_submit), JS_CFUNC_DEF("syncGet", 1, n_sync_get), JS_CFUNC_DEF("load", 1, n_load), JS_CFUNC_DEF("save", 2, n_save),
 };
 
 /* ---------- running JS ---------- */
