@@ -206,19 +206,21 @@ static int parse_compound(const char *s, int n, int *pi, struct simple *t, int *
                 else return 0;
                 j++;
                 while (j < n && isspace((unsigned char)s[j])) j++;
-                char v[300];
-                int k = 0;
+                char vb[300], *v = vb;
+                int k = 0, vcap = 299;
                 if (j < n && (s[j] == '"' || s[j] == '\'')) {
                     char q = s[j++];
-                    while (j < n && s[j] != q && k < 299) { if (s[j] == '\\' && j + 1 < n) j++; v[k++] = s[j++]; }
-                    if (j >= n) return 0;
+                    if (n - j > vcap && !(v = malloc(vcap = n - j + 1))) return 0;   /* long values (data: URLs) */
+                    while (j < n && s[j] != q && k < vcap) { if (s[j] == '\\' && j + 1 < n) j++; v[k++] = s[j++]; }
+                    if (j >= n) { if (v != vb) free(v); return 0; }
                     j++;
-                } else if (!read_ident(s, n, &j, v, sizeof v)) {
+                } else if (!read_ident(s, n, &j, v, sizeof vb)) {
                     if (j < n && (isdigit((unsigned char)s[j]))) { while (j < n && ident_char(s[j]) && k < 299) v[k++] = s[j++]; v[k] = 0; }
                     else return 0;
                 } else k = strlen(v);
                 v[k] = 0;
                 x->b = intern(v, k);
+                if (v != vb) free(v);
                 while (j < n && isspace((unsigned char)s[j])) j++;
                 if (j < n && (s[j] | 32) == 'i') { x->ci = 1; j++; }
                 else if (j < n && (s[j] | 32) == 's') j++;

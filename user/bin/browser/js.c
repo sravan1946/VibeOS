@@ -70,8 +70,8 @@ static struct { int id, every; uint32_t due; } T[MAXT];
 static int nt, next_tid = 1;
 
 /* fetch() and <script src>: helper processes like page loads (fetch.c); file: URLs are read on the next pump */
-static struct jf { int id, used, hops, script; struct fetch f; char url[URL_MAX]; int file; const char *fail; char *post; } F[MAXF];
-static struct { int id; char url[URL_MAX]; int script; char *post; } FQ[64];   /* waiting for a slot */
+static struct jf { int id, used, hops, script; struct fetch f; char *url; int file; const char *fail; char *post; } F[MAXF];
+static struct { int id; char *url; int script; char *post; } FQ[64];   /* waiting for a slot */
 static int nfq, next_fid = 1;
 
 static struct { char t[200]; int kind; } LOG[NLOG];
@@ -1332,9 +1332,9 @@ static void deliver(int id, int script, int status, const char *text, const char
 }
 
 static int slot_start(struct jf *f, int id, const char *url, int script, char *post) {   /* takes post */
-    memset(f, 0, sizeof *f);
+    free(f->url); memset(f, 0, sizeof *f);
     f->id = id; f->script = script; f->post = post;
-    strlcpy(f->url, url, sizeof f->url);
+    f->url = strdup(url);
     if (!url_is_web(url)) { f->used = 1; f->file = 1; return 0; }       /* read on the next pump */
     f->used = 1;
     const char *meth = post, *hdrs = post ? post + strlen(post) + 1 : 0, *body = hdrs ? hdrs + strlen(hdrs) + 1 : 0;
@@ -1355,7 +1355,7 @@ static int fetch_queue(const char *url, int script, const char *blob, int has_bl
     }
     for (int i = 0; i < MAXF; i++) if (!F[i].used) { slot_start(&F[i], id, url, script, pd); return id; }
     if (nfq == 64) { free(pd); return -1; }
-    FQ[nfq].id = id; FQ[nfq].script = script; FQ[nfq].post = pd; strlcpy(FQ[nfq].url, url, sizeof FQ[0].url); nfq++;
+    FQ[nfq].id = id; FQ[nfq].script = script; FQ[nfq].post = pd; FQ[nfq].url = strdup(url); nfq++;
     return id;
 }
 
@@ -1404,7 +1404,7 @@ static void pump_fetches(void) {
         free(rs.body); free(f->post); f->post = 0;
     }
     for (int i = 0; i < MAXF && nfq && active; i++)
-        if (!F[i].used) { slot_start(&F[i], FQ[0].id, FQ[0].url, FQ[0].script, FQ[0].post); memmove(FQ, FQ + 1, --nfq * sizeof *FQ); }
+        if (!F[i].used) { slot_start(&F[i], FQ[0].id, FQ[0].url, FQ[0].script, FQ[0].post); free(FQ[0].url); memmove(FQ, FQ + 1, --nfq * sizeof *FQ); }
 }
 
 int js_busy(void) {
@@ -1595,7 +1595,8 @@ static void add_script(int id, int where) {                /* where: 0 parser, 1
     struct buf b = { 0 };
     if (!(src && *src)) { text_of(&b, id); if (!b.n) { free(b.p); return; } free(b.p); }
     struct scr e = { id, 0, src && *src ? 1 : 2, module, 0, where == 0 ? nscr : 0, 0, 0 };
-    if (src && *src) { char u[URL_MAX]; url_resolve(page_url, src, u, sizeof u); e.url = strdup(u); }
+    if (src && *src && !strncasecmp(src, "data:", 5)) { size_t sl = strlen(src); char *u = malloc(sl + 1); if (u) { url_resolve(page_url, src, u, sl + 1); e.url = u; } }   /* data: URLs can exceed URL_MAX */
+    else if (src && *src) { char u[URL_MAX]; url_resolve(page_url, src, u, sizeof u); e.url = strdup(u); }
     if (where == 2 || (e.url && attr(id, "async"))) e.mode = 2;
     else if (module || (e.url && attr(id, "defer"))) e.mode = 1;
     struct scr *slot;
@@ -1711,7 +1712,7 @@ int js_timeout(void) {
 
 void js_reset(void) {
     for (int i = 0; i < MAXF; i++) if (F[i].used) { if (!F[i].file) fetch_cancel(&F[i].f); F[i].used = 0; free(F[i].post); F[i].post = 0; }
-    for (int i = 0; i < nfq; i++) free(FQ[i].post);
+    for (int i = 0; i < nfq; i++) { free(FQ[i].post); free(FQ[i].url); }
     nfq = 0;
     if (ctx) {
         JS_FreeValue(ctx, imap); imap = JS_UNDEFINED;
