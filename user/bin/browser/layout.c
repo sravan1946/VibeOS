@@ -2575,7 +2575,11 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
     if (tag == T_IMG) { build_img(dn, pb, &S, &ni); return; }
     if (tag == T_SVG) { build_svg(dn, pb, &S, &ni); return; }
     int iconbtn = 0;                                          /* <button><svg/></button>: lay the children out as an inline-block instead of a text control */
-    if (tag == T_BUTTON && has_icon(dn)) { char t[8]; text_of(dn, t, sizeof t); iconbtn = !t[0]; if (iconbtn && S.inner == IN_INLINE) S.inner = IN_FLOW; }
+    if (tag == T_BUTTON && has_icon(dn)) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
+        const char *ty2 = ATTR(dn, "type");
+        iconbtn = S.bg || S.bw[0] | S.bw[1] | S.bw[2] | S.bw[3] || !(ty2 && !strcasecmp(ty2, "submit"));
+        if (iconbtn && S.inner == IN_INLINE) S.inner = IN_FLOW;
+    }
     if (!iconbtn && (tag == T_INPUT || tag == T_TEXTAREA || tag == T_SELECT || tag == T_BUTTON)) {
         int bi = bx_new();
         if (bi >= 0) {
