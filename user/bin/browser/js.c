@@ -30,7 +30,7 @@
 #define MAXDYN 64
 #define MAXDIRTY 1024
 #define MAXIFR 32
-#define MAXFR 16
+#define MAXFR 32
 #define NLOG 64
 
 struct node {
@@ -147,6 +147,9 @@ static struct jsst top_st, *J = &top_st;
 #define RJ (J->s_RJ)
 #define nrj (J->s_nrj)
 static int killed;
+static struct jsst *par_of(struct jsst *s);
+/* the URL relative references resolve against: a frame's own address, except about:blank / about:srcdoc, whose base is the parent's */
+static const char *base_of(struct jsst *s) { return s->fr && !strncmp(s->s_page_url, "about:", 6) ? base_of(par_of(s)) : s->s_page_url; }
 static uint32_t deadline;
 static char *blob_get(const char *url, size_t *len);
 static char *sync_get(const char *url, size_t *len);
@@ -156,7 +159,7 @@ static void exec_entry(struct scr *e);
 static char *mod_norm(JSContext *c, const char *base, const char *name, void *op);
 static JSModuleDef *mod_load(JSContext *c, const char *name, void *op);
 static int fetch_queue(const char *url, int script, const char *blob, int has_blob);
-static void frame_loaded(int id, int status, const char *ctype, const char *body, size_t blen, int bad, const char *url);
+static void frame_loaded(int id, int status, const char *ctype, const char *body, size_t blen, int bad, const char *url, const char *hdrs);
 static void worker_loaded(int id, int status, const char *body, size_t blen, int bad, const char *url);
 static void frames_scan(void);
 static void msgs_deliver(void);
@@ -888,10 +891,30 @@ NATIVE(n_remove) {
     return JS_UNDEFINED;
 }
 NATIVE(n_clone) { int id = ARGID(0); int r = id ? clone(id, JS_ToBool(c, argv[1])) : 0; return JS_NewInt32(c, r); }
+/* The CSS engine holds one document's rules (the last one laid out). A script in a frame that asks for a computed style or runs a selector
+ * gets its own: the rules are rebuilt from J's tree (hd_from_js feeds the <style>/<link> elements) when another document owned them. */
+struct doc;
+int hd_from_js(struct doc *d, const char *base);       /* dom.c */
+void hd_free(void);
+static struct jsst *css_owner;
+void js_css_owner(void) { css_owner = J; }
+static void css_claim(void) {
+    css_dom_set(&CDOM);                                    /* layout installs its own tree between our calls */
+    if (css_owner == J || !active) return;
+    struct doc tmp;
+    memset(&tmp, 0, sizeof tmp);
+    css_reset();
+    css_viewport_size(vw, vh);
+    css_base(base_of(J));
+    hd_from_js(&tmp, base_of(J));                            /* (sets css_owner) */
+    hd_free();
+    css_dom_set(&CDOM);
+    css_owner = J;
+}
 NATIVE(n_qsa) {
     int root = ARGID(0), first = JS_ToBool(c, argv[2]);
     CSTR(sel, 1);
-    css_dom_set(&CDOM);                                    /* layout installs its own tree between our calls */
+    css_claim();
     if (css_match_node(sel, 2) < 0) { JSValue e = JS_ThrowSyntaxError(c, "'%s' is not a valid selector", sel); JS_FreeCString(c, sel); return e; }
     JSValue a = JS_NewArray(c);
     uint32_t cnt = 0;
@@ -902,7 +925,7 @@ NATIVE(n_qsa) {
 NATIVE(n_matches) {
     int id = ARGID(0);
     CSTR(sel, 1);
-    css_dom_set(&CDOM);
+    css_claim();
     int r = id && N[id].type == 1 ? css_match_node(sel, id) : 0;
     JS_FreeCString(c, sel);
     return r < 0 ? JS_ThrowSyntaxError(c, "unsupported selector") : JS_NewBool(c, r);
@@ -962,14 +985,14 @@ NATIVE(n_resolve) {
     CSTR(u, 0);
     if (!strncasecmp(u, "data:", 5)) { JSValue r = str(u); JS_FreeCString(c, u); return r; }   /* absolute and possibly longer than URL_MAX */
     const char *bs = argc > 1 && !JS_IsUndefined(argv[1]) ? JS_ToCString(c, argv[1]) : 0;
-    url_resolve(bs ? bs : page_url, u, out, sizeof out);
+    url_resolve(bs ? bs : base_of(J), u, out, sizeof out);
     JS_FreeCString(c, bs);
     JS_FreeCString(c, u);
     return str(out);
 }
 NATIVE(n_navigate) {
     CSTR(u, 0);
-    url_resolve(page_url, u, nav, sizeof nav);
+    url_resolve(base_of(J), u, nav, sizeof nav);
     JS_FreeCString(c, u);
     return JS_UNDEFINED;
 }
@@ -1011,7 +1034,7 @@ static int fetch_queue(const char *url, int script, const char *blob, int has_bl
 NATIVE(n_fetch) {
     CSTR(u, 0);
     char abs[URL_MAX];
-    url_resolve(page_url, u, abs, sizeof abs);
+    url_resolve(base_of(J), u, abs, sizeof abs);
     url_strip_frag(abs);
     JS_FreeCString(c, u);
     /* the request travels as one blob "METHOD\0headers\0" + u32 body length + body bytes (NULL = a plain GET); the body is a string (UTF-8) or an ArrayBuffer (binary: protobuf and friends) */
@@ -1072,7 +1095,7 @@ NATIVE(n_submit) { submit_req = ARGID(0); return JS_UNDEFINED; }
 NATIVE(n_sync_get) {
     CSTR(u, 0);
     char abs[URL_MAX];
-    url_resolve(page_url, u, abs, sizeof abs);
+    url_resolve(base_of(J), u, abs, sizeof abs);
     url_strip_frag(abs);
     JS_FreeCString(c, u);
     size_t l = 0;
@@ -1148,7 +1171,7 @@ NATIVE(n_cv_show) {              /* js node id of a <canvas>, canvas slot: hand 
     const uint8_t *px = id ? cnv_pixels(ai(c, argv[1]), &w, &h) : 0;
     if (px) {
         char key[24];
-        snprintf(key, sizeof key, "canvas:%d", id);
+        snprintf(key, sizeof key, "canvas:%d.%d", J->fid, id);
         if (img_set_rgba(key, px, w, h) >= 0) touch(id);
     }
     return JS_UNDEFINED;
@@ -1192,7 +1215,7 @@ NATIVE(n_ready) { return JS_NewInt32(c, rstate); }
 NATIVE(n_set_url) {                                        /* pushState / replaceState / #hash: the page URL changes, no load */
     CSTR(u, 0);
     char out[URL_MAX];
-    url_resolve(page_url, u, out, sizeof out);
+    url_resolve(base_of(J), u, out, sizeof out);
     JS_FreeCString(c, u);
     strlcpy(page_url, out, sizeof page_url);
     url_changed = 1;
@@ -1259,6 +1282,7 @@ NATIVE(n_rect) {
 /* what a click at document point (x, y) landed on: the display items only know text, images and controls, so an empty styled div (a
  * checkbox drawn with borders and a background) is found from the border boxes layout published. The deepest box under the point wins;
  * the item's own node (hint) stands when nothing inside it is under the point. */
+int js_fid(void) { return J->fid; }                         /* which context (0 = the page) the layout in progress belongs to */
 int js_hit(int x, int y, int hint) {
     if (!rc_set) return hint;
     int best = hint, bd = -1;
@@ -1272,7 +1296,7 @@ int js_hit(int x, int y, int hint) {
     }
     return best;
 }
-NATIVE(n_media) { CSTR(q, 0); css_viewport(vw); int r = css_media(q); JS_FreeCString(c, q); return JS_NewBool(c, r); }
+NATIVE(n_media) { CSTR(q, 0); css_claim(); css_viewport(vw); int r = css_media(q); JS_FreeCString(c, q); return JS_NewBool(c, r); }
 /* computed style of an element, as an object of CSS strings (css_compute down the ancestor chain: UA sheet, author sheets, style="") */
 static void put_len(JSContext *c, JSValue o, const char *name, const struct cprops *p, int prop) {
     char b[24];
@@ -1290,8 +1314,8 @@ static void put_col(JSContext *c, JSValue o, const char *name, uint32_t col) {
 static const struct cprops *computed_of(int id) {          /* the cascade down the ancestor chain; the result is a static */
     int chain[128], n = 0;
     for (int a = id; a && n < 128; a = cd_parent(a)) chain[n++] = a;
-    css_dom_set(&CDOM);
-    css_base(page_url);
+    css_claim();
+    css_base(base_of(J));
     static struct cprops cp[2];
     int cur = 0;
     for (int i = n - 1; i >= 0; i--) { css_compute(chain[i], PE_NONE, i == n - 1 ? 0 : &cp[cur ^ 1], &cp[cur]); if (i) cur ^= 1; }
@@ -1586,7 +1610,7 @@ static struct scr *scr_by_fid(int id) {
 }
 static void deliver(int id, int script, int status, const char *text, const char *ctype, const char *body, size_t blen, const char *err, const char *url, const char *hdrs) {
     if (script == 3) { worker_loaded(id, status, body, blen, err != 0, url); return; }
-    if (script == 2) { frame_loaded(id, status, ctype, body, blen, err != 0, url); return; }
+    if (script == 2) { frame_loaded(id, status, ctype, body, blen, err != 0, url, hdrs); return; }
     if (script) {
         struct scr *e = scr_by_fid(id);
         if (!e || e->state != 1) return;
@@ -1914,7 +1938,7 @@ static void add_script(int id, int where) {                /* where: 0 parser, 1
     struct buf b = { 0 };
     if (!(src && *src)) { text_of(&b, id); if (!b.n) { free(b.p); return; } free(b.p); }
     struct scr e = { id, 0, src && *src ? 1 : 2, module, 0, where == 0 ? nscr : 0, 0, 0 };
-    if (src && *src) { size_t sl = strlen(src) + strlen(page_url) + 1; char *u = malloc(sl); if (u) { url_resolve(page_url, src, u, sl); e.url = u; } }   /* data: and long URLs can exceed URL_MAX */
+    if (src && *src) { size_t sl = strlen(src) + strlen(page_url) + 1; char *u = malloc(sl); if (u) { url_resolve(base_of(J), src, u, sl); e.url = u; } }   /* data: and long URLs can exceed URL_MAX */
     if (where == 2 || (e.url && attr(id, "async"))) e.mode = 2;
     else if (module || (e.url && attr(id, "defer"))) e.mode = 1;
     struct scr *slot;
@@ -2169,6 +2193,7 @@ int dom_ctl_sel(int n) { return n > 0 && n < nn ? sel_index(n) : -1; }       /* 
  * realm (JS_GetCallerContext tells which), queues, and the receiving frame's pump deserialises and dispatches. */
 enum { SB_ON = 1, SB_SCRIPTS = 2, SB_SAME = 4, SB_TOP = 8, SB_FORMS = 16 };
 static struct { int to, from, port; char *json; char origin[160]; } MQ[64];   /* port: the MessagePort it is for (0 = the window / the Worker object) */
+static const char *evo(struct jsst *s) { return !strncmp(s->origin, "file:", 5) ? "null" : s->origin; }   /* event.origin: a local file's is "null" */
 static struct { int owner, peer; } PT[256];                /* MessagePorts: which context holds each end, and the other end */
 
 
@@ -2185,7 +2210,9 @@ static void origin_of(const char *url, const char *inherit, char *out, int cap) 
         size_t n = strlen(out);                                  /* the default port is not part of the origin */
         if (n > 4 && !strcmp(out + n - 4, ":443") && out[4] == 's') out[n - 4] = 0;
         else if (n > 3 && !strcmp(out + n - 3, ":80") && out[4] == ':') out[n - 3] = 0;
-    } else if (!strncasecmp(url, "file:", 5)) strlcpy(out, "file://", cap);
+    } else if (!strncasecmp(url, "file:", 5)) {                /* every local file is an origin of its own (an opaque one in a real browser) */
+        snprintf(out, cap, "%.*s", (int)strcspn(url, "?#"), url);
+    }
     else if (inherit && !strncasecmp(url, "about:", 6)) strlcpy(out, inherit, cap);
     else strlcpy(out, "null", cap);
 }
@@ -2253,7 +2280,7 @@ static int frame_boot(struct jsst *ch, const char *html, size_t n, const char *u
     doc_free(&f->doc);
     for (int i = 0; i < f->nfs; i++) free(f->fs[i].val);
     free(f->fs); f->fs = 0; f->nfs = 0;
-    f->ready = 0; f->redo = 1; f->sy = f->ty = 0; f->fo = f->cb = f->hover = -1; f->pnode = f->pbtn = 0; f->pmx = f->pmy = -1;
+    f->ready = 0; f->redo = 1; f->sy = f->ty = 0; f->fo = f->cb = f->hover = -1; f->selp = 0; f->pnode = f->pbtn = 0; f->pmx = f->pmy = -1;
     strlcpy(J->origin, org, sizeof J->origin);
     int ok = page_boot(html, n, url, !(ch->sandbox & SB_ON) || (ch->sandbox & SB_SCRIPTS));
     if (ok && wname[0]) { JSValue g = JS_GetGlobalObject(ctx); JS_SetPropertyStr(ctx, g, "name", str(wname)); JS_FreeValue(ctx, g); }
@@ -2270,12 +2297,75 @@ static void owner_event(const char *type) {                  /* J = the frame: l
     J = ch;
 }
 
-static void frame_loaded(int id, int status, const char *ctype, const char *body, size_t blen, int bad, const char *url) {   /* J = the parent */
+/* does one frame-ancestors source expression allow the ancestor with origin `anc` (the framed document's own origin is `self`)? */
+static int fa_match(const char *tok, const char *anc, const char *self) {
+    if (!strcmp(tok, "*")) return strncmp(anc, "http", 4) == 0;
+    if (!strcasecmp(tok, "'self'")) return strcmp(self, "null") && !strcmp(self, anc);
+    if (!strcasecmp(tok, "'none'")) return 0;
+    size_t tl = strlen(tok);
+    if (tl && tok[tl - 1] == ':') return !strncasecmp(anc, tok, tl);
+    const char *sch = strstr(tok, "://"), *th = sch ? sch + 3 : tok;
+    if (sch && strncasecmp(anc, tok, sch - tok + 3)) return 0;
+    const char *ah = strstr(anc, "://");
+    if (!ah) return 0;
+    ah += 3;
+    char t[160], a[160];
+    snprintf(t, sizeof t, "%.*s", (int)strcspn(th, "/"), th);
+    snprintf(a, sizeof a, "%s", ah);
+    char *tc = strchr(t, ':');
+    int hp = tc && strcmp(tc, ":*");
+    if (tc && !hp) *tc = 0;
+    if (!hp) { char *ac = strchr(a, ':'); if (ac) *ac = 0; }       /* no port in the source: any port */
+    if (t[0] == '*' && t[1] == '.') { size_t n = strlen(t + 1), m = strlen(a); return m > n && !strcasecmp(a + m - n, t + 1); }
+    return !strcasecmp(t, a);
+}
+static int frame_may_load(struct jsst *ch, const char *url, const char *hdrs) {   /* X-Frame-Options and CSP frame-ancestors of the response */
+    if (!hdrs || !*hdrs) return 1;
+    char self[160], v[1024];
+    origin_of(url, 0, self, sizeof self);
+    int csp = 0;
+    if (hdr_get(hdrs, strlen(hdrs), "Content-Security-Policy", v, sizeof v)) {
+        char *fa = 0;
+        for (char *q = v; *q && !fa; q++) if (!strncasecmp(q, "frame-ancestors", 15)) fa = q;
+        if (fa) {
+            csp = 1;
+            fa += 15;
+            size_t dl = strcspn(fa, ";");
+            char dir[1024];
+            snprintf(dir, sizeof dir, "%.*s", (int)dl, fa);
+            for (struct jsst *an = par_of(ch);; an = par_of(an)) {
+                int ok = 0;
+                char *cp = strdup(dir), *tk, *sp;
+                for (tk = strtok_r(cp, " \t", &sp); tk && !ok; tk = strtok_r(0, " \t", &sp)) ok = fa_match(tk, an->origin, self);
+                free(cp);
+                if (!ok) return 0;
+                if (an == &top_st) break;
+            }
+        }
+    }
+    if (!csp && hdr_get(hdrs, strlen(hdrs), "X-Frame-Options", v, sizeof v)) {
+        if (!strncasecmp(v, "deny", 4)) return 0;
+        if (!strncasecmp(v, "sameorigin", 10))
+            for (struct jsst *an = par_of(ch);; an = par_of(an)) {
+                if (!strcmp(self, "null") || strcmp(self, an->origin)) return 0;
+                if (an == &top_st) break;
+            }
+    }
+    return 1;
+}
+
+static void frame_loaded(int id, int status, const char *ctype, const char *body, size_t blen, int bad, const char *url, const char *hdrs) {   /* J = the parent */
     struct jsst *ch = 0, *pa = J;
     for (int i = 0; i < MAXFR; i++) if (FS[i] && FS[i]->lfid == id && par_of(FS[i]) == pa) ch = FS[i];
     if (!ch) return;
     ch->lfid = 0;
     if (bad) { jlog(1, "iframe %s failed to load", url); J = ch; owner_event("error"); J = pa; return; }
+    if (!frame_may_load(ch, url, hdrs)) {                  /* the page said it must not be framed here */
+        static const char MSG[] = "<body style=\"font:14px sans-serif;color:#555;background:#f4f4f4;margin:12px\"><p>This content is blocked. Contact the site owner to fix the issue.</p></body>";
+        jlog(1, "iframe %s refused to be framed (X-Frame-Options / frame-ancestors)", url);
+        frame_boot(ch, MSG, sizeof MSG - 1, "data:text/html,blocked");
+        return;
+    }
     struct buf b = { 0 };
     const char *html = body ? body : "";
     size_t n = body ? blen : 0;
@@ -2297,12 +2387,21 @@ static void frame_loaded(int id, int status, const char *ctype, const char *body
     free(b.p);
 }
 
-static int frame_nav_url(const char *src) {                 /* J = the parent: queue the document at src; the fetch id */
+static int frame_nav_url(const char *src, const char *post) {   /* J = the parent: queue the document at src (a POST with this body if post); the fetch id */
     size_t cap = strlen(src) + strlen(page_url) + 8;
     char *abs = malloc(cap);
     if (!abs) return 0;
-    url_resolve(page_url, src, abs, cap);
-    int id = fetch_queue(abs, 2, 0, 0);
+    url_resolve(base_of(J), src, abs, cap);
+    int id;
+    if (post) {
+        static const char H[] = "POST\0Content-Type: application/x-www-form-urlencoded";
+        size_t pl = strlen(post), hl = sizeof H;                /* "POST\0headers\0" (H's own NUL ends the headers), then the body */
+        char *blob = malloc(hl + pl + 1);
+        if (!blob) { free(abs); return 0; }
+        memcpy(blob, H, hl); memcpy(blob + hl, post, pl + 1);
+        id = fetch_queue(abs, 2, blob, 1);
+        free(blob);
+    } else id = fetch_queue(abs, 2, 0, 0);
     free(abs);
     return id < 0 ? 0 : id;
 }
@@ -2336,7 +2435,7 @@ static void frames_scan(void) {                              /* J: start the loa
         if (sd) frame_boot(ch, sd, strlen(sd), "about:srcdoc");
         else if (!strncasecmp(src, "javascript:", 11)) continue;
         else if (!strcasecmp(src, "about:blank")) frame_blank(ch);
-        else ch->lfid = frame_nav_url(src);
+        else ch->lfid = frame_nav_url(src, 0);
     }
 }
 
@@ -2352,14 +2451,63 @@ struct frame *js_frame_find(const struct doc *pdoc, int node) {
     }
     return 0;
 }
-const char *js_frame_url(struct frame *f) { return ((struct jsst *)f->st)->s_page_url; }
-void js_frame_navigate(struct frame *f, const char *url) {   /* a link or location change inside the frame */
+const char *js_frame_url(struct frame *f) { return base_of((struct jsst *)f->st); }
+void js_frame_navigate_post(struct frame *f, const char *url, const char *post) {   /* a link, form or location change inside the frame */
     struct jsst *ch = f->st, *sv = J;
     J = par_of(ch);
     if (!strcasecmp(url, "about:blank")) frame_blank(ch);
-    else if (strncasecmp(url, "javascript:", 11) && strncmp(url, "vibe:", 5)) ch->lfid = frame_nav_url(url);
+    else if (strncasecmp(url, "javascript:", 11) && strncmp(url, "vibe:", 5)) ch->lfid = frame_nav_url(url, post);
     J = sv;
 }
+void js_frame_navigate(struct frame *f, const char *url) { js_frame_navigate_post(f, url, 0); }
+
+/* target= of a link or form: _self, _parent, _top, _blank (a new tab, asked of main.c through js_open_url) or the name of a frame.
+ * from = the frame the link is in (NULL = the page). 1 = handled here; 0 = the caller navigates its own document. A POST body (form) is
+ * kept for frames; a top-level or new-tab navigation from a frame is a GET. */
+static char open_req[URL_MAX];
+const char *js_open_url(void) {
+    static char o[URL_MAX];
+    if (!open_req[0]) return 0;
+    strlcpy(o, open_req, sizeof o);
+    open_req[0] = 0;
+    return o;
+}
+int js_goto_target(struct frame *from, const char *tg, const char *url, const char *post) {
+    struct frame *dest = from;
+    int top = 0;
+    if (!tg || !*tg || !strcasecmp(tg, "_self")) { if (!from) return 0; }
+    else if (!strcasecmp(tg, "_top")) { if (!from) return 0; top = 1; dest = 0; }
+    else if (!strcasecmp(tg, "_parent")) { if (!from) return 0; dest = from->par; top = !dest; }
+    else if (!strcasecmp(tg, "_blank") || !strcasecmp(tg, "_new")) { strlcpy(open_req, url, sizeof open_req); return 1; }
+    else {
+        dest = 0;
+        struct jsst *sv = J;
+        for (int i = 0; i < MAXFR; i++) {
+            struct jsst *s = FS[i];
+            if (!s || !s->fr->node) continue;
+            J = par_of(s);
+            const char *nm = attr(s->fr->node, "name");
+            if (nm && !strcmp(nm, tg)) { dest = s->fr; break; }
+        }
+        J = sv;
+        if (!dest) { strlcpy(open_req, url, sizeof open_req); return 1; }      /* no such window: a new one */
+    }
+    if (top) {
+        struct jsst *src = from ? from->st : &top_st;
+        if ((src->sandbox & SB_ON) && !(src->sandbox & SB_TOP)) return 1;      /* sandbox without allow-top-navigation */
+        strlcpy(top_st.s_nav, url, sizeof top_st.s_nav);
+        return 1;
+    }
+    js_frame_navigate_post(dest, url, post);
+    return 1;
+}
+static const char *base_target(void) { int bs = by_tag(1, "base"); return bs ? attr(bs, "target") : 0; }
+const char *js_link_target(int node) {                       /* J's tree: target of the link that holds `node`, else <base target> */
+    for (int a = node; a > 0 && a < nn; a = N[a].parent)
+        if (N[a].type == 1 && (!strcmp(N[a].tag, "a") || !strcmp(N[a].tag, "area")) && attr(a, "href")) { const char *t = attr(a, "target"); return t ? t : base_target(); }
+    return 0;
+}
+const char *js_form_target(int node) { const char *t = node > 0 && node < nn ? attr(node, "target") : 0; return t ? t : base_target(); }
 int js_frame_is_worker(struct frame *f) { return !f->node; }
 int js_frame_sandbox(struct frame *f) { return ((struct jsst *)f->st)->sandbox; }
 
@@ -2426,7 +2574,7 @@ NATIVE(n_fnav) {                                           /* location = url on 
     int32_t f = -1; JS_ToInt32(c, &f, argv[0]);
     struct jsst *t = st_by_fid(f);
     CSTR(u, 1);
-    if (t && strncasecmp(u, "javascript:", 11) && !((J->sandbox & SB_ON) && t == &top_st && !(J->sandbox & SB_TOP))) url_resolve(page_url, u, t->s_nav, sizeof t->s_nav);
+    if (t && strncasecmp(u, "javascript:", 11) && !((J->sandbox & SB_ON) && t == &top_st && !(J->sandbox & SB_TOP))) url_resolve(base_of(J), u, t->s_nav, sizeof t->s_nav);
     JS_FreeCString(c, u);
     return JS_UNDEFINED;
 }
@@ -2467,7 +2615,7 @@ static JSValue post_to(struct jsst *cs, struct jsst *tg, JSContext *c, JSValueCo
     JS_FreeValue(cs->s_ctx, js);
     if (!j) { JS_FreeValue(c, tv); return JS_EXCEPTION; }
     ports_move(c, tr, tg->fid);
-    if (nmq < 64) { MQ[nmq].to = tg->fid; MQ[nmq].port = 0; MQ[nmq].from = cs->fid; MQ[nmq].json = strdup(j); strlcpy(MQ[nmq].origin, cs->origin, sizeof MQ[0].origin); nmq++; }
+    if (nmq < 64) { MQ[nmq].to = tg->fid; MQ[nmq].port = 0; MQ[nmq].from = cs->fid; MQ[nmq].json = strdup(j); strlcpy(MQ[nmq].origin, evo(cs), sizeof MQ[0].origin); nmq++; }
     JS_FreeCString(c, j);
     JS_FreeValue(c, tv);
     return JS_UNDEFINED;
@@ -2509,7 +2657,7 @@ NATIVE(n_isworker) { return JS_NewBool(c, J->fr && !J->fr->node); }
 NATIVE(n_wnew) {                                           /* new Worker(url): the fid, or -1 */
     CSTR(u, 0);
     char abs[URL_MAX];
-    url_resolve(page_url, u, abs, sizeof abs);
+    url_resolve(base_of(J), u, abs, sizeof abs);
     JS_FreeCString(c, u);
     struct jsst *ch = frame_new(0);
     if (!ch) return JS_NewInt32(c, -1);
@@ -2538,7 +2686,7 @@ NATIVE(n_wterm) {
 NATIVE(n_wsend) {                                          /* self.postMessage(json) in a worker: to its creator's Worker object */
     CSTR(j, 0);
     ports_move(c, argc > 1 ? argv[1] : JS_UNDEFINED, J->fr ? par_of(J)->fid : 0);
-    if (J->fr && nmq < 64) { MQ[nmq].to = par_of(J)->fid; MQ[nmq].port = 0; MQ[nmq].from = -J->fid; MQ[nmq].json = strdup(j); strlcpy(MQ[nmq].origin, J->origin, sizeof MQ[0].origin); nmq++; }
+    if (J->fr && nmq < 64) { MQ[nmq].to = par_of(J)->fid; MQ[nmq].port = 0; MQ[nmq].from = -J->fid; MQ[nmq].json = strdup(j); strlcpy(MQ[nmq].origin, evo(J), sizeof MQ[0].origin); nmq++; }
     JS_FreeCString(c, j);
     return JS_UNDEFINED;
 }
@@ -2557,7 +2705,7 @@ NATIVE(n_ppost) {                                          /* port.postMessage: 
     if (id > 0 && id < npt && nmq < 64) {
         int peer = PT[id].peer, to = PT[peer].owner;
         ports_move(c, argc > 2 ? argv[2] : JS_UNDEFINED, to);
-        MQ[nmq].to = to; MQ[nmq].port = peer; MQ[nmq].from = J->fid; MQ[nmq].json = strdup(j); strlcpy(MQ[nmq].origin, J->origin, sizeof MQ[0].origin); nmq++;
+        MQ[nmq].to = to; MQ[nmq].port = peer; MQ[nmq].from = J->fid; MQ[nmq].json = strdup(j); strlcpy(MQ[nmq].origin, evo(J), sizeof MQ[0].origin); nmq++;
     }
     JS_FreeCString(c, j);
     return JS_UNDEFINED;

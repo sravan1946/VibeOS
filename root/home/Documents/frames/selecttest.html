@@ -1,0 +1,6 @@
+<!doctype html>
+<html><head><title>Frame select and target test</title></head>
+<body style="font:14px sans-serif;margin:10px">
+<h3>A &lt;select&gt; and a target=_blank link inside a frame</h3>
+<iframe id="f" width="320" height="200" srcdoc="<body style='font:14px sans-serif;margin:8px'><p>Pick one: <select id=s><option>One<option>Two<option>Three<option>Four</select></p><p>value: <b id=v>One</b></p><p><a id=l href='child2.html' target=_blank>open in a new tab</a></p><script>document.getElementById('s').addEventListener('change', function (e) { document.getElementById('v').textContent = e.target.value; console.log('selecttest: value=' + e.target.value); });</script></body>"></iframe>
+</body></html>

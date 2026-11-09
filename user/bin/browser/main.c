@@ -902,6 +902,8 @@ static void submit(int btn, int form) {
     if (form < 0 || js_event(doc.fm[form].node, "submit", 0, 0, 0)) return;
     char url[URL_MAX], body[sizeof post_body];
     int post = form_submit(&doc, form, btn, cur_url, url, sizeof url, body, sizeof body);
+    const char *ftg = js_active() ? js_form_target(doc.fm[form].node) : 0;      /* target=: another frame, or a new tab */
+    if (ftg && js_goto_target(0, ftg, url, post ? body : 0)) return;
     if (post && url_is_web(url)) { strlcpy(post_body, body, sizeof post_body); has_post = true; }
     navigate(url, 1, -1);
     has_post = false;
@@ -1246,7 +1248,15 @@ int main(int argc, char **argv) {
                 }
                 else if (c->kind == C_SELECT) { sel_ci = ci; sel_scroll = fs_get(&doc, ci)->sel - 5; }
                 hover = -1;
-            } else if (hover >= 0) { if (!js_event(node, "click", 0, dx, dy)) follow(hover); hover = -1; }
+            } else if (hover >= 0) {
+                if (!js_event(node, "click", 0, dx, dy)) {
+                    const char *ltg = js_active() ? js_link_target(node) : 0;
+                    char lu[URL_MAX];
+                    url_resolve(cur_url, doc.link[hover], lu, sizeof lu);
+                    if (!(ltg && js_goto_target(0, ltg, lu, 0))) follow(hover);
+                }
+                hover = -1;
+            }
             else {
                 js_event(node, "click", 0, dx, dy);
                 if (doc_pos_at(&doc, dx, dy, &anc_it, &anc_ch)) { selecting = true; sel_moved = false; }
@@ -1376,6 +1386,8 @@ int main(int argc, char **argv) {
         if (fci >= 0) { fo = doc.ct[fci].ord; caret = fs_get(&doc, fci)->val ? strlen(fs_get(&doc, fci)->val) : 0; }
         char *al = js_alert();
         if (al) { free(alert_msg); alert_msg = al; }
+        const char *ou = js_open_url();
+        if (ou) { char ob[URL_MAX]; strlcpy(ob, ou, sizeof ob); tab_new(ob, true); }
         const char *jn = js_nav();
         if (jn && !strcmp(jn, "vibe:back")) go_hist(-1);
         else if (jn && !strcmp(jn, "vibe:forward")) go_hist(1);

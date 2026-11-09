@@ -2902,7 +2902,7 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni, int cv
     }
     if (!picked && ATTR(dn, "srcset") && img_pick(src, ATTR(dn, "srcset"), ATTR(dn, "sizes"), rootw, pk, sizeof pk)) src = pk;
     if (cvn) {
-        snprintf(u, sizeof u, "canvas:%d", cvn);
+        snprintf(u, sizeof u, "canvas:%d.%d", js_fid(), cvn);
         idx = img_find(u);
         st = idx >= 0 ? img_info(idx, &iw, &ih) : IMG_FAILED;
     } else if (src && *src) {
