@@ -832,7 +832,7 @@ struct fi { struct bx *b; int order, hyp, main, cross, edges, grow, shrink, basi
 
 static int fi_cmp(const void *a, const void *b) {
     const struct fi *x = a, *y = b;
-    return x->order != y->order ? (x->order > y->order ? 1 : -1) : (x->b > y->b) - (x->b < y->b);
+    return x->order != y->order ? (x->order > y->order ? 1 : -1) : x->line - y->line;   /* equal order: document order (line holds it until the flex lines are built) */
 }
 
 static void lay_flex(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *ch, int defh) {
@@ -848,7 +848,7 @@ static void lay_flex(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
         struct bx *x = &B[c];
         if (oof(x)) continue;
         resolve(x, cw);
-        it[k].b = x; it[k].order = x->order; it[k].grow = x->grow; it[k].shrink = x->shrink;
+        it[k].b = x; it[k].line = k; it[k].order = x->order; it[k].grow = x->grow; it[k].shrink = x->shrink;
         k++;
     }
     qsort(it, n, sizeof *it, fi_cmp);
