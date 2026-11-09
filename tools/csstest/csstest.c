@@ -80,6 +80,11 @@ static void test_colors(void) {
     CHECK(col("rgba(255,0,0,.5)") == (int)0x80FF0000u);
     CHECK(col("rgb(100%, 0%, 0%)") == (int)0xFFFF0000u);
     CHECK(col("hsl(120, 100%, 50%)") == (int)0xFF00FF00u);
+    CHECK(col("oklab(1 0 0)") == (int)0xFFFFFFFFu && col("lab(100% 0 0)") == (int)0xFFFFFFFFu && col("lab(0 0 0)") == (int)0xFF000000u);   /* modern colour spaces */
+    { int c = col("oklch(62.8% 0.2577 29.23)"); CHECK(((c >> 16) & 255) >= 252 && ((c >> 8) & 255) <= 3 && (c & 255) <= 3); }
+    CHECK(col("color(srgb 1 0 0)") == (int)0xFFFF0000u && col("color(display-p3 1 1 1)") == (int)0xFFFFFFFFu);
+    CHECK(col("color-mix(in srgb, red, blue)") == (int)0xFF800080u && col("color-mix(in oklab, white 30%, white)") == (int)0xFFFFFFFFu);
+    CHECK(col("color-mix(in srgb, red 25%, blue)") == (int)0xFF4000BFu && col("oklch(0.5 0.1 none)") != -1);
     CHECK(col("hsl(0 100% 50% / 0)") == 0);
     CHECK(col("hsla(240,100%,50%,1)") == (int)0xFF0000FFu);
     CHECK(col("RebeccaPurple") == (int)0xFF663399u);
@@ -132,6 +137,8 @@ static void test_cascade(void) {
     struct cprops c;
     new_page("p{color:red} .t{color:blue} div p{color:green}"); c = compute(p);
     CHECK(c.v[P_COLOR] == (int)0xFF0000FFu);                       /* class beats two tags */
+    new_page("@container (min-width:1px){.a\\'b [x=y]{margin:0}} p{color:red} .t{color:blue}"); c = compute(p);
+    CHECK(c.v[P_COLOR] == (int)0xFF0000FFu);                       /* an escaped quote in a selector inside an at-rule block doesn't open a string */
     new_page("#d p{color:red} p.t.t{color:blue}"); c = compute(p);
     CHECK(c.v[P_COLOR] == (int)0xFFFF0000u);                       /* id beats classes */
     new_page("p{color:red !important} p.t{color:blue}"); c = compute(p);

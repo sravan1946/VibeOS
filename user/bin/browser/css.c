@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <math.h>
 
 /* ---------- interned strings ---------- */
 char *SP; static int sp_n, sp_cap;
@@ -156,6 +157,142 @@ static int angle_deg(double v, const char *u, double *deg) {
     return 1;
 }
 
+/* ---- modern colour spaces: lab() lch() oklab() oklch() color(srgb|display-p3|...) color-mix(); everything lands in sRGB (gamut clipped) ---- */
+static double cbrt3(double x) { return x < 0 ? -pow(-x, 1. / 3) : x == 0 ? 0 : pow(x, 1. / 3); }
+static double lin2srgb(double c) { c = c < 0 ? 0 : c > 1 ? 1 : c; return c <= 0.0031308 ? 12.92 * c : 1.055 * pow(c, 1 / 2.4) - 0.055; }
+static double srgb2lin(double c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
+static color_t pack_lin(double r, double g, double b, double a) {
+    int al = cl255(a * 255);
+    return al ? (color_t)al << 24 | (uint32_t)cl255(lin2srgb(r) * 255) << 16 | (uint32_t)cl255(lin2srgb(g) * 255) << 8 | (uint32_t)cl255(lin2srgb(b) * 255) : 0;
+}
+static color_t oklab_pack(double L, double a, double b, double al) {
+    double l = L + 0.3963377774 * a + 0.2158037573 * b, m = L - 0.1055613458 * a - 0.0638541728 * b, s = L - 0.0894841775 * a - 1.2914855480 * b;
+    l = l * l * l; m = m * m * m; s = s * s * s;
+    return pack_lin(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+                    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s, al);
+}
+static void to_oklab(color_t c, double *L, double *a, double *b) {
+    double r = srgb2lin((c >> 16 & 255) / 255.), g = srgb2lin((c >> 8 & 255) / 255.), bl = srgb2lin((c & 255) / 255.);
+    double l = cbrt3(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * bl), m = cbrt3(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * bl),
+           s = cbrt3(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * bl);
+    *L = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+    *a = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+    *b = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+}
+static color_t lab_pack(double L, double a, double b, double al) {              /* CIE Lab, D50 */
+    double fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200;
+    double x = fx * fx * fx > 0.008856 ? fx * fx * fx : (116 * fx - 16) / 903.3, y = L > 8 ? fy * fy * fy : L / 903.3, z = fz * fz * fz > 0.008856 ? fz * fz * fz : (116 * fz - 16) / 903.3;
+    x *= 0.96422; z *= 0.82521;
+    double X = 0.9555766 * x - 0.0230393 * y + 0.0631636 * z, Y = -0.0282895 * x + 1.0099416 * y + 0.0210077 * z, Z = 0.0122982 * x - 0.0204830 * y + 1.3299098 * z;
+    return pack_lin(3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z, -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z, 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z, al);
+}
+/* "lab(" "lch(" "oklab(" "oklch(" "color(": returns 1 and fills *out, 0 if s is none of them or malformed */
+static int modern_color(const char *s, color_t *out) {
+    int k = !strncasecmp(s, "oklab(", 6) ? 1 : !strncasecmp(s, "oklch(", 6) ? 2 : !strncasecmp(s, "lab(", 4) ? 3 : !strncasecmp(s, "lch(", 4) ? 4 : !strncasecmp(s, "color(", 6) ? 5 : 0;
+    if (!k) return 0;
+    const char *p = strchr(s, '(') + 1;
+    int space = 0;                                                  /* color(): 0 srgb, 1 linear, 2 display-p3, 3 a98/rec2020 (treated as srgb) */
+    if (k == 5) {
+        while (isspace((unsigned char)*p)) p++;
+        if (!strncasecmp(p, "srgb-linear", 11)) { space = 1; p += 11; }
+        else if (!strncasecmp(p, "srgb", 4)) p += 4;
+        else if (!strncasecmp(p, "display-p3", 10)) { space = 2; p += 10; }
+        else if (!strncasecmp(p, "a98-rgb", 7)) { space = 3; p += 7; }
+        else if (!strncasecmp(p, "rec2020", 7)) { space = 3; p += 7; }
+        else if (!strncasecmp(p, "prophoto-rgb", 12)) { space = 3; p += 12; }
+        else return 0;
+    }
+    double c[3], a = 1;
+    int pc[3];
+    for (int i = 0; i < 3; i++) {
+        char u[8];
+        while (isspace((unsigned char)*p)) p++;
+        if (!strncasecmp(p, "none", 4)) { c[i] = 0; pc[i] = 0; p += 4; u[0] = 0; }
+        else if (!cnum(&p, &c[i], &pc[i], u)) return 0;
+        if (((k == 2 || k == 4) && i == 2)) { double dg; if (!angle_deg(c[i], u, &dg)) return 0; c[i] = dg * 0.017453292519943295; }
+        if (pc[i]) {                                                /* percentages: 100% of the reference range */
+            double v = c[i] / 100;
+            if (k == 5) c[i] = v;
+            else if (i == 0) c[i] = k <= 2 ? v : v * 100;
+            else if (k == 1) c[i] = v * 0.4;
+            else if (k == 2) c[i] = v * 0.4;
+            else c[i] = v * (k == 3 ? 125 : 150);
+        }
+        if (k == 5 && !pc[i]) { }
+    }
+    while (isspace((unsigned char)*p)) p++;
+    if (*p == '/') {
+        p++;
+        int ap; double x; char u[8];
+        if (!cnum(&p, &x, &ap, u)) return 0;
+        a = ap ? x / 100 : x;
+        a = a < 0 ? 0 : a > 1 ? 1 : a;
+        while (isspace((unsigned char)*p)) p++;
+    }
+    if (*p != ')') return 0;
+    if (k == 1) *out = oklab_pack(c[0], c[1], c[2], a);
+    else if (k == 2) *out = oklab_pack(c[0], c[1] * cos(c[2]), c[1] * sin(c[2]), a);
+    else if (k == 3) *out = lab_pack(c[0], c[1], c[2], a);
+    else if (k == 4) *out = lab_pack(c[0], c[1] * cos(c[2]), c[1] * sin(c[2]), a);
+    else if (space == 1) *out = pack_lin(c[0], c[1], c[2], a);
+    else if (space == 2) {                                           /* display-p3 -> linear sRGB */
+        double r = srgb2lin(c[0] < 0 ? 0 : c[0]), g = srgb2lin(c[1] < 0 ? 0 : c[1]), b = srgb2lin(c[2] < 0 ? 0 : c[2]);
+        *out = pack_lin(1.2249401 * r - 0.2249404 * g, -0.0420569 * r + 1.0420571 * g, -0.0196376 * r - 0.0786361 * g + 1.0982735 * b, a);
+    } else *out = pack_lin(srgb2lin(c[0] < 0 ? 0 : c[0]), srgb2lin(c[1] < 0 ? 0 : c[1]), srgb2lin(c[2] < 0 ? 0 : c[2]), a);
+    return 1;
+}
+/* color-mix(in <space>, c1 [p1%], c2 [p2%]); srgb mixes in sRGB, every other space in oklab (ponytail: no hue interpolation, no polar spaces) */
+static int color_mix(const char *s, color_t *out) {
+    if (strncasecmp(s, "color-mix(", 10)) return 0;
+    const char *p = s + 10, *e = s + strlen(s);
+    while (e > p && isspace((unsigned char)e[-1])) e--;
+    if (e == p || e[-1] != ')') return 0;
+    e--;
+    char arg[3][120];
+    int n = 0, d = 0, len = 0;
+    for (const char *q = p; q <= e && n < 3; q++) {
+        if (q == e || (*q == ',' && !d)) { arg[n][len] = 0; n++; len = 0; continue; }
+        if (*q == '(') d++; else if (*q == ')') d--;
+        if (len < 119) arg[n][len++] = *q;
+    }
+    if (n != 3) return 0;
+    int srgb = strstr(arg[0], "srgb") && !strstr(arg[0], "linear");
+    color_t cc[2]; double pct[2] = { -1, -1 };
+    for (int i = 0; i < 2; i++) {
+        char *t = arg[i + 1], *sp = 0;
+        int dd = 0;
+        while (isspace((unsigned char)*t)) t++;
+        for (char *q = t; *q; q++) { if (*q == '(') dd++; else if (*q == ')') dd--; else if (isspace((unsigned char)*q) && !dd) sp = q; }
+        if (sp) {                                                   /* a percentage before or after the colour */
+            char *pp = sp; while (isspace((unsigned char)*pp)) pp++;
+            if (strchr(pp, '%') && (isdigit((unsigned char)*pp) || *pp == '.')) { pct[i] = atof(pp); *sp = 0; }
+        }
+        if (pct[i] < 0 && (isdigit((unsigned char)*t) || *t == '.')) {
+            char *pp = t; pct[i] = atof(pp);
+            while (*pp && !isspace((unsigned char)*pp)) pp++;
+            t = pp;
+        }
+        if (!css_color(t, &cc[i], 0)) return 0;
+    }
+    if (pct[0] < 0 && pct[1] < 0) pct[0] = pct[1] = 50; else if (pct[0] < 0) pct[0] = 100 - pct[1]; else if (pct[1] < 0) pct[1] = 100 - pct[0];
+    double sum = pct[0] + pct[1];
+    if (sum <= 0) return 0;
+    double w0 = pct[0] / sum, w1 = pct[1] / sum, a0 = (cc[0] >> 24) / 255., a1 = (cc[1] >> 24) / 255., a = a0 * w0 + a1 * w1 * 1;
+    a = (a0 * w0 + a1 * w1) * (sum > 100 ? 1 : sum / 100);
+    if (a <= 0) { *out = 0; return 1; }
+    double m0 = a0 * w0 / (a0 * w0 + a1 * w1), m1 = 1 - m0;         /* premultiplied weights */
+    if (a0 * w0 + a1 * w1 <= 0) m0 = m1 = .5;
+    if (srgb) {
+        int r = cl255((cc[0] >> 16 & 255) * m0 + (cc[1] >> 16 & 255) * m1), g = cl255((cc[0] >> 8 & 255) * m0 + (cc[1] >> 8 & 255) * m1), b = cl255((cc[0] & 255) * m0 + (cc[1] & 255) * m1);
+        *out = (color_t)cl255(a * 255) << 24 | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
+    } else {
+        double L0, A0, B0, L1, A1, B1;
+        to_oklab(cc[0], &L0, &A0, &B0); to_oklab(cc[1], &L1, &A1, &B1);
+        *out = oklab_pack(L0 * m0 + L1 * m1, A0 * m0 + A1 * m1, B0 * m0 + B1 * m1, a);
+    }
+    return 1;
+}
+
 int css_color(const char *s, color_t *out, int legacy) {
     while (isspace((unsigned char)*s)) s++;
     int n = strlen(s);
@@ -210,6 +347,7 @@ int css_color(const char *s, color_t *out, int legacy) {
         *out = al ? (color_t)al << 24 | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b : 0;
         return 1;
     }
+    if (modern_color(s, out) || color_mix(s, out)) return 1;
     if (n > 11 && !strncasecmp(s, "light-dark(", 11)) {                /* light scheme: the first colour */
         char b[64];
         const char *c = s + 11;
@@ -1709,7 +1847,8 @@ static const char *skip_block(const char *s, const char *e) {       /* s at '{' 
     char q = 0;
     for (; s < e; s++) {
         if (q) { if (*s == '\\') s++; else if (*s == q) q = 0; continue; }
-        if (*s == '"' || *s == '\'') q = *s;
+        if (*s == '\\') s++;                              /* an escaped quote or brace in a selector opens nothing */
+        else if (*s == '"' || *s == '\'') q = *s;
         else if (*s == '{') d++;
         else if (*s == '}' && !--d) return s + 1;
     }
@@ -1790,6 +1929,7 @@ static void sheet(const char *s, size_t m, const char *base, int depth) {
             char qt = 0;
             for (; i < m && (qt || par || (s[i] != '{' && s[i] != ';')); i++) {
                 if (qt) { if (s[i] == '\\') i++; else if (s[i] == qt) qt = 0; }
+                else if (s[i] == '\\') i++;
                 else if (s[i] == '"' || s[i] == '\'') qt = s[i];
                 else if (s[i] == '(') par++;
                 else if (s[i] == ')' && par) par--;
