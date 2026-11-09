@@ -827,11 +827,11 @@ static void place_float(struct bx *c, int cx, int cw, int y, struct bfc *f) {
 }
 
 /* ---------- flexbox ---------- */
-struct fi { struct bx *b; int order, hyp, main, cross, edges, grow, shrink, basis, minc, maxc, ml, mr, mt, mb, line; };
+struct fi { struct bx *b; int seq, order, hyp, main, cross, edges, grow, shrink, basis, minc, maxc, ml, mr, mt, mb, line; };
 
 static int fi_cmp(const void *a, const void *b) {
     const struct fi *x = a, *y = b;
-    return x->order != y->order ? (x->order > y->order ? 1 : -1) : (x->b > y->b) - (x->b < y->b);
+    return x->order != y->order ? (x->order > y->order ? 1 : -1) : (x->seq > y->seq) - (x->seq < y->seq);   /* ties keep tree order (anonymous boxes are allocated late) */
 }
 
 static void lay_flex(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *ch, int defh) {
@@ -847,7 +847,7 @@ static void lay_flex(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
         struct bx *x = &B[c];
         if (oof(x)) continue;
         resolve(x, cw);
-        it[k].b = x; it[k].order = x->order; it[k].grow = x->grow; it[k].shrink = x->shrink;
+        it[k].b = x; it[k].seq = k; it[k].order = x->order; it[k].grow = x->grow; it[k].shrink = x->shrink;
         k++;
     }
     qsort(it, n, sizeof *it, fi_cmp);
