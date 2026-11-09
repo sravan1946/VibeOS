@@ -354,6 +354,10 @@ const t0 = performance.now();
     check('localStorage proxy', [localStorage.k2, localStorage.getItem('foo'), localStorage.length >= 3, Object.keys(localStorage).includes('k2')], ['v2', 'bar', true, true]);
     localStorage.clear();
     check('Promise combinators', [await Promise.all([1, Promise.resolve(2)]), (await Promise.allSettled([Promise.reject(1)]))[0].status, await Promise.race([new Promise(r => setTimeout(() => r('slow'), 30)), 'fast'])], [[1, 2], 'rejected', 'fast']);
+    check('createElement _ / :', [document.createElement('_').localName, document.createElement('a:b').localName, (() => { try { document.createElement('1a'); } catch (e) { return e.name; } })()], ['_', 'a:b', 'InvalidCharacterError']);
+    { const sc = document.createElement('script'); sc.innerHTML = 'var jsq = 1<2 && 3>1;'; document.head.appendChild(sc); check('script innerHTML is raw text', [sc.textContent, window.jsq], ['var jsq = 1<2 && 3>1;', true]); }
+    { const st = document.createElement('style'); document.head.appendChild(st); const sh = st.sheet; sh.insertRule('#summary { letter-spacing: 0px }', 0); sh.insertRule('.zz { color: red }', 1);
+      check('CSSOM insertRule', [st.sheet === sh, sh.cssRules.length, sh.cssRules[1].selectorText, st.textContent.includes('.zz')], [true, 2, '.zz', true]); sh.deleteRule(0); check('CSSOM deleteRule', [sh.cssRules.length, st.textContent.includes('letter-spacing')], [1, false]); }
     const s = document.getElementById('summary');
     s.textContent = fail ? `${pass} passed, ${fail} FAILED` : `all ${pass} tests passed`;
     s.className = fail ? 'fail' : 'pass';

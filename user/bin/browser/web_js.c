@@ -466,11 +466,36 @@ def(g, { WebSocket, EventSource, BroadcastChannel, MessageChannel });
 const CSS = { escape: s => String(s).replace(/[^a-zA-Z0-9_ -￿-]/g, (c, i, str) => c === '\0' ? '�' : /[\x01-\x1f\x7f]/.test(c) || (i === 0 && /[0-9]/.test(c)) ? '\\' + c.charCodeAt(0).toString(16) + ' ' : '\\' + c).replace(/^-(?=[0-9])/, '\\-'),
     supports: (a, b) => b === undefined ? true : /^(display|color|background|margin|padding|width|height|font|border|position|float|text|line|overflow|opacity|cursor|visibility|z-index|flex|top|left|right|bottom)/.test(String(a)),
     registerProperty() {}, px: n => ({ value: n, unit: 'px' }) };
+function splitRules(t) {
+    const out = []; let d = 0, st = 0, q = '';
+    t = String(t).replace(/\/\*[\s\S]*?\*\//g, '');
+    for (let i = 0; i < t.length; i++) {
+        const c = t[i];
+        if (q) { if (c === '\\') i++; else if (c === q) q = ''; continue; }
+        if (c === '"' || c === "'") q = c;
+        else if (c === '{') d++;
+        else if (c === '}') { if (--d === 0) { out.push(t.slice(st, i + 1).trim()); st = i + 1; } else if (d < 0) d = 0; }
+        else if (c === ';' && d === 0) { const r = t.slice(st, i + 1).trim(); if (r) out.push(r); st = i + 1; }
+    }
+    return out;
+}
+const mkRule = (r, sh) => { const i = r.indexOf('{'), sel = i < 0 ? r : r.slice(0, i).trim(), body = i < 0 ? '' : r.slice(i + 1, r.lastIndexOf('}')); const o = { cssText: r, selectorText: sel, parentStyleSheet: sh, type: sel[0] === '@' ? 4 : 1, style: { cssText: body.trim() } }; if (sel[0] === '@') { o.conditionText = sel.replace(/^@\w+\s*/, ''); o.cssRules = splitRules(body).map(x => mkRule(x, sh)); } return o; };
 class CSSStyleSheet {
-    constructor() { this.cssRules = []; this.rules = this.cssRules; this.disabled = false; this.href = null; this.ownerNode = null; this.media = { mediaText: '' }; this.type = 'text/css'; }
-    insertRule(r, i = 0) { this.cssRules.splice(i, 0, { cssText: r, selectorText: String(r).split('{')[0].trim(), style: {} }); return i; }
-    deleteRule(i) { this.cssRules.splice(i, 1); } addRule(s, r) { this.insertRule(s + '{' + r + '}', this.cssRules.length); } removeRule(i) { this.deleteRule(i); }
-    replace() { return Promise.resolve(this); } replaceSync() {}
+    constructor(o) { this.__o = o || null; this.__r = null; this.disabled = false; this.href = null; this.ownerNode = o || null; this.media = { mediaText: '' }; this.type = 'text/css'; }
+    get cssRules() { if (!this.__r) this.__r = this.__o ? splitRules(this.__o.textContent).map(x => mkRule(x, this)) : []; return this.__r; }
+    get rules() { return this.cssRules; }
+    __sync() { if (this.__o) this.__o.textContent = this.__r.map(x => x.cssText).join('\n'); }
+    insertRule(r, i = 0) {
+        const L = this.cssRules.length; r = String(r).trim();
+        if (i > L || i < 0) throw new DOMException('Failed to execute \'insertRule\' on \'CSSStyleSheet\': The index provided is larger than the number of rules.', 'IndexSizeError');
+        if (!r || r.indexOf('{') < 0 && r[0] !== '@') throw new DOMException('Failed to parse the rule \'' + r + '\'.', 'SyntaxError');
+        this.__r.splice(i, 0, mkRule(r, this));
+        if (this.__o) { if (i === L && this.__o.firstChild) this.__o.appendChild(document.createTextNode('\n' + r)); else this.__sync(); }
+        return i;
+    }
+    deleteRule(i) { this.cssRules.splice(i, 1); this.__sync(); }
+    addRule(s, r, i) { this.insertRule(s + '{' + r + '}', i === undefined ? this.cssRules.length : i); return -1; } removeRule(i) { this.deleteRule(i); }
+    replace(t) { this.replaceSync(t); return Promise.resolve(this); } replaceSync(t) { this.__r = splitRules(t).map(x => mkRule(x, this)); this.__sync(); }
 }
 def(g, { CSS, CSSStyleSheet, CSSRule: function CSSRule() {}, StyleSheet: CSSStyleSheet });
 

@@ -567,7 +567,8 @@ class Element extends Node {
     get dataset() { return this.__ds || Object.defineProperty(this, '__ds', { value: datasetOf(this) }).__ds; }
     get innerHTML() { return d.html(this.__id, false); }
     set innerHTML(v) {
-        v = v == null ? '' : String(v);
+        v = v == null ? "" : String(v);
+        if (/^(SCRIPT|STYLE|TEXTAREA|TITLE)$/.test(this.tagName)) { this.textContent = v; return; }
         if (OBS.size) { const rem = [...this.childNodes]; d.setHTML(this.__id, v); record({ type: 'childList', target: this, removedNodes: coll(rem), addedNodes: coll([...this.childNodes]) }); }
         else d.setHTML(this.__id, v);
         if (CE.size && this.isConnected) for (let c = this.firstChild; c; c = c.nextSibling) connectedCallbacks(c, 'connectedCallback');
@@ -835,7 +836,7 @@ HTMLScriptElement.supports = t => t === 'classic' || t === 'module';
 reflect(HTMLLinkElement, { rel: 'rel', type: 'type', media: 'media', as: 'as', crossOrigin: 'crossorigin', integrity: 'integrity', hreflang: 'hreflang' }, { disabled: 'disabled' }, 0, { href: 'href' });
 Object.defineProperty(HTMLLinkElement.prototype, 'sheet', { get() { return null; } });
 reflect(HTMLStyleElement, { media: 'media', type: 'type' }, { disabled: 'disabled' });
-Object.defineProperty(HTMLStyleElement.prototype, 'sheet', { get() { return new g.CSSStyleSheet(); } });
+Object.defineProperty(HTMLStyleElement.prototype, 'sheet', { get() { return this.isConnected ? (this.__sh || (this.__sh = new g.CSSStyleSheet(this))) : null; } });
 reflect(HTMLMetaElement, { name: 'name', content: 'content', httpEquiv: 'http-equiv', charset: 'charset' });
 reflect(HTMLBaseElement, {}, 0, 0, { href: 'href' });
 Object.defineProperty(HTMLTemplateElement.prototype, 'content', { get() {
@@ -915,7 +916,7 @@ class Document extends Node {
     get anchors() { return coll(this.querySelectorAll('a[name]')); }
     get scripts() { return coll(this.querySelectorAll('script')); }
     get embeds() { return coll([]); } get plugins() { return coll([]); }
-    get styleSheets() { return coll([...this.querySelectorAll('style, link[rel~=stylesheet]')].map(() => new g.CSSStyleSheet())); }
+    get styleSheets() { return coll([...this.querySelectorAll('style, link[rel~=stylesheet]')].map(e => e.sheet || new g.CSSStyleSheet())); }
     get adoptedStyleSheets() { return this.__ass || []; } set adoptedStyleSheets(v) { this.__ass = v; }
     get fonts() { return { ready: Promise.resolve(), load: () => Promise.resolve([]), check: () => true, add() {}, forEach() {}, addEventListener() {} }; }
     get cookie() { return g.__cookieGet(); }
@@ -923,7 +924,7 @@ class Document extends Node {
     get lastModified() { return new Date().toString(); }
     hasFocus() { return true; }
     getElementsByName(n) { return coll(this.querySelectorAll('[name="' + String(n).replace(/"/g, '\\"') + '"]')); }
-    createElement(t) { t = String(t).toLowerCase(); if (!/^[a-z][^\s\/>]*$/.test(t)) throw new DOMException("The tag name provided ('" + t + "') is not a valid name.", 'InvalidCharacterError'); const c = t.indexOf('-') > 0 && CE.get(t); if (c) { V.upgrade = 0; return new c(); } return wrap(d.create(t)); }
+    createElement(t) { t = String(t).toLowerCase(); if (!/^[a-z_:\u0080-\uffff][^\s\/>]*$/.test(t)) throw new DOMException("The tag name provided ('" + t + "') is not a valid name.", 'InvalidCharacterError'); const c = t.indexOf('-') > 0 && CE.get(t); if (c) { V.upgrade = 0; return new c(); } return wrap(d.create(t)); }
     createElementNS(ns, t) { return this.createElement(String(t).replace(/^.*:/, '')); }
     createTextNode(s) { return wrap(d.createText(String(s))); }
     createComment(s) { return wrap(d.createComment(String(s))); }
