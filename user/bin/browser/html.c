@@ -360,6 +360,14 @@ static void draw_item(struct canvas *cc, const struct doc *d, int i, int vx, int
         k += nl - 1;
     }
     color_t col = it->link >= 0 && it->link == hover ? d->hoverc : it->col;
+    if (it->flags & FL_DIFF) {                                               /* mix-blend-mode: difference: |backdrop - colour|, with the backdrop sampled mid-item */
+        int sx = vx + it->x + it->w / 2, sy = y + it->h / 2;
+        if (sx >= cv->cx0 && sx < cv->cx1 && sy >= cv->cy0 && sy < cv->cy1) {
+            color_t bgp = cv->px[sy * cv->stride + sx];
+            int r = abs((int)((bgp >> 16) & 255) - (int)((col >> 16) & 255)), g = abs((int)((bgp >> 8) & 255) - (int)((col >> 8) & 255)), b = abs((int)(bgp & 255) - (int)(col & 255));
+            col = (col & 0xFF000000u) | r << 16 | g << 8 | b;
+        }
+    }
     gfx_text_n(cv, f, vx + it->x, y, txt, it->len, col);
     if (it->flags & FL_UL) gfx_fill(cv, vx + it->x, y + f->ascent + 2, it->w, 1, col);
     if (it->flags & FL_STRIKE) gfx_fill(cv, vx + it->x, y + f->height * 55 / 100, it->w, 1, col);

@@ -107,6 +107,7 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
        P_TRSX, P_TRSY, P_TRROT, P_CLIP,   /* P_CLIP: clip: rect(0 0 0 0) (the sr-only trick) = 1: nothing painted */
                                             /* transform scale (x1000, 1000 = none) and rotate (tenths of a degree); LAYOUT may ignore */
        P_FILL, P_STROKE, P_STROKEW,       /* svg: colour (alpha 0 = none) / K_AUTO = not set; stroke width px */
+       P_BLEND,                           /* mix-blend-mode: 1 = difference/exclusion (text drawn inverted over its backdrop), 0 = anything else */
        P_N };
 /* value kinds. K_PX also carries every keyword/enum/colour (value in v). Lengths: K_PX px, K_PCT percent*100, K_CALC compiled
  * calc()/min()/max()/clamp() with a percentage inside (resolve with css_len()). Never read p->v of a length directly: css_len(). */
@@ -232,13 +233,14 @@ int  img_type_ok(const char *mime);              /* a <source type=...> the deco
 extern int doc_zoom;                             /* main.c: page zoom in percent (100 = normal); layout scales fonts, lengths and images by it */
 enum { C_TEXT, C_PASS, C_AREA, C_BTN, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT };
 struct ctl { uint8_t kind, sub, chk, fl; int form, ord, item, node; uint32_t name, val, ph; int o0, no, cols, rows; };   /* sub: C_BTN 1 = submits; ph: placeholder (txt offset, "" = none); fl: CF_* */
-enum { CF_REQ = 1, CF_EMAIL = 2, CF_AUTO = 4, CF_RO = 8 };   /* required, type=email, autofocus, readonly/disabled */
+enum { CF_REQ = 1, CF_EMAIL = 2, CF_AUTO = 4, CF_RO = 8, CF_FLAT = 16 };   /* required, type=email, autofocus, readonly/disabled; flat: author drew only a bottom rule (underline field), so no native box */
 struct opt { uint32_t lab, val; };
 struct form { uint32_t action; uint8_t post; int node; };
 #define FL_UL 1
 #define FL_STRIKE 2
 #define FL_IMG 4
 #define FL_CTL 8
+#define FL_DIFF 16                       /* text inside a mix-blend-mode:difference box: drawn as |backdrop - colour| */
 struct item { int x, y; short w, h, clip; uint8_t font, flags, fit; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
 struct decor { int x, y, w, h; color_t col, g1; int it; short clip; uint8_t rad, ring, msk, gdir, opq;   /* gdir 1/2: linear gradient col -> g1 down / right across the rect */
                int img; uint8_t rep, kx, ky, kw, kh; int px, py, sw, sh; };   /* img: background-image (image cache index + 1; col is then unused): repeat, position and size as k (K_PX/K_PCT[x100]/K_AUTO/K_COVER/K_CONTAIN) + value */   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */

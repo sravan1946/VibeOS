@@ -625,9 +625,19 @@ static void ls_close(void *u, struct bx *b) {
     ls_chunk_add(s, &(struct lit){ .t = LT_CLOSE, .b = b - B, .w = b->m[1] + b->bw[1] + b->p[1] }, 0);
 }
 
+/* height: N% of an image: the containing block's height when that is known before layout (a px height, or an aspect-ratio box of width cw) */
+static int repl_pct_h(const struct bx *b, int cw) {
+    int p = b->par;
+    if (oof(b)) while (p >= 0 && B[p].pos == POS_STATIC && B[p].par >= 0) p = B[p].par;
+    if (p < 0) return -1;
+    const struct bx *q = &B[p];
+    int e = oof(b) ? 0 : hedge(q), ph = q->k[L_H] == K_PX ? q->v[L_H] : q->aspect > 0 ? (int)((long long)(cw - e) * 1000 / q->aspect) : -1;
+    return ph < 0 ? -1 : pctof(b->v[L_H], ph);
+}
+
 static void repl_size(struct bx *b, int cw, int *W, int *H) {
     int nw = b->iw, nh = b->ih;
-    int w = b->k[L_W] == K_AUTO ? -1 : rl(b, L_W, cw), h = b->k[L_H] == K_PX ? b->v[L_H] : -1;
+    int w = b->k[L_W] == K_AUTO ? -1 : rl(b, L_W, cw), h = b->k[L_H] == K_PX ? b->v[L_H] : b->k[L_H] == K_PCT ? repl_pct_h(b, cw) : -1;
     if (b->inner == IN_CTL) { w = w >= 0 ? w : nw; h = h >= 0 ? h : nh; }
     else if (w < 0 && h < 0) { w = nw; h = nh; }
     else if (w < 0) w = nh ? (int)((long long)nw * h / nh) : nw;
@@ -659,7 +669,9 @@ static void ls_atom(void *u, struct bx *b) {
         lay_block(b, s->cx, s->cw, s->y, 0, &c0, LB_ABSY | LB_ROOT);
     }
     int ow = b->w + b->m[1] + b->m[3];
+    if (b->ws != 1) chunk_flush(s);                              /* an atomic inline is a line break opportunity on both sides, space or not (label<input width:100%> wraps) */
     ls_chunk_add(s, &(struct lit){ .t = LT_BOX, .b = b - B, .w = ow }, b->ws == 1);
+    if (b->ws != 1) chunk_flush(s);
 }
 static void ls_flt(void *u, struct bx *b) {
     struct ls *s = u;
@@ -2625,7 +2637,7 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     ni->col = cp->v[P_COLOR];
     ni->align = cp->v[P_ALIGN] == TA_CENTER ? 1 : cp->v[P_ALIGN] == TA_RIGHT ? 2 : 0;
     ni->ws = cp->v[P_WS] == WS_BREAK_SPACES ? 3 : cp->v[P_WS];
-    ni->flags = in->flags | ((cp->v[P_DECO] & DECO_UNDERLINE) ? FL_UL : 0) | ((cp->v[P_DECO] & DECO_LINETHROUGH) ? FL_STRIKE : 0);
+    ni->flags = in->flags | (cp->v[P_BLEND] ? FL_DIFF : 0) | ((cp->v[P_DECO] & DECO_UNDERLINE) ? FL_UL : 0) | ((cp->v[P_DECO] & DECO_LINETHROUGH) ? FL_STRIKE : 0);
     ni->nul = 1;
     ni->vis = cp->v[P_VISIB] != 0 || cp->v[P_CLIP];
     ni->icon = cp->v[P_FAMILY] == FAM_ICON;
@@ -2764,6 +2776,11 @@ static int tw_ui(const char *s) { return gfx_text_width(&font_ui, s); }
 static int has_icon(int dn) {
     for (int c = DN(dn).first; c >= 0; c = DN(c).next)
         if (DN(c).type == 1 && (DN(c).tag == T_SVG || DN(c).tag == T_IMG || has_icon(c))) return 1;
+    return 0;
+}
+
+static int has_elem(int dn) {                              /* an element child (<button><span>..</span></button>: author-styled content, not a label) */
+    for (int c = DN(dn).first; c >= 0; c = DN(c).next) if (DN(c).type == 1) return 1;
     return 0;
 }
 
@@ -3088,7 +3105,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
     if (tag == T_IMG) { build_img(dn, pb, &S, &ni); return; }
     if (tag == T_SVG) { build_svg(dn, pb, &S, &ni, cp); return; }
     int iconbtn = 0;                                          /* <button><svg/></button>: lay the children out as an inline-block instead of a text control */
-    if (tag == T_BUTTON && has_icon(dn)) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
+    if (tag == T_BUTTON && (has_icon(dn) || S.inner == IN_FLEX || S.inner == IN_GRID || has_elem(dn))) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
         const char *ty2 = ATTR(dn, "type");
         iconbtn = S.bg || S.bw[0] | S.bw[1] | S.bw[2] | S.bw[3] || !(ty2 && !strcasecmp(ty2, "submit"));
         if (iconbtn && S.inner == IN_INLINE) S.inner = IN_FLOW;
@@ -3103,6 +3120,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
                 struct bx *b = &B[bi];
                 b->outer = S.flt || oof(&S) || S.outer == OUT_BLOCK ? OUT_BLOCK : OUT_INLINE;
                 b->inner = IN_CTL; b->ref = ci; b->li = 0;
+                if (b->bw[2] && !b->bw[0] && !b->bw[1] && !b->bw[3] && (tag == T_INPUT || tag == T_TEXTAREA)) D->ct[ci].fl |= CF_FLAT;
                 bx_append(pb, bi);
                 if (oof(b)) abs_reg(bi);
             }

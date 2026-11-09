@@ -751,7 +751,7 @@ static const struct pdef PD[] = {
     KW("align-self", P_ALIGNS, ALK "|auto:100"), KW("justify-self", P_JUSTS, ALK "|auto:100"),
     KW("white-space", P_WS, "normal|nowrap|pre|pre-wrap|pre-line|break-spaces"),
     KW("table-layout", P_TBLAY, "auto|fixed"), KW("pointer-events", P_PEV, "auto|none|all:0|visible:0|painted:0|fill:0|stroke:0"),
-    KW("object-fit", P_OBJFIT, "fill|contain|cover|none|scale-down"), KW("font-style", P_ITALIC, "normal|italic|oblique:1"),
+    KW("mix-blend-mode", P_BLEND, "normal|difference|exclusion:1|multiply:0|screen:0|overlay:0|darken:0|lighten:0|color-dodge:0|color-burn:0|hard-light:0|soft-light:0|hue:0|saturation:0|color:0|luminosity:0|plus-lighter:0|plus-darker:0"), KW("object-fit", P_OBJFIT, "fill|contain|cover|none|scale-down"), KW("font-style", P_ITALIC, "normal|italic|oblique:1"),
     KW("border-top-style", P_BSTT, BSL), KW("border-right-style", P_BSTR, BSL), KW("border-bottom-style", P_BSTB, BSL), KW("border-left-style", P_BSTL, BSL),
     KW("border-collapse", P_COLLAPSE, "separate|collapse"), KW("list-style-position", P_LISTP, "outside|inside"),
     KW("text-align", P_ALIGN, "left|center|right|justify|start:0|end:2|-webkit-center:1|-moz-center:1|-webkit-left:0|-webkit-right:2|match-parent:0|justify-all:3"),
