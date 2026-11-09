@@ -231,9 +231,15 @@ static void draw_decor(struct canvas *cc, const struct doc *d, const struct deco
         if (th < 1) th = 1;
         if (tw > 4096 || th > 4096) return;
         long ox = r->kx == K_PCT ? (W - tw) * r->px / 10000 : r->px, oy = r->ky == K_PCT ? (H - th) * r->py / 10000 : r->py;
-        const uint32_t *px = img_pixels(r->img - 1, (int)tw, (int)th, r->msk ? 0 : (r->col >> 24) == 0xFF ? r->col : d->bg);
+        const uint32_t *px = img_pixels(r->img - 1, (int)tw, (int)th, 0);      /* keep the picture's alpha: gfx_blit_alpha blends it over whatever is really behind (a pre-blend with the page colour made a translucent overlay a solid slab) */
         if (!px) return;
         uint32_t *tint = 0;
+        if (r->opq && !r->msk) {                         /* opacity < 1 on the box: fade the picture */
+            tint = malloc((size_t)tw * th * 4);
+            if (!tint) return;
+            for (long k = 0, m = tw * th; k < m; k++) tint[k] = (((px[k] >> 24) * (255 - r->opq) / 255) << 24) | (px[k] & 0xFFFFFF);
+            px = tint;
+        }
         if (r->msk) {                                    /* mask-image: the box colour through the picture's alpha */
             tint = malloc((size_t)tw * th * 4);
             if (!tint) return;

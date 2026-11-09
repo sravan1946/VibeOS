@@ -222,7 +222,7 @@ function live(compute) {
     });
 }
 for (const n of ['NodeList', 'HTMLCollection', 'HTMLOptionsCollection', 'HTMLFormControlsCollection']) g[n] = Object.assign(function () { throw new TypeError('Illegal constructor'); }, { prototype: ListProto });
-g.CSSStyleDeclaration = function CSSStyleDeclaration() {}; g.NamedNodeMap = function NamedNodeMap() {}; g.Window = function Window() {};
+g.CSSStyleDeclaration = function CSSStyleDeclaration() {}; g.NamedNodeMap = function NamedNodeMap() {}; g.Window = function Window() {}; Object.defineProperty(g.Window, Symbol.hasInstance, { value: v => v != null && v.window === v }); /* lenis: wrapper instanceof Window */
 V.coll = coll;
 
 // ---------- mutation observers ----------

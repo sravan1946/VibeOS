@@ -2157,7 +2157,7 @@ static void paint_bg(struct bx *b, int ox, int oy) {
             if (mid > 0) { emit_decor(sx, sy + top, l, mid, c, 0, 0); emit_decor(sx + sw - r, sy + top, r, mid, c, 0, 0); }
         }
     }
-    if (b->bg && !b->msk) emit_decor(x, y, w, h, b->bg, b->rad, 0);
+    if (b->bg && !b->msk) emit_decor(x, y, w, h, b->opacity == 255 ? b->bg : (b->bg & 0xFFFFFF) | (b->bg >> 24) * b->opacity / 255 << 24, b->rad, 0);   /* opacity: only the box's own paint is faded (no group compositing), enough for translucent overlays */
     if (b->bgi && w > 0 && h > 0) {                      /* background-image, placed in the padding box */
         int l = b->bw[3], t = b->bw[0];
         color_t under = b->msk || (b->bg >> 24) == 0xFF ? b->bg : 1;       /* the box's own colour: what a transparent picture is drawn over */
@@ -2165,7 +2165,7 @@ static void paint_bg(struct bx *b, int ox, int oy) {
         struct decor *r = &D->dc[D->ndc - 1];
         if (D->ndc && r->it == D->nit && r->col == under && !r->img) {
             r->img = b->bgi; r->rep = b->brep; r->kx = b->bkx; r->ky = b->bky; r->kw = b->bkw; r->kh = b->bkh;
-            r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh; r->msk = b->msk;
+            r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh; r->msk = b->msk; r->opq = 255 - b->opacity;
         }
     }
     if (b->grd && w > 0 && h > 0) paint_grad(b, x + b->bw[3], y + b->bw[0], w - b->bw[1] - b->bw[3], h - b->bw[0] - b->bw[2]);

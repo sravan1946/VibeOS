@@ -1879,6 +1879,9 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 			attr->hasFill = 1;
 			attr->fillColor = nsvg__parseColor(value);
 		}
+	} else if (strcmp(name, "filter") == 0) {
+		/* VibeOS: no SVG filters (feTurbulence grain overlays etc.): the unfiltered shape would be a solid slab, so draw nothing */
+		if (strncmp(value, "url(", 4) == 0) attr->visible = 0;
 	} else if (strcmp(name, "opacity") == 0) {
 		attr->opacity = nsvg__parseOpacity(value);
 	} else if (strcmp(name, "fill-opacity") == 0) {
