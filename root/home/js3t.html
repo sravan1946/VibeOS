@@ -1,0 +1,30 @@
+<html><body><script>
+function t(n, f) { try { console.log(n + ' => ' + f()); } catch (e) { console.log(n + ' THROWS ' + e); } }
+const d = new Date(Date.UTC(2026, 10, 8, 22, 54, 50));
+t('tz', () => Intl.DateTimeFormat().resolvedOptions().timeZone + ' off ' + d.getTimezoneOffset());
+t('short', () => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+t('long', () => d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }));
+t('time', () => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }));
+t('dtf', () => new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(d));
+t('dtfparts', () => JSON.stringify(new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).formatToParts(d)));
+t('toLocaleString', () => d.toLocaleString('en-US'));
+t('toLocaleString2', () => d.toLocaleString());
+t('num', () => (1234567.891).toLocaleString('en-US'));
+t('nf', () => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(1234.5));
+t('nfc', () => new Intl.NumberFormat('en-US', { notation: 'compact' }).format(12345));
+t('rtf', () => new Intl.RelativeTimeFormat('en', { numeric: 'auto' }).format(-1, 'day'));
+t('plural', () => new Intl.PluralRules('en').select(1));
+t('lf', () => new Intl.ListFormat('en').format(['a', 'b', 'c']));
+t('str', () => d.toString());
+t('utc', () => d.toUTCString());
+t('iso', () => d.toISOString());
+t('date', () => new Date('2026-11-08T13:00:00').getTime() + ' ' + new Date('Nov 8, 2026').getTime());
+t('coll', () => ['b', 'a', 'C'].sort(new Intl.Collator('en').compare).join());
+t('lc', () => 'a'.localeCompare('B'));
+t('ua', () => navigator.userAgent + ' | ' + navigator.language + ' | ' + navigator.languages);
+t('mm', () => matchMedia('(min-width: 768px)').matches + ' ' + matchMedia('(prefers-color-scheme: dark)').matches + ' ' + matchMedia('(hover: hover)').matches + ' ' + matchMedia('(pointer: fine)').matches + ' ' + matchMedia('(prefers-reduced-motion: reduce)').matches);
+t('inner', () => innerWidth + 'x' + innerHeight + ' dpr ' + devicePixelRatio + ' screen ' + screen.width);
+t('animate', () => { const e = document.createElement('div'); document.body.appendChild(e); const a = e.animate([{opacity:0},{opacity:1}], {duration: 100, fill: 'forwards'}); a.finished.then(() => console.log('anim done op=' + e.style.opacity)); return a.playState; });
+t('dataurl', () => { fetch('data:text/plain;base64,' + btoa('x'.repeat(3000))).then(r => r.text()).then(x => console.log('data len ' + x.length)); return 'sent'; });
+t('formdata', () => { const f = document.createElement('form'); f.innerHTML = '<input name=a value=1><input type=checkbox name=c checked><select name=s><option value=x selected>X</option></select><textarea name=t>hey</textarea>'; return [...new FormData(f).entries()].join('|'); });
+</script></body></html>
