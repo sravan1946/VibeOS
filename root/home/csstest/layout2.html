@@ -34,4 +34,7 @@ body { margin: 8px; font-family: sans-serif; font-size: 14px; }
 <div class="t"><div style="float:left;display:grid;grid-template-columns:auto auto;gap:3px"><i style="width:20px;height:20px;display:block"></i><span>LIVE</span></div><b>headline text</b></div>
 <!-- flex: items with equal order stay in document order even when an anonymous text item was created later -->
 <div class="t" style="display:flex;white-space:pre"><span>one </span>two <span>three</span></div>
+<!-- flex: automatic minimum size is min-content even when flex-basis is 0 (flex:1 beside a 130px media box); grid auto-fit with a % minimum caps at the item count -->
+<div class="t" style="display:flex;gap:12px;width:260px"><a style="display:flex;flex:1"><div style="width:130px;height:30px;background:#ccc"></div></a><a style="display:flex"><span>The retired ocean liner is sunk</span></a></div>
+<div class="t" style="display:grid;gap:24px;grid-template-columns:repeat(auto-fit,minmax(25%,1fr))"><div>a</div><div>b</div><div>c</div></div>
 </body></html>

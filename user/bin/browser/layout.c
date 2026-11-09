@@ -864,7 +864,7 @@ static void lay_flex(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
             else if (x->inner == IN_IMG || x->inner == IN_CTL) { int W, H; repl_size(x, cw, &W, &H); basis = W; }
             else basis = sw >= 0 ? sw : mx;
             int mnw = csize(x, L_MINW, cw, 1), mxw = csize(x, L_MAXW, cw, 1);
-            it[i].minc = mnw >= 0 ? mnw : sw >= 0 || x->k[L_BASIS] != K_AUTO ? imin_(mn, basis) : mn;
+            it[i].minc = mnw >= 0 ? mnw : x->ovf ? 0 : sw >= 0 ? imin_(mn, sw) : mn;   /* automatic minimum: min-content (0 when it scrolls or clips) */
             it[i].maxc = mxw >= 0 ? mxw : BIGW;
             it[i].basis = basis;
             it[i].hyp = imin_(imax_(basis, it[i].minc), it[i].maxc);
@@ -1042,6 +1042,21 @@ static int track_one(const char *t, int len, struct trk *o, int cw) {
     return 1;
 }
 
+static int g_nitems;                        /* in-flow children of the grid being laid out (auto-fit track cap) */
+static int track_min(const char *s, int cw) {   /* minmax()'s minimum: px, %, em or min(a, b) of those */
+    while (*s == ' ') s++;
+    if (!strncmp(s, "min(", 4)) {
+        int a = track_min(s + 4, cw);
+        const char *c = strchr(s, ',');
+        int b = c ? track_min(c + 1, cw) : a;
+        return imin_(a, b);
+    }
+    double v = atof(s);
+    const char *u = s;
+    while (*u && (isdigit((unsigned char)*u) || *u == '.' || *u == '-')) u++;
+    return *u == '%' ? (int)(v * cw / 100) : css_px(s);
+}
+
 static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) {
     int n = 0;
     while (s && *s && n < max) {
@@ -1066,9 +1081,10 @@ static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) 
                 else {                                       /* auto-fill / auto-fit: as many as fit */
                     int m = 0;
                     const char *mm = strstr(sub, "minmax(");
-                    m = mm ? css_px(mm + 7) : in[0].kind == 0 ? in[0].v : 200;
+                    m = mm ? track_min(mm + 7, cw) : in[0].kind == 0 ? in[0].v : 200;
                     if (m < 40) m = 40;
                     cnt = imax_(1, (cw + gap) / (m + gap));
+                    if (!strncmp(a, "auto-fit", 8) && g_nitems > 0 && cnt > g_nitems) cnt = g_nitems;   /* auto-fit collapses the empty tracks */
                     for (int i = 0; i < ni; i++) if (in[i].kind == 1 || in[i].kind == 2) { in[i].kind = 1; in[i].v = 100; }
                 }
                 if (ni < 1) ni = 1, in[0] = (struct trk){ 2, 0 };
@@ -1083,6 +1099,7 @@ static int parse_tracks(const char *s, struct trk *t, int max, int cw, int gap) 
 /* shrink-to-fit width of a grid: items fall into the explicit columns in order; px tracks keep their size, the others take their widest item (ponytail: ignores spans and explicit placement) */
 static void grid_intr(struct bx *b, int *mn, int *mx) {
     struct trk ct[GMAXC];
+    g_nitems = 0;
     int nc = parse_tracks(b->gcols ? css_str(b->gcols - 1) : 0, ct, GMAXC, 0, b->gapc), i = 0, a = 0, z = 0;
     int cmn[GMAXC] = { 0 }, cmx[GMAXC] = { 0 };
     if (nc < 1) nc = 1;
@@ -1151,6 +1168,8 @@ struct gitem { struct bx *b; int r, c, rs, cs; };
 
 static void lay_grid(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *ch) {
     struct trk ct[GMAXC], rt[GMAXR];
+    g_nitems = 0;
+    for (int c = b->first; c >= 0; c = B[c].next) if (!oof(&B[c])) g_nitems++;
     int nc = parse_tracks(b->gcols ? css_str(b->gcols - 1) : 0, ct, GMAXC, cw, b->gapc), nr_t = parse_tracks(b->grows ? css_str(b->grows - 1) : 0, rt, GMAXR, cw, b->gapr);
     if (nc < 1) { nc = 1; ct[0] = (struct trk){ 1, 100 }; }
     /* areas */
