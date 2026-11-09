@@ -411,6 +411,20 @@ The CSSOM is backed by the `<style>` text (`sheet.insertRule`/`deleteRule` rewri
 `innerHTML` on `<script>`/`<style>` is raw text. Pages and scripts are capped at 8 MiB and the JS heap at 128 MiB.
 `indexedDB` and `WebAssembly` are stubs that fail cleanly (asynchronously), so feature-detecting code falls back.
 
+**Frames and workers** (`iframe.c`, `js.c`): every browsing context (page, iframe, worker) is a `struct jsst` with its own
+JSContext in the shared runtime, node tree, timers and fetches; js.c's old per-page statics are macros onto the current
+state `J` (`#define ctx (J->s_ctx)`), and every native selects `J` from its JSContext, so new locals must not reuse those
+names. A `struct frame` owns its `struct doc` and is laid out on its own (the parent never relays out for it); the
+parent's display list has an `FL_FRM` item that `frame_paint` fills, and input is routed into the frame under the
+pointer. Origins are compared per context (each `file://` document is opaque); a cross-origin window is a Proxy that
+exposes only `postMessage`/`location`/`closed`/`parent`/`top`. `postMessage` uses a structured clone with a transfer list
+(QuickJS patch: `JS_GetCallerContext`). Fetched frames honour `X-Frame-Options` and `frame-ancestors`.
+
+**Fonts and canvas**: text under 22 px uses the baked bitmap faces; larger text and `@font-face` faces go through
+`ttf.c` (stb_truetype, glyph caches per face and size, LRU web-font slots, fallback web font -> symbol face -> Inter).
+`canvas.c` rasterises 2D canvas commands in C (64 slots, LRU); a `<canvas>` is an image keyed `canvas:<frame>.<node>`.
+fetch/XHR bodies cross into C as `method NUL headers NUL u32 length + bytes`, so binary bodies survive.
+
 **Icons and paint details**: an inline `<svg>` is serialised and handed to nanosvg after `svg_resolve_use` (svg.c) expands
 `<use href>` against same-page `<symbol>`/id elements (copying the symbol's viewBox); an svg root without its own `fill`
 takes the CSS text colour (stands in for `currentColor`). A `<button>` holding an svg/img lays its children out instead of

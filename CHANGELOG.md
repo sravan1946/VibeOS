@@ -442,6 +442,30 @@ round 2 and this round each wrote were reconciled into one: `fn_len` for `calc()
 - Known gaps: Arabic and other RTL scripts (no glyphs, no bidi or shaping), web.dev's header, Tailwind's "Quick search"
   button placement, no incremental relayout beyond skipping clean attribute changes.
 
+### Browser: round 4 (p1ng.me, frames, Google search and reCAPTCHA)
+Three agents (P1NG, FRAMES, GOOGLE) merged on `main`.
+- [x] p1ng.me (React/Vite, lenis, motion): `window instanceof Window`, box `opacity`, `position: fixed`,
+  `mix-blend-mode: difference`, an SVG `filter=url()` overlay no longer paints a solid slab. Text from 22 px up is drawn
+  from outlines (`ttf.c`, vendored stb_truetype; static Inter, JetBrains Mono and a Noto Symbols2 face built by
+  `tools/mkttf.py`), `@font-face` (TTF/OTF/WOFF1; Google Fonts serves TTF to our User-Agent, so no woff2/brotli),
+  `@keyframes`/`animation` for translate (drawn at paint time, no relayout), lazy images start two screens ahead.
+- [x] Frames: real `<iframe>` (src, srcdoc, data:, about:blank), one JS realm per browsing context (`struct jsst`),
+  `postMessage` with structured clone and transfer, cross-origin windows behind a Proxy that throws `SecurityError`,
+  Web Workers, `MessageChannel` across frames and workers, per-frame `getComputedStyle`/`matchMedia`,
+  `X-Frame-Options` and CSP `frame-ancestors`, form POST and `target=` (`_self`/`_parent`/`_top`/`_blank`/named) from
+  frames, `<select>` in frames, each `file://` document is its own opaque origin. `framestest.html` 36/36 (39/39 over
+  http with `tools/frametest/server.py`).
+- [x] Google: `crypto.subtle.digest`, `getRandomValues` from `/dev/urandom`, native-looking `Function.toString`,
+  canvas 2D (`canvas.c`, software rasteriser; `<canvas>` lays out as an image), `URL_MAX` 4096 (the homepage script
+  URL is 3656 chars), binary fetch/XHR request bodies (reCAPTCHA's protobuf POSTs were sent as C strings, which is what
+  "Error in protected function: 1" was), images with an explicit width are no longer clamped to their box, styled
+  `<button>`s lay out as boxes, long `url(data:)` CSS values, `display:none` controls submit with their form, 16 KB POST
+  bodies, 2 KB cookies. The homepage runs clean and searches submit; from the VM's AWS address Google answers with
+  `/sorry`, whose reCAPTCHA widget and image challenge now render and take clicks for a human to solve.
+- Known gaps: CSS transitions, non-translate animations, woff2, variable fonts and italics in vector text; text
+  selection/find inside frames; a top-level navigation from a frame is always GET; the selected-tile `scale()` in
+  reCAPTCHA; the Google results page is untested (never reached from the VM).
+
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
 - Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.
