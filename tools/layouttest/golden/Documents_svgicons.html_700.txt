@@ -1,0 +1,22 @@
+? o1 i0 p0 f0 [0,0 700x276]  fr0@0,0
+  html o1 i0 p0 f0 [0,20 700x236]  fr0@0,0
+    body o1 i0 p0 f0 [20,20 660x236]  fr0@0,0
+      p o1 i0 p0 f0 [20,20 660x23]  fr2@20,21
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+        button.btn o0 i0 p0 f0 [297,20 14x14]  fr0@0,0
+      p o1 i0 p0 f0 [20,59 660x22]  fr1@20,59
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+      p o1 i0 p0 f0 [20,97 660x26]  fr4@20,101
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+        button.btn o0 i0 p0 f0 [150,100 14x14]  fr0@0,0
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+        button o0 i11 p0 f0 [255,97 48x26]  fr0@0,0
+      p o1 i0 p0 f0 [20,139 660x41]  fr2@20,158
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+        span.mk o0 i0 p0 f0 [200,139 32x32]  fr0@0,0
+      p o1 i0 p0 f0 [20,196 660x22]  fr1@20,196
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+      p o1 i0 p0 f0 [20,234 660x22]  fr1@20,234
+        #text o0 i9 p0 f0 [0,0 0x0]  fr0@0,0
+        span#js o0 i1 p0 f0 [0,0 0x0]  fr0@0,0

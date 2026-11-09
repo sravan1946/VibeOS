@@ -102,7 +102,8 @@ enum { P_COLOR, P_BG, P_BOLD, P_ALIGN, P_MT, P_MR, P_MB, P_ML, P_PT, P_PR, P_PB,
        P_CRESET, P_CINC,                                               /* counter-reset / counter-increment: K_STR "name N name N" (K_NONE = none); see css_cnt_* */
        P_OBJPX, P_OBJPY, P_TRX, P_TRY, P_MASKIMG,
        P_BG2IMG, P_BG2REP, P_BG2PX, P_BG2PY, P_BG2SW, P_BG2SH,       /* second background layer (painted UNDER the P_BGIMG one, over the colour): same encoding as P_BGIMG..P_BGSH */
-       P_TRSX, P_TRSY, P_TRROT,                                      /* transform scale (x1000, 1000 = none) and rotate (tenths of a degree); LAYOUT may ignore */
+       P_TRSX, P_TRSY, P_TRROT, P_CLIP,   /* P_CLIP: clip: rect(0 0 0 0) (the sr-only trick) = 1: nothing painted */
+                                            /* transform scale (x1000, 1000 = none) and rotate (tenths of a degree); LAYOUT may ignore */
        P_N };
 /* value kinds. K_PX also carries every keyword/enum/colour (value in v). Lengths: K_PX px, K_PCT percent*100, K_CALC compiled
  * calc()/min()/max()/clamp() with a percentage inside (resolve with css_len()). Never read p->v of a length directly: css_len(). */
@@ -119,7 +120,7 @@ enum { AL_NORMAL, AL_START, AL_END, AL_CENTER, AL_BETWEEN, AL_AROUND, AL_EVENLY,
 enum { WS_NORMAL, WS_NOWRAP, WS_PRE, WS_PRE_WRAP, WS_PRE_LINE, WS_BREAK_SPACES };
 enum { TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY };  /* P_ALIGN */
 enum { VA_BASELINE, VA_TOP, VA_MIDDLE, VA_BOTTOM, VA_TEXT_TOP, VA_TEXT_BOTTOM, VA_SUB, VA_SUPER };   /* P_VALIGN (+ P_VAOFF px for lengths) */
-enum { FAM_SANS, FAM_SERIF, FAM_MONO };
+enum { FAM_SANS, FAM_SERIF, FAM_MONO, FAM_ICON /* icon fonts (ligature or private-use glyphs we can't draw): the text is not painted */ };
 enum { LT_DISC, LT_CIRCLE, LT_SQUARE, LT_DECIMAL, LT_ZERO, LT_LALPHA, LT_UALPHA, LT_LROMAN, LT_UROMAN, LT_LGREEK, LT_NONE };
 enum { REP_REPEAT, REP_X, REP_Y, REP_NONE };
 enum { DECO_UNDERLINE = 1, DECO_LINETHROUGH = 2, DECO_OVERLINE = 4 };
@@ -210,7 +211,10 @@ void *img_save(void);                            /* background tab: take the cac
 void img_restore(void *h);
 void img_drop(void *h);
 int  img_add_data(const char *url, const uint8_t *d, size_t n);   /* decode a body we already have */
+int  img_translucent(int i);
 int  img_svg_inline(const char *svg, size_t n, long color);       /* an inline <svg> element's markup as an image (index, or -1); color = currentColor 0xRRGGBB or -1 */
+const char *svg_mem(const char *h, size_t hn, const char *nd, size_t nn);
+char *svg_resolve_use(const char *svg, size_t n, const char *const *docs, const size_t *dl, int nd, size_t *on);
 const char *img_url(int i);                      /* the cache key / URL of image i */
 int  img_anim_due(void);                         /* ms until an animated GIF on screen wants its next frame, -1 = none (wake the loop then; no relayout needed) */
 /* srcset/sizes: the URL to load for an <img> or <source> (src may be NULL), vw = viewport width. 1 = out filled (unresolved URL) */
@@ -229,9 +233,13 @@ struct form { uint32_t action; uint8_t post; int node; };
 #define FL_IMG 4
 #define FL_CTL 8
 struct item { int x, y; short w, h, clip; uint8_t font, flags, fit; uint16_t len; color_t col; int link; uint32_t off; int ref, node; };   /* node: js.c DOM id */
-struct decor { int x, y, w, h; color_t col; int it; short clip; uint8_t rad, ring;
+struct decor { int x, y, w, h; color_t col, g1; int it; short clip; uint8_t rad, ring, msk, gdir;   /* gdir 1/2: linear gradient col -> g1 down / right across the rect */
                int img; uint8_t rep, kx, ky, kw, kh; int px, py, sw, sh; };   /* img: background-image (image cache index + 1; col is then unused): repeat, position and size as k (K_PX/K_PCT[x100]/K_AUTO/K_COVER/K_CONTAIN) + value */   /* drawn before item `it`; rad: corner radius; ring: draw a border ring of that width instead of a fill */
 struct cliprect { int x, y, w, h; };
+/* position: sticky box: the items/decors/clips it emitted are moved down at draw time (doc_draw) so it stays `top` px below the viewport top,
+ * but never past `lim` (bottom of its parent). y0/h: its border box. */
+struct stick { int i0, i1, d0, d1, c0, c1, y0, h, top, lim; };
+#define MAXSTK 8
 struct anchor { char name[40]; int y; };
 struct doc {
     struct item *it; int nit, itcap;
@@ -246,6 +254,7 @@ struct doc {
     char title[128];
     color_t bg, fg, linkc, hoverc;
     int height, truncated, maxh;     /* maxh: tallest item (images, textareas), for the y search */
+    struct stick sk[MAXSTK]; int nsk;   /* position: sticky groups */
     int *pmax, *smin;                /* per item: max bottom edge of items 0..i, min top edge of items i..end (table cells make y non-monotonic) */
 };
 void doc_free(struct doc *d);
@@ -256,6 +265,7 @@ void doc_layout_js(struct doc *d, int width, const char *base);   /* the same fo
 struct docmark { int from_it, from_ch, to_it, to_ch; const char *find; int find_it, find_off; };
 void doc_draw(struct ui *ui, const struct doc *d, int vx, int vy, int vw, int vh, int scroll, int hover,
               const struct docmark *mk, int focus_ord, int caret);
+int  doc_unstick(const struct doc *d, int y, int scroll);   /* a document y under a drawn sticky box -> where that box was laid out */
 int  doc_hit(const struct doc *d, int x, int y);          /* link index at document coords, or -1 */
 int  doc_pos_at(const struct doc *d, int x, int y, int *item, int *ch);   /* text run + byte offset nearest the point (for selecting) */
 int  doc_ctl_at(const struct doc *d, int x, int y);       /* control index under the point, or -1 */

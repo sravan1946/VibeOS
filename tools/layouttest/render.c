@@ -50,6 +50,9 @@ int img_ref(const char *u) { return 0; }
 int img_ref_ex(const char *u, const char *l) { return 0; }
 int img_info(int i, int *w, int *h) { return IMG_LOADING; }
 const uint32_t *img_pixels(int i, int w, int h, color_t bg) { return 0; }
+int img_translucent(int i) { return 0; }
+const char *svg_mem(const char *h, size_t hn, const char *nd, size_t nn) { for (; hn >= nn; h++, hn--) if (!memcmp(h, nd, nn)) return h; return 0; }
+char *svg_resolve_use(const char *svg, size_t n, const char *const *docs, const size_t *dl, int nd, size_t *on) { return 0; }
 void browser_status(int bad, const char *fmt, ...) {}
 int main(int argc, char **argv) {
     FILE *f = fopen(argv[1], "rb");
@@ -68,7 +71,7 @@ int main(int argc, char **argv) {
     uint32_t *px = calloc((size_t)w * h, 4);
     struct canvas c; canvas_init(&c, px, w, h, w);
     struct ui ui; memset(&ui, 0, sizeof ui); ui.c = &c;
-    doc_draw(&ui, &d, 0, 0, w, h, 0, -1, 0, -1, 0);
+    doc_draw(&ui, &d, 0, 0, w, h, getenv("LT_SCROLL") ? atoi(getenv("LT_SCROLL")) : 0, -1, 0, -1, 0);
     FILE *o = fopen(argv[3], "wb");
     fprintf(o, "P6\n%d %d\n255\n", w, h);
     for (int i = 0; i < w * h; i++) { fputc(px[i] >> 16, o); fputc(px[i] >> 8, o); fputc(px[i], o); }

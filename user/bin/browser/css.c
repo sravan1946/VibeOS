@@ -593,6 +593,7 @@ static const struct pdef PD[] = {
        "table-row-group:13|table-header-group:14|table-footer-group:15|table-column:16|table-column-group:17|table-caption:18|list-item:19|contents:20|"
        "flow-root:2|-webkit-box:5|-webkit-inline-box:6|-ms-flexbox:5|-ms-inline-flexbox:6|run-in:2|ruby:3|ruby-text:3|block flow:2|inline flow:3|block flow-root:2|"
        "inline flow-root:4|block flex:5|inline flex:6|block grid:7|inline grid:8|flow list-item:19|block flow list-item:19"),
+    KW("clip", P_CLIP, "auto|rect(0 0 0 0):1|rect(0,0,0,0):1|rect(0, 0, 0, 0):1|rect(0px 0px 0px 0px):1|rect(0px,0px,0px,0px):1|rect(1px 1px 1px 1px):1|rect(1px,1px,1px,1px):1|rect(1px, 1px, 1px, 1px):1"),
     KW("position", P_POSITION, "static|relative|absolute|fixed|sticky|-webkit-sticky:4"),
     KW("float", P_FLOAT, "none|left|right|inline-start:1|inline-end:2"), KW("clear", P_CLEAR, "none|left|right|both|inline-start:1|inline-end:2"),
     KW("overflow-x", P_OVX, "visible|hidden|scroll|auto|clip|overlay:3"), KW("overflow-y", P_OVY, "visible|hidden|scroll|auto|clip|overlay:3"),
@@ -820,7 +821,8 @@ static int classify_family(const char *list) {     /* FAM_*, or -1 when no liste
             char *s = b;
             while (isspace((unsigned char)*s) || *s == '"' || *s == '\'') s++;
             int c = -1;
-            if (strstr(s, "mono") || strstr(s, "courier") || strstr(s, "consolas") || strstr(s, "menlo") || strstr(s, "monaco") || strstr(s, "lucida console") ||
+            if (strstr(s, "material icons") || strstr(s, "material symbols") || strstr(s, "fontawesome") || strstr(s, "font awesome") || strstr(s, "glyphicons") || strstr(s, "icomoon") || strstr(s, "bootstrap-icons") || strstr(s, "ionicons") || strstr(s, "octicons")) c = FAM_ICON;
+            else if (strstr(s, "mono") || strstr(s, "courier") || strstr(s, "consolas") || strstr(s, "menlo") || strstr(s, "monaco") || strstr(s, "lucida console") ||
                 strstr(s, "fira code") || strstr(s, "source code") || strstr(s, "cascadia") || strstr(s, "jetbrains") || strstr(s, "inconsolata") || strstr(s, "terminal")) c = FAM_MONO;
             else if (strstr(s, "sans") || !strncmp(s, "arial", 5) || strstr(s, "helvetica") || strstr(s, "verdana") || strstr(s, "tahoma") || strstr(s, "segoe") ||
                      strstr(s, "system-ui") || strstr(s, "-apple-system") || strstr(s, "blinkmacsystemfont") || strstr(s, "roboto") || !strncmp(s, "inter", 5) ||

@@ -56,7 +56,8 @@ struct bx {
     uint8_t halign, valn, lt;
     int txp, typ;
     int aspect, txv, tyv, sh[4], outw, outo; color_t shc, outc, markc; uint8_t tt;   /* box-shadow x/y/blur/spread, outline */         /* aspect-ratio (w/h x1000), transform: translate() */         /* table cell: horizontal / vertical alignment */
-    int bgi; uint8_t brep, bkx, bky, bkw, bkh, objfit; int bpx, bpy, bsw, bsh;   /* background-image (img index + 1) and its repeat/position/size; object-fit for images */
+    int grd;                       /* background-image: linear-gradient(...): css_str index + 1 */
+    int bgi; uint8_t msk, brep, bkx, bky, bkw, bkh, objfit; int bpx, bpy, bsw, bsh;   /* background-image (img index + 1) and its repeat/position/size; object-fit for images */
     int x, y, w, h, base;         /* border box, document coordinates; base: baseline offset from the top (-1 = bottom edge) */
     int m[4], p[4];               /* used margins and paddings (t r b l) */
     int imin, imax; uint8_t iv;
@@ -1008,7 +1009,7 @@ static void lay_flex(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
  * Tracks from grid-template-columns (px, %, fr, auto, minmax(), repeat(n|auto-fill, ...)), items placed by named areas,
  * line numbers/spans or auto-flow (row-major, sparse), columns sized fixed -> auto (max-content) -> fr, rows by content
  * (or their px size). ponytail: no subgrid, no dense packing, no implicit column tracks beyond the explicit count. */
-struct trk { uint8_t kind; int v; };       /* 0 px, 1 fr (x100), 2 auto, 3 percent */
+struct trk { uint8_t kind; int v, mn; };   /* 0 px, 1 fr (x100), 2 auto, 3 percent; mn: minmax()'s fixed minimum (px) */
 #define GMAXC 24
 #define GMAXR 400
 
@@ -1024,6 +1025,8 @@ static int track_one(const char *t, int len, struct trk *o, int cw) {
     if (len >= (int)sizeof b) len = sizeof b - 1;
     memcpy(b, t, len); b[len] = 0;
     char *p = b;
+    o->mn = -1;
+    if (!strncmp(p, "minmax(", 7)) { const char *a = p + 7; while (*a == ' ') a++; if (isdigit((unsigned char)*a) && strcspn(a, "%,") == strcspn(a, ",")) o->mn = css_px(a); }
     if (!strncmp(p, "minmax(", 7) || !strncmp(p, "fit-content(", 12)) {
         char *c = strrchr(p, ',');
         p = c ? c + 1 : strchr(p, '(') + 1;
@@ -1167,6 +1170,7 @@ static void lay_grid(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
     int cwid[GMAXC], fixed = 0, frsum = 0, gaps = b->gapc * (nc - 1);
     for (int i = 0; i < nc; i++) {
         cwid[i] = 0;
+        if (ct[i].kind == 3 && ct[i].mn >= 0) { ct[i].kind = 0; ct[i].v = pctof(ct[i].v, cw); }   /* minmax(0, 25%): a range, grows to 25% only if there's room */
         if (ct[i].kind == 0) cwid[i] = ct[i].v;
         else if (ct[i].kind == 3) cwid[i] = pctof(ct[i].v, cw);
         else if (ct[i].kind == 2) {
@@ -1174,15 +1178,33 @@ static void lay_grid(struct bx *b, int cx, int cw, int cy, struct bfc *f, int *c
         } else frsum += ct[i].v;
         if (ct[i].kind != 1) fixed += cwid[i];
     }
+    for (int i = 0; i < nc; i++) if (ct[i].kind == 0 && ct[i].mn >= 0 && ct[i].mn < ct[i].v) { fixed -= cwid[i] - ct[i].mn; cwid[i] = ct[i].mn; }   /* minmax(a,b): start at a */
+    int fmin = 0;
+    for (int i = 0; i < nc; i++) if (ct[i].kind == 1 && ct[i].mn > 0) fmin += ct[i].mn;
     int room = cw - gaps - fixed;
+    {                                                                /* minmax(a,b) tracks grow towards b with what the fr minimums leave */
+        int extra = 0, give = imax_(room - fmin, 0);
+        for (int i = 0; i < nc; i++) if (ct[i].kind == 0 && ct[i].mn >= 0 && ct[i].mn < ct[i].v) extra += ct[i].v - cwid[i];
+        if (extra > 0 && give > 0) {
+            give = imin_(give, extra);
+            for (int i = 0; i < nc; i++) if (ct[i].kind == 0 && ct[i].mn >= 0 && ct[i].mn < ct[i].v) { int g = (int)((long long)give * (ct[i].v - cwid[i]) / extra); cwid[i] += g; fixed += g; }
+            room = cw - gaps - fixed;
+        }
+    }
     if (room < 0 && fixed > 0) {                                  /* auto tracks overflow: shrink them, never below 0 */
         int autos = 0;
         for (int i = 0; i < nc; i++) if (ct[i].kind == 2) autos += cwid[i];
         if (autos > 0) { int take = imin_(-room, autos); for (int i = 0; i < nc; i++) if (ct[i].kind == 2) cwid[i] -= (int)((long long)take * cwid[i] / autos); room += take; }
     }
     if (frsum) {
-        int rem = imax_(room, 0), used = 0, lastfr = -1;
-        for (int i = 0; i < nc; i++) if (ct[i].kind == 1) { cwid[i] = (int)((long long)rem * ct[i].v / frsum); used += cwid[i]; lastfr = i; }
+        int rem = imax_(room, 0), used = 0, lastfr = -1, fs = frsum;
+        uint8_t frz[GMAXC] = { 0 };
+        for (int again = 1; again;) {                                /* an fr track whose share is under its minimum freezes at the minimum */
+            again = 0;
+            for (int i = 0; i < nc; i++) if (ct[i].kind == 1 && !frz[i] && ct[i].mn > 0 && fs > 0 && (long long)rem * ct[i].v / fs < ct[i].mn) { frz[i] = 1; cwid[i] = ct[i].mn; rem -= ct[i].mn; fs -= ct[i].v; again = 1; }
+            if (rem < 0) rem = 0;
+        }
+        for (int i = 0; i < nc; i++) if (ct[i].kind == 1 && !frz[i]) { cwid[i] = fs > 0 ? (int)((long long)rem * ct[i].v / fs) : 0; used += cwid[i]; lastfr = i; }
         if (lastfr >= 0) cwid[lastfr] += rem - used;
     }
     int colx[GMAXC + 1], x = cx;
@@ -1233,7 +1255,7 @@ static void lay_block(struct bx *b, int cx, int cw, int y, struct bfc *pf, int *
     if (b->inner == IN_IMG || b->inner == IN_CTL) {
         int W, H;
         repl_size(b, cw - ml - mr, &W, &H);
-        cwid = W;
+        cwid = fw >= 0 ? fw : W;                              /* a flex item's / abs box's resolved main size wins */
     } else if (b->inner == IN_TABLE) {
         int avail = imax_(cw - ml - mr - hed, 1);
         cwid = tab_plan(b, avail, fw >= 0 ? fw : sw);
@@ -1676,6 +1698,87 @@ static int clip_push(int x, int y, int w, int h) {         /* returns the previo
     return prev;
 }
 
+/* linear-gradient(): stops painted as consecutive two-colour rects (decor.gdir). Only the axis matters: angles and corners snap to
+ * vertical or horizontal. ponytail: no radial/conic gradients (nothing is painted), no gradient on a rounded box's corners. */
+#define GSTOPS 12
+struct gstop { color_t c; int kind, v; };                  /* kind 0 unset, 1 percent (x100), 2 px */
+static int grad_parse(const char *s, int *horiz, int *rev, struct gstop *st) {
+    const char *p = strstr(s, "linear-gradient(");
+    if (!p) return 0;
+    p += 16;
+    *horiz = 0; *rev = 0;
+    int n = 0, d = 0, first = 1;
+    char a[160];
+    while (*p && n < GSTOPS) {
+        const char *e = p;
+        for (; *e && (d || (*e != ',' && *e != ')')); e++) { if (*e == '(') d++; if (*e == ')') d--; }
+        int l = imin_((int)(e - p), 159);
+        memcpy(a, p, l); a[l] = 0;
+        char *q = a;
+        while (*q == ' ') q++;
+        int isdir = !strncmp(q, "to ", 3) || (first && (isdigit((unsigned char)*q) || *q == '-' || *q == '.') && strstr(q, "deg"));
+        if (first && isdir) {
+            if (!strncmp(q, "to ", 3)) {
+                int up = !!strstr(q, "top"), lf = !!strstr(q, "left"), rt = !!strstr(q, "right"), dn = !!strstr(q, "bottom");
+                if ((lf || rt) && !up && !dn) { *horiz = 1; *rev = lf; } else *rev = up && !dn;
+            } else {
+                int deg = ((int)atof(q) % 360 + 360) % 360;
+                if (deg >= 45 && deg < 135) *horiz = 1;
+                else if (deg >= 225 && deg < 315) { *horiz = 1; *rev = 1; }
+                else *rev = deg < 45 || deg >= 315;
+            }
+        } else {
+            char *sp = 0;                                         /* a trailing position: the last top-level space */
+            int dd = 0;
+            for (char *t = q; *t; t++) { if (*t == '(') dd++; else if (*t == ')') dd--; else if (*t == ' ' && !dd) sp = t; }
+            st[n].kind = 0; st[n].v = 0;
+            if (sp && (isdigit((unsigned char)sp[1]) || sp[1] == '.' || sp[1] == '-')) {
+                st[n].kind = strchr(sp, '%') ? 1 : 2;
+                st[n].v = (int)(atof(sp + 1) * (st[n].kind == 1 ? 100 : 1));
+                *sp = 0;
+            }
+            color_t c;
+            if (css_color(q, &c, 0)) st[n++].c = c;
+        }
+        first = 0;
+        p = e;
+        if (*p == ')' && !d) break;
+        if (*p == ',') p++;
+    }
+    return n >= 2 ? n : 0;
+}
+
+static void paint_grad(struct bx *b, int x, int y, int w, int h) {
+    struct gstop st[GSTOPS];
+    int horiz, rev, n = grad_parse(css_str(b->grd - 1), &horiz, &rev, st);
+    if (n < 2 || w <= 0 || h <= 0) return;
+    int len = horiz ? w : h, pos[GSTOPS];
+    for (int i = 0; i < n; i++) pos[i] = st[i].kind == 1 ? len * st[i].v / 10000 : st[i].kind == 2 ? st[i].v : -1;
+    if (pos[0] < 0) pos[0] = 0;
+    if (pos[n - 1] < 0) pos[n - 1] = len;
+    for (int i = 1; i < n; i++) if (pos[i] >= 0 && pos[i] < pos[i - 1]) pos[i] = pos[i - 1];
+    for (int i = 1; i < n - 1; i++) if (pos[i] < 0) {              /* unset stops spread evenly between their neighbours */
+        int a = i - 1, z = i + 1;
+        while (pos[z] < 0) z++;
+        for (int k = i; k < z; k++) pos[k] = pos[a] + (pos[z] - pos[a]) * (k - a) / (z - a);
+    }
+    if (rev) {                                                      /* "to top"/"to left": run the stops backwards */
+        for (int i = 0; i < n / 2; i++) { struct gstop t = st[i]; st[i] = st[n - 1 - i]; st[n - 1 - i] = t; }
+        for (int i = 0; i < n / 2; i++) { int t = pos[i]; pos[i] = len - pos[n - 1 - i]; pos[n - 1 - i] = len - t; }
+        if (n & 1) pos[n / 2] = len - pos[n / 2];
+    }
+    if (pos[0] > 0) { if (horiz) emit_decor(x, y, pos[0], h, st[0].c, 0, 0); else emit_decor(x, y, w, pos[0], st[0].c, 0, 0); }
+    for (int i = 0; i + 1 < n; i++) {
+        int a = imin_(pos[i], len), z = imin_(pos[i + 1], len);
+        if (z <= a) continue;
+        int n0 = D->ndc;
+        color_t c0 = st[i].c ? st[i].c : 1;                          /* emit_decor drops colour 0 */
+        if (horiz) emit_decor(x + a, y, z - a, h, c0, 0, 0); else emit_decor(x, y + a, w, z - a, c0, 0, 0);
+        if (D->ndc == n0 + 1) { struct decor *r = &D->dc[n0]; r->g1 = st[i + 1].c ? st[i + 1].c : 1; r->gdir = horiz ? 2 : 1; }
+    }
+    if (pos[n - 1] < len) { if (horiz) emit_decor(x + pos[n - 1], y, len - pos[n - 1], h, st[n - 1].c, 0, 0); else emit_decor(x, y + pos[n - 1], w, len - pos[n - 1], st[n - 1].c, 0, 0); }
+}
+
 static void paint_bg(struct bx *b, int ox, int oy) {
     int x = b->x + ox, y = b->y + oy, w = b->w, h = b->h;
     if (b->shc && w > 0 && h > 0) {                       /* box-shadow: a few growing translucent rounded rects stand in for the blur */
@@ -1684,20 +1787,28 @@ static void paint_bg(struct bx *b, int ox, int oy) {
         color_t c = (b->shc & 0xFFFFFF) | (a > 255 ? 255u : a) << 24;
         for (int i = n - 1; i >= 0; i--) {
             int g = b->sh[3] + (n > 1 ? bl * i / (n - 1) : 0) - (n > 1 ? bl / 4 : 0);
-            emit_decor(x + b->sh[0] - g, y + b->sh[1] - g, w + 2 * g, h + 2 * g, c, b->rad + g, 0);
+            int sx = x + b->sh[0] - g, sy = y + b->sh[1] - g, sw = w + 2 * g, sh = h + 2 * g;
+            if ((b->bg >> 24) == 0xFF) { emit_decor(sx, sy, sw, sh, c, b->rad + g, 0); continue; }
+            /* a transparent box shows what's behind it: the shadow only exists outside the border box (4 strips around it) */
+            int top = imin_(imax_(y - sy, 0), sh), bot = imin_(imax_(sy + sh - (y + h), 0), sh), mid = sh - top - bot;
+            int l = imin_(imax_(x - sx, 0), sw), r = imin_(imax_(sx + sw - (x + w), 0), sw);
+            emit_decor(sx, sy, sw, top, c, 0, 0);
+            emit_decor(sx, sy + sh - bot, sw, bot, c, 0, 0);
+            if (mid > 0) { emit_decor(sx, sy + top, l, mid, c, 0, 0); emit_decor(sx + sw - r, sy + top, r, mid, c, 0, 0); }
         }
     }
-    if (b->bg) emit_decor(x, y, w, h, b->bg, b->rad, 0);
+    if (b->bg && !b->msk) emit_decor(x, y, w, h, b->bg, b->rad, 0);
     if (b->bgi && w > 0 && h > 0) {                      /* background-image, placed in the padding box */
         int l = b->bw[3], t = b->bw[0];
-        color_t under = (b->bg >> 24) == 0xFF ? b->bg : 1;       /* the box's own colour: what a transparent picture is drawn over */
+        color_t under = b->msk || (b->bg >> 24) == 0xFF ? b->bg : 1;       /* the box's own colour: what a transparent picture is drawn over */
         emit_decor(x + l, y + t, w - l - b->bw[1], h - t - b->bw[2], under, 0, 0);
         struct decor *r = &D->dc[D->ndc - 1];
         if (D->ndc && r->it == D->nit && r->col == under && !r->img) {
             r->img = b->bgi; r->rep = b->brep; r->kx = b->bkx; r->ky = b->bky; r->kw = b->bkw; r->kh = b->bkh;
-            r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh;
+            r->px = b->bpx; r->py = b->bpy; r->sw = b->bsw; r->sh = b->bsh; r->msk = b->msk;
         }
     }
+    if (b->grd && w > 0 && h > 0) paint_grad(b, x + b->bw[3], y + b->bw[0], w - b->bw[1] - b->bw[3], h - b->bw[0] - b->bw[2]);
     if (b->outw && b->outc >> 24) emit_decor(x - b->outo - b->outw, y - b->outo - b->outw, w + 2 * (b->outo + b->outw), h + 2 * (b->outo + b->outw), b->outc, b->rad, b->outw);
     int bt = b->bw[0], br = b->bw[1], bb = b->bw[2], bl = b->bw[3];
     if (!(bt | br | bb | bl)) return;
@@ -1826,10 +1937,20 @@ static void paint_kids(int bi, int ox, int oy, int pass) {
     }
 }
 
+static int in_stk;
 static void paint_box(int bi, int ox, int oy) {
     struct bx *b = &B[bi];
     if (b->opacity == 0 || (b->inner == IN_CTL && b->ref < 0)) return;
-    int positioned = b->pos != POS_STATIC && b->pos != POS_STICKY, mark = npe;
+    int positioned = b->pos != POS_STATIC, mark = npe;
+    struct stick *sg = 0;
+    if (b->pos == POS_STICKY && !in_stk && D->nsk < MAXSTK && b->k[L_TOP] != K_AUTO) {       /* moved at draw time: remember what it emits */
+        int ph = b->par >= 0 ? B[b->par].h : VIEWH;
+        sg = &D->sk[D->nsk++];
+        struct bx *pp = b->par >= 0 ? &B[b->par] : 0;
+        *sg = (struct stick){ .i0 = D->nit, .d0 = D->ndc, .c0 = imax_(D->ncl, 1), .y0 = b->y + oy, .h = b->h, .top = rl(b, L_TOP, ph),
+                              .lim = pp ? pp->y + oy + pp->h - pp->bw[2] - pp->p[2] : 1 << 30 };
+        in_stk = 1;
+    }
     if (b->pos == POS_REL) { int dx, dy; rel_offset(b, &dx, &dy); ox += dx; oy += dy; }
     if (b->txv || b->tyv || b->txp || b->typ) { ox += b->txv + b->w * b->txp / 100; oy += b->tyv + b->h * b->typ / 100; }
     if (b->aname) anchor_add(b->aname, b->y + oy);
@@ -1861,6 +1982,7 @@ static void paint_box(int bi, int ox, int oy) {
         npe = mark;
     }
     cur_clip = prev;
+    if (sg) { sg->i1 = D->nit; sg->d1 = D->ndc; sg->c1 = imax_(D->ncl, 1); in_stk = 0; }
 }
 
 /* ---------- build: HD + CSS -> boxes ---------- */
@@ -1868,7 +1990,7 @@ static void paint_box(int bi, int ox, int oy) {
 static color_t col_em, col_dim;
 static int nord, curform_;
 
-struct inh { uint8_t tt, font, flags, nul, ws, align, nomark, vis, valign; color_t col; int link, lh, node; };
+struct inh { uint8_t tt, font, flags, nul, ws, align, nomark, vis, valign, icon; color_t col; int link, lh, node; };
 struct bctx { int incenter, cb, curform, tpad, tborder, tcollapse, nested, js; int *cnt; uint8_t tva; };
 static struct el E[128];
 static int nel;
@@ -2006,9 +2128,12 @@ static void fix_table_kids(int p, int want_row, int want_cell) {   /* rows under
 
 static void fix_items(int p) {                                  /* flex / grid: every in-flow child is a block item */
     int c = B[p].first, prev = -1;
+    for (int q = c; q >= 0; q = B[q].next) {
+        struct bx *x = &B[q];
+        if (!out_of_flow_or_float(x) && x->outer == OUT_INLINE && x->inner != IN_TEXT && x->inner != IN_BR && x->inner != IN_INLINE) x->outer = OUT_BLOCK;   /* atoms are blockified */
+    }
     while (c >= 0) {
         struct bx *x = &B[c];
-        if (!out_of_flow_or_float(x) && x->outer == OUT_INLINE && x->inner != IN_TEXT && x->inner != IN_BR && x->inner != IN_INLINE) x->outer = OUT_BLOCK;   /* atoms are blockified */
         if (x->flt || oof(x) || x->outer == OUT_BLOCK) { prev = c; c = B[c].next; continue; }
         int e = c, real = 0;
         while (e >= 0 && !(B[e].flt || oof(&B[e]) || B[e].outer == OUT_BLOCK)) { if (!is_ws_text(&B[e])) real = 1; e = B[e].next; }
@@ -2141,7 +2266,8 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     ni->ws = cp->v[P_WS] == WS_BREAK_SPACES ? 3 : cp->v[P_WS];
     ni->flags = in->flags | ((cp->v[P_DECO] & DECO_UNDERLINE) ? FL_UL : 0) | ((cp->v[P_DECO] & DECO_LINETHROUGH) ? FL_STRIKE : 0);
     ni->nul = 1;
-    ni->vis = cp->v[P_VISIB] != 0;
+    ni->vis = cp->v[P_VISIB] != 0 || cp->v[P_CLIP];
+    ni->icon = cp->v[P_FAMILY] == FAM_ICON;
     ni->nomark = cp->v[P_LISTT] == LT_NONE;
     int va = cp->v[P_VALIGN];
     ni->valign = va == VA_SUPER ? VA_SUPER : va == VA_SUB ? VA_SUB : in->valign;
@@ -2160,20 +2286,25 @@ static int style_cp(int dn, int tag, struct bx *S, struct inh *ni, const struct 
     lenset(S, L_W, cp, P_WIDTH); lenset(S, L_H, cp, P_HEIGHT); lenset(S, L_MINW, cp, P_MINW); lenset(S, L_MAXW, cp, P_MAXW);
     lenset(S, L_MINH, cp, P_MINH); lenset(S, L_MAXH, cp, P_MAXH); lenset(S, L_BASIS, cp, P_FBASIS);
     S->bg = cp->v[P_BG];
-    if (cp->k[P_MASKIMG] != K_NONE) S->bg = 0;                    /* mask-image icons: the colour is shown through a picture we can't apply; better nothing than a black square */
     if (cp->k[P_SHC] != K_NONE && !cp->v[P_SHI] && (cp->v[P_SHC] >> 24)) { S->shc = cp->v[P_SHC]; S->sh[0] = css_len(cp, P_SHX, 0); S->sh[1] = css_len(cp, P_SHY, 0); S->sh[2] = css_len(cp, P_SHB, 0); S->sh[3] = css_len(cp, P_SHS, 0); }
     if (cp->v[P_OUTS] != BS_NONE && cp->v[P_OUTW] > 0) { S->outw = cp->v[P_OUTW]; S->outc = cp->v[P_OUTC]; S->outo = css_len(cp, P_OUTO, 0); }
     ni->tt = cp->v[P_TT];
     S->aspect = cp->k[P_ASPECT] == K_PX ? cp->v[P_ASPECT] : 0;
     S->txv = css_len(cp, P_TRX, 0); S->tyv = css_len(cp, P_TRY, 0);                 /* px part, and the % of the box (translate(calc(-100% - 10px)) works) */
     S->txp = css_len(cp, P_TRX, 100) - S->txv; S->typ = css_len(cp, P_TRY, 100) - S->tyv;
-    S->bgi = 0;
+    S->bgi = 0; S->grd = cp->k[P_BGIMG] == K_GRAD ? cp->v[P_BGIMG] + 1 : 0;
     if (cp->k[P_BGIMG] == K_STR) {                       /* url(...) is absolute already (css.c); a gradient or none paints nothing */
         int ix = img_ref_ex(css_str(cp->v[P_BGIMG]), "lazy");
         S->bgi = ix >= 0 ? ix + 1 : 0;
         S->brep = cp->v[P_BGREP];
         S->bkx = cp->k[P_BGPX]; S->bpx = cp->v[P_BGPX]; S->bky = cp->k[P_BGPY]; S->bpy = cp->v[P_BGPY];
         S->bkw = cp->k[P_BGSW]; S->bsw = cp->v[P_BGSW]; S->bkh = cp->k[P_BGSH]; S->bsh = cp->v[P_BGSH];
+    }
+    S->msk = 0;
+    if (cp->k[P_MASKIMG] != K_NONE) {                    /* mask-image icon: the background colour shows through the picture's alpha; no usable picture -> no square */
+        int ix = cp->k[P_MASKIMG] == K_STR ? img_ref_ex(css_str(cp->v[P_MASKIMG]), "lazy") : -1;
+        if (ix >= 0 && S->bg >> 24) { S->bgi = ix + 1; S->msk = 1; S->brep = REP_NONE; S->bkx = S->bky = K_PCT; S->bpx = S->bpy = 5000; S->bkw = S->bkh = K_CONTAIN; }
+        else S->bg = 0;
     }
     S->objfit = cp->v[P_OBJFIT];
     S->rad = cp->v[P_RTL] > 0 ? css_len(cp, P_RTL, 100) : 0;
@@ -2269,6 +2400,12 @@ static void text_of(int dn, char *out, int cap) {
 
 static int tw_ui(const char *s) { return gfx_text_width(&font_ui, s); }
 
+static int has_icon(int dn) {
+    for (int c = DN(dn).first; c >= 0; c = DN(c).next)
+        if (DN(c).type == 1 && (DN(c).tag == T_SVG || DN(c).tag == T_IMG || has_icon(c))) return 1;
+    return 0;
+}
+
 /* returns the control index and sets b's size; -1 for hidden inputs */
 static int build_ctl(int dn, int tag, struct bx *b, const struct bctx *cx, const struct inh *ni) {
     struct doc *d = D;
@@ -2292,7 +2429,7 @@ static int build_ctl(int dn, int tag, struct bx *b, const struct bctx *cx, const
         else if (!strcmp(k, "reset")) { c.kind = C_BTN; c.sub = 2; }
         else if (!strcmp(k, "button")) c.kind = C_BTN;
         else c.kind = C_TEXT;
-        if (c.kind == C_BTN) strlcpy(lab, val[0] ? val : c.sub == 1 ? "Submit" : c.sub == 2 ? "Reset" : "Button", sizeof lab);
+        if (c.kind == C_BTN) strlcpy(lab, val[0] || (ATTR(dn, "value") && strcmp(k, "image")) ? val : c.sub == 1 ? "Submit" : c.sub == 2 ? "Reset" : "Button", sizeof lab);
     } else if (tag == T_BUTTON) {
         c.kind = C_BTN;
         c.sub = ty && !strcasecmp(ty, "reset") ? 2 : ty && !strcasecmp(ty, "button") ? 0 : 1;
@@ -2351,6 +2488,7 @@ static void build_children(int dn, int pb, const struct inh *in, struct bctx *cx
 static int root_box = -1, is_js;
 
 static int mk_text(int pb, uint32_t off, int n, const struct inh *in) {
+    if (in->icon) return -1;                                    /* icon-font text (Material ligature names, private-use glyphs): nothing to show */
     int t = bx_new();
     if (t < 0) return -1;
     struct bx *x = &B[t];
@@ -2413,12 +2551,27 @@ static void build_img(int dn, int pb, struct bx *S, const struct inh *ni) {
     if (aw && strchr(aw, '%') && !cssw && atoi(aw) > 0) { b->k[L_W] = K_PCT; b->v[L_W] = atoi(aw); }
     if (alt && *alt) { b->toff = (uint32_t)(alt - HD.pool); b->tlen = strlen(alt); }
     bx_append(pb, bi);
+    if (oof(b)) abs_reg(bi);
 }
 
 static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
     int c = HD.n[dn].first;
     if (c < 0) return;
-    int idx = img_svg_inline(hd_str(HD.n[c].nm), HD.n[c].tn, ni->col & 0xFFFFFF), iw = 0, ih = 0;
+    const char *mk = hd_str(HD.n[c].nm);
+    size_t mn = HD.n[c].tn;
+    char *res = 0;
+    if (svg_mem(mk, mn, "<use", 4)) {                         /* sprite references: copy the <symbol>/element from this or another inline svg */
+        static const char *dp[64]; static size_t dl[64];
+        int nd = 0;
+        for (int j = 0; j < HD.nn && nd < 64; j++) {
+            int f = HD.n[j].type == 1 && HD.n[j].tag == T_SVG && j != dn ? HD.n[j].first : -1;
+            if (f >= 0 && HD.n[f].tn > 32 && svg_mem(hd_str(HD.n[f].nm), HD.n[f].tn, "<symbol", 7)) { dp[nd] = hd_str(HD.n[f].nm); dl[nd++] = HD.n[f].tn; }
+        }
+        size_t rn = 0;
+        if ((res = svg_resolve_use(mk, mn, dp, dl, nd, &rn))) { mk = res; mn = rn; }
+    }
+    int idx = img_svg_inline(mk, mn, ni->col & 0xFFFFFF), iw = 0, ih = 0;
+    free(res);
     if (idx < 0 || img_info(idx, &iw, &ih) != IMG_READY || iw <= 0 || ih <= 0) return;
     const char *aw = ATTR(dn, "width"), *ah = ATTR(dn, "height");
     int bi = bx_new();
@@ -2431,6 +2584,7 @@ static void build_svg(int dn, int pb, struct bx *S, const struct inh *ni) {
     if (b->k[L_W] == K_AUTO && aw && atoi(aw) > 0 && !strchr(aw, '%')) { b->k[L_W] = K_PX; b->v[L_W] = atoi(aw); }
     if (b->k[L_H] == K_AUTO && ah && atoi(ah) > 0 && !strchr(ah, '%')) { b->k[L_H] = K_PX; b->v[L_H] = atoi(ah); }
     bx_append(pb, bi);
+    if (oof(b)) abs_reg(bi);
 }
 
 static int bg_from_html;
@@ -2549,7 +2703,13 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
     }
     if (tag == T_IMG) { build_img(dn, pb, &S, &ni); return; }
     if (tag == T_SVG) { build_svg(dn, pb, &S, &ni); return; }
-    if (tag == T_INPUT || tag == T_TEXTAREA || tag == T_SELECT || tag == T_BUTTON) {
+    int iconbtn = 0;                                          /* <button><svg/></button>: lay the children out as an inline-block instead of a text control */
+    if (tag == T_BUTTON && has_icon(dn)) {                    /* (a bare unstyled submit button keeps the real control, so it still submits) */
+        const char *ty2 = ATTR(dn, "type");
+        iconbtn = S.bg || S.bw[0] | S.bw[1] | S.bw[2] | S.bw[3] || !(ty2 && !strcasecmp(ty2, "submit"));
+        if (iconbtn && S.inner == IN_INLINE) S.inner = IN_FLOW;
+    }
+    if (!iconbtn && (tag == T_INPUT || tag == T_TEXTAREA || tag == T_SELECT || tag == T_BUTTON)) {
         int bi = bx_new();
         if (bi >= 0) {
             B[bi] = S;
@@ -2560,6 +2720,7 @@ static void build_el_body(int dn, int pb, const struct inh *in, struct bctx *cx,
                 b->outer = S.flt || oof(&S) || S.outer == OUT_BLOCK ? OUT_BLOCK : OUT_INLINE;
                 b->inner = IN_CTL; b->ref = ci; b->li = 0;
                 bx_append(pb, bi);
+                if (oof(b)) abs_reg(bi);
             }
         }
         return;
@@ -2686,7 +2847,7 @@ static void layout_do(struct doc *d, const char *src, size_t n, int mode, int wi
     double t_phase = now_ms();
 #endif
     free_boxes();
-    nabs = npe = nord = nel = cur_clip = 0;
+    nabs = npe = nord = nel = cur_clip = in_stk = 0;
     bg_from_html = is_js = 0;
     root_box = -1;
     plain_text = mode == 0;
