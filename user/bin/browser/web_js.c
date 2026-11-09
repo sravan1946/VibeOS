@@ -819,6 +819,18 @@ def(g, { Intl: { NumberFormat: callable(NumberFormat), DateTimeFormat: callable(
   };
 }
 
+// ---------- interface objects scripts probe (instanceof, window[name].prototype) or construct, without engines behind them ----------
+{
+    const iface = (name, base) => { if (g[name] !== undefined) return g[name]; const f = { [name]: class extends (base || Object) { constructor() { throw new TypeError('Illegal constructor'); } } }[name]; def(g, { [name]: f }); return f; };
+    iface('ProcessingInstruction', D.CharacterData); iface('DOMImplementation'); iface('DOMStringMap'); iface('DOMStringList'); iface('CustomElementRegistry'); iface('MediaQueryList', D.EventTarget);
+    iface('PerformanceEntry'); iface('PerformanceMark', g.PerformanceEntry); iface('PerformanceMeasure', g.PerformanceEntry); iface('PerformanceNavigationTiming', g.PerformanceEntry); iface('PerformanceResourceTiming', g.PerformanceEntry);
+    iface('FileList'); iface('DataTransfer'); iface('MessagePort', D.EventTarget); iface('ServiceWorker', D.EventTarget); iface('DocumentTimeline'); iface('KeyframeEffect'); iface('Lock'); iface('LockManager');
+    for (const n of ['MediaQueryListEvent', 'BeforeUnloadEvent', 'CompositionEvent', 'SubmitEvent', 'FormDataEvent', 'PageTransitionEvent', 'SecurityPolicyViolationEvent']) if (g[n] === undefined) def(g, { [n]: { [n]: class extends D.Event { constructor(t, o) { super(t, o); if (o) Object.assign(this, o); } } }[n] });
+    if (g.DOMRectReadOnly === undefined) def(g, { DOMRectReadOnly: D.DOMRect });
+    for (const [n, o] of [['History', g.history], ['Location', g.location], ['Navigator', g.navigator], ['Screen', g.screen]]) { const f = { [n]: function () { throw new TypeError('Illegal constructor'); } }[n]; if (g[n] === undefined) def(g, { [n]: f }); try { if (o) Object.setPrototypeOf(o, g[n].prototype); } catch (e) {} }
+    if (g.Audio === undefined) def(g, { Audio: Object.assign(function Audio(src) { const a = document.createElement('audio'); if (src !== undefined) a.src = src; return a; }, { prototype: D.HTMLAudioElement.prototype }) });
+}
+
 // ---------- unhandled rejections are logged by the host; window.onerror is wired in dom_js.c ----------
 delete g.__d;
 delete g.__v;
