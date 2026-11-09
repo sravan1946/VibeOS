@@ -34,7 +34,7 @@ int js_active(void) { return 0; }
 int js_fid(void) { return 0; }
 void js_css_owner(void) {}
 void frame_paint(struct canvas *c, const struct doc *d, const struct item *it, int x, int y) {}
-void js_set_rect(int n, int x, int y, int w, int h) {}
+void js_set_rect(int n, int x, int y, int w, int h, int fixed) {}
 int dom_first(int n) { return 0; }
 int dom_next(int n) { return 0; }
 int dom_type(int n) { return 0; }

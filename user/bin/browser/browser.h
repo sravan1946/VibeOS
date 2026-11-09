@@ -307,7 +307,7 @@ void doc_draw(struct ui *ui, const struct doc *d, int vx, int vy, int vw, int vh
               const struct docmark *mk, int focus_ord, int caret);
 void doc_draw_c(struct canvas *c, const struct doc *d, int vx, int vy, int vw, int vh, int scroll, int hover,
                 const struct docmark *mk, int focus_ord, int caret);   /* the same onto a canvas (an iframe's document) */
-int  doc_unstick(const struct doc *d, int y, int scroll);   /* a document y under a drawn sticky box -> where that box was laid out */
+int  doc_unstick(const struct doc *d, int x, int y, int scroll);   /* a document y under a drawn sticky box -> where that box was laid out */
 int  doc_hit(const struct doc *d, int x, int y);          /* link index at document coords, or -1 */
 int  doc_pos_at(const struct doc *d, int x, int y, int *item, int *ch);   /* text run + byte offset nearest the point (for selecting) */
 int  doc_ctl_at(const struct doc *d, int x, int y);       /* control index under the point, or -1 */
@@ -349,6 +349,7 @@ int  js_timeout(void);                            /* ms until the next timer, -1
 int  js_busy(void);                               /* script or fetch downloads in flight */
 void js_reset(void);                              /* leave the page */
 /* dispatch `type` (bubbling) at node (0 = window); k: key event or NULL. Returns 1 if a handler called preventDefault */
+extern int js_wheel_dy;                          /* deltaY of the next "wheel" js_event (px, + = down) */
 int  js_event(int node, const char *type, const struct gui_event *k, int x, int y);
 int  js_active(void);
 int  js_fid(void);                                /* the context (0 = page, else a frame) the current layout belongs to: canvas image keys */
@@ -363,7 +364,7 @@ void js_viewport(int scroll, int w, int h);       /* the window's scroll offset 
 int  js_scroll_req(void);                         /* window.scrollTo target (document y), consumed, or -1 */
 const char *js_anchor_req(void);                  /* location.hash was set: scroll to this anchor name (consumed), or NULL */
 const char *js_url_change(void);                  /* pushState/replaceState/hash changed the URL without a load (consumed), or NULL */
-void js_set_rect(int node, int x, int y, int w, int h);   /* layout -> JS: border box of a data-vjs element, document coords (getBoundingClientRect, offset*) */
+void js_set_rect(int node, int x, int y, int w, int h, int fixed);   /* fixed: inside a position:fixed box, so its client rect ignores the scroll; rect = border box of a data-vjs element, document coords (getBoundingClientRect, offset*) */
 /* the JS node tree for layout (ids = data-vjs ids; 1 = document, 2 = <html>; types 1 element, 3 text, 8 comment, 9 document, 11 fragment) */
 int  dom_first(int n), dom_next(int n), dom_parent(int n), dom_type(int n);   /* the COMPOSED tree: a shadow host's children are its shadow root's, a <slot>'s are the nodes it takes (or its fallback) */
 int  dom_shadow_host(int n);                      /* the host whose shadow tree contains n (for scoping <style> in it), or 0 */
@@ -406,6 +407,7 @@ void js_frame_navigate(struct frame *f, const char *url);
 void js_frame_navigate_post(struct frame *f, const char *url, const char *post);   /* post = form body (a POST) or NULL */
 int  js_goto_target(struct frame *from, const char *target, const char *url, const char *post);   /* link/form target=: 1 = handled, 0 = navigate the caller's own document */
 const char *js_open_url(void);                    /* a target=_blank (or unknown name) wants a new tab: its URL (consumed), or NULL */
+int js_pressable(int node);                       /* node is inside a button/summary/role=button|link */
 const char *js_link_target(int node);             /* current context: target of the link holding node (or <base target>) */
 const char *js_form_target(int node);
 int  js_frame_is_worker(struct frame *f);          /* a Web Worker's context (no document) */

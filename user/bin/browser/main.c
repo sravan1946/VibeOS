@@ -163,6 +163,7 @@ static const char HOME_HTML[] =
 /* zoom: baked fonts can't scale, so the page is laid out and drawn at (window size * 100 / zoom) and the picture is scaled to the window.
  * Scroll and layout are in page ("doc") pixels; zd() takes screen pixels to doc pixels, zs() back. */
 static int zd(int v) { return (int)((long long)v * 100 / doc_zoom); }
+#define EVY (zd(ui.my - CT) + scroll)   /* the pointer's document y for page events (dy is the hit-test y: a fixed box is hit where it was laid out) */
 static int zs(int v) { return (int)((long long)v * doc_zoom / 100); }
 static int view_w(void) { return win->w - SB; }
 static int view_h(void) { return win->h - CT - STH - (find_open ? FB : 0); }
@@ -1213,45 +1214,45 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (in_view && sel_ci < 0) hover = doc_hit(&doc, zd(ui.mx), doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll));
+        if (in_view && sel_ci < 0) hover = doc_hit(&doc, zd(ui.mx), doc_unstick(&doc, zd(ui.mx), zd(ui.my - CT) + scroll, scroll));
         if (js_active()) {                                   /* mouseover/out on node changes, mousemove, mouseup */
             static int pnode, pmx = -1, pmy = -1, pbtn;
-            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), nn = in_view && sel_ci < 0 ? doc_node_at(&doc, dx, dy) : 0;
-            if (nn != pnode) { if (pnode) js_event(pnode, "mouseout", 0, dx, dy); if (nn) js_event(nn, "mouseover", 0, dx, dy); pnode = nn; }
-            if (in_view && (ui.mx != pmx || ui.my != pmy)) { pmx = ui.mx; pmy = ui.my; js_event(nn, "mousemove", 0, dx, dy); }
+            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.mx), zd(ui.my - CT) + scroll, scroll), nn = in_view && sel_ci < 0 ? doc_node_at(&doc, dx, dy) : 0;
+            if (nn != pnode) { if (pnode) js_event(pnode, "mouseout", 0, dx, EVY); if (nn) js_event(nn, "mouseover", 0, dx, EVY); else js_event(0, "__leave", 0, dx, EVY); pnode = nn; }
+            if (in_view && (ui.mx != pmx || ui.my != pmy)) { pmx = ui.mx; pmy = ui.my; js_event(nn, "mousemove", 0, dx, EVY); }
             int infr = nn && frame_pointer(&doc, nn, dx, dy, 0);          /* an <iframe> under the pointer gets the motion too */
             if (!infr) frame_leave();
-            if (pbtn && !(ui.buttons & 1)) { js_event(nn, "mouseup", 0, dx, dy); if (infr) frame_pointer(&doc, nn, dx, dy, 2); }
+            if (pbtn && !(ui.buttons & 1)) { js_event(nn, "mouseup", 0, dx, EVY); if (infr) frame_pointer(&doc, nn, dx, dy, 2); }
             pbtn = ui.buttons & 1;
         }
         bool fpress = false;
         if (ui.pressed && !consumed && in_view && js_active()) {         /* a click inside an <iframe> belongs to that frame */
-            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), nd = doc_node_at(&doc, dx, dy);
+            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.mx), zd(ui.my - CT) + scroll, scroll), nd = doc_node_at(&doc, dx, dy);
             if (nd && frame_pointer(&doc, nd, dx, dy, 1)) { fpress = true; fo = -1; hover = -1; mk.from_it = mk.to_it = -1; }
             else frame_unfocus();
         }
         if (ui.pressed && !consumed && in_view && !fpress) {
-            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
+            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.mx), zd(ui.my - CT) + scroll, scroll), ci = doc_ctl_at(&doc, dx, dy), node = js_active() ? doc_node_at(&doc, dx, dy) : 0;
             fo = -1;
             mk.from_it = mk.to_it = -1;
             if (node) node = js_hit(dx, dy, node); else if (js_active()) node = js_hit(dx, dy, 0);
-            js_event(node, "mousedown", 0, dx, dy);
+            js_event(node, "mousedown", 0, dx, EVY);
             if (ci >= 0) {                                   /* the page sees the click first; preventDefault skips our part */
                 const struct ctl *c = &doc.ct[ci];
                 const struct item *it = ctl_item(ci);
-                if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = ctl_caret_at(&doc, ci, dx - it->x, dy - it->y); fs_get(&doc, ci)->anc1 = caret + 1; fo_drag = 1; js_event(node, "click", 0, dx, dy); }
-                else if (c->kind == C_BTN) { if (!js_event(node, "click", 0, dx, dy)) { if (c->sub == 1) submit(ci, c->form); else if (c->sub == 2) form_reset(&doc, c->form); } }
+                if (c->kind == C_TEXT || c->kind == C_PASS || c->kind == C_AREA) { fo = c->ord; caret = ctl_caret_at(&doc, ci, dx - it->x, dy - it->y); fs_get(&doc, ci)->anc1 = caret + 1; fo_drag = 1; js_event(node, "click", 0, dx, EVY); }
+                else if (c->kind == C_BTN) { if (!js_event(node, "click", 0, dx, EVY)) { if (c->sub == 1) submit(ci, c->form); else if (c->sub == 2) form_reset(&doc, c->form); } }
                 else if (c->kind == C_CHECK || c->kind == C_RADIO) {
                     struct fstate *fs = fs_get(&doc, ci);
                     int was = fs->on;
                     ctl_toggle(&doc, ci);
-                    if (js_event(node, "click", 0, dx, dy)) fs->on = was;   /* (a radio's old partner stays off) */
-                    else if (fs->on != was) { js_event(node, "input", 0, dx, dy); js_event(node, "change", 0, dx, dy); }
+                    if (js_event(node, "click", 0, dx, EVY)) fs->on = was;   /* (a radio's old partner stays off) */
+                    else if (fs->on != was) { js_event(node, "input", 0, dx, EVY); js_event(node, "change", 0, dx, EVY); }
                 }
                 else if (c->kind == C_SELECT) { sel_ci = ci; sel_scroll = fs_get(&doc, ci)->sel - 5; }
                 hover = -1;
             } else if (hover >= 0) {
-                if (!js_event(node, "click", 0, dx, dy)) {
+                if (!js_event(node, "click", 0, dx, EVY)) {
                     const char *ltg = js_active() ? js_link_target(node) : 0;
                     char lu[URL_MAX];
                     url_resolve(cur_url, doc.link[hover], lu, sizeof lu);
@@ -1260,8 +1261,8 @@ int main(int argc, char **argv) {
                 hover = -1;
             }
             else {
-                js_event(node, "click", 0, dx, dy);
-                if (doc_pos_at(&doc, dx, dy, &anc_it, &anc_ch)) { selecting = true; sel_moved = false; }
+                if (!js_event(node, "click", 0, dx, EVY) && node) js_event(node, "__activate", 0, dx, EVY);
+                if (!(node && js_pressable(node)) && doc_pos_at(&doc, dx, dy, &anc_it, &anc_ch)) { selecting = true; sel_moved = false; }
             }
         }
         if (fo_drag) {                                       /* drag-select inside a text field */
@@ -1284,8 +1285,9 @@ int main(int argc, char **argv) {
         if (hover >= 0) url_resolve(cur_url, doc.link[hover], hover_url, sizeof hover_url);
         if (ui.mpressed && hover >= 0 && !modal) tab_new(hover_url, false);   /* middle-click: link in a background tab */
         if (ui.scroll && in_view && js_active()) {                       /* the wheel over an <iframe> scrolls it first */
-            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.my - CT) + scroll, scroll), nd = doc_node_at(&doc, dx, dy);
+            int dx = zd(ui.mx), dy = doc_unstick(&doc, zd(ui.mx), zd(ui.my - CT) + scroll, scroll), nd = doc_node_at(&doc, dx, dy);
             if (nd && frame_wheel(&doc, nd, dx, dy, ui.scroll)) ui.scroll = 0;
+            else { js_wheel_dy = ui.scroll * 100; if (js_event(nd, "wheel", 0, dx, EVY)) ui.scroll = 0; }   /* the page's wheel handlers (lenis) may preventDefault it */
         }
         if (ui.scroll && ui.my >= CT) target += ui.scroll * 64;
         struct gui_event k;

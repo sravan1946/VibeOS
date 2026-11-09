@@ -3336,7 +3336,7 @@ static void layout_do(struct doc *d, const char *src, size_t n, int mode, int wi
     if (js_active())                                          /* getBoundingClientRect() & co: the border boxes of the scripts' elements */
         for (int i = 0; i < nb; i++) {
             const struct bx *b = &B[i];
-            if (b->dn > 0 && b->node && b->inner != IN_TEXT && !b->anon && (b->w || b->h)) js_set_rect(b->node, b->x, b->y, b->w, b->h);
+            if (b->dn > 0 && b->node && b->inner != IN_TEXT && !b->anon && (b->w || b->h)) { int fx = 0; for (int p = i; p >= 0 && !fx; p = B[p].par) fx = B[p].pos == POS_FIXED; js_set_rect(b->node, b->x, b->y, b->w, b->h, fx); }
         }
     int bot = 0;
     paint_box(root, 0, 0);

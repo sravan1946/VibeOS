@@ -189,7 +189,24 @@ const MOUSE = new Set(['click', 'dblclick', 'mousedown', 'mouseup', 'mousemove',
 const NOBUBBLE = new Set(['load', 'error', 'focus', 'blur', 'mouseenter', 'mouseleave', 'abort', 'toggle', 'readystatechange', 'unload', 'resize']);
 const NOCANCEL = new Set(['load', 'error', 'focus', 'blur', 'scroll', 'resize', 'input', 'change', 'DOMContentLoaded', 'readystatechange', 'mouseenter', 'mouseleave']);
 let trusted = 0;                                // inside a user-initiated event: window.open is allowed
+const PTR = { mousedown: 'pointerdown', mouseup: 'pointerup', mousemove: 'pointermove', mouseover: 'pointerover', mouseout: 'pointerout' };   // the pointer event goes first
+let hovered = null;
+const chain = n => { const a = []; for (; n; n = n.parentNode) if (n.nodeType === 1) a.push(n); return a; };
+function hoverTo(nw, x, mouse) {                // leave (innermost first) then enter (outermost first) on the nodes the pointer left / entered: pointer* (mouse = 0) before mouseover, mouse* after it
+    const pc = chain(hovered), nc = chain(nw), p = mouse ? 'mouse' : 'pointer';
+    if (mouse) hovered = nw;
+    for (const n of pc) if (!nc.includes(n)) g.__dispatch(n.__id, p + 'leave', x);
+    for (const n of nc.reverse()) if (!pc.includes(n)) g.__dispatch(n.__id, p + 'enter', x);
+}
 g.__dispatch = (id, type, x) => {
+    if (type === '__leave') { hoverTo(null, x, 0); hoverTo(null, x, 1); return false; }
+    if (type === '__activate') {                // default action of a click that landed inside a styled <button> (not a form control of ours): submit / reset its form
+        const b = id && wrap(id).closest('button');
+        if (b && !b.disabled && b.form) { const t = b.type; if (t === 'submit') b.form.requestSubmit(b); else if (t === 'reset') b.form.reset(); }
+        return false;
+    }   // the pointer left every element (main.c)
+    if (PTR[type]) g.__dispatch(id, PTR[type], x);
+    if (type === 'mouseover' && id) hoverTo(wrap(id), x, 0);
     const o = { bubbles: !NOBUBBLE.has(type), cancelable: !NOCANCEL.has(type) };
     if (x) Object.assign(o, x);
     const ev = new (type.startsWith('key') ? KeyboardEvent : MOUSE.has(type) ? MouseEvent : type.startsWith('pointer') ? PointerEvent : type === 'wheel' ? WheelEvent :
@@ -198,7 +215,7 @@ g.__dispatch = (id, type, x) => {
     if (id && type === 'focus') document.__active = wrap(id); else if (id && type === 'blur' && document.__active === wrap(id)) document.__active = null;
     const keep = trusted;
     trusted = type === 'click' || type === 'submit' || type.startsWith('key') || type === 'mousedown' || type === 'mouseup';
-    try { return !dispatch(id ? wrap(id) : (type === 'DOMContentLoaded' || type === 'readystatechange') ? document : g, ev); } finally { trusted = keep; }
+    try { const r = !dispatch(id ? wrap(id) : (type === 'DOMContentLoaded' || type === 'readystatechange') ? document : g, ev); if (type === 'mouseover' && id) hoverTo(wrap(id), x, 1); return r; } finally { trusted = keep; }
 };
 V.trusted = () => trusted;
 
@@ -573,7 +590,7 @@ function innerText(e) {
     return out.join('').replace(/\n?\u0001+/g, '\n').replace(/ *\n */g, '\n').replace(/^\n+|\n+$/g, '').replace(/^ +| +$/g, '');
 }
 
-const rectOf = e => { const r = d.rect(e.__id), s = d.view()[0]; return { x: r[0], y: r[1] - s, w: r[2], h: r[3], dy: r[1] }; };
+const rectOf = e => { const r = d.rect(e.__id), s = d.view()[0]; return { x: r[0], y: r[1] - (r[4] ? 0 : s), w: r[2], h: r[3], dy: r[1] }; };
 class DOMRect {
     constructor(x = 0, y = 0, w = 0, h = 0) { Object.assign(this, { x, y, width: w, height: h }); }
     get left() { return Math.min(this.x, this.x + this.width); } get right() { return Math.max(this.x, this.x + this.width); }

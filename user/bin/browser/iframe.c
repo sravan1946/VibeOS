@@ -160,7 +160,7 @@ static void point(struct frame *f, int dx, int dy, int ev) {
     int lx = dx - f->bx, ly = dy - f->by;
     if (lx < 0 || ly < 0 || lx >= f->w || ly >= f->h || !f->ready) return;
     int own = enter(f);
-    int x = lx, y = doc_unstick(&f->doc, ly + f->sy, f->sy), node = doc_node_at(&f->doc, x, y);
+    int x = lx, y = doc_unstick(&f->doc, lx, ly + f->sy, f->sy), node = doc_node_at(&f->doc, x, y);
     struct frame *ch = node ? js_frame_find(&f->doc, node) : 0;
     if (ev == 1 && !ch) node = js_hit(x, y, node);
     if (ch) {                                                /* a frame inside the frame */

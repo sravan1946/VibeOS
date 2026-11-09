@@ -77,7 +77,7 @@ struct jsst {
     unsigned s_tgen;                                         /* bumped by every tree/attribute change: live NodeLists/HTMLCollections re-query when it moved */
     int s_DI[MAXDIRTY], s_ndi, s_di_over;
     uint32_t s_gen;
-    int (*s_RC)[4], s_nrc, s_rc_set;                             /* RC[node] = {x, y, w, h}; w < 0 = unset */
+    int (*s_RC)[5], s_nrc, s_rc_set;                             /* RC[node] = {x, y, w, h}; w < 0 = unset */
     struct rej s_RJ[16]; int s_nrj;
     /* browsing context */
     struct frame *fr;                                      /* NULL: the top page */
@@ -1227,16 +1227,16 @@ NATIVE(n_scroll_to) { double y = 0; JS_ToFloat64(c, &y, argv[1]); scroll_req_y =
 NATIVE(n_view) { JSValue a = JS_NewArray(c); JS_SetPropertyUint32(c, a, 0, JS_NewInt32(c, vscroll)); JS_SetPropertyUint32(c, a, 1, JS_NewInt32(c, vw)); JS_SetPropertyUint32(c, a, 2, JS_NewInt32(c, vh)); return a; }
 /* layout publishes border boxes here after each layout (js_set_rect); until it does (or for a node it skipped) a node's
  * box is the union of the display items inside it: text extents, and an empty element has none */
-void js_set_rect(int node, int x, int y, int w, int h) {
+void js_set_rect(int node, int x, int y, int w, int h, int fixed) {
     if (node <= 0 || node >= nn) return;
     if (node >= nrc) {
         int n2 = nn + 256;
-        int (*r)[4] = realloc(RC, n2 * sizeof *RC);
+        int (*r)[5] = realloc(RC, n2 * sizeof *RC);
         if (!r) return;
         for (int i = nrc; i < n2; i++) r[i][2] = -1;
         RC = r; nrc = n2;
     }
-    RC[node][0] = x; RC[node][1] = y; RC[node][2] = w; RC[node][3] = h; rc_set = 1;
+    RC[node][0] = x; RC[node][1] = y; RC[node][2] = w; RC[node][3] = h; RC[node][4] = fixed; rc_set = 1;
 }
 /* Reading a size or position after a DOM change must see the change (offsetHeight, getBoundingClientRect, scrollHeight...): main.c registers its
  * relayout and we run it on demand. Adaptive so a loop that alternates writes and reads can't spend more than ~1/3 of the time in layout. */
@@ -1259,7 +1259,7 @@ NATIVE(n_rect) {
     force_layout();
     JSValue a = JS_NewArray(c);
     if (id && id < nrc && RC[id][2] >= 0) {
-        for (int i = 0; i < 4; i++) JS_SetPropertyUint32(c, a, i, JS_NewInt32(c, RC[id][i]));
+        for (int i = 0; i < 5; i++) JS_SetPropertyUint32(c, a, i, JS_NewInt32(c, RC[id][i]));
         return a;
     }
     if (id && live && N[id].type != 9)
@@ -1557,6 +1557,7 @@ static void run_script(const char *src, size_t n, const char *name, int module) 
     leave(f);
 }
 
+int js_wheel_dy;
 int js_event(int node, const char *type, const struct gui_event *k, int x, int y) {
     if (!active || dead || !ctx) return 0;
     JSValue o = JS_NewObject(ctx);
@@ -1593,6 +1594,7 @@ int js_event(int node, const char *type, const struct gui_event *k, int x, int y
     JS_SetPropertyStr(ctx, o, "clientY", JS_NewInt32(ctx, y - vscroll));
     JS_SetPropertyStr(ctx, o, "pageX", JS_NewInt32(ctx, x));
     JS_SetPropertyStr(ctx, o, "pageY", JS_NewInt32(ctx, y));
+    if (!strcmp(type, "wheel")) JS_SetPropertyStr(ctx, o, "deltaY", JS_NewInt32(ctx, js_wheel_dy));
     JSValue argv[3] = { JS_NewInt32(ctx, node), str(type), o };
     enter();
     JSValue r = JS_Call(ctx, fn_dispatch, JS_UNDEFINED, 3, argv);
@@ -2505,6 +2507,14 @@ static const char *base_target(void) { int bs = by_tag(1, "base"); return bs ? a
 const char *js_link_target(int node) {                       /* J's tree: target of the link that holds `node`, else <base target> */
     for (int a = node; a > 0 && a < nn; a = N[a].parent)
         if (N[a].type == 1 && (!strcmp(N[a].tag, "a") || !strcmp(N[a].tag, "area")) && attr(a, "href")) { const char *t = attr(a, "target"); return t ? t : base_target(); }
+    return 0;
+}
+int js_pressable(int node) {                                 /* inside a <button>/<summary> or a role=button/link element: a click there is not the start of a text selection */
+    for (int a = node; a > 0 && a < nn; a = N[a].parent) {
+        if (N[a].type != 1) continue;
+        const char *r = attr(a, "role");
+        if (!strcmp(N[a].tag, "button") || !strcmp(N[a].tag, "summary") || (r && (!strcmp(r, "button") || !strcmp(r, "link")))) return 1;
+    }
     return 0;
 }
 const char *js_form_target(int node) { const char *t = node > 0 && node < nn ? attr(node, "target") : 0; return t ? t : base_target(); }

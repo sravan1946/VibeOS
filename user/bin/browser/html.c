@@ -394,10 +394,17 @@ void doc_draw_c(struct canvas *c, const struct doc *d, int vx, int vy, int vw, i
     }
 }
 
-int doc_unstick(const struct doc *d, int y, int scroll) {
-    for (int g = 0; g < d->nsk; g++) {
-        int s = stick_shift(&d->sk[g], scroll);
-        if (s && y >= d->sk[g].y0 + s && y < d->sk[g].y0 + s + d->sk[g].h) return y - s;
+int doc_unstick(const struct doc *d, int x, int y, int scroll) {
+    for (int g = d->nsk - 1; g >= 0; g--) {                                  /* topmost (drawn last) first; animated groups move by their keyframes, not stick_shift */
+        const struct stick *k = &d->sk[g];
+        int s, dx;
+        if (k->akf) anim_shift(k, &dx, &s); else s = stick_shift(k, scroll);
+        if (!s || y < k->y0 + s || y >= k->y0 + s + k->h) continue;
+        int uy = y - s;
+        for (int i = k->i0; i < k->i1; i++) {                                /* a full-screen fixed layer with nothing clickable at the point is transparent to the pointer */
+            const struct item *it = &d->it[i];
+            if ((it->node || it->link >= 0 || (it->flags & FL_CTL)) && in_clip(d, it, x, uy) && x >= it->x && x < it->x + it->w && uy >= it->y && uy < it->y + it->h) return uy;
+        }
     }
     return y;
 }
