@@ -1,8 +1,8 @@
 /* js.c - JavaScript in the browser: QuickJS (third_party/quickjs) plus a small DOM.
- * A page with scripts is parsed into a node tree here. Layout (html.c) runs on that tree serialised back to HTML with
- * data-vjs="ID" on every element, so display items, controls and forms know their node. Scripts change the tree through
+ * A page with scripts is parsed into a node tree here. Layout (layout.c, doc_layout_js) reads that tree directly through
+ * the dom_* accessors, so display items, controls and forms know their node. Scripts change the tree through
  * the natives in this file (the object __d, wrapped into DOM classes by the prelude in dom_js.c); a change to the
- * document marks it dirty and main.c re-serialises and re-lays it out, at most once per frame. Events go the other
+ * document marks it dirty and main.c re-lays it out, at most once per frame. Events go the other
  * way: main.c finds the node under the pointer or the focused control and calls js_event -> __dispatch.
  * Every entry into JS (a script, a handler, a timer) gets RUN_MS: the interrupt handler aborts a runaway script, and
  * the page's scripts are then switched off. Form controls keep their live state in form.c (by ordinal); .value and

@@ -356,6 +356,43 @@ Same method as above: `sysbench`, `bench`, `tools/gfxbench.py` (now `--headless`
   size classes (`kmalloc` ~130 cycles average), 128 KiB ATA commands (host-bound), `realloc` growth (already in place),
   stdio (already 100-200 MB/s), Files with 2000 entries (opens in ~25 ms).
 
+### Browser: real pages (browser round)
+Five agents in parallel (LAYOUT, CSS, JS, NET, MEDIA), coordinating through a shared message board, merged on `perf-usability`.
+- [x] Layout: a box-tree engine (`dom.c` node tree, `layout.c` boxes -> display list) replaces the one-pass layout: block and
+  inline formatting contexts, floats, abs/fixed positioning, flexbox, tables, CSS grid (tracks, areas, line placement),
+  counters and list marker formats, `aspect-ratio`, transforms (translate/scale/rotate, `calc()` percentages), `box-shadow`,
+  `outline`, `mask-image`, overflow clips, auto margins, baseline alignment. Pages with scripts are laid out straight from
+  `js.c`'s tree (`doc_layout_js` over `dom_*`, no HTML round trip); element rects go back to JS (`js_set_rect`). Golden
+  layout tests (`tools/layouttest`) run in `make test-host`.
+- [x] CSS: new engine (`cssel.c` selectors, `css.c` cascade and computed style, UA sheet) behind `css_dom` + `css_compute`:
+  all combinators, `:not/:is/:where/:has/:nth-*`, `:visited`, `::before/::after/::marker/::placeholder/::selection/
+  ::first-letter`, custom properties, `@container`, `@layer`, `@media` with `calc()`, shadow-DOM scoped sheets (`:host`,
+  `::slotted`), two background layers, `background-image` (size/position/repeat), `object-fit/position`. Restyle scoping
+  for hover/attribute changes. Matching uses bucket hashes, a subject bloom mask and a 256-bit ancestor bloom
+  (`tools/csstest`, `wpbench` times a real Wikipedia page). Escaped brackets in selectors (Tailwind) no longer swallow the
+  rest of a sheet.
+- [x] JavaScript: capture/bubble events with `passive`/`once`, focus/blur/focusin/focusout/change, `activeElement`, typed
+  `HTMLxxxElement` classes, comment nodes, script loading (`defer`/`async`/modules with imports, import maps, dynamic
+  import, `document.write`, onload/onerror), `fetch`/XHR with method, headers, body and response headers, `FormData`,
+  `Blob`, persisted storage, `document.cookie`, observers, `Intl`, history, shadow DOM (`attachShadow`, declarative shadow
+  roots, slots), custom elements, `getComputedStyle` and selectors through the CSS engine. Element `load` events stop at
+  the document (bbc.com grew listeners exponentially); attribute changes that never paint skip the relayout.
+- [x] Network: keep-alive `vfetch --worker` pool, exact body framing, TLS session resumption and ALPN http/1.1, cookie jar
+  (`~/.config/browser/cookies`), gzip/deflate, charsets to UTF-8 (UTF-16, cp1252, koi8-r, iso-8859-2), shared DNS cache,
+  preconnect from the HTML, 6 image / 4 stylesheet slots, ETag/Last-Modified revalidation, `Vary`, `data:` URLs, 307/308
+  keep POST, `--fetch` CLI.
+- [x] Media and app: SVG (nanosvg: `<img>` and inline), animated GIF, `srcset`/`sizes`/`<picture>`, `loading=lazy`, a 40 MB
+  decoded-image budget with eviction; wide fonts (Latin Ext, IPA, Greek, Cyrillic, symbols; `common/fontsw.c`), full entity
+  table; tabs (Ctrl+T/W/Tab, middle-click; a tab keeps its page when left), downloads to `~/Downloads` (`about:downloads`,
+  Ctrl+J), bookmarks, view-source, zoom (Ctrl+= / - / 0), forms with UTF-8, selection, wrapping textareas, placeholder,
+  required/email checks, autofocus.
+- Real sites (12 loaded, 0 crashes): Wikipedia, Hacker News, docs.python.org, lite.cnn.com, text.npr.org and example.com
+  (bar its CJK/Arabic lines) render properly; DuckDuckGo HTML's submit button lands at x < 0; GitHub, MDN and Bootstrap
+  are mostly right but icon-only buttons draw as text and SVG sprites (`<use href="#id">`) as solid squares;
+  BBC News stays unstyled (`createElement('_')` throws) and tailwindcss.com is blank (a script error).
+- Known gaps: no incremental relayout, `position: sticky` acts as static, CJK and emoji draw as boxes, no WebP,
+  `@container` queries the viewport, Tailwind's style computation is slow (~13.5 us per element).
+
 ## Log
 - 2026-10-22: Cloned original VibeOS (~2.7k lines: 1-sector bootloader, 16bpp VESA console, in-RAM FS, IRQ-driven shell). Started v2 branch.
 - Phase 0 done: boots via new stage1/stage2 into a 1280x800x32 framebuffer, kernel at 1 MiB, paging + heap + 1 kHz timer; anti-aliased JetBrains Mono / Noto Sans glyphs baked by `tools/mkfont.py`; shared `common/gfx.c` (alpha blending, rounded rects, shadows, AA lines); styled panic screen with register dump + backtrace.

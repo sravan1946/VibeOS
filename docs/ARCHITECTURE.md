@@ -367,33 +367,46 @@ into an arena-allocated AST; "incomplete" results drive the `> ` continuation pr
 that is sent the exported environment, plain variables, function definitions, positionals and `-e/-x`.
 The kernel runs `#!interp [arg]` scripts itself (`proc_spawn_ex`, one level, 128-byte line).
 
-`/bin/browser` (`user/bin/browser/`) is the Vibe Browser. `fetch.c` runs HTTP in a helper process (`/bin/vfetch URL [POST-BODY]`, a small binary of its own: a fetch doesn't load the whole browser image)
-so DNS/connect never block the UI; `url.c` resolves URLs; `html.c` is a tolerant tokenizer plus a one-pass block/inline layout
-into a flat display list in reading order (drawing and hit tests binary-search it through a prefix-max/suffix-min of y, because table cells
-break monotonic y; layout reruns only on a new page, a resize, or when an image's size or a stylesheet arrives). Tables are a grid: the source
-of a `<table>` is read ahead, each cell measured at huge width (rolled back) and then laid out at its column's width. `sheet.c` fetches
-`<link>`/`@import` stylesheets like `img.c` fetches images. `css.c` parses `<style>`/`style=""` (type, class, id, `[attr]`, `:first-child`, descendant, child, comma selectors; `@media`/`@import`;
-specificity, `!important`) and the layout asks it for the cascaded properties of every element as its tag streams past, keeping an
-element stack for ancestry; properties land on the layout frame (colour, weight, alignment, margins, padding, 1-6px borders,
-background boxes patched to their final height when the element closes, centred `width`/`max-width` columns, `display`). `img.c` is the
-per-page image cache: `<img>` queues a URL, two helper processes download, `image_decode` (user/lib/image.c) decodes in-process, and one
-scaled copy composited over the page colour is kept per image. `form.c` holds control state keyed by control ordinal (so it survives
-relayout), draws inline controls, edits text, and builds the GET query / POST body. `main.c` is the window: toolbar, history,
-selection, find bar, select dropdowns. inflate in `image.c` is table-driven (9-bit lookup, slow path for long codes).
+`/bin/browser` (`user/bin/browser/`) is the Vibe Browser. The pipeline is fetch -> tree -> style -> boxes -> display list.
 
-**Scripts** (`js.c`, `dom_js.c`): a page that has `<script>` or `on*=` attributes is parsed into a node tree in `js.c` (a
-tolerant tree builder: implied `</p> </li> </td>`, head/body inference, raw text for script/style/textarea/title). Layout then
-runs on that tree serialised back to HTML with `data-vjs="ID"` on every element; html.c keeps the innermost id on each
-display item, control and form, so a click maps to a node with `doc_node_at` and a control to its element. Scripts see the
-tree through natives on integer ids (`__d.parent`, `insert`, `setAttr`, `qsa`...); the prelude in `dom_js.c` wraps them in
-`Node`/`Element`/`Document` classes with one cached wrapper per node, and implements events (bubbling to `window`, inline
-handlers compiled once), timers, `fetch`, `console`, `location`, `classList`, `style` (a Proxy over the `style`
-attribute). `querySelector` uses css.c's selector matcher. A mutation of the connected tree sets a dirty flag; main.c calls
-`js_pump()` once per frame (timers, fetch helpers, pending scripts) and, if dirty, copies the live form state into the tree
-(`js_sync`), re-serialises and relays out, keeping the scroll and the focused field. Form state stays in form.c: `.value` and
-`.checked` read and write it directly, so typing never needs a relayout. Scripts run in document order after the first
-paint; `src=` scripts and `fetch()` use the same helper processes as page loads (`file:` is read directly). Each entry into
-JS gets 5 s: QuickJS's interrupt handler aborts a runaway script, after which the page's scripts are off.
+**Network** (`fetch.c`, `frame.c`, `cookie.c`, `/bin/vfetch`): HTTP runs in helper processes so DNS/connect never block
+the UI. Up to 24 `vfetch --worker` processes take requests over a pipe and keep their connection open between
+them; a request goes to an idle worker last used for the same origin. `frame.c` finds the exact end of a body
+(Content-Length, chunked, close) so a connection can carry the next response. vfetch decompresses gzip/deflate and converts
+charsets to UTF-8; cookies live in `~/.config/browser/cookies`, shared by every worker. Images get 6 slots, stylesheets 4.
+`url.c` resolves URLs.
+
+**Tree and style** (`dom.c`, `css.c`, `cssel.c`): `dom.c` builds the `hd_*` node tree from HTML with a tolerant tokenizer
+and the implied-end-tag rules that matter; `<style>`/`<link>` sheets go to css.c in document order (`sheet.c` fetches
+external ones). css.c parses sheets (`@media`, `@supports`, `@layer`, `@container`, `@import`), declarations (`calc()`,
+`var()`, shorthands) and a UA sheet; `css_compute(node, parent_style)` returns the full computed `struct cprops`.
+Selectors (`cssel.c`) match through a `struct css_dom` of callbacks, so the same matcher serves dom.c's tree and js.c's
+tree; rules are bucketed by their subject's id/class/tag and prefiltered with a 256-bit ancestor bloom. Shadow trees get
+scoped sheets (`css_add_scoped`).
+
+**Layout and paint** (`layout.c`, `html.c`): layout.c turns the styled tree into a tree of `struct bx` (adding anonymous
+blocks and table parts), lays it out (block/inline formatting, floats, abs/fixed, flexbox, tables, grid; min/max-content
+widths computed lazily and cached per box) and paints it in stacking order into `struct doc`: decors and text items with
+clip rects. `html.c` only queries and draws that display list (hit tests, selection, find, `doc_draw`); items are in paint
+order and y is not monotonic. Layout reruns on a new page, a resize, an arriving image size or sheet, or a dirty script
+tree. `tools/layouttest` runs the same code on the host against golden dumps.
+
+**Images** (`img.c`, `svg.c`): `<img>` queues a URL; fetches are lazy in document order (what has been drawn, plus a
+look-ahead), decoding is in-process (PNG, JPEG, GIF with animation, BMP, PPM; SVG through nanosvg) and one scaled copy per
+image is kept, within a 40 MB decoded budget (least recently drawn evicted, re-decoded on draw). `form.c` holds control
+state keyed by control ordinal (so it survives relayout), draws inline controls and builds GET/POST bodies. `main.c` is
+the window: tabs (a left tab keeps its page; up to 3 live in the background), toolbar, history, downloads, bookmarks,
+zoom, find bar.
+
+**Scripts** (`js.c`, `dom_js.c`, `web_js.c`): a page with `<script>` or `on*=` attributes is parsed into js.c's node tree
+instead, and layout reads that tree directly through the `dom_*` accessors (`doc_layout_js`), so display items, controls
+and forms carry node ids; element rects go back to JS with `js_set_rect`. Scripts see the tree through natives on integer
+ids (`__d`); `dom_js.c` wraps them in `Node`/`Element`/`HTMLxxxElement` classes (one cached wrapper per node), events
+(capture/target/bubble), shadow DOM and custom elements; `web_js.c` adds URL, fetch/XHR, storage, cookies, observers and
+friends, then hides the internals. Selectors and `getComputedStyle` go through css.c's `css_dom` API. A mutation that can
+change rendering marks the tree dirty; main.c calls `js_pump()` once per frame (timers, fetches, pending scripts) and
+relays out if dirty, keeping scroll and focus. Form state stays in form.c, so typing never relays out. Each entry into JS
+gets 5 s: QuickJS's interrupt handler aborts a runaway script, after which the page's scripts are off.
 
 ## QuickJS
 
